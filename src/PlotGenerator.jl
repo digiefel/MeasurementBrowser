@@ -8,7 +8,7 @@ using PrecompileTools: @setup_workload, @compile_workload
 include("DataLoader.jl")
 using .DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup
 include("DataAnalysis.jl")
-using .Analysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance
+using .Analysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
 
 export figure_for_file, figure_for_files, plot_tlm_combined, plot_pund_fatigue, get_combined_plot_types
 
@@ -162,7 +162,7 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
     # Residuals plot (below main)
     ax_res = Axis(fig[2, 1:2],
         xlabel="Length/Width Ratio (L/W)",
-        ylabel="Residuals (kΩ)",
+        ylabel="Residuals (%)",
         title="Residuals")
     linkxaxes!(ax1, ax_res)
 
@@ -225,19 +225,19 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
     if nrow(valid_geometry) > 0 && isfinite(sheet_res) && isfinite(contact_res)
         xvals = valid_geometry.length_um ./ valid_geometry.width_um
         pred_ohm = contact_res .+ sheet_res .* xvals
-        resid_kohm = (valid_geometry.avg_resistance_ohm .- pred_ohm) ./ 1e3
+        resid_rel = 1e2 .* (valid_geometry.avg_resistance_ohm .- pred_ohm) ./ valid_geometry.avg_resistance_ohm
 
         # Zero reference line
         xext = extrema(xvals)
         lines!(ax_res, [xext[1], xext[2]], [0.0, 0.0], color=:black, linewidth=1, linestyle=:dot)
 
         # Blue vertical lines from zero to each residual
-        for (x, r) in zip(xvals, resid_kohm)
+        for (x, r) in zip(xvals, resid_rel)
             lines!(ax_res, [x, x], [0.0, r], color=:blue, linewidth=1)
         end
 
         # Red dots at residual values
-        scatter!(ax_res, xvals, resid_kohm, color=:red, markersize=6)
+        scatter!(ax_res, xvals, resid_rel, color=:red, markersize=6)
     end
 
     # Plot 3: Width-normalized resistance vs length
@@ -288,30 +288,142 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
 end
 
 """
-Plot PUND fatigue analysis showing either overlapped P-E curves or fatigue evolution
+Plot PUND fatigue analysis with:
+- Top: overlapped P–E (or Q–V) curves color-coded by cumulative fatigue cycles (log-scaled colorbar)
+- Bottom: remnant polarization (Pr) vs fatigue cycles
+Includes a "Last only" toggle button (inside the figure) to show only the last repetition per FE_PUND file.
 """
 function plot_pund_fatigue(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], mode=:overlapped, kwargs...)
-    @info "plot_pund_fatigue called with $(length(paths)) files, mode=$mode"
+    isempty(paths) && return nothing
 
-    # TODO: Implement PUND fatigue analysis
-    # 1. Load all PUND files
-    # 2. Extract fatigue cycle numbers
-    # 3. Create either:
-    #    - :overlapped: P-E curves color-coded by cycle number
-    #    - :evolution: fatigue cycles vs remnant polarization
+    # Prepare entries for analysis (chronological is enforced in analysis)
+    n = length(paths)
+    device_params_list = length(device_params_list) == n ? device_params_list : [Dict{Symbol,Any}() for _ in 1:n]
+    entries = NamedTuple[]
+    for i in 1:n
+        path = paths[i]
+        params = device_params_list[i]
+        fname = lowercase(basename(path))
+        dirpath = dirname(path)
+        ts = stat(path).mtime
+        if occursin("wakeup", fname)
+            df_w = read_wakeup(basename(path), dirpath)
+            push!(entries, (kind=:wakeup, df=df_w, params=params, timestamp=ts))
+        else
+            df_p = read_fe_pund(basename(path), dirpath)
+            push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
+        end
+    end
 
-    # Placeholder implementation
-    fig = Figure(size=(800, 600))
-    ax = Axis(fig[1, 1],
-        xlabel=mode === :overlapped ? "Voltage (V)" : "Fatigue Cycles",
-        ylabel=mode === :overlapped ? "Polarization (μC/cm²)" : "Remnant Polarization (μC/cm²)",
-        title="PUND Fatigue Analysis - $(mode) mode")
+    # Delegate analysis (per-repetition cycles, chronological accumulation, Pr extraction)
+    res = analyze_pund_fatigue_combined(entries)
+    traces = get(res, :traces, NamedTuple[])
+    x_label = get(res, :x_label, "Voltage (V)")
+    y_label = get(res, :y_label, "Polarization (μC/cm²)")
+    pr_points = get(res, :pr_points, NamedTuple[])
 
-    text!(ax, 0.5, 0.5, text="PUND Fatigue Plot\nMode: $mode\nNot Yet Implemented",
-        align=(:center, :center), fontsize=20, color=:red)
+    # Nothing to show
+    isempty(traces) && isempty(pr_points) && return nothing
 
-    xlims!(ax, 0, 1)
-    ylims!(ax, 0, 1)
+    # Figure layout: top plot + control area on the right, bottom plot spans width
+    fig = Figure(size=(1200, 800))
+    ax_top = Axis(fig[1, 1], xlabel=x_label, ylabel=y_label,
+        title="Overlapped P–E curves (color-coded by fatigue cycles)")
+    # Controls + colorbar column
+    gl_ctrl = GridLayout(fig[1, 2])
+    ax_bottom = Axis(fig[2, 1:2], xlabel="Fatigue cycles", ylabel="Remnant polarization (μC/cm²)",
+        title="Remnant polarization vs fatigue cycles")
+
+    # Toggle for "Last only"
+    last_only = Observable(false)
+    btn = Button(gl_ctrl[1, 1], label="Last only: OFF")
+    on(btn.clicks) do _
+        last_only[] = !last_only[]
+        btn.label[] = last_only[] ? "Last only: ON" : "Last only: OFF"
+    end
+
+    # Map cycles -> color using log scale; replace legend with a colorbar
+    cyc_vals = [t.cycles for t in traces if hasproperty(t, :cycles)]
+    if isempty(cyc_vals)
+        # Fallback text if there are no cycles
+        text!(ax_top, 0.5, 0.5, text="No valid P–E traces", align=(:center, :center), color=:gray)
+    else
+        # Log10 scaling; ensure limits are valid
+        logvals = log10.(Float64.(cyc_vals))
+        vmin = minimum(logvals)
+        vmax = maximum(logvals)
+        # Nice tick labels for colorbar (1, 10, 100, ...)
+        min_pow = floor(Int, vmin)
+        max_pow = ceil(Int, vmax)
+        tick_positions = collect(min_pow:max_pow)
+        tick_labels = string.(Int.(10 .^ tick_positions))
+
+        # Colorbar (log ticks)
+        Colorbar(gl_ctrl[2, 1], colormap=:viridis, limits=(vmin, vmax), label="Fatigue cycles (log10)",
+            ticks=(tick_positions, tick_labels))
+
+        # Plot all traces once; color by log(cycles) and toggle visibility
+        plotted_traces = NamedTuple{(:plt, :is_last)}[]
+        for t in traces
+            isempty(t.x) && continue
+            isempty(t.y) && continue
+            t_log = log10(float(t.cycles))
+            plt = lines!(ax_top, t.x, t.y;
+                color=t_log, colormap=:viridis, colorrange=(vmin, vmax), linewidth=2)
+            is_last = hasproperty(t, :rep_index) && hasproperty(t, :rep_count) && (t.rep_index == t.rep_count)
+            push!(plotted_traces, (plt=plt, is_last=is_last))
+        end
+        # Initialize visibility (show all)
+        for p in plotted_traces
+            p.plt.visible[] = true
+        end
+        on(last_only) do v
+            for p in plotted_traces
+                p.plt.visible[] = (!v) || p.is_last
+            end
+        end
+    end
+
+    # Bottom panel: Pr vs cycles (all vs last-only)
+    if !isempty(pr_points)
+        all_x = Float64[p.cycles for p in pr_points]
+        all_y = Float64[p.Pr for p in pr_points]
+        ord_all = sortperm(all_x)
+        lines_all = lines!(ax_bottom, all_x[ord_all], all_y[ord_all], color=:black, linewidth=2, alpha=0.7)
+        scatter_all = scatter!(ax_bottom, all_x, all_y, color=:red, markersize=8)
+
+        last_x = Float64[]
+        last_y = Float64[]
+        for p in pr_points
+            if hasproperty(p, :rep_index) && hasproperty(p, :rep_count) && (p.rep_index == p.rep_count)
+                push!(last_x, p.cycles)
+                push!(last_y, p.Pr)
+            end
+        end
+        ord_last = sortperm(last_x)
+        lines_last = isempty(last_x) ? nothing : lines!(ax_bottom, last_x[ord_last], last_y[ord_last], color=:black, linewidth=2, alpha=0.7)
+        scatter_last = isempty(last_x) ? nothing : scatter!(ax_bottom, last_x, last_y, color=:red, markersize=8)
+
+        # Start with "all" visible
+        if lines_last !== nothing
+            lines_last.visible[] = false
+        end
+        if scatter_last !== nothing
+            scatter_last.visible[] = false
+        end
+        on(last_only) do v
+            lines_all.visible[] = !v
+            scatter_all.visible[] = !v
+            if lines_last !== nothing
+                lines_last.visible[] = v
+            end
+            if scatter_last !== nothing
+                scatter_last.visible[] = v
+            end
+        end
+    else
+        text!(ax_bottom, 0.5, 0.5, text="No remnant polarization points", align=(:center, :center), color=:gray)
+    end
 
     return fig
 end
@@ -519,7 +631,7 @@ function debug_fe_pund(df, title_str="FE PUND"; area_um2=nothing, DEBUG::Bool=fa
         # Build contiguous segments of constant pulse_idx
         segs = UnitRange{Int}[]
         s = 1
-        for i in 2:length(pid)
+        for i in eachindex(pid)[2:end]
             if pid[i] != pid[i-1]
                 push!(segs, s:(i-1))
                 s = i

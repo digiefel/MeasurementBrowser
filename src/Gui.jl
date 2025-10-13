@@ -827,6 +827,37 @@ function render_combined_plots_window(ui_state)
                 if ig.Button("Generate Combined Plot", (-1, 0))
                     ui_state[:generate_combined_plot] = true
                 end
+                if ig.BeginPopupContextItem()
+                    if ig.MenuItem("Open in New Window")
+                        # Prepare compatible selections
+                        local sel_meas = get(ui_state, :selected_measurements, MeasurementInfo[])
+                        local comp_meas = filter_measurements_for_plot_type(sel_meas, current_type)
+                        if length(comp_meas) >= 2
+                            try
+                                local paths = [m.filepath for m in comp_meas]
+                                local dev_params = [m.device_info.parameters for m in comp_meas]
+                                local fig = figure_for_files(paths, current_type; device_params_list=dev_params)
+                                if fig !== nothing
+                                    local open_plots = get!(ui_state, :open_plot_windows) do
+                                        Vector{Dict{Symbol,Any}}()
+                                    end
+                                    local counter = get!(ui_state, :_combined_plot_counter) do
+                                        0
+                                    end
+                                    ui_state[:_combined_plot_counter] = counter + 1
+                                    push!(open_plots, Dict(
+                                        :figure => fig,
+                                        :title => "Combined: $(string(current_type))",
+                                        :id => "combined_$(counter + 1)",
+                                    ))
+                                end
+                            catch err
+                                @warn "Failed to generate combined plot in new window" error = err
+                            end
+                        end
+                    end
+                    ig.EndPopup()
+                end
             else
                 ig.TextColored((1.0, 0.6, 0.2, 1.0), "Warning: Only $compatible_count compatible (need 2+)")
                 ig.Separator()
@@ -855,7 +886,7 @@ function count_compatible_measurements(measurements::Vector{MeasurementInfo}, pl
     if plot_type === :tlm_analysis
         return count(m -> m.measurement_kind === :tlm4p, measurements)
     elseif plot_type === :pund_fatigue
-        return count(m -> m.measurement_kind === :pund, measurements)
+        return count(m -> (m.measurement_kind === :pund || m.measurement_kind === :wakeup), measurements)
     end
     return 0
 end
@@ -864,7 +895,7 @@ function filter_measurements_for_plot_type(measurements::Vector{MeasurementInfo}
     if plot_type === :tlm_analysis
         return filter(m -> m.measurement_kind === :tlm4p, measurements)
     elseif plot_type === :pund_fatigue
-        return filter(m -> m.measurement_kind === :pund, measurements)
+        return filter(m -> (m.measurement_kind === :pund || m.measurement_kind === :wakeup), measurements)
     end
     return MeasurementInfo[]
 end
@@ -1008,6 +1039,23 @@ function render_additional_plot_windows(ui_state)
     to_keep = Vector{Dict{Symbol,Any}}()
     for entry in open_plots
         filepath = get(entry, :filepath, "")
+        # Support figure-only entries (no filepath)
+        if isempty(filepath) && haskey(entry, :figure)
+            title = get(entry, :title, "Combined Plot")
+            id = get(entry, :id, "combined_plot")
+            open_ref = Ref(true)
+            if ig.Begin("Plot: $title###plot_window_$id", open_ref)
+                f = entry[:figure]
+                _time!(ui_state, :makie_fig) do
+                    MakieFigure("measurement_plot_$id", f; auto_resize_x=true, auto_resize_y=true)
+                end
+                ig.Separator()
+                ig.TextDisabled(title)
+            end
+            ig.End()
+            open_ref[] && push!(to_keep, entry)
+            continue
+        end
         isempty(filepath) && continue
         if !isfile(filepath)
             continue

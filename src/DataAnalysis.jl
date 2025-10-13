@@ -3,8 +3,9 @@ module Analysis
 using DataFrames
 using Dates
 using Statistics, SmoothData
+using Printf
 
-export analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined
+export analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, analyze_pund_fatigue_combined
 
 """
 Simple breakdown analysis for I-V data
@@ -351,7 +352,7 @@ Returns DataFrame with columns:
 - current_source: source current values
 - voltage: measured voltage values
 """
-function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,Dict{Symbol,Any}}}; Vmin=0.0002, Imin=1e-15)
+function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,Dict{Symbol,Any}}}; Vmin=0.0003, Imin=1e-15)
     if isempty(files_data_params)
         @warn "No TLM data provided for combined analysis"
         return DataFrame()
@@ -407,7 +408,8 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
         )
 
         # Add device name for plotting
-        device_name = "L$(Int(length_um))W$(Int(width_um))"
+        # device_name = "L$(Int(length_um))W$(Int(width_um))"
+        device_name = @sprintf "L%.4gW%.2g" length_um width_um
         file_data.device_name = fill(device_name, nrow(df))
 
         # Append to combined data
@@ -428,6 +430,167 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
     end
 
     return combined_data
+end
+
+"""
+Analyze PUND fatigue across multiple entries (FE_PUND and Wakeup), producing:
+- traces: vector of NamedTuples (cycles, x, y, label, file_index, rep_index, rep_count) for top-panel overlapped curves
+- x_label, y_label: suggested axis labels for top panel
+- pr_points: vector of NamedTuples (cycles, Pr, file_index, rep_index, rep_count) for bottom panel
+
+Input:
+entries :: Vector of NamedTuples with fields:
+    kind::Symbol              # :pund or :wakeup
+    df::DataFrame             # raw data frame for the entry
+    params::Dict{Symbol,Any}  # device-level params (expects :area_um2, :thickness_nm)
+    timestamp::Any            # optional; used for chronological sorting
+
+Notes:
+- Only the exact parameter names are considered for geometry: area_um2 (μm²) and thickness_nm (nm).
+- Wakeup entries contribute their pulse_count to the cumulative cycle count.
+- FE_PUND entries are analyzed and each repetition (quintuple) is treated as one fatigue cycle.
+- Remnant polarization is computed as Pr = (max(P) - min(P)) / 2 from each repetition's P–E trace (only if area_um2 is present).
+"""
+function analyze_pund_fatigue_combined(entries::Vector)
+    # Results
+    traces = NamedTuple{(:cycles, :x, :y, :label, :file_index, :rep_index, :rep_count),
+        Tuple{Int,Vector{Float64},Vector{Float64},String,Int,Int,Int}}[]
+    pr_points = NamedTuple{(:cycles, :Pr, :file_index, :rep_index, :rep_count),
+        Tuple{Float64,Float64,Int,Int,Int}}[]
+
+    # Axis label decisions
+    any_thickness = false
+    all_thickness = true
+    any_area = false
+    all_area = true
+
+    # Running counters
+    cycles_accum = 0
+    file_counter = 0
+
+    # Sort chronologically when possible (by :timestamp or params[:timestamp]); fallback to given order
+    sorted_entries = sort(entries; by=e -> begin
+        if hasproperty(e, :timestamp)
+            return e.timestamp
+        elseif hasproperty(e, :params) && haskey(e.params, :timestamp)
+            return e.params[:timestamp]
+        else
+            return 0
+        end
+    end)
+
+    for entry in sorted_entries
+        kind = hasproperty(entry, :kind) ? entry.kind : :pund
+        df = hasproperty(entry, :df) ? entry.df : DataFrame()
+        params = hasproperty(entry, :params) ? entry.params : Dict{Symbol,Any}()
+
+        if kind === :wakeup
+            # Add wakeup pulses to cumulative cycles
+            pulses = 0
+            if "pulse_count" ∈ names(df)
+                pulses = Int(df.pulse_count[1])
+            elseif haskey(params, :pulse_count)
+                pulses = Int(params[:pulse_count])
+            end
+            cycles_accum += pulses
+            continue
+        elseif kind === :pund
+            nrows = nrow(df)
+            nrows == 0 && continue
+
+            # Device parameters (exact keys expected)
+            area_um2 = haskey(params, :area_um2) ? Float64(params[:area_um2]) : NaN
+            thickness_nm = haskey(params, :thickness_nm) ? Float64(params[:thickness_nm]) : NaN
+
+            # Track availability for axis labels
+            if isfinite(thickness_nm) && thickness_nm > 0
+                any_thickness = true
+            else
+                all_thickness = false
+            end
+            if isfinite(area_um2) && area_um2 > 0
+                any_area = true
+            else
+                all_area = false
+            end
+
+            # Analyze single PUND to get FE charge, pulse indices, etc.
+            df_an = analyze_pund(df)
+
+            # Y-axis base (centered) and unit handling
+            Q_FE = df_an.Q_FE
+            finite_Q = filter(!isnan, Q_FE)
+            q_center = isempty(finite_Q) ? 0.0 : mean(finite_Q)
+            Qc = Q_FE .- q_center
+
+            y_all = if isfinite(area_um2) && area_um2 > 0
+                area_cm2 = area_um2 / 1e8      # μm² -> cm²
+                (Qc ./ area_cm2) .* 1e6        # μC/cm²
+            else
+                Qc .* 1e12                     # pC
+            end
+
+            # X-axis base (E if thickness given, else V)
+            V = df_an.voltage
+            x_all = if isfinite(thickness_nm) && thickness_nm > 0
+                (V ./ (thickness_nm * 1e-7)) ./ 1e6   # V/(nm->cm) => V/cm => MV/cm
+            else
+                V
+            end
+
+            # Per-PUND repetition handling: each quintuple (poling,P,U,N,D) is one cycle increment
+            pid = df_an.pulse_idx
+            maxpid = maximum(pid)
+            n_groups = maxpid ÷ 5
+            file_counter += 1
+
+            for rep in 1:n_groups
+                # Use only P and N pulses within this repetition
+                P_code = rep * 5 - 3
+                N_code = rep * 5 - 1
+                rep_mask = (pid .== P_code) .| (pid .== N_code)
+
+                valid = rep_mask .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
+                if any(valid)
+                    cyc = cycles_accum + 1
+
+                    xv = collect(x_all[valid])
+                    yv = collect(y_all[valid])
+
+                    # Top panel trace
+                    push!(traces, (cycles=cyc, x=xv, y=yv, label=string(cyc),
+                        file_index=file_counter, rep_index=rep, rep_count=n_groups))
+
+                    # Bottom panel: Pr = (max(P) - min(P)) / 2 (only if area was provided)
+                    if isfinite(area_um2) && area_um2 > 0
+                        ymin = minimum(yv)
+                        ymax = maximum(yv)
+                        if isfinite(ymin) && isfinite(ymax)
+                            Pr = 0.5 * (ymax - ymin)
+                            if isfinite(Pr)
+                                push!(pr_points, (cycles=float(cyc), Pr=Pr,
+                                    file_index=file_counter, rep_index=rep, rep_count=n_groups))
+                            end
+                        end
+                    end
+
+                    # Increment cumulative cycles after this repetition
+                    cycles_accum += 1
+                end
+            end
+        end
+    end
+
+    # Decide axis labels
+    x_label = all_thickness ? "E (MV/cm)" : "Voltage (V)"
+    y_label = all_area ? "Polarization (μC/cm²)" : "Switching charge (pC)"
+
+    return Dict(
+        :traces => traces,
+        :x_label => x_label,
+        :y_label => y_label,
+        :pr_points => pr_points,
+    )
 end
 
 end # module
