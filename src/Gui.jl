@@ -168,6 +168,23 @@ function render_menu_bar(ui_state)
                     ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
                 end
             end
+            if ig.MenuItem("Reload")
+                if haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
+                    @info "Reloading path: $(ui_state[:root_path])"
+                    hierarchy = scan_directory(ui_state[:root_path])
+                    ui_state[:hierarchy_root] = hierarchy.root
+                    ui_state[:all_measurements] = hierarchy.all_measurements
+                    ui_state[:has_device_metadata] = hierarchy.has_device_metadata
+                    # Collect device-level metadata keys (union)
+                    all_params = Set{Symbol}()
+                    for m in hierarchy.all_measurements
+                        for k in keys(m.device_info.parameters)
+                            push!(all_params, k)
+                        end
+                    end
+                    ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
+                end
+            end
             ig.EndMenu()
         end
         if ig.BeginMenu("Debug")
