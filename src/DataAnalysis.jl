@@ -234,62 +234,65 @@ function validate_tlm_dataframe(df::DataFrame, filepath::String="")
 end
 
 """
-Calculate sheet resistance from TLM analysis data
+Calculate sheet resistance and specific contact resistivity (long-contact TLM).
 
-Given analyzed TLM data with length and resistance information,
-fits a linear relationship R = R_contact + R_sheet * L/W
-and returns (sheet_resistance_ohm_per_square, contact_resistance_ohm, r_squared)
+Given analyzed TLM data with columns (:length_um, :width_um, :resistance_ohm),
+fits the width-invariant relation  R*W = 2R_c' + R_sheet * L
+and returns (sheet_resistance_ohm_per_square,
+             contact_resistance_per_width_ohm_cm,
+             contact_resistivity_ohm_cm2,
+             r_squared).
+
+Notes:
+- Uses long-contact approximation (L_c ≫ L_T):  ρ_c = (R_c')^2 / R_sheet.
+- Converts μm → cm internally. Width must be > 0.
 """
 function calculate_sheet_resistance(analysis_df::DataFrame)
     if nrow(analysis_df) == 0
-        @warn "Empty analysis dataframe for sheet resistance calculation"
-        return (NaN, NaN, NaN)
+        @warn "Empty analysis dataframe for sheet/contact calculation"
+        return (NaN, NaN, NaN, NaN)
     end
 
-    # Group by length and width to get average resistance per geometry
-    geometry_groups = combine(groupby(analysis_df, [:length_um, :width_um]),
-        :resistance_ohm => (x -> mean(filter(isfinite, x))) => :avg_resistance_ohm)
+    # Average repeated measurements per geometry
+    g = combine(groupby(analysis_df, [:length_um, :width_um]),
+        :resistance_ohm => (x -> mean(filter(isfinite, x))) => :R_ohm)
 
-    # Filter out invalid data
-    valid_mask = isfinite.(geometry_groups.avg_resistance_ohm) .&
-                 isfinite.(geometry_groups.length_um) .&
-                 isfinite.(geometry_groups.width_um) .&
-                 (geometry_groups.width_um .> 0)
-
-    valid_data = geometry_groups[valid_mask, :]
-
-    if nrow(valid_data) < 2
-        @warn "Need at least 2 valid geometry points for sheet resistance calculation"
-        return (NaN, NaN, NaN)
+    # Validate inputs
+    mask = isfinite.(g.R_ohm) .& isfinite.(g.length_um) .& isfinite.(g.width_um) .& (g.width_um .> 0)
+    d = g[mask, :]
+    if nrow(d) < 2
+        @warn "Need at least 2 valid geometry points"
+        return (NaN, NaN, NaN, NaN)
     end
 
-    # Linear fit: R = R_contact + R_sheet * L/W
-    x = valid_data.length_um ./ valid_data.width_um  # L/W ratio
-    y = valid_data.avg_resistance_ohm
+    # Build regression: y = R*W (Ω·cm), x = L (cm)
+    L_cm = d.length_um .* 1e-4
+    W_cm = d.width_um .* 1e-4
+    y = d.R_ohm .* W_cm           # Ω·cm
+    x = L_cm                      # cm
 
     n = length(x)
-    sum_x = sum(x)
-    sum_y = sum(y)
-    sum_xy = sum(x .* y)
-    sum_x2 = sum(x .^ 2)
-
-    # Linear regression coefficients
-    denominator = n * sum_x2 - sum_x^2
-    if abs(denominator) < 1e-12
-        @warn "Cannot fit sheet resistance - insufficient variation in L/W ratios"
-        return (NaN, NaN, NaN)
+    sx, sy = sum(x), sum(y)
+    sxx, sxy = sum(x .^ 2), sum(x .* y)
+    denom = n * sxx - sx^2
+    if abs(denom) < 1e-12
+        @warn "Cannot fit: insufficient variation in lengths"
+        return (NaN, NaN, NaN, NaN)
     end
 
-    sheet_resistance = (n * sum_xy - sum_x * sum_y) / denominator  # slope
-    contact_resistance = (sum_y - sheet_resistance * sum_x) / n     # intercept
+    R_sheet = (n * sxy - sx * sy) / denom     # Ω/□ (slope)
+    two_Rcprime = (sy - R_sheet * sx) / n     # 2 * R_c' (Ω·cm) (intercept)
+    Rcprime = 0.5 * two_Rcprime               # Ω·cm
 
-    # Calculate R-squared
-    y_pred = contact_resistance .+ sheet_resistance .* x
+    # R^2 on the y = R*W regression
+    y_pred = two_Rcprime .+ R_sheet .* x
     ss_res = sum((y .- y_pred) .^ 2)
     ss_tot = sum((y .- mean(y)) .^ 2)
-    r_squared = 1 - ss_res / ss_tot
+    R2 = 1 - ss_res / ss_tot
 
-    return (sheet_resistance, contact_resistance, r_squared)
+    rho_c = (Rcprime^2) / R_sheet             # Ω·cm²  (long-contact limit)
+
+    return (R_sheet, Rcprime, rho_c, R2)
 end
 
 """
@@ -423,9 +426,9 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
         @info "TLM combined analysis completed" n_files = processed_files n_total_files = length(files_data_params) n_points = nrow(combined_data)
 
         # Calculate and report sheet resistance if we have enough data
-        sheet_res, contact_res, r_sq = calculate_sheet_resistance(combined_data)
-        if isfinite(sheet_res)
-            @info "Sheet resistance analysis" sheet_resistance_ohm_per_sq = sheet_res contact_resistance_ohm = contact_res r_squared = r_sq
+        R_sheet, R_cprime, rho_c, R2 = calculate_sheet_resistance(combined_data)
+        if isfinite(R_sheet)
+            @info "Sheet/contact analysis" sheet_resistance_ohm_per_sq = R_sheet contact_resistance_per_width_ohm_cm = R_cprime contact_resistivity_ohm_cm2 = rho_c r_squared = R2
         end
     end
 

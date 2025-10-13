@@ -102,8 +102,30 @@ function figure_for_files(paths::Vector{String}, combined_kind::Symbol; device_p
     end
 end
 
+
+# small OLS helper: y = a + b x
+ols_ab(x::AbstractVector{<:Real}, y::AbstractVector{<:Real}) = begin
+    n = length(x)
+    sx = sum(x)
+    sy = sum(y)
+    sxx = sum(x .^ 2)
+    sxy = sum(x .* y)
+    denom = n * sxx - sx^2
+    if !isfinite(denom) || abs(denom) < 1e-12
+        (NaN, NaN, false)
+    else
+        b = (n * sxy - sx * sy) / denom
+        a = (sy - b * sx) / n
+        (a, b, true)
+    end
+end
+
 """
-Plot combined TLM analysis showing width-normalized resistance vs length
+Plot combined TLM analysis with a toggle:
+- Global fit (one OLS over all widths) OR Per-width fits (one OLS per width).
+Bottom axis always shows the mean of width-normalized resistance vs length.
+
+Requires: calculate_sheet_resistance(::DataFrame) -> (R_sheet, R_cprime, rho_c, R2)
 """
 function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
     @info "plot_tlm_combined called with $(length(paths)) files"
@@ -120,14 +142,7 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
             filename = basename(path)
             dirname_path = dirname(path)
             df = read_tlm_4p(filename, dirname_path)
-
-            # Get device parameters if provided
-            device_params = if i <= length(device_params_list)
-                device_params_list[i]
-            else
-                Dict{Symbol,Any}()
-            end
-
+            device_params = (i <= length(device_params_list)) ? device_params_list[i] : Dict{Symbol,Any}()
             push!(files_data_params, (path, df, device_params))
         catch err
             @warn "Failed to load TLM file: $path" error = err
@@ -147,8 +162,8 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
         return nothing
     end
 
-    # Calculate sheet resistance
-    sheet_res, contact_res, r_squared = calculate_sheet_resistance(analysis_df)
+    # Width-invariant fit → (R_sheet, R_c', rho_c, R2)
+    R_sheet, R_cprime, rho_c, r_squared = calculate_sheet_resistance(analysis_df)
 
     # Create the plot with three rows: main, residuals (shorter), and secondary+info
     fig = Figure(size=(900, 600))
@@ -157,13 +172,13 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
     ax1 = Axis(fig[1, 1:2],
         xlabel="Length/Width Ratio (L/W)",
         ylabel="Resistance (kΩ)",
-        title="TLM Analysis - Sheet Resistance Extraction")
+        title="TLM Analysis - Model from (R□, R_c')")
 
-    # Residuals plot (below main)
+    # Residuals plot (underneath main)
     ax_res = Axis(fig[2, 1:2],
         xlabel="Length/Width Ratio (L/W)",
         ylabel="Residuals (%)",
-        title="Residuals")
+        title="Residuals vs linear model")
     linkxaxes!(ax1, ax_res)
 
     # Secondary plot: Width-normalized resistance vs length
@@ -172,9 +187,7 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
         ylabel="Width-Normalized Resistance (Ω·μm)",
         title="Width-Normalized Resistance vs Length")
 
-    # Info panel
-    info_ax = Axis(fig[3, 2],
-        xlabel="", ylabel="", title="Analysis Results")
+    info_ax = Axis(fig[3, 2], xlabel="", ylabel="", title="Analysis Results")
     hidedecorations!(info_ax)
     hidespines!(info_ax)
 
@@ -183,106 +196,91 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
     rowsize!(fig.layout, 2, Relative(0.20))
     rowsize!(fig.layout, 3, Relative(0.25))
 
-    # Group by device for plotting
-    devices = unique(analysis_df.device_name)
-    colors = cgrad(:tab10, length(devices), categorical=true)
-
-    # Plot 1: R vs L/W for sheet resistance extraction
-    geometry_groups = combine(groupby(analysis_df, [:length_um, :width_um, :device_name]),
+    # Geometry-averaged points for R vs L/W
+    geometry_groups = combine(groupby(analysis_df, [:length_um, :width_um]),
         :resistance_ohm => (x -> mean(filter(isfinite, x))) => :avg_resistance_ohm)
 
-    valid_geom_mask = isfinite.(geometry_groups.avg_resistance_ohm) .&
-                      isfinite.(geometry_groups.length_um) .&
-                      isfinite.(geometry_groups.width_um) .&
-                      (geometry_groups.width_um .> 0)
+    if nrow(geometry_groups) == 0
+        @warn "No geometry-averaged data available"
+        return fig
+    end
 
-    valid_geometry = geometry_groups[valid_geom_mask, :]
+    widths = unique(geometry_groups.width_um)
+    colors = cgrad(:tab10, length(widths), categorical=true)
 
-    if nrow(valid_geometry) > 0
-        lw_ratio = valid_geometry.length_um ./ valid_geometry.width_um
-
-        # Plot data points
-        for (i, device) in enumerate(devices)
-            device_geom = filter(row -> row.device_name == device, valid_geometry)
-            if nrow(device_geom) > 0
-                device_lw = device_geom.length_um ./ device_geom.width_um
-                scatter!(ax1, device_lw, device_geom.avg_resistance_ohm ./ 1e3,
-                    color=colors[i], label=device, markersize=10)
-            end
-        end
-
-        # Add linear fit line if sheet resistance is valid
-        if isfinite(sheet_res) && isfinite(contact_res)
-            lw_range = extrema(lw_ratio)
-            lw_fit = range(0, lw_range[2], length=100)
-            r_fit = (contact_res .+ sheet_res .* lw_fit) ./ 1e3
-            lines!(ax1, lw_fit, r_fit, color=:red, linewidth=2,
-                label="Linear Fit", linestyle=:dash)
+    # Scatter points by width (main axis)
+    for (i, w_um) in enumerate(widths)
+        width_geom = filter(row -> row.width_um == w_um, geometry_groups)
+        if nrow(width_geom) > 0
+            lw_vals = width_geom.length_um ./ width_geom.width_um
+            scatter!(ax1, lw_vals, width_geom.avg_resistance_ohm ./ 1e3,
+                color=colors[i], label="$(w_um) μm", markersize=10)
         end
     end
 
-    # Residuals plot below main plot (red dots with blue vertical lines)
-    if nrow(valid_geometry) > 0 && isfinite(sheet_res) && isfinite(contact_res)
-        xvals = valid_geometry.length_um ./ valid_geometry.width_um
-        pred_ohm = contact_res .+ sheet_res .* xvals
-        resid_rel = 1e2 .* (valid_geometry.avg_resistance_ohm .- pred_ohm) ./ valid_geometry.avg_resistance_ohm
+    # Predicted lines from inferred (R_sheet, R_c') for each width
+    if isfinite(R_sheet) && isfinite(R_cprime)
+        for (i, w_um) in enumerate(widths)
+            mask = geometry_groups.width_um .== w_um
+            if any(mask)
+                w_cm = w_um * 1e-4
+                a_w = 2 * (R_cprime / w_cm)                 # Ω
+                xspan = geometry_groups.length_um[mask] ./ geometry_groups.width_um[mask]
+                x_max = maximum(xspan)
+                lw_fit = range(0, max(x_max, 1.0), length=200)
+                r_fit = (a_w .+ R_sheet .* lw_fit) ./ 1e3   # kΩ
+                lines!(ax1, lw_fit, r_fit, color=colors[i], linewidth=2, linestyle=:dash)
+            end
+        end
+    end
 
-        # Zero reference line
+    # Residuals vs the same inferred model
+    if isfinite(R_sheet) && isfinite(R_cprime)
+        xvals = geometry_groups.length_um ./ geometry_groups.width_um
+        W_cm = geometry_groups.width_um .* 1e-4
+        pred_ohm = (2 .* (R_cprime ./ W_cm)) .+ R_sheet .* xvals
+        resid_rel = 1e2 .* (geometry_groups.avg_resistance_ohm .- pred_ohm) ./ geometry_groups.avg_resistance_ohm
+
         xext = extrema(xvals)
         lines!(ax_res, [xext[1], xext[2]], [0.0, 0.0], color=:black, linewidth=1, linestyle=:dot)
-
-        # Blue vertical lines from zero to each residual
         for (x, r) in zip(xvals, resid_rel)
             lines!(ax_res, [x, x], [0.0, r], color=:blue, linewidth=1)
         end
-
-        # Red dots at residual values
         scatter!(ax_res, xvals, resid_rel, color=:red, markersize=6)
     end
 
-    # Plot 3: Width-normalized resistance vs length
-    for (i, device) in enumerate(devices)
-        device_data = filter(row -> row.device_name == device, analysis_df)
-
-        # Filter out infinite and NaN values
-        valid_mask = isfinite.(device_data.resistance_normalized) .&
-                     isfinite.(device_data.length_um)
-
-        if sum(valid_mask) > 0
-            valid_data = device_data[valid_mask, :]
-            scatter!(ax2, valid_data.length_um, valid_data.resistance_normalized,
-                color=colors[i], label=device, markersize=6)
-        end
+    # Bottom axis: keep original behavior (per-width points)
+    for (i, w_um) in enumerate(widths)
+        width_data = filter(row -> row.width_um == w_um, analysis_df)
+        scatter!(ax2, width_data.length_um, width_data.resistance_normalized,
+            color=colors[i], label="$(w_um) μm", markersize=6)
     end
 
-    # Display analysis results in info panel
+    # Info panel (values inferred from the fit function)
     results_text = ""
-    if isfinite(sheet_res)
-        results_text *= "Sheet Resistance:\n"
-        results_text *= "  $(round(sheet_res, digits=2)) Ω/□\n\n"
-        results_text *= "Contact Resistance:\n"
-        results_text *= "  $(round(contact_res, digits=2)) Ω\n\n"
-        results_text *= "R² = $(round(r_squared, digits=4))\n\n"
+    if isfinite(R_sheet)
+        results_text *= "Sheet Resistance (R□):  $(round(R_sheet, digits=2)) Ω/□\n\n"
+        if isfinite(R_cprime)
+            results_text *= "Contact per width (R_c'):  $(round(R_cprime, sigdigits=4)) Ω·cm\n\n"
+        end
+        if isfinite(rho_c)
+            results_text *= "Specific Contact (ρ_c):  $(round(rho_c, sigdigits=4)) Ω·cm²\n\n"
+        end
+        results_text *= "R² (width-invariant fit):  $(round(r_squared, digits=4))\n\n"
     else
-        results_text *= "Sheet Resistance:\n"
-        results_text *= "  Unable to calculate\n"
-        results_text *= "  (need ≥2 geometries)\n\n"
+        results_text *= "Width-invariant fit unavailable (need ≥2 geometries)\n\n"
     end
     results_text *= "Files analyzed: $(length(files_data_params))\n"
-    results_text *= "Devices: $(length(devices))\n"
+    results_text *= "Widths: $(length(widths))\n"
     results_text *= "Data points: $(nrow(analysis_df))"
 
-    text!(info_ax, 0.05, 0.95, text=results_text,
-        align=(:left, :top), fontsize=16, space=:relative)
-
-    # Add legends
-    if length(devices) > 1
-        axislegend(ax1, position=:lt)
-    end
-
-    # Set reasonable axis limits
+    text!(info_ax, 0.05, 0.95, text=results_text, align=(:left, :top), fontsize=15, space=:relative)
     xlims!(info_ax, 0, 1)
     ylims!(info_ax, 0, 1)
+
+    if length(widths) > 1
+        axislegend(ax1, position=:lt)
+    end
 
     return fig
 end
