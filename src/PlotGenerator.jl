@@ -713,61 +713,136 @@ end
 """
 Plot TLM 4-point data with detailed analysis
 """
-function plot_tlm_4p(df, title_str="TLM 4-Point"; kwargs...)
+function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}(), kwargs...)
     if nrow(df) == 0
         return nothing
     end
 
-    current_source_ua = df.current_source * 1e6
-    i1_ua = df.i1 * 1e6
-    i2_ua = df.i2 * 1e6
-    is_ua = df.is * 1e6
-
-    fig = Figure(size=(1200, 1000))
-
-    # Current response with scatter points
-    ax1 = Axis(fig[1, 1], xlabel="Source Current (μA)", ylabel="Current (μA)",
-        title="$title_str - Current Response")
-    lines!(ax1, current_source_ua, i1_ua, color=:blue, linewidth=2, label="I1")
-    scatter!(ax1, current_source_ua, i1_ua, color=:blue, markersize=4)
-    lines!(ax1, current_source_ua, i2_ua, color=:red, linewidth=2, label="I2")
-    scatter!(ax1, current_source_ua, i2_ua, color=:red, markersize=4)
-    lines!(ax1, current_source_ua, is_ua, color=:green, linewidth=2, label="Is")
-    scatter!(ax1, current_source_ua, is_ua, color=:green, markersize=4)
-    axislegend(ax1, position=:rt)
-
-    # Voltage response
-    ax2 = Axis(fig[1, 2], xlabel="Source Current (μA)", ylabel="Voltage (V)",
-        title="$title_str - Voltage Response")
-    lines!(ax2, current_source_ua, df.v_gnd, color=:purple, linewidth=2, label="V_GND")
-    scatter!(ax2, current_source_ua, df.v_gnd, color=:purple, markersize=4)
-    axislegend(ax2, position=:rt)
-
-    # Resistance calculation
-    resistance = df.v_gnd ./ df.current_source
-    finite_mask = isfinite.(resistance)
-
-    ax3 = Axis(fig[2, 1], xlabel="Source Current (μA)", ylabel="Resistance (Ω)",
-        title="$title_str - Resistance vs Current")
-    if any(finite_mask)
-        lines!(ax3, current_source_ua[finite_mask], resistance[finite_mask],
-            color=:orange, linewidth=2, label="R = V/I")
-        scatter!(ax3, current_source_ua[finite_mask], resistance[finite_mask],
-            color=:orange, markersize=4)
+    # Extract data
+    I = df.current_source
+    V = df.v_gnd
+    
+    # Filter out NaNs and infinite values
+    mask = isfinite.(I) .& isfinite.(V)
+    I = I[mask]
+    V = V[mask]
+    
+    if isempty(I)
+        return nothing
     end
-    axislegend(ax3, position=:rt)
 
-    # Current distribution comparison
-    ax4 = Axis(fig[2, 2], xlabel="Source Current (μA)", ylabel="Current (μA)",
-        title="$title_str - Current Distribution")
-    lines!(ax4, current_source_ua, i1_ua, color=:blue, linewidth=2, label="I1")
-    lines!(ax4, current_source_ua, i2_ua, color=:red, linewidth=2, label="I2")
-    lines!(ax4, current_source_ua, is_ua, color=:green, linewidth=2, label="Is")
-    # Add reference line for perfect current transfer
-    lines!(ax4, current_source_ua, current_source_ua, color=:black,
-        linewidth=1, linestyle=:dash, label="Reference")
-    axislegend(ax4, position=:rt)
-
+    # Linear Fit V = R*I + offset
+    # Simple linear regression
+    n = length(I)
+    sx = sum(I)
+    sy = sum(V)
+    sxx = sum(I .^ 2)
+    sxy = sum(I .* V)
+    
+    denom = n * sxx - sx^2
+    
+    R_fit = 0.0
+    offset = 0.0
+    
+    if abs(denom) > 1e-20
+        R_fit = (n * sxy - sx * sy) / denom
+        offset = (sy - R_fit * sx) / n
+    end
+    
+    # Calculate Resistance for plotting
+    # Avoid division by zero
+    R_meas = V ./ I
+    
+    # Extract Geometry
+    L_um, W_um = extract_tlm_geometry_from_params(device_params, title_str)
+    
+    # Calculate Sheet Resistivity
+    rho_sheet = NaN
+    if !isnan(L_um) && !isnan(W_um) && L_um > 0
+        rho_sheet = R_fit * W_um / L_um
+    end
+    
+    # Parse Title Info
+    # Expected format: Chip_Type_Subtype_Geometry_Date_Time_Temp_...
+    # e.g. A11_VI_TLM_L100W2_20251205_151649_298K_FourTerminalIV
+    parts = split(title_str, ['_', ' '])
+    
+    chip = length(parts) >= 1 ? parts[1] : "?"
+    geometry_str = "?"
+    temp = "?"
+    
+    # Try to find geometry in parts
+    for p in parts
+        if occursin(r"L\d+W\d+", p)
+            geometry_str = p
+        end
+    end
+    
+    # Use temperature from device_params if available
+    if haskey(device_params, :temperature_K)
+        temp = "$(device_params[:temperature_K])K"
+    else
+        # Fallback to parsing title
+        for p in parts
+            if occursin(r"\d+K", p)
+                temp = p
+            end
+        end
+    end
+    
+    new_title = "$chip $geometry_str $temp"
+    
+    # Plotting
+    fig = Figure(size=(1000, 500))
+    
+    # Scale units
+    I_uA = I .* 1e6
+    V_mV = V .* 1e3
+    R_kOhm = R_meas ./ 1e3
+    R_fit_kOhm = R_fit / 1e3
+    
+    # Panel 1: I-V
+    ax1 = Axis(fig[1, 1], xlabel="Current (μA)", ylabel="Voltage (mV)", title="I-V Curve")
+    scatter!(ax1, I_uA, V_mV, color=:blue, markersize=8, label="Data")
+    
+    # Plot fit line
+    I_min, I_max = minimum(I_uA), maximum(I_uA)
+    # Add some padding
+    I_span = I_max - I_min
+    if I_span == 0
+        I_span = 1.0
+    end
+    I_range = [I_min - 0.1*I_span, I_max + 0.1*I_span]
+    # V = R*I + offset => V_mV = (R_fit * I_uA*1e-6 + offset) * 1e3
+    # V_mV = R_fit * I_uA * 1e-3 + offset * 1e3
+    # V_mV = (R_fit/1e3) * I_uA + offset*1e3
+    V_fit_mV = (R_fit / 1e3) .* I_range .+ (offset * 1e3)
+    
+    lines!(ax1, I_range, V_fit_mV, color=:red, linewidth=2, label="Fit: R=$(round(R_fit, digits=2)) Ω")
+    
+    # Add Rho to legend if available
+    if !isnan(rho_sheet)
+        # Add an invisible line for the legend entry
+        lines!(ax1, [NaN], [NaN], color=:transparent, label="ρ_sq = $(round(rho_sheet, digits=2)) Ω/sq")
+    end
+    
+    axislegend(ax1, position=:lt)
+    
+    # Panel 2: R vs I
+    ax2 = Axis(fig[1, 2], xlabel="Current (μA)", ylabel="Resistance (kΩ)", title="Resistance vs Current")
+    
+    # Filter R_meas for plotting (remove outliers/infinities)
+    valid_R = isfinite.(R_kOhm) .& (abs.(R_kOhm) .< 1e6) # Arbitrary large cutoff
+    
+    if any(valid_R)
+        scatter!(ax2, I_uA[valid_R], R_kOhm[valid_R], color=:green, markersize=8, label="R = V/I")
+    end
+    hlines!(ax2, [R_fit_kOhm], color=:red, linestyle=:dash, linewidth=2, label="Fitted R")
+    
+    axislegend(ax2)
+    
+    Label(fig[0, :], new_title, fontsize=20, font=:bold)
+    
     return fig
 end
 

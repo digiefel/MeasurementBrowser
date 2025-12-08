@@ -147,9 +147,6 @@ function read_tlm_4p(filename, workdir=".")
 
     data_lines = lines[data_start:end]
     current_source = Float64[]
-    i1 = Float64[]
-    i2 = Float64[]
-    is = Float64[]
     v_gnd = Float64[]
 
     if is_new_format
@@ -163,9 +160,6 @@ function read_tlm_4p(filename, workdir=".")
                         v_low = parse(Float64, parts[3])
                         push!(current_source, curr)
                         push!(v_gnd, v_high - v_low) # Calculate voltage drop
-                        push!(i1, 0.0)
-                        push!(i2, 0.0)
-                        push!(is, 0.0)
                     catch
                         continue
                     end
@@ -183,15 +177,6 @@ function read_tlm_4p(filename, workdir=".")
                     try
                         push!(current_source, parse(Float64, valid_parts[1]))
                         push!(v_gnd, parse(Float64, valid_parts[2]))  # voltage
-                        # For i1 and i2, we'll use placeholders or try to parse additional columns
-                        if length(valid_parts) >= 4
-                            push!(i1, parse(Float64, valid_parts[end]))  # last valid column
-                            push!(i2, 0.0)  # placeholder
-                        else
-                            push!(i1, 0.0)
-                            push!(i2, 0.0)
-                        end
-                        push!(is, 0.0)  # placeholder
                     catch e
                         println("Error parsing line: $line, error: $e")
                         continue
@@ -201,7 +186,7 @@ function read_tlm_4p(filename, workdir=".")
         end
     end
 
-    return DataFrame(current_source=current_source, i1=i1, i2=i2, is=is, v_gnd=v_gnd)
+    return DataFrame(current_source=current_source, v_gnd=v_gnd)
 end
 
 """

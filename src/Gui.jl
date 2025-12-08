@@ -732,7 +732,9 @@ function render_plot_window(ui_state)
         last_plot_key = get(ui_state, :_last_plot_key, nothing)
 
         if current_plot_key != last_plot_key
-            fig = _ensure_plot_figure(ui_state, filepath; kind=detect_measurement_kind(m.filename), m.device_info.parameters...)
+            # Merge device parameters and measurement parameters
+            all_params = merge(m.device_info.parameters, m.parameters)
+            fig = _ensure_plot_figure(ui_state, filepath; kind=detect_measurement_kind(m.filename), device_params=all_params)
             if fig !== nothing
                 ui_state[:plot_figure] = fig
                 ui_state[:_last_plot_key] = current_plot_key

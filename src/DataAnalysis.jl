@@ -321,8 +321,9 @@ function extract_tlm_geometry_from_params(device_params::Dict{Symbol,Any}, filep
         basename_file = basename(filepath)
         name_part = replace(basename_file, r"\.(csv|txt)$" => "")
 
-        # Pattern to match TLML<length>W<width>
-        pattern = r"TLML(\d+)W(\d+)"
+        # Pattern to match TLML<length>W<width> or L<length>W<width>
+        # Try to match L<length>W<width> which covers both TLML... and ..._L...W...
+        pattern = r"L(\d+)W(\d+)"
         m = match(pattern, name_part)
 
         if m !== nothing
