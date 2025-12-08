@@ -10,7 +10,7 @@ using .DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup
 include("DataAnalysis.jl")
 using .Analysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
 
-export figure_for_file, figure_for_files, plot_tlm_combined, plot_pund_fatigue, get_combined_plot_types
+export figure_for_file, figure_for_files, plot_tlm_combined, plot_tlm_temperature, plot_pund_fatigue, get_combined_plot_types
 
 """
     figure_for_file(path::AbstractString; kind::Union{Symbol,Nothing}=nothing) -> Union{Figure,Nothing}
@@ -73,6 +73,7 @@ function get_combined_plot_types()
     return [
         (nothing, "None", "No combined plot selected"),
         (:tlm_analysis, "TLM Analysis", "Width-normalized resistance vs length from multiple TLM 4-point measurements"),
+        (:tlm_temperature, "TLM vs Temperature", "Sheet resistance vs temperature (groups by site/chip)"),
         (:pund_fatigue, "PUND Fatigue", "P-E curve evolution or remnant polarization vs fatigue cycles from PUND measurements"),
     ]
 end
@@ -90,6 +91,8 @@ function figure_for_files(paths::Vector{String}, combined_kind::Symbol; device_p
     try
         if combined_kind === :tlm_analysis
             return plot_tlm_combined(paths; device_params_list=device_params_list, kwargs...)
+        elseif combined_kind === :tlm_temperature
+            return plot_tlm_temperature(paths; device_params_list=device_params_list, kwargs...)
         elseif combined_kind === :pund_fatigue
             return plot_pund_fatigue(paths; device_params_list=device_params_list, kwargs...)
         else
@@ -100,6 +103,203 @@ function figure_for_files(paths::Vector{String}, combined_kind::Symbol; device_p
         @warn "figure_for_files failed" paths combined_kind error = err
         return nothing
     end
+end
+
+# Extract temperature in Kelvin from device params or filename
+function _extract_temperature_K(params::Dict{Symbol,Any}, filepath::String)
+    if haskey(params, :temperature_K)
+        return try
+            Float64(params[:temperature_K])
+        catch
+            NaN
+        end
+    end
+
+    base = basename(filepath)
+    if (m = match(r"(\d+(?:\.\d+)?)K", base)) !== nothing
+        return try
+            parse(Float64, m.captures[1])
+        catch
+            NaN
+        end
+    end
+    return NaN
+end
+
+# Extract a site/chip label from params or filename
+function _extract_site_label(params::Dict{Symbol,Any}, filepath::String)
+    for key in (:site, :chip, :device_id, :die, :location)
+        if haskey(params, key)
+            return string(params[key])
+        end
+    end
+    # Fallback: basename up to first date/time or temp token
+    name_part = replace(basename(filepath), r"\.(csv|txt)$" => "")
+    tokens = split(name_part, '_')
+    device_tokens = String[]
+    for t in tokens
+        # stop before date/time, temperature, or geometry token
+        if occursin(r"^\d{6,}$", t) || occursin(r"^\d{4}-\d{2}-\d{2}$", t) || occursin(r"^\d+K$", t) || occursin(r"^L\d+W\d+$", t)
+            break
+        end
+        push!(device_tokens, t)
+    end
+    return isempty(device_tokens) ? name_part : join(device_tokens, "_")
+end
+
+# Extract oxygen percentage from params or filename (optional)
+function _extract_oxygen_percent(params::Dict{Symbol,Any}, filepath::String)
+    for key in (:oxygen_percent, :o2_percent)
+        if haskey(params, key)
+            return try
+                Float64(params[key])
+            catch
+                NaN
+            end
+        end
+    end
+
+    base = basename(filepath)
+    if (m = match(r"(\d+(?:\.\d+)?)%O2", base)) !== nothing
+        return try
+            parse(Float64, m.captures[1])
+        catch
+            NaN
+        end
+    end
+    return NaN
+end
+
+"""
+Plot sheet resistance vs temperature for TLM measurements.
+
+Groups files by site/chip and temperature, computes sheet/contact parameters
+via `calculate_sheet_resistance(analyze_tlm_combined(...))`, then plots
+R□ (or thickness-normalized resistivity when thickness is present for all
+files at that site/temperature) vs temperature with one series per site/chip.
+Adds a linear fit per site to report TCR.
+"""
+function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
+    isempty(paths) && return nothing
+
+    entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent)}[]
+
+    for (i, path) in enumerate(paths)
+        try
+            df = read_tlm_4p(basename(path), dirname(path))
+            params = i <= length(device_params_list) ? device_params_list[i] : Dict{Symbol,Any}()
+            tempK = _extract_temperature_K(params, path)
+            if !isfinite(tempK)
+                @warn "Skipping TLM file without temperature" path
+                continue
+            end
+            site = _extract_site_label(params, path)
+            o2 = _extract_oxygen_percent(params, path)
+            push!(entries, (path=path, df=df, params=params, tempK=tempK, site=site, oxygen_percent=o2))
+        catch err
+            @warn "Failed to load TLM file for temperature plot" path error = err
+        end
+    end
+
+    isempty(entries) && return nothing
+
+    results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[], rho_c=Float64[], r_squared=Float64[], n_files=Int[], thickness_cm=Float64[], oxygen_percent=Float64[])
+
+    # Group by site then temperature
+    by_site = Dict{String, Vector{NamedTuple}}()
+    for e in entries
+        vec = get!(by_site, e.site, Vector{NamedTuple}())
+        push!(vec, e)
+    end
+
+    for (site, vec) in by_site
+        temps = unique([e.tempK for e in vec])
+        for temp in temps
+            subset = filter(e -> e.tempK == temp, vec)
+            files_data_params = [(e.path, e.df, e.params) for e in subset]
+            combined_df = analyze_tlm_combined(files_data_params)
+            if nrow(combined_df) == 0
+                @warn "No valid TLM data for site/temp" site tempK = temp
+                continue
+            end
+            R_sheet, R_cprime, rho_c, r2 = calculate_sheet_resistance(combined_df)
+            if !isfinite(R_sheet)
+                @warn "Insufficient geometries for sheet resistance" site tempK = temp
+                continue
+            end
+            thickness_values = Float64[]
+            for s in subset
+                if haskey(s.params, :thickness_nm)
+                    t_nm = try
+                        Float64(s.params[:thickness_nm])
+                    catch
+                        NaN
+                    end
+                    if isfinite(t_nm) && t_nm > 0
+                        push!(thickness_values, t_nm)
+                    end
+                end
+            end
+
+            thickness_cm = NaN
+            if length(thickness_values) == length(subset)
+                thickness_cm = mean(thickness_values) * 1e-7
+                if maximum(thickness_values) - minimum(thickness_values) > 1e-3 * maximum(thickness_values)
+                    @warn "Thickness varies across files; using mean for normalization" site tempK = temp
+                end
+            elseif !isempty(thickness_values)
+                @warn "Thickness missing for some files; skipping normalization" site tempK = temp
+            end
+
+            R_val = isfinite(thickness_cm) ? R_sheet * thickness_cm : R_sheet
+            o2 = begin
+                vals = filter(isfinite, [s.oxygen_percent for s in subset])
+                isempty(vals) ? NaN : mean(vals)
+            end
+            push!(results, (site, temp, R_val, R_cprime, rho_c, r2, length(subset), thickness_cm, o2))
+        end
+    end
+
+    nrow(results) == 0 && return nothing
+
+    # Plot
+    fig = Figure(size=(900, 550))
+    any_thickness = any(isfinite, results.thickness_cm)
+    y_label = any_thickness ? "Resistivity (Ω·cm)" : "Sheet Resistance (Ω/□)"
+    title_str = any_thickness ? "TLM Resistivity vs Temperature" : "TLM Sheet Resistance vs Temperature"
+    ax = Axis(fig[1, 1], xlabel="Temperature (K)", ylabel=y_label, title=title_str)
+
+    sites = unique(results.site)
+    colors = cgrad(:tab10, length(sites), categorical=true)
+
+    for (i, site) in enumerate(sites)
+        sub = sort(filter(row -> row.site == site, results), :temperature_K)
+        label = site
+        if any(isfinite, sub.oxygen_percent)
+            o2 = mean(filter(isfinite, sub.oxygen_percent))
+            label = string(site, " (", round(o2, digits=2), "% O2)")
+        end
+        scatterlines!(ax, sub.temperature_K, sub.R_val;
+            color=colors[i], marker=:circle, markersize=10, linewidth=2, label=label)
+
+        # Linear fit for TCR: R = a + b*T  => alpha = b/a (1/K)
+        a, b, ok = ols_ab(sub.temperature_K, sub.R_val)
+        if ok && isfinite(a) && a != 0
+            alpha = b / a
+            tmin, tmax = extrema(sub.temperature_K)
+            tspan = range(tmin, tmax; length=50)
+            fit_vals = a .+ b .* tspan
+            lines!(ax, tspan, fit_vals; color=colors[i], linestyle=:dash, linewidth=1.5)
+            # annotate near the last point
+            t_annot = maximum(sub.temperature_K)
+            R_annot = a + b * t_annot
+            text!(ax, t_annot, R_annot; text=\"TCR=$(round(alpha*1e6, digits=1)) ppm/K\", align=(:left, :center), color=colors[i], offset=(8, 0))
+        end
+    end
+
+    axislegend(ax, position=:rt)
+
+    return fig
 end
 
 
@@ -165,7 +365,7 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
     # Width-invariant fit → (R_sheet, R_c', rho_c, R2)
     R_sheet, R_cprime, rho_c, r_squared = calculate_sheet_resistance(analysis_df)
 
-    # Create the plot with three rows: main, residuals (shorter), and secondary+info
+    # Create the plot with two rows: main and secondary+info
     fig = Figure(size=(900, 600))
 
     # Main plot: Resistance vs Length/Width
@@ -174,27 +374,19 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
         ylabel="Resistance (kΩ)",
         title="TLM Analysis - Model from (R□, R_c')")
 
-    # Residuals plot (underneath main)
-    ax_res = Axis(fig[2, 1:2],
-        xlabel="Length/Width Ratio (L/W)",
-        ylabel="Residuals (%)",
-        title="Residuals vs linear model")
-    linkxaxes!(ax1, ax_res)
-
     # Secondary plot: Width-normalized resistance vs length
-    ax2 = Axis(fig[3, 1],
+    ax2 = Axis(fig[2, 1],
         xlabel="Length (μm)",
         ylabel="Width-Normalized Resistance (Ω·μm)",
         title="Width-Normalized Resistance vs Length")
 
-    info_ax = Axis(fig[3, 2], xlabel="", ylabel="", title="Analysis Results")
+    info_ax = Axis(fig[2, 2], xlabel="", ylabel="", title="Analysis Results")
     hidedecorations!(info_ax)
     hidespines!(info_ax)
 
-    # Make the residuals row shorter than the main plot
-    rowsize!(fig.layout, 1, Relative(0.55))
-    rowsize!(fig.layout, 2, Relative(0.20))
-    rowsize!(fig.layout, 3, Relative(0.25))
+    # Balance the two rows (slightly larger main plot)
+    rowsize!(fig.layout, 1, Relative(0.65))
+    rowsize!(fig.layout, 2, Relative(0.35))
 
     # Geometry-averaged points for R vs L/W
     geometry_groups = combine(groupby(analysis_df, [:length_um, :width_um]),
@@ -234,21 +426,6 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
         end
     end
 
-    # Residuals vs the same inferred model
-    if isfinite(R_sheet) && isfinite(R_cprime)
-        xvals = geometry_groups.length_um ./ geometry_groups.width_um
-        W_cm = geometry_groups.width_um .* 1e-4
-        pred_ohm = (2 .* (R_cprime ./ W_cm)) .+ R_sheet .* xvals
-        resid_rel = 1e2 .* (geometry_groups.avg_resistance_ohm .- pred_ohm) ./ geometry_groups.avg_resistance_ohm
-
-        xext = extrema(xvals)
-        lines!(ax_res, [xext[1], xext[2]], [0.0, 0.0], color=:black, linewidth=1, linestyle=:dot)
-        for (x, r) in zip(xvals, resid_rel)
-            lines!(ax_res, [x, x], [0.0, r], color=:blue, linewidth=1)
-        end
-        scatter!(ax_res, xvals, resid_rel, color=:red, markersize=6)
-    end
-
     # Bottom axis: keep original behavior (per-width points)
     for (i, w_um) in enumerate(widths)
         width_data = filter(row -> row.width_um == w_um, analysis_df)
@@ -266,7 +443,6 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
         if isfinite(rho_c)
             results_text *= "Specific Contact (ρ_c):  $(round(rho_c, sigdigits=4)) Ω·cm²\n\n"
         end
-        results_text *= "R² (width-invariant fit):  $(round(r_squared, digits=4))\n\n"
     else
         results_text *= "Width-invariant fit unavailable (need ≥2 geometries)\n\n"
     end
@@ -720,7 +896,7 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
 
     # Extract data
     I = df.current_source
-    V = df.v_gnd
+    V = df.voltage_drop
     
     # Filter out NaNs and infinite values
     mask = isfinite.(I) .& isfinite.(V)
@@ -858,7 +1034,7 @@ end
         i1=[0.0, 9e-7, 1.8e-6],
         i2=[0.0, 0.0, 0.0],
         is=[0.0, 0.0, 0.0],
-        v_gnd=[0.0, 1e-3, 2e-3],
+        voltage_drop=[0.0, 1e-3, 2e-3],
     )
     fe_df = DataFrame(
         time=[0.0, 1e-6, 2e-6, 3e-6],

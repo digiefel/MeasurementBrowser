@@ -902,7 +902,7 @@ function render_combined_plots_window(ui_state)
 end
 
 function count_compatible_measurements(measurements::Vector{MeasurementInfo}, plot_type::Symbol)
-    if plot_type === :tlm_analysis
+    if plot_type === :tlm_analysis || plot_type === :tlm_temperature
         return count(m -> m.measurement_kind === :tlm4p, measurements)
     elseif plot_type === :pund_fatigue
         return count(m -> (m.measurement_kind === :pund || m.measurement_kind === :wakeup), measurements)
@@ -911,7 +911,7 @@ function count_compatible_measurements(measurements::Vector{MeasurementInfo}, pl
 end
 
 function filter_measurements_for_plot_type(measurements::Vector{MeasurementInfo}, plot_type::Symbol)
-    if plot_type === :tlm_analysis
+    if plot_type === :tlm_analysis || plot_type === :tlm_temperature
         return filter(m -> m.measurement_kind === :tlm4p, measurements)
     elseif plot_type === :pund_fatigue
         return filter(m -> (m.measurement_kind === :pund || m.measurement_kind === :wakeup), measurements)
