@@ -180,7 +180,21 @@ function parse_device_info(filename::String)
         end
         return DeviceInfo(caps)
     end
-    return DeviceInfo(["Unknown"])
+    # Fallback: infer hierarchy segments from filename prefix before date/time tokens
+    name_part = replace(filename, r"\.(csv|txt)$" => "")
+    tokens = split(name_part, '_')
+    device_tokens = String[]
+    for t in tokens
+        # stop before date/time or temperature tokens
+        if occursin(r"^\d{6,}$", t) || occursin(r"^\d{4}-\d{2}-\d{2}$", t) || occursin(r"^\d+K$", t)
+            break
+        end
+        push!(device_tokens, t)
+    end
+    if isempty(device_tokens)
+        return DeviceInfo(["Unknown"])
+    end
+    return DeviceInfo(device_tokens)
 end
 
 function detect_measurement_kind(filename::String)::Symbol
@@ -241,14 +255,23 @@ function parse_parameters(filename::String)
     if (m = match(r"\((\d+)\)", filename)) !== nothing
         params[:count] = parse(Int, m.captures[1])
     end
+    if (m = match(r"(\d+)K", filename)) !== nothing
+        params[:temperature_K] = parse(Int, m.captures[1])
+    end
     return params
 end
 
 function display_label(meas::MeasurementInfo)
     label = measurement_label(meas.measurement_kind)
+    
+    temp_str = ""
+    if haskey(meas.parameters, :temperature_K)
+        temp_str = " $(meas.parameters[:temperature_K])K"
+    end
+
     if meas.measurement_kind == :wakeup
         if meas.wakeup_pulse_count !== nothing && meas.wakeup_pulse_count > 0
-            return "$(meas.timestamp) $(label) $(meas.wakeup_pulse_count)×"
+            return "$(meas.timestamp) $(label) $(meas.wakeup_pulse_count)×$(temp_str)"
         end
     elseif meas.measurement_kind == :pund
         try
@@ -256,13 +279,13 @@ function display_label(meas::MeasurementInfo)
             if amplitude_match !== nothing
                 voltage = parse(Float64, amplitude_match.captures[1])
                 voltage_str = voltage == floor(voltage) ? "$(Int(voltage))V" : "$(voltage)V"
-                return "$(meas.timestamp) $(label) $(voltage_str)"
+                return "$(meas.timestamp) $(label) $(voltage_str)$(temp_str)"
             end
         catch
             # ignore, fall through to default
         end
     end
-    return "$(meas.timestamp) $(label)"
+    return "$(meas.timestamp) $(label)$(temp_str)"
 end
 
 
@@ -273,7 +296,7 @@ end
 function expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
     meas.measurement_kind == :breakdown || return [meas]
     dev = last(meas.device_info.location)
-    if (m = match(r"^([A-Z][1-9]+)([A-Z][1-9]+)$", dev)) === nothing
+    if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
         return [meas]
     end
     parts = m.captures
@@ -342,7 +365,7 @@ function Base.sort!(node::HierarchyNode)
         sort!(node.children, by=c -> natural_key(c.name))
     end
     for ch in node.children
-        sort!(ch.measurements, by=m -> m.timestamp === nothing ? DateTime(typemax(Date).year) : m.timestamp)
+        sort!(ch.measurements, by=m -> m.timestamp === nothing ? DateTime(Dates.year(typemax(Date))) : m.timestamp)
     end
     return node
 end

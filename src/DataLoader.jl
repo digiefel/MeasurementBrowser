@@ -35,46 +35,69 @@ Read I-V sweep data from CSV file, skipping header metadata
 """
 function read_iv_sweep(filename, workdir=".")
     filepath = joinpath(workdir, filename)
+    
+    # 1. Find the header line index
     lines = readlines(filepath)
-    data_start = 1
-
+    header_line = 1
     for (i, line) in enumerate(lines)
-        if occursin(r"^-?\d+\.?\d*,-?\d+\.?\d*[eE]?-?\d*,-?\d+\.?\d*[eE]?-?\d*", line)
-            data_start = i
+        # A header line typically contains "Voltage" or "V" AND "Current" or "I"
+        # and is NOT a data line (doesn't start with a number)
+        if (occursin("Voltage", line) || occursin("V", line)) && 
+           (occursin("Current", line) || occursin("I", line)) &&
+           !occursin(r"^-?\d", line)
+            header_line = i
             break
         end
     end
 
-    header_cols = split(lines[data_start-1], ',')
-    data_lines = lines[data_start:end]
-    voltage = Float64[]
-    current = Float64[]
-
-    # check if header line contains expected columns
-    # it's enough that there's a column containing "V" and one containing "I"
-    if !any(occursin.("V", header_cols)) && !any(occursin.("I", header_cols))
-        error("Invalid column names")
+    # 2. Use CSV.read
+    # silence warnings about empty lines or metadata
+    df = CSV.read(filepath, DataFrame; header=header_line, silencewarnings=true)
+    
+    # 3. Identify columns robustly
+    cols = names(df)
+    
+    # Helper to find column matching candidates
+    function find_col(candidates)
+        for cand in candidates
+            # Exact match or starts with
+            match = findfirst(c -> c == cand || startswith(c, cand), cols)
+            if match !== nothing
+                return cols[match]
+            end
+        end
+        # Fallback: contains
+        for cand in candidates
+             match = findfirst(c -> occursin(cand, c), cols)
+             if match !== nothing
+                 return cols[match]
+             end
+        end
+        return nothing
     end
 
-    v_idx = findfirst(contains.(header_cols, "V"))
-    i_idx = findfirst(contains.(header_cols, "I"))
+    v_col = find_col(["Voltage", "V", "Voltage_V", "VoltageHigh_V"])
+    i_col = find_col(["Current", "I", "Current_A", "Current_High_A", "I1"])
 
-    # parse data lines
-    for line in data_lines
-        if !isempty(strip(line))
-            parts = split(line, ',')
-            if length(parts) >= 2
-                try
-                    push!(voltage, parse(Float64, parts[v_idx]))
-                    push!(current, parse(Float64, parts[i_idx]))
-                catch
-                    continue
-                end
-            end
+    if v_col === nothing || i_col === nothing
+        # Last ditch effort: look for "V" and "I" anywhere, excluding common non-data words
+        if v_col === nothing
+            idx = findfirst(c -> occursin("V", c) && !occursin("Time", c), cols)
+            v_col = idx !== nothing ? cols[idx] : nothing
+        end
+        if i_col === nothing
+            idx = findfirst(c -> occursin("I", c) && !occursin("Time", c) && !occursin("Info", c) && !occursin("Index", c), cols)
+            i_col = idx !== nothing ? cols[idx] : nothing
+        end
+        
+        if v_col === nothing || i_col === nothing
+             @warn "Could not identify V/I columns in $filename. Columns: $cols"
+             return DataFrame()
         end
     end
 
-    return DataFrame(v=voltage, i=current)
+    # 4. Return standardized DataFrame
+    return DataFrame(v=df[!, v_col], i=df[!, i_col])
 end
 
 """
@@ -147,7 +170,7 @@ function read_tlm_4p(filename, workdir=".")
 
     data_lines = lines[data_start:end]
     current_source = Float64[]
-    v_gnd = Float64[]
+    voltage_drop = Float64[]
 
     if is_new_format
         for line in data_lines
@@ -159,7 +182,7 @@ function read_tlm_4p(filename, workdir=".")
                         v_high = parse(Float64, parts[2])
                         v_low = parse(Float64, parts[3])
                         push!(current_source, curr)
-                        push!(v_gnd, v_high - v_low) # Calculate voltage drop
+                        push!(voltage_drop, v_high - v_low) # Use measured drop (high - low)
                     catch
                         continue
                     end
@@ -175,8 +198,19 @@ function read_tlm_4p(filename, workdir=".")
 
                 if length(valid_parts) >= 3
                     try
+                        curr = parse(Float64, valid_parts[1])
+                        v_high = parse(Float64, valid_parts[2])
+                        v_low = parse(Float64, valid_parts[3])
+                        push!(current_source, curr)
+                        push!(voltage_drop, v_high - v_low)
+                    catch e
+                        println("Error parsing line: $line, error: $e")
+                        continue
+                    end
+                elseif length(valid_parts) >= 2
+                    try
                         push!(current_source, parse(Float64, valid_parts[1]))
-                        push!(v_gnd, parse(Float64, valid_parts[2]))  # voltage
+                        push!(voltage_drop, parse(Float64, valid_parts[2]))  # assume already a drop
                     catch e
                         println("Error parsing line: $line, error: $e")
                         continue
@@ -186,7 +220,7 @@ function read_tlm_4p(filename, workdir=".")
         end
     end
 
-    return DataFrame(current_source=current_source, v_gnd=v_gnd)
+    return DataFrame(current_source=current_source, voltage_drop=voltage_drop)
 end
 
 """

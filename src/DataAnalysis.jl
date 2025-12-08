@@ -77,7 +77,7 @@ function analyze_pund(df::DataFrame; DEBUG::Bool=false)
     # Find regions with significant voltage changes
     pulse_mask = abs.(dV) .> dV_threshold
 
-    # Expand pulse regions to capture full triangular waves
+    # expand pulse regions to capture full triangular waves
     expanded_mask = copy(pulse_mask)
     safe_win = 5  # Larger expansion window
     for i in (safe_win+1):(length(pulse_mask)-safe_win)
@@ -197,7 +197,7 @@ function validate_tlm_dataframe(df::DataFrame, filepath::String="")
     issues = String[]
 
     # Check required columns
-    required_cols = ["current_source", "v_gnd"]
+    required_cols = ["current_source", "voltage_drop"]
     for col in required_cols
         if !(col in names(df))
             push!(issues, "Missing required column: $col")
@@ -225,7 +225,7 @@ function validate_tlm_dataframe(df::DataFrame, filepath::String="")
         push!(issues, "More than 50% of current data is missing or NaN")
     end
 
-    voltage_nan_fraction = sum(ismissing.(df.v_gnd) .| isnan.(df.v_gnd)) / nrow(df)
+    voltage_nan_fraction = sum(ismissing.(df.voltage_drop) .| isnan.(df.voltage_drop)) / nrow(df)
     if voltage_nan_fraction > 0.5
         push!(issues, "More than 50% of voltage data is missing or NaN")
     end
@@ -301,7 +301,7 @@ Extract geometry information from device parameters
 Returns (length_um, width_um) or (NaN, NaN) if not found
 Expects device_params to contain :length_um and :width_um keys
 """
-function extract_tlm_geometry_from_params(device_params::Dict{Symbol,Any}, filepath::String="")
+function extract_tlm_geometry_from_params(device_params::Dict{Symbol,Any}, filepath::AbstractString="")
     length_um = get(device_params, :length_um, NaN)
     width_um = get(device_params, :width_um, NaN)
 
@@ -390,10 +390,10 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
         for i in eachindex(df.current_source)
             if abs(df.current_source[i]) < Imin  # Avoid division by very small numbers
                 resistance_ohm[i] = NaN
-            elseif abs(df.v_gnd[i]) < Vmin # avoid inaccurate values
+            elseif abs(df.voltage_drop[i]) < Vmin # avoid inaccurate values
                 resistance_ohm[i] = NaN
             else
-                resistance_ohm[i] = df.v_gnd[i] / df.current_source[i]
+                resistance_ohm[i] = df.voltage_drop[i] / df.current_source[i]
             end
         end
 
@@ -408,7 +408,7 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
             resistance_ohm=resistance_ohm,
             resistance_normalized=resistance_normalized,
             current_source=df.current_source,
-            voltage=df.v_gnd
+            voltage=df.voltage_drop
         )
 
         # Add device name for plotting
