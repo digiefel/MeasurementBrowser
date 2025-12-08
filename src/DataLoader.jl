@@ -131,8 +131,14 @@ function read_tlm_4p(filename, workdir=".")
     filepath = joinpath(workdir, filename)
     lines = readlines(filepath)
     data_start = 1
+    is_new_format = false
 
     for (i, line) in enumerate(lines)
+        if occursin("Current_A,VoltageHigh_V,VoltageLow_V", line)
+            data_start = i + 1
+            is_new_format = true
+            break
+        end
         if occursin(r"^-?\d+\.?\d*[eE]?-?\d*,(-?\d+\.?\d*[eE]?-?\d*,){2,}", line)
             data_start = i
             break
@@ -146,28 +152,50 @@ function read_tlm_4p(filename, workdir=".")
     is = Float64[]
     v_gnd = Float64[]
 
-    for line in data_lines
-        if !isempty(strip(line))
-            parts = split(line, ',')
-            # Filter out empty parts
-            valid_parts = filter(p -> !isempty(strip(p)), parts)
-
-            if length(valid_parts) >= 3
-                try
-                    push!(current_source, parse(Float64, valid_parts[1]))
-                    push!(v_gnd, parse(Float64, valid_parts[2]))  # voltage
-                    # For i1 and i2, we'll use placeholders or try to parse additional columns
-                    if length(valid_parts) >= 4
-                        push!(i1, parse(Float64, valid_parts[end]))  # last valid column
-                        push!(i2, 0.0)  # placeholder
-                    else
+    if is_new_format
+        for line in data_lines
+            if !isempty(strip(line))
+                parts = split(line, ',')
+                if length(parts) >= 3
+                    try
+                        curr = parse(Float64, parts[1])
+                        v_high = parse(Float64, parts[2])
+                        v_low = parse(Float64, parts[3])
+                        push!(current_source, curr)
+                        push!(v_gnd, v_high - v_low) # Calculate voltage drop
                         push!(i1, 0.0)
                         push!(i2, 0.0)
+                        push!(is, 0.0)
+                    catch
+                        continue
                     end
-                    push!(is, 0.0)  # placeholder
-                catch e
-                    println("Error parsing line: $line, error: $e")
-                    continue
+                end
+            end
+        end
+    else
+        for line in data_lines
+            if !isempty(strip(line))
+                parts = split(line, ',')
+                # Filter out empty parts
+                valid_parts = filter(p -> !isempty(strip(p)), parts)
+
+                if length(valid_parts) >= 3
+                    try
+                        push!(current_source, parse(Float64, valid_parts[1]))
+                        push!(v_gnd, parse(Float64, valid_parts[2]))  # voltage
+                        # For i1 and i2, we'll use placeholders or try to parse additional columns
+                        if length(valid_parts) >= 4
+                            push!(i1, parse(Float64, valid_parts[end]))  # last valid column
+                            push!(i2, 0.0)  # placeholder
+                        else
+                            push!(i1, 0.0)
+                            push!(i2, 0.0)
+                        end
+                        push!(is, 0.0)  # placeholder
+                    catch e
+                        println("Error parsing line: $line, error: $e")
+                        continue
+                    end
                 end
             end
         end

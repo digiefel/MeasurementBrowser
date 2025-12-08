@@ -9,6 +9,7 @@ using Dates
 # ---------------------------------------------------------------------------
 const MAX_HEADER_LINES = 50
 const REGEX_DEVICE = r"RuO2test_([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+(?:W[0-9]+)?)"
+const REGEX_DEVICE_NEW = r"^([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+)_"
 
 # ---------------------------------------------------------------------------
 # DeviceInfo
@@ -64,19 +65,31 @@ function MeasurementInfo(filepath::AbstractString)
     parameters = parse_parameters(filename)
     file_info = extract_file_info(filepath)
     exp_label = measurement_label(measurement_kind)
-    device_label = (m = match(REGEX_DEVICE, filename)) !== nothing ? join(m.captures, "_") : ""
-    date_str = let d = get(file_info, "test_date", "")
-        isempty(d) && return ""
-        try
+    
+    device_label = ""
+    if (m = match(REGEX_DEVICE, filename)) !== nothing
+        device_label = join(m.captures, "_")
+    elseif (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
+        device_label = join(m.captures, "_")
+    end
+
+    date_str = ""
+    d = get(file_info, "test_date", "")
+    if !isempty(d)
+        date_str = try
             parts = split(d)
             if length(parts) >= 3
                 month = parts[2]
                 day = try
                     parse(Int, parts[3])
                 catch
-                    return d
+                    nothing
                 end
-                "$(month)$(day)"
+                if day !== nothing
+                    "$(month)$(day)"
+                else
+                    d
+                end
             else
                 d
             end
@@ -84,6 +97,7 @@ function MeasurementInfo(filepath::AbstractString)
             d
         end
     end
+
     parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label, date_str))
     clean_title = isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
 
@@ -158,6 +172,13 @@ function parse_device_info(filename::String)
             push!(caps, String(c))
         end
         return DeviceInfo(caps)
+    elseif (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
+        caps = String[]
+        for c in m.captures
+            c === nothing && continue
+            push!(caps, String(c))
+        end
+        return DeviceInfo(caps)
     end
     return DeviceInfo(["Unknown"])
 end
@@ -193,6 +214,13 @@ function parse_timestamp(filename::String)
         date_str, hour, minute, second = m.captures
         try
             return DateTime("$date_str $hour:$minute:$second", "yyyy-mm-dd HH:MM:SS")
+        catch
+            return nothing
+        end
+    elseif (m = match(r"_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_", filename)) !== nothing
+        year, month, day, hour, minute, second = m.captures
+        try
+            return DateTime("$year-$month-$day $hour:$minute:$second", "yyyy-mm-dd HH:MM:SS")
         catch
             return nothing
         end
