@@ -3,7 +3,6 @@ module DataLoader
 using CSV
 using DataFrames
 using Dates
-using PrecompileTools: @setup_workload, @compile_workload
 
 export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p
 
@@ -279,13 +278,5 @@ function extract_datetime_from_filename(filename)
     end
     return nothing
 end
-
-@setup_workload begin
-    # TODO
-    @compile_workload begin
-        # TODO
-    end
-end
-
 
 end # module

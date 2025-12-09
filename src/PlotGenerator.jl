@@ -1022,42 +1022,4 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
     return fig
 end
 
-@setup_workload begin
-    # In-memory synthetic data only (avoid any filesystem interaction)
-    iv_df = DataFrame(
-        voltage=[0.0, 0.5, 1.0],
-        current1=[0.0, 5e-7, 1e-6],
-        current2=[0.0, 5.5e-7, 1.1e-6],
-    )
-    tlm_df = DataFrame(
-        current_source=[0.0, 1e-6, 2e-6],
-        i1=[0.0, 9e-7, 1.8e-6],
-        i2=[0.0, 0.0, 0.0],
-        is=[0.0, 0.0, 0.0],
-        voltage_drop=[0.0, 1e-3, 2e-3],
-    )
-    fe_df = DataFrame(
-        time=[0.0, 1e-6, 2e-6, 3e-6],
-        current=[1e-6, 1.1e-6, 1.05e-6, 1.2e-6],
-        voltage=[0.0, 0.1, 0.2, 0.0],
-        current_time=[0.0, 0.0, 0.0, 0.0],
-        voltage_time=[0.0, 0.0, 0.0, 0.0],
-    )
-    @compile_workload begin
-        try
-            plot_iv_sweep_single(iv_df, "PC IV")
-        catch
-        end
-        try
-            plot_tlm_4p(tlm_df, "PC TLM")
-        catch
-        end
-        try
-            plot_fe_pund(fe_df, "PC PUND")
-        catch
-        end
-        # Dispatcher requires a filesystem path; skip to avoid creating files.
-    end
-end
-
 end # module
