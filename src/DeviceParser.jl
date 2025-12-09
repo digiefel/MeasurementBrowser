@@ -9,7 +9,7 @@ using Dates
 # ---------------------------------------------------------------------------
 const MAX_HEADER_LINES = 50
 const REGEX_DEVICE = r"RuO2test_([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+(?:W[0-9]+)?)"
-const REGEX_DEVICE_NEW = r"^([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+)_"
+const REGEX_DEVICE_NEW = r"^RuO2test_([^_]+)_([^_]+)_([^_]+)_([^_]+)_"
 
 # ---------------------------------------------------------------------------
 # DeviceInfo
@@ -67,9 +67,9 @@ function MeasurementInfo(filepath::AbstractString)
     exp_label = measurement_label(measurement_kind)
     
     device_label = ""
-    if (m = match(REGEX_DEVICE, filename)) !== nothing
+    if (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
         device_label = join(m.captures, "_")
-    elseif (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
+    elseif (m = match(REGEX_DEVICE, filename)) !== nothing
         device_label = join(m.captures, "_")
     end
 
@@ -164,37 +164,24 @@ function extract_file_info(path::AbstractString)
 end
 
 function parse_device_info(filename::String)
-    if (m = match(REGEX_DEVICE, filename)) !== nothing
-        # Convert captures (SubString / maybe Nothing) into plain Strings, skipping any missing
+    if (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
         caps = String[]
         for c in m.captures
             c === nothing && continue
             push!(caps, String(c))
         end
-        return DeviceInfo(caps)
-    elseif (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
+        loc = vcat("RuO2test_" * caps[1], caps[2:end])
+        return DeviceInfo(loc)
+    elseif (m = match(REGEX_DEVICE, filename)) !== nothing
         caps = String[]
         for c in m.captures
             c === nothing && continue
             push!(caps, String(c))
         end
-        return DeviceInfo(caps)
+        loc = vcat("RuO2test_" * caps[1], caps[2:end])
+        return DeviceInfo(loc)
     end
-    # Fallback: infer hierarchy segments from filename prefix before date/time tokens
-    name_part = replace(filename, r"\.(csv|txt)$" => "")
-    tokens = split(name_part, '_')
-    device_tokens = String[]
-    for t in tokens
-        # stop before date/time or temperature tokens
-        if occursin(r"^\d{6,}$", t) || occursin(r"^\d{4}-\d{2}-\d{2}$", t) || occursin(r"^\d+K$", t)
-            break
-        end
-        push!(device_tokens, t)
-    end
-    if isempty(device_tokens)
-        return DeviceInfo(["Unknown"])
-    end
-    return DeviceInfo(device_tokens)
+    error("Unrecognized device filename format: $filename")
 end
 
 function detect_measurement_kind(filename::String)::Symbol
@@ -296,7 +283,7 @@ end
 function expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
     meas.measurement_kind == :breakdown || return [meas]
     dev = last(meas.device_info.location)
-    if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
+        if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
         return [meas]
     end
     parts = m.captures
@@ -455,15 +442,18 @@ end
     _load_device_info_txt(path) -> Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
 
 Reads device_info.txt where first column is `device_path` (slash-separated),
-remaining columns are arbitrary device-level parameters.
+remaining columns are arbitrary device-level parameters. Keys may optionally
+include the `RuO2test_` chip prefix (e.g. `RuO2test_A9/...`) to disambiguate
+chip IDs like `A9` from other devices; both prefixed and unprefixed keys are
+honored during lookup.
 
-Example device_info.txt format for TLM measurements:
+Example device_info.txt format for TLM measurements (including oxide and electrode thickness):
 ```
-device_path,length_um,width_um,area_um2,notes
-TLML800W2,800,2,1600,TLM structure L800 W2
-TLML800W4,800,4,3200,TLM structure L800 W4
-TLML400W2,400,2,800,TLM structure L400 W2
-TLML400W4,400,4,1600,TLM structure L400 W4
+device_path,length_um,width_um,area_um2,t_HZO_nm,t_RuO2_nm,notes
+TLML800W2,800,2,1600,10,30,TLM structure L800 W2
+TLML800W4,800,4,3200,10,30,TLM structure L800 W4
+TLML400W2,400,2,800,10,30,TLM structure L400 W2
+TLML400W4,400,4,1600,10,30,TLM structure L400 W4
 ```
 
 For TLM combined analysis, the length_um and width_um parameters are required
@@ -472,7 +462,7 @@ to calculate width-normalized resistance and extract sheet resistance.
 function _load_device_info_txt(path::AbstractString)
     lines = readlines(path)
     isempty(lines) && return Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
-    header = split(lines[1], ',')
+    header = strip.(split(lines[1], ','))
     length(header) >= 2 || return Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
     devcol = header[1]
     param_cols = header[2:end]
@@ -488,10 +478,10 @@ function _load_device_info_txt(path::AbstractString)
         for (i, col) in enumerate(param_cols)
             idx = i + 1
             idx > length(parts) && continue
-            cell = parts[idx]
+            cell = strip(parts[idx])
             val = _infer_meta_value(cell)
             val === nothing && continue
-            params[Symbol(col)] = val
+            params[Symbol(strip(col))] = val
         end
         meta[segs] = params
     end
@@ -501,6 +491,30 @@ end
 # ---------------------------------------------------------------------------
 # Scanning
 # ---------------------------------------------------------------------------
+function _lookup_device_params(meta::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}, loc::Vector{String})
+    isempty(loc) && return nothing
+
+    candidates = Tuple{Vararg{String}}[]
+    push!(candidates, (last(loc),))           # geometry-only (e.g., L100W2)
+    push!(candidates, (loc[1],))              # chip (includes prefix if present)
+    for k in reverse(1:length(loc)-1)
+        push!(candidates, Tuple(loc[1:k]))    # chip/block...
+    end
+    push!(candidates, Tuple(loc))             # full path
+
+    merged = Dict{Symbol,Any}()
+    seen = Set{Tuple{Vararg{String}}}()
+    for cand in candidates
+        cand in seen && continue
+        push!(seen, cand)
+        if haskey(meta, cand)
+            merge!(merged, meta[cand])
+        end
+    end
+
+    return isempty(merged) ? nothing : merged
+end
+
 function scan_directory(root_path::String)::MeasurementHierarchy
     measurements = MeasurementInfo[]
 
@@ -517,13 +531,7 @@ function scan_directory(root_path::String)::MeasurementHierarchy
                     # expand (may duplicate)
                     for m in expand_multi_device(measurement_info)
                         if meta !== nothing
-                            loc_tuple = Tuple(m.device_info.location)
-                            dev_params = get(meta, loc_tuple, nothing)
-                            if dev_params === nothing && !isempty(m.device_info.location)
-                                # leaf fallback
-                                leaf = (last(m.device_info.location),)
-                                dev_params = get(meta, leaf, nothing)
-                            end
+                            dev_params = _lookup_device_params(meta, m.device_info.location)
                             if dev_params !== nothing
                                 merge!(m.device_info.parameters, dev_params)
                             end
