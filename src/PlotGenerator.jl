@@ -205,7 +205,6 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
 
     results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[], rho_c=Float64[], r_squared=Float64[], n_files=Int[], thickness_cm=Float64[], oxygen_percent=Float64[])
 
-    # Group by site then temperature
     by_site = Dict{String, Vector{NamedTuple}}()
     for e in entries
         vec = get!(by_site, e.site, Vector{NamedTuple}())
@@ -227,11 +226,12 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
                 @warn "Insufficient geometries for sheet resistance" site tempK = temp
                 continue
             end
+
             thickness_values = Float64[]
             for s in subset
-                if haskey(s.params, :thickness_nm)
+                if haskey(s.params, :t_RuO2_nm)
                     t_nm = try
-                        Float64(s.params[:thickness_nm])
+                        Float64(s.params[:t_RuO2_nm])
                     catch
                         NaN
                     end
@@ -242,7 +242,7 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
             end
 
             thickness_cm = NaN
-            if length(thickness_values) == length(subset)
+            if length(thickness_values) == length(subset) && !isempty(thickness_values)
                 thickness_cm = mean(thickness_values) * 1e-7
                 if maximum(thickness_values) - minimum(thickness_values) > 1e-3 * maximum(thickness_values)
                     @warn "Thickness varies across files; using mean for normalization" site tempK = temp
@@ -262,15 +262,31 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
 
     nrow(results) == 0 && return nothing
 
-    # Plot
-    fig = Figure(size=(900, 550))
+    fig = Figure(size=(1100, 700))
     any_thickness = any(isfinite, results.thickness_cm)
-    y_label = any_thickness ? "Resistivity (Ω·cm)" : "Sheet Resistance (Ω/□)"
+    y_label = any_thickness ? "Resistivity (mΩ·cm)" : "Sheet Resistance (Ω/□)"
     title_str = any_thickness ? "TLM Resistivity vs Temperature" : "TLM Sheet Resistance vs Temperature"
-    ax = Axis(fig[1, 1], xlabel="Temperature (K)", ylabel=y_label, title=title_str)
+    ax = Axis(fig[1, 1:2], xlabel="Temperature (K)", ylabel=y_label, title=title_str)
 
     sites = unique(results.site)
-    colors = cgrad(:tab10, length(sites), categorical=true)
+    site_o2 = Dict{String,Float64}()
+    for s in sites
+        vals = filter(isfinite, results.oxygen_percent[results.site .== s])
+        site_o2[s] = isempty(vals) ? NaN : mean(vals)
+    end
+    sites = sort(sites; by = s -> begin
+        o2 = site_o2[s]
+        isfinite(o2) ? o2 : Inf
+    end)
+
+    o2_vals = filter(isfinite, collect(values(site_o2)))
+    use_o2_colors = !isempty(o2_vals)
+    cmap = to_colormap(Reverse(:seaborn_flare_gradient))
+    o2_min, o2_max = use_o2_colors ? (minimum(o2_vals), maximum(o2_vals)) : (0.0, 1.0)
+    base_colors = to_colormap(:tab10)
+
+    rt_points = NamedTuple{(:site, :o2, :resistivity)}[]
+    tcr_points = NamedTuple{(:site, :o2, :tcr_ppm)}[]
 
     for (i, site) in enumerate(sites)
         sub = sort(filter(row -> row.site == site, results), :temperature_K)
@@ -279,31 +295,70 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
             o2 = mean(filter(isfinite, sub.oxygen_percent))
             label = string(site, " (", round(o2, digits=2), "% O2)")
         end
-        scatterlines!(ax, sub.temperature_K, sub.R_val;
-            color=colors[i], marker=:circle, markersize=10, linewidth=2, label=label)
+        color = use_o2_colors && isfinite(site_o2[site]) && o2_max > o2_min ?
+            cmap[clamp(Int(round(1 + (length(cmap)-1) * (site_o2[site]-o2_min)/(o2_max-o2_min))), 1, length(cmap))] :
+            base_colors[mod1(i, length(base_colors))]
 
-        # Linear fit for TCR: R = a + b*T  => alpha = b/a (1/K)
-        a, b, ok = ols_ab(sub.temperature_K, sub.R_val)
+        plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
+
+        scatterlines!(ax, sub.temperature_K, plot_vals;
+            color=color, marker=:circle, markersize=10, linewidth=2, label=label)
+
+        # R(T) = R0*(1 + alpha*T) => alpha = R0*alpha / R0 = b/a
+        # units of R don't matter since we divide by R0
+        a, b, ok = ols_ab(sub.temperature_K, plot_vals)
         if ok && isfinite(a) && a != 0
             alpha = b / a
             tmin, tmax = extrema(sub.temperature_K)
             tspan = range(tmin, tmax; length=50)
             fit_vals = a .+ b .* tspan
-            lines!(ax, tspan, fit_vals; color=colors[i], linestyle=:dash, linewidth=1.5)
-            # annotate near the last point
+            lines!(ax, tspan, fit_vals; color=color, linestyle=:dash, linewidth=1.5)
             t_annot = maximum(sub.temperature_K)
             R_annot = a + b * t_annot
-            text!(ax, t_annot, R_annot; text=\"TCR=$(round(alpha*1e6, digits=1)) ppm/K\", align=(:left, :center), color=colors[i], offset=(8, 0))
+            text!(ax, t_annot, R_annot; text="TCR=$(round(alpha*1e3, digits=2)) ppm/K", align=(:left, :center), color=color, offset=(8, 0))
+
+            if isfinite(site_o2[site])
+                push!(tcr_points, (site=site, o2=site_o2[site], tcr_ppm=alpha*1e3))
+            end
+        end
+
+        if isfinite(site_o2[site]) && !isempty(sub.temperature_K)
+            idx = argmin(abs.(sub.temperature_K .- 298.0))
+            rt_val = plot_vals[idx]
+            push!(rt_points, (site=site, o2=site_o2[site], resistivity=rt_val))
         end
     end
 
     axislegend(ax, position=:rt)
 
+    ax_rt = Axis(fig[2, 1], xlabel="O2 (%)", ylabel=any_thickness ? "Resistivity(~298K) (mΩ·cm)" : "Sheet R(~298K) (Ω/□)", title="Resistivity vs O2%")
+    ax_tcr = Axis(fig[2, 2], xlabel="O2 (%)", ylabel="TCR (ppm/K)", title="TCR vs O2")
+
+    site_color = Dict{String, Any}()
+    for (i, s) in enumerate(sites)
+        color = use_o2_colors && isfinite(site_o2[s]) && o2_max > o2_min ?
+            cmap[clamp(Int(round(1 + (length(cmap)-1) * (site_o2[s]-o2_min)/(o2_max-o2_min))), 1, length(cmap))] :
+            base_colors[mod1(i, length(base_colors))]
+        site_color[s] = color
+    end
+
+    for p in rt_points
+        scatter!(ax_rt, [p.o2], [p.resistivity]; color=site_color[p.site], marker=:circle, markersize=9)
+    end
+    for p in tcr_points
+        scatter!(ax_tcr, [p.o2], [p.tcr_ppm]; color=site_color[p.site], marker=:diamond, markersize=9)
+    end
+
+    rowsize!(fig.layout, 1, Relative(0.6))
+    rowsize!(fig.layout, 2, Relative(0.4))
+
     return fig
 end
+"""
+Simple ordinary least squares to fit y = a + b*x
 
-
-# small OLS helper: y = a + b x
+Returns (a, b, success)
+"""
 ols_ab(x::AbstractVector{<:Real}, y::AbstractVector{<:Real}) = begin
     n = length(x)
     sx = sum(x)

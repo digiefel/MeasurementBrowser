@@ -446,11 +446,11 @@ Input:
 entries :: Vector of NamedTuples with fields:
     kind::Symbol              # :pund or :wakeup
     df::DataFrame             # raw data frame for the entry
-    params::Dict{Symbol,Any}  # device-level params (expects :area_um2, :thickness_nm)
+    params::Dict{Symbol,Any}  # device-level params (expects :area_um2, :t_HZO_nm)
     timestamp::Any            # optional; used for chronological sorting
 
 Notes:
-- Only the exact parameter names are considered for geometry: area_um2 (μm²) and thickness_nm (nm).
+- Only the exact parameter names are considered for geometry: area_um2 (μm²) and t_HZO_nm (nm).
 - Wakeup entries contribute their pulse_count to the cumulative cycle count.
 - FE_PUND entries are analyzed and each repetition (quintuple) is treated as one fatigue cycle.
 - Remnant polarization is computed as Pr = (max(P) - min(P)) / 2 from each repetition's P–E trace (only if area_um2 is present).
@@ -504,7 +504,7 @@ function analyze_pund_fatigue_combined(entries::Vector)
 
             # Device parameters (exact keys expected)
             area_um2 = haskey(params, :area_um2) ? Float64(params[:area_um2]) : NaN
-            thickness_nm = haskey(params, :thickness_nm) ? Float64(params[:thickness_nm]) : NaN
+            thickness_nm = haskey(params, :t_HZO_nm) ? Float64(params[:t_HZO_nm]) : NaN
 
             # Track availability for axis labels
             if isfinite(thickness_nm) && thickness_nm > 0
