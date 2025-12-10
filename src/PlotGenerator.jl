@@ -5,10 +5,9 @@ using DataFrames
 using Statistics
 using PrecompileTools: @setup_workload, @compile_workload
 
+using DataAnalysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
 include("DataLoader.jl")
 using .DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup
-include("DataAnalysis.jl")
-using .Analysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
 
 export figure_for_file, figure_for_files, plot_tlm_combined, plot_tlm_temperature, plot_pund_fatigue, get_combined_plot_types
 
