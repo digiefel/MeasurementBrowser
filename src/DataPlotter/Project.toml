@@ -1,0 +1,16 @@
+name = "DataPlotter"
+uuid = "467e584f-0006-40b8-bc2d-8131653a99d4"
+version = "0.1.0"
+authors = ["Davide Lombardo <davide.lombardo@eit.lth.se>"]
+
+[deps]
+DataAnalysis = "509f87cb-f238-4275-9ee2-d3327c3af205"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+DataLoader = "a8afec15-28fe-4831-94d8-4f8efdbf8782"
+GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+
+[compat]
+DataFrames = "1.8.1"
+GLMakie = "0.13.8"
+Statistics = "1.11.1"

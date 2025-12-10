@@ -11,8 +11,7 @@ using Statistics: mean
 include("MakieIntegration.jl")
 using .MakieImguiIntegration
 
-include("PlotGenerator.jl")
-using .PlotGenerator: figure_for_file, figure_for_files, get_combined_plot_types
+using DataPlotter: figure_for_file, figure_for_files, get_combined_plot_types
 
 # Timing & allocation utilities
 # usage: _time!(ui_state, :key) do ... end

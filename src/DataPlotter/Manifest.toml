@@ -2,7 +2,7 @@
 
 julia_version = "1.12.1"
 manifest_format = "2.0"
-project_hash = "2791fd63f99124cfe701b01c1b9113cee5e769eb"
+project_hash = "27e78476a795831e963b11d9932d5f8466e92867"
 
 [[deps.AbstractFFTs]]
 deps = ["LinearAlgebra"]
@@ -94,23 +94,6 @@ git-tree-sha1 = "389ad5c84de1ae7cf0e28e381131c98ea87d54fc"
 uuid = "fa961155-64e5-5f13-b03f-caf6b980ea82"
 version = "0.5.0"
 
-[[deps.CImGui]]
-deps = ["CEnum", "CImGuiPack_jll", "CSyntax", "DocStringExtensions", "PrecompileTools", "Printf", "Statistics"]
-git-tree-sha1 = "98122bb4c5782d77789a8f58cc0d0a7109d2eea5"
-uuid = "5d785b6c-b76f-510e-a07c-3070796c7e87"
-version = "6.2.1"
-weakdeps = ["GLFW", "GLMakie", "ModernGL"]
-
-    [deps.CImGui.extensions]
-    GlfwOpenGLBackend = ["GLFW", "ModernGL"]
-    MakieIntegration = ["GLFW", "ModernGL", "GLMakie"]
-
-[[deps.CImGuiPack_jll]]
-deps = ["Artifacts", "GLFW_jll", "JLLWrappers", "Libdl"]
-git-tree-sha1 = "9179bb57ea0cfa8e2f8017df594a46989fe15f63"
-uuid = "333409e9-af72-5310-9767-d6ad21a76a05"
-version = "0.10.0+0"
-
 [[deps.CRC32c]]
 uuid = "8bf52ea8-c179-5cab-976a-9e18b702a9bc"
 version = "1.11.0"
@@ -132,12 +115,6 @@ deps = ["CodecZlib", "Dates", "FilePathsBase", "InlineStrings", "Mmap", "Parsers
 git-tree-sha1 = "deddd8725e5e1cc49ee205a1964256043720a6c3"
 uuid = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 version = "0.10.15"
-
-[[deps.CSyntax]]
-deps = ["CEnum"]
-git-tree-sha1 = "bc5c9dec3a2b7f601e68435de49fe82effc3fa24"
-uuid = "ea656a56-6ca6-5dda-bba5-7b6963a5f74c"
-version = "0.4.1"
 
 [[deps.Cairo_jll]]
 deps = ["Artifacts", "Bzip2_jll", "CompilerSupportLibraries_jll", "Fontconfig_jll", "FreeType2_jll", "Glib_jll", "JLLWrappers", "LZO_jll", "Libdl", "Pixman_jll", "Xorg_libXext_jll", "Xorg_libXrender_jll", "Zlib_jll", "libpng_jll"]
@@ -248,7 +225,7 @@ version = "1.16.0"
 
 [[deps.DataAnalysis]]
 deps = ["DataFrames", "Dates", "Printf", "SmoothData", "Statistics"]
-path = "src/DataAnalysis"
+path = "../DataAnalysis"
 uuid = "509f87cb-f238-4275-9ee2-d3327c3af205"
 version = "0.1.0"
 
@@ -260,13 +237,13 @@ version = "1.8.1"
 
 [[deps.DataLoader]]
 deps = ["CSV", "DataFrames", "Dates"]
-path = "src/DataLoader"
+path = "../DataLoader"
 uuid = "a8afec15-28fe-4831-94d8-4f8efdbf8782"
 version = "0.1.0"
 
 [[deps.DataPlotter]]
 deps = ["DataAnalysis", "DataFrames", "GLMakie", "Statistics"]
-path = "src/DataPlotter"
+path = "."
 uuid = "467e584f-0006-40b8-bc2d-8131653a99d4"
 version = "0.1.0"
 
@@ -926,12 +903,6 @@ deps = ["AbstractTrees", "Automa", "DataStructures", "FreeTypeAbstraction", "Geo
 git-tree-sha1 = "7eb8cdaa6f0e8081616367c10b31b9d9b34bb02a"
 uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.7"
-
-[[deps.MeasurementBrowser]]
-deps = ["CImGui", "CSV", "DataAnalysis", "DataFrames", "DataPlotter", "Dates", "GLFW", "GLMakie", "ModernGL", "Observables", "PrecompileTools", "Printf", "SmoothData", "Statistics"]
-path = "."
-uuid = "12345678-1234-5678-9abc-123456789abc"
-version = "0.1.0"
 
 [[deps.MeshIO]]
 deps = ["ColorTypes", "FileIO", "GeometryBasics", "Printf"]

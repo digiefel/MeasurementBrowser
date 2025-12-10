@@ -6,28 +6,7 @@ using Dates
 
 export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p
 
-"""
-Find files matching a pattern in the specified directory
-"""
-function find_files(pattern, workdir=".")
-    all_files = readdir(workdir)
-    csv_files = filter(f -> endswith(f, ".csv"), all_files)
-    return filter(f -> occursin(pattern, f), csv_files)
-end
-
-
-"""
-Get standard file patterns for different measurement types
-"""
-function get_file_patterns()
-    return (
-        iv_sweep=r"I_V Sweep",
-        fe_pund=r"FE PUND",
-        tlm_4p=r"TLM_4P",
-        breakdown=r"Break.*oxide",
-        wakeup=r"Wakeup"
-    )
-end
+include("PUND.jl")
 
 """
 Read I-V sweep data from CSV file, skipping header metadata
@@ -99,52 +78,6 @@ function read_iv_sweep(filename, workdir=".")
     return DataFrame(v=df[!, v_col], i=df[!, i_col])
 end
 
-"""
-Read FE PUND data from CSV file
-"""
-function read_fe_pund(filename, workdir=".")
-    filepath = joinpath(workdir, filename)
-    lines = readlines(filepath)
-    data_start = 1
-
-    for (i, line) in enumerate(lines)
-        if occursin("Time,MeasResult1_value,MeasResult2_value", line)
-            data_start = i + 1
-            break
-        end
-    end
-
-    if data_start == 1
-        return DataFrame()
-    end
-
-    data_lines = lines[data_start:end]
-    time = Float64[]
-    current = Float64[]
-    voltage = Float64[]
-    current_time = Float64[]
-    voltage_time = Float64[]
-
-    for line in data_lines
-        if !isempty(strip(line))
-            parts = split(line, ',')
-            if length(parts) >= 5
-                try
-                    push!(time, parse(Float64, parts[1]))
-                    push!(current, parse(Float64, parts[2]))
-                    push!(voltage, parse(Float64, parts[3]))
-                    push!(current_time, parse(Float64, parts[4]))
-                    push!(voltage_time, parse(Float64, parts[5]))
-                catch
-                    continue
-                end
-            end
-        end
-    end
-
-    return DataFrame(time=time, current=current, voltage=voltage,
-        current_time=current_time, voltage_time=voltage_time)
-end
 
 """
 Read TLM 4-point data from CSV file
@@ -223,38 +156,6 @@ function read_tlm_4p(filename, workdir=".")
 end
 
 """
-Read wakeup data from CSV file - counts lines and extracts amplitude from filename
-Returns DataFrame with pulse_count and amplitude
-"""
-function read_wakeup(filename, workdir=".")
-    filepath = joinpath(workdir, filename)
-    lines = readlines(filepath)
-
-    # Find the header line that contains "Time,MeasResult1_value,MeasResult2_value"
-    data_start = 1
-    for (i, line) in enumerate(lines)
-        if occursin("Time,MeasResult1_value,MeasResult2_value", line)
-            data_start = i + 1
-            break
-        end
-    end
-
-    # Count actual data lines (non-empty lines with commas after the header)
-    data_lines = 0
-    for line in lines[data_start:end]
-        if !isempty(strip(line)) && occursin(',', line)
-            data_lines += 1
-        end
-    end
-
-    # Extract amplitude from filename (pattern like "3V", "10V", etc.)
-    amplitude_match = match(r"(\d+(?:\.\d+)?)V", filename)
-    amplitude = amplitude_match !== nothing ? parse(Float64, amplitude_match.captures[1]) : 0.0
-
-    return DataFrame(pulse_count=data_lines, amplitude=amplitude)
-end
-
-"""
 Extract datetime from filename in format: [... ; YYYY-MM-DD HH_MM_SS].csv
 Returns DateTime object or nothing if parsing fails
 """
@@ -279,4 +180,28 @@ function extract_datetime_from_filename(filename)
     return nothing
 end
 
-end # module
+"""
+Find files matching a pattern in the specified directory
+"""
+function find_files(pattern, workdir=".")
+    all_files = readdir(workdir)
+    csv_files = filter(f -> endswith(f, ".csv"), all_files)
+    return filter(f -> occursin(pattern, f), csv_files)
+end
+
+
+"""
+Get standard file patterns for different measurement types
+"""
+function get_file_patterns()
+    return (
+        iv_sweep=r"I_V Sweep",
+        fe_pund=r"FE PUND",
+        tlm_4p=r"TLM_4P",
+        breakdown=r"Break.*oxide",
+        wakeup=r"Wakeup"
+    )
+end
+
+
+end # module DataLoader
