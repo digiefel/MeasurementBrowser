@@ -1,11 +1,12 @@
 name = "MeasurementBrowser"
 uuid = "12345678-1234-5678-9abc-123456789abc"
-authors = ["Your Name <your.email@example.com>"]
 version = "0.1.0"
+authors = ["Your Name <your.email@example.com>"]
 
 [deps]
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataAnalysis = "509f87cb-f238-4275-9ee2-d3327c3af205"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
@@ -17,12 +18,6 @@ Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SmoothData = "0112b07a-89eb-48f6-acf7-65d97704274c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 
-[extras]
-Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
-
-[targets]
-test = ["Test"]
-
 [compat]
 CImGui = "6.1.0"
 GLFW = "3.4.4"
@@ -32,3 +27,9 @@ PrecompileTools = "1.2.1"
 Printf = "1.11.0"
 SmoothData = "0.1.0"
 julia = "1.9"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
