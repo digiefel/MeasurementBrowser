@@ -44,7 +44,7 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
     R_meas = V ./ I
     
     # Extract Geometry
-    L_um, W_um = extract_tlm_geometry_from_params(device_params, title_str)
+    L_um, W_um = extract_tlm_geometry_from_params(device_params)
     
     # Calculate Sheet Resistivity
     rho_sheet = NaN

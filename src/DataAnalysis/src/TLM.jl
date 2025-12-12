@@ -111,40 +111,9 @@ Extract geometry information from device parameters
 Returns (length_um, width_um) or (NaN, NaN) if not found
 Expects device_params to contain :length_um and :width_um keys
 """
-function extract_tlm_geometry_from_params(device_params::Dict{Symbol,Any}, filepath::AbstractString="")
+function extract_tlm_geometry_from_params(device_params::Dict{Symbol,Any})
     length_um = get(device_params, :length_um, NaN)
     width_um = get(device_params, :width_um, NaN)
-
-    # Try alternative key names
-    if isnan(length_um)
-        length_um = get(device_params, :length, NaN)
-    end
-    if isnan(width_um)
-        width_um = get(device_params, :width, NaN)
-    end
-
-    # If still not found, try fallback filename parsing
-    if isnan(length_um) || isnan(width_um)
-        @info "Geometry not found in device parameters, trying filename parsing for: $filepath"
-
-        # Remove path and extension
-        basename_file = basename(filepath)
-        name_part = replace(basename_file, r"\.(csv|txt)$" => "")
-
-        # Pattern to match TLML<length>W<width> or L<length>W<width>
-        # Try to match L<length>W<width> which covers both TLML... and ..._L...W...
-        pattern = r"L(\d+)W(\d+)"
-        m = match(pattern, name_part)
-
-        if m !== nothing
-            length_um = parse(Float64, m.captures[1])
-            width_um = parse(Float64, m.captures[2])
-            @info "Extracted geometry from filename: L=$(length_um)μm, W=$(width_um)μm"
-        else
-            @warn "Could not extract geometry from device parameters or filename: $filepath" available_keys = keys(device_params)
-            return (NaN, NaN)
-        end
-    end
 
     return (Float64(length_um), Float64(width_um))
 end
@@ -188,7 +157,7 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
         end
 
         # Extract geometry from device parameters
-        length_um, width_um = extract_tlm_geometry_from_params(device_params, filepath)
+        length_um, width_um = extract_tlm_geometry_from_params(device_params)
 
         if isnan(length_um) || isnan(width_um) || length_um <= 0 || width_um <= 0
             @warn "Skipping file with invalid geometry: $filepath (L=$length_um, W=$width_um)"
