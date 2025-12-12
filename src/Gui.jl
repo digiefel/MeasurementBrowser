@@ -534,10 +534,16 @@ function _render_measurements_panel(ui_state, filter_meas)
     end
 
     measurement_filter_func = (m, filter_obj) -> begin
-        !ig.ImGuiTextFilter_IsActive(filter_obj) ||
-            ig.ImGuiTextFilter_PassFilter(filter_obj, display_label(m), C_NULL) ||
-            ig.ImGuiTextFilter_PassFilter(filter_obj, m.clean_title, C_NULL) ||
-            ig.ImGuiTextFilter_PassFilter(filter_obj, measurement_label(m.measurement_kind), C_NULL)
+        if !ig.ImGuiTextFilter_IsActive(filter_obj)
+            return true
+        end
+        # Evaluate the filter against a single combined string so negative tokens work reliably
+        filter_text = string(
+            display_label(m), "\n",
+            m.clean_title, "\n",
+            measurement_label(m.measurement_kind)
+        )
+        return ig.ImGuiTextFilter_PassFilter(filter_obj, filter_text, C_NULL)
     end
     filtered_count = count_filtered_items(all_measurements, filter_meas, measurement_filter_func)
 
@@ -601,10 +607,7 @@ function _render_measurements_panel(ui_state, filter_meas)
     if !isempty(meas_vec)
         any_shown = false
         for m in meas_vec
-            passes = !ig.ImGuiTextFilter_IsActive(filter_meas) ||
-                     ig.ImGuiTextFilter_PassFilter(filter_meas, display_label(m), C_NULL) ||
-                     ig.ImGuiTextFilter_PassFilter(filter_meas, m.clean_title, C_NULL) ||
-                     ig.ImGuiTextFilter_PassFilter(filter_meas, measurement_label(m.measurement_kind), C_NULL)
+            passes = measurement_filter_func(m, filter_meas)
             passes || continue
             any_shown = true
             selected_measurements = get!(ui_state, :selected_measurements, MeasurementInfo[])
