@@ -108,16 +108,14 @@ function read_tlm_4p(filename, workdir=".")
         for line in data_lines
             if !isempty(strip(line))
                 parts = split(line, ',')
-                if length(parts) >= 3
-                    try
-                        curr = parse(Float64, parts[1])
-                        v_high = parse(Float64, parts[2])
-                        v_low = parse(Float64, parts[3])
-                        push!(current_source, curr)
-                        push!(voltage_drop, v_high - v_low) # Use measured drop (high - low)
-                    catch
-                        continue
-                    end
+                try
+                    curr = parse(Float64, parts[1])
+                    v_high = parse(Float64, parts[2])
+                    v_low = parse(Float64, parts[3])
+                    push!(current_source, curr)
+                    push!(voltage_drop, v_high - v_low) # Use measured drop (high - low)
+                catch
+                    continue
                 end
             end
         end
@@ -127,26 +125,14 @@ function read_tlm_4p(filename, workdir=".")
                 parts = split(line, ',')
                 # Filter out empty parts
                 valid_parts = filter(p -> !isempty(strip(p)), parts)
-
-                if length(valid_parts) >= 3
-                    try
-                        curr = parse(Float64, valid_parts[1])
-                        v_high = parse(Float64, valid_parts[2])
-                        v_low = parse(Float64, valid_parts[3])
-                        push!(current_source, curr)
-                        push!(voltage_drop, v_high - v_low)
-                    catch e
-                        println("Error parsing line: $line, error: $e")
-                        continue
-                    end
-                elseif length(valid_parts) >= 2
-                    try
-                        push!(current_source, parse(Float64, valid_parts[1]))
-                        push!(voltage_drop, parse(Float64, valid_parts[2]))  # assume already a drop
-                    catch e
-                        println("Error parsing line: $line, error: $e")
-                        continue
-                    end
+                try
+                    curr = parse(Float64, valid_parts[1])
+                    dv = parse(Float64, valid_parts[2])
+                    push!(current_source, curr)
+                    push!(voltage_drop, dv)
+                catch e
+                    println("Error parsing line: $line, error: $e")
+                    continue
                 end
             end
         end
