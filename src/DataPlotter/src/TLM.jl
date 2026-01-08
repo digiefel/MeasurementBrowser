@@ -284,7 +284,8 @@ Groups files by site/chip and temperature, computes sheet/contact parameters
 via `calculate_sheet_resistance(analyze_tlm_combined(...))`, then plots
 R□ (or thickness-normalized resistivity when thickness is present for all
 files at that site/temperature) vs temperature with one series per site/chip.
-Adds a linear fit per site to report TCR.
+Adds a linear fit per site to report TCR. Toggle `use_o2_flow=true` to label
+series and O2 summary plots by oxygen flow (sccm) instead of oxygen percent.
 """
 function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
     isempty(paths) && return nothing
