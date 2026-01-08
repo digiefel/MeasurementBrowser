@@ -170,6 +170,29 @@ function _extract_oxygen_percent(params::Dict{Symbol,Any}, filepath::String)
     return NaN
 end
 
+# Extract oxygen flow in sccm from params or filename (optional)
+function _extract_oxygen_flow(params::Dict{Symbol,Any}, filepath::String)
+    for key in (:oxygen_flow_sccm, :o2_flow_sccm, :oxygen_flow, :o2_flow)
+        if haskey(params, key)
+            return try
+                Float64(params[key])
+            catch
+                NaN
+            end
+        end
+    end
+
+    base = basename(filepath)
+    if (m = match(r"(\d+(?:\.\d+)?)\s*sccm", base)) !== nothing
+        return try
+            parse(Float64, m.captures[1])
+        catch
+            NaN
+        end
+    end
+    return NaN
+end
+
 """
 Simple ordinary least squares to fit y = a + b*x
 

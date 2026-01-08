@@ -11,12 +11,12 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
     # Extract data
     I = df.current_source
     V = df.voltage_drop
-    
+
     # Filter out NaNs and infinite values
     mask = isfinite.(I) .& isfinite.(V)
     I = I[mask]
     V = V[mask]
-    
+
     if isempty(I)
         return nothing
     end
@@ -28,46 +28,46 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
     sy = sum(V)
     sxx = sum(I .^ 2)
     sxy = sum(I .* V)
-    
+
     denom = n * sxx - sx^2
-    
+
     R_fit = 0.0
     offset = 0.0
-    
+
     if abs(denom) > 1e-20
         R_fit = (n * sxy - sx * sy) / denom
         offset = (sy - R_fit * sx) / n
     end
-    
+
     # Calculate Resistance for plotting
     # Avoid division by zero
     R_meas = V ./ I
-    
+
     # Extract Geometry
     L_um, W_um = extract_tlm_geometry_from_params(device_params)
-    
+
     # Calculate Sheet Resistivity
     rho_sheet = NaN
     if !isnan(L_um) && !isnan(W_um) && L_um > 0
         rho_sheet = R_fit * W_um / L_um
     end
-    
+
     # Parse Title Info
     # Expected format: Chip_Type_Subtype_Geometry_Date_Time_Temp_...
     # e.g. A11_VI_TLM_L100W2_20251205_151649_298K_FourTerminalIV
     parts = split(title_str, ['_', ' '])
-    
+
     chip = length(parts) >= 1 ? parts[1] : "?"
     geometry_str = "?"
     temp = "?"
-    
+
     # Try to find geometry in parts
     for p in parts
         if occursin(r"L\d+W\d+", p)
             geometry_str = p
         end
     end
-    
+
     # Use temperature from device_params if available
     if haskey(device_params, :temperature_K)
         temp = "$(device_params[:temperature_K])K"
@@ -79,22 +79,22 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
             end
         end
     end
-    
+
     new_title = "$chip $geometry_str $temp"
-    
+
     # Plotting
     fig = Figure(size=(1000, 500))
-    
+
     # Scale units
     I_uA = I .* 1e6
     V_mV = V .* 1e3
     R_kOhm = R_meas ./ 1e3
     R_fit_kOhm = R_fit / 1e3
-    
+
     # Panel 1: I-V
     ax1 = Axis(fig[1, 1], xlabel="Current (μA)", ylabel="Voltage (mV)", title="I-V Curve")
     scatter!(ax1, I_uA, V_mV, color=:blue, markersize=8, label="Data")
-    
+
     # Plot fit line
     I_min, I_max = minimum(I_uA), maximum(I_uA)
     # Add some padding
@@ -107,32 +107,32 @@ function plot_tlm_4p(df, title_str="TLM 4-Point"; device_params=Dict{Symbol,Any}
     # V_mV = R_fit * I_uA * 1e-3 + offset * 1e3
     # V_mV = (R_fit/1e3) * I_uA + offset*1e3
     V_fit_mV = (R_fit / 1e3) .* I_range .+ (offset * 1e3)
-    
+
     lines!(ax1, I_range, V_fit_mV, color=:red, linewidth=2, label="Fit: R=$(round(R_fit, digits=2)) Ω")
-    
+
     # Add Rho to legend if available
     if !isnan(rho_sheet)
         # Add an invisible line for the legend entry
         lines!(ax1, [NaN], [NaN], color=:transparent, label="ρ_sq = $(round(rho_sheet, digits=2)) Ω/sq")
     end
-    
+
     axislegend(ax1, position=:lt)
-    
+
     # Panel 2: R vs I
     ax2 = Axis(fig[1, 2], xlabel="Current (μA)", ylabel="Resistance (kΩ)", title="Resistance vs Current")
-    
+
     # Filter R_meas for plotting (remove outliers/infinities)
     valid_R = isfinite.(R_kOhm) .& (abs.(R_kOhm) .< 1e6) # Arbitrary large cutoff
-    
+
     if any(valid_R)
         scatter!(ax2, I_uA[valid_R], R_kOhm[valid_R], color=:green, markersize=8, label="R = V/I")
     end
     hlines!(ax2, [R_fit_kOhm], color=:red, linestyle=:dash, linewidth=2, label="Fitted R")
-    
+
     axislegend(ax2)
-    
+
     Label(fig[0, :], new_title, fontsize=20, font=:bold)
-    
+
     return fig
 end
 
@@ -287,10 +287,10 @@ files at that site/temperature) vs temperature with one series per site/chip.
 Adds a linear fit per site to report TCR. Toggle `use_o2_flow=true` to label
 series and O2 summary plots by oxygen flow (sccm) instead of oxygen percent.
 """
-function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
+function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], use_o2_flow::Bool=false, kwargs...)
     isempty(paths) && return nothing
 
-    entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent)}[]
+    entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent, :oxygen_flow_sccm)}[]
 
     for (i, path) in enumerate(paths)
         try
@@ -303,7 +303,8 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
             end
             site = _extract_site_label(params, path)
             o2 = _extract_oxygen_percent(params, path)
-            push!(entries, (path=path, df=df, params=params, tempK=tempK, site=site, oxygen_percent=o2))
+            o2_flow = _extract_oxygen_flow(params, path)
+            push!(entries, (path=path, df=df, params=params, tempK=tempK, site=site, oxygen_percent=o2, oxygen_flow_sccm=o2_flow))
         catch err
             @warn "Failed to load TLM file for temperature plot" path error = err
         end
@@ -311,7 +312,7 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
 
     isempty(entries) && return nothing
 
-    results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[], rho_c=Float64[], r_squared=Float64[], n_files=Int[], thickness_cm=Float64[], oxygen_percent=Float64[])
+    results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[], rho_c=Float64[], r_squared=Float64[], n_files=Int[], thickness_cm=Float64[], oxygen_percent=Float64[], oxygen_flow_sccm=Float64[])
 
     by_site = Dict{String, Vector{NamedTuple}}()
     for e in entries
@@ -364,97 +365,135 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
                 vals = filter(isfinite, [s.oxygen_percent for s in subset])
                 isempty(vals) ? NaN : mean(vals)
             end
-            push!(results, (site, temp, R_val, R_cprime, rho_c, r2, length(subset), thickness_cm, o2))
+            o2_flow = begin
+                vals = filter(isfinite, [s.oxygen_flow_sccm for s in subset])
+                isempty(vals) ? NaN : mean(vals)
+            end
+            push!(results, (site, temp, R_val, R_cprime, rho_c, r2, length(subset), thickness_cm, o2, o2_flow))
         end
     end
 
     nrow(results) == 0 && return nothing
 
-    fig = Figure(size=(1100, 700))
+    fig = Figure(size=(1100, 720))
     any_thickness = any(isfinite, results.thickness_cm)
     y_label = any_thickness ? "Resistivity (mΩ·cm)" : "Sheet Resistance (Ω/□)"
     title_str = any_thickness ? "TLM Resistivity vs Temperature" : "TLM Sheet Resistance vs Temperature"
+
+    # Controls row (top)
+    controls = GridLayout(fig[0, 1:2], tellwidth=false)
+    Label(controls[1, 1], "O2 metric")
+    toggle_flow = Toggle(controls[1, 2], active=use_o2_flow, width=80)
+    Label(controls[1, 3], "Use O2 flow (sccm)")
+
+    # Axes
     ax = Axis(fig[1, 1:2], xlabel="Temperature (K)", ylabel=y_label, title=title_str)
+    ax_rt = Axis(fig[2, 1], xlabel="O2 (%)", ylabel=any_thickness ? "Resistivity(~298K) (mΩ·cm)" : "Sheet R(~298K) (Ω/□)", title="Resistivity vs O2%")
+    ax_tcr = Axis(fig[2, 2], xlabel="O2 (%)", ylabel="TCR (ppm/K)", title="TCR vs O2")
 
-    sites = unique(results.site)
-    site_o2 = Dict{String,Float64}()
-    for s in sites
-        vals = filter(isfinite, results.oxygen_percent[results.site .== s])
-        site_o2[s] = isempty(vals) ? NaN : mean(vals)
-    end
-    sites = sort(sites; by = s -> begin
-        o2 = site_o2[s]
-        isfinite(o2) ? o2 : Inf
-    end)
+    # Precompute per-site data that does not depend on O2 metric
+    sites = sort(unique(results.site))
+    rt_val_map = Dict{String,Float64}()
+    tcr_ppm_map = Dict{String,Float64}()
+    fit_lines = Vector{Any}(undef, length(sites))
+    data_lines = Vector{Any}(undef, length(sites))
+    tcr_texts = Vector{Any}(undef, length(sites))
+    rt_scatter = Vector{Any}(undef, length(sites))
+    tcr_scatter = Vector{Any}(undef, length(sites))
+    rt_x = [Observable([NaN]) for _ in sites]
+    tcr_x = [Observable([NaN]) for _ in sites]
 
-    o2_vals = filter(isfinite, collect(values(site_o2)))
-    use_o2_colors = !isempty(o2_vals)
+    # Colors stay tied to oxygen percent (stable palette)
     cmap = to_colormap(Reverse(:seaborn_flare_gradient))
-    o2_min, o2_max = use_o2_colors ? (minimum(o2_vals), maximum(o2_vals)) : (0.0, 1.0)
     base_colors = to_colormap(:tab10)
-
-    rt_points = NamedTuple{(:site, :o2, :resistivity)}[]
-    tcr_points = NamedTuple{(:site, :o2, :tcr_ppm)}[]
+    meanfinite(field::Symbol, site::String) = begin
+        col = results[!, field]
+        vals = filter(isfinite, col[results.site .== site])
+        isempty(vals) ? NaN : mean(vals)
+    end
+    color_vals = [meanfinite(:oxygen_percent, s) for s in sites]
+    finite_color_vals = filter(isfinite, color_vals)
+    color_min, color_max = isempty(finite_color_vals) ? (0.0, 1.0) : (minimum(finite_color_vals), maximum(finite_color_vals))
+    colors = [
+        (isfinite(cv) && color_max > color_min) ?
+            cmap[clamp(Int(round(1 + (length(cmap)-1) * (cv - color_min)/(color_max - color_min))), 1, length(cmap))] :
+            base_colors[mod1(i, length(base_colors))]
+        for (i, cv) in enumerate(color_vals)
+    ]
 
     for (i, site) in enumerate(sites)
         sub = sort(filter(row -> row.site == site, results), :temperature_K)
-        label = site
-        if any(isfinite, sub.oxygen_percent)
-            o2 = mean(filter(isfinite, sub.oxygen_percent))
-            label = string(site, " (", round(o2, digits=2), "% O2)")
-        end
-        color = use_o2_colors && isfinite(site_o2[site]) && o2_max > o2_min ?
-            cmap[clamp(Int(round(1 + (length(cmap)-1) * (site_o2[site]-o2_min)/(o2_max-o2_min))), 1, length(cmap))] :
-            base_colors[mod1(i, length(base_colors))]
-
         plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
+        color = colors[i]
 
-        scatterlines!(ax, sub.temperature_K, plot_vals;
-            color=color, marker=:circle, markersize=10, linewidth=2, label=label)
-
-        # R(T) = R0*(1 + alpha*T) => alpha = R0*alpha / R0 = b/a
-        # units of R don't matter since we divide by R0
         a, b, ok = ols_ab(sub.temperature_K, plot_vals)
+        alpha_ppm = NaN
+        fit_obj = nothing
+        tcr_text_obj = nothing
         if ok && isfinite(a) && a != 0
             alpha = b / a
+            alpha_ppm = alpha * 1e6
             tmin, tmax = extrema(sub.temperature_K)
             tspan = range(tmin, tmax; length=50)
             fit_vals = a .+ b .* tspan
-            lines!(ax, tspan, fit_vals; color=color, linestyle=:dash, linewidth=1.5)
+            fit_obj = lines!(ax, tspan, fit_vals; color=color, linestyle=:dash, linewidth=1.5)
             t_annot = maximum(sub.temperature_K)
             R_annot = a + b * t_annot
-            text!(ax, t_annot, R_annot; text="TCR=$(round(alpha*1e3, digits=2)) ppm/K", align=(:left, :center), color=color, offset=(8, 0))
-
-            if isfinite(site_o2[site])
-                push!(tcr_points, (site=site, o2=site_o2[site], tcr_ppm=alpha*1e3))
-            end
+            tcr_text_obj = text!(ax, t_annot, R_annot; text="TCR=$(round(alpha_ppm)) ppm/K", align=(:left, :center), color=color, offset=(8, 0))
         end
+        tcr_ppm_map[site] = alpha_ppm
+        fit_lines[i] = fit_obj
+        tcr_texts[i] = tcr_text_obj
 
-        if isfinite(site_o2[site]) && !isempty(sub.temperature_K)
-            idx = argmin(abs.(sub.temperature_K .- 298.0))
-            rt_val = plot_vals[idx]
-            push!(rt_points, (site=site, o2=site_o2[site], resistivity=rt_val))
-        end
+        idx = !isempty(sub.temperature_K) ? argmin(abs.(sub.temperature_K .- 298.0)) : 1
+        rt_val_map[site] = !isempty(plot_vals) ? plot_vals[idx] : NaN
+
+        data_lines[i] = scatterlines!(ax, sub.temperature_K, plot_vals;
+            color=color, marker=:circle, markersize=10, linewidth=2, label=site)
     end
 
     axislegend(ax, position=:rt)
 
-    ax_rt = Axis(fig[2, 1], xlabel="O2 (%)", ylabel=any_thickness ? "Resistivity(~298K) (mΩ·cm)" : "Sheet R(~298K) (Ω/□)", title="Resistivity vs O2%")
-    ax_tcr = Axis(fig[2, 2], xlabel="O2 (%)", ylabel="TCR (ppm/K)", title="TCR vs O2")
+    o2_field_from_toggle() = toggle_flow.active[] ? :oxygen_flow_sccm : :oxygen_percent
+    suffix_from_toggle() = toggle_flow.active[] ? " sccm O2" : "% O2"
 
-    site_color = Dict{String, Any}()
-    for (i, s) in enumerate(sites)
-        color = use_o2_colors && isfinite(site_o2[s]) && o2_max > o2_min ?
-            cmap[clamp(Int(round(1 + (length(cmap)-1) * (site_o2[s]-o2_min)/(o2_max-o2_min))), 1, length(cmap))] :
-            base_colors[mod1(i, length(base_colors))]
-        site_color[s] = color
+    function update_o2_metric!()
+        field = o2_field_from_toggle()
+        suffix = suffix_from_toggle()
+        metric_vals = [meanfinite(field, s) for s in sites]
+
+        # Update axis labels/titles
+        x_label = toggle_flow.active[] ? "O2 Flow (sccm)" : "O2 (%)"
+        ax_rt.xlabel[] = x_label
+        ax_tcr.xlabel[] = x_label
+        ax_rt.title[] = toggle_flow.active[] ? "Resistivity vs O2 flow" : "Resistivity vs O2%"
+        ax_tcr.title[] = toggle_flow.active[] ? "TCR vs O2 flow" : "TCR vs O2"
+
+        for (i, site) in enumerate(sites)
+            val = metric_vals[i]
+            label = isfinite(val) ? string(site, " (", round(val, digits=2), suffix, ")") : site
+
+            data_lines[i].label[] = label
+
+            rt_x[i][] = [val]
+            tcr_x[i][] = [val]
+        end
     end
 
-    for p in rt_points
-        scatter!(ax_rt, [p.o2], [p.resistivity]; color=site_color[p.site], marker=:circle, markersize=9)
+    # Initialize RT/TCR scatter plots (x Observable will be filled in updater)
+    for (i, site) in enumerate(sites)
+        rt_val = rt_val_map[site]
+        tcr_ppm = tcr_ppm_map[site]
+        color = colors[i]
+        rt_scatter[i] = scatter!(ax_rt, rt_x[i], Observable([rt_val]); color=color, marker=:circle, markersize=9)
+        tcr_scatter[i] = scatter!(ax_tcr, tcr_x[i], Observable([tcr_ppm]); color=color, marker=:diamond, markersize=9)
     end
-    for p in tcr_points
-        scatter!(ax_tcr, [p.o2], [p.tcr_ppm]; color=site_color[p.site], marker=:diamond, markersize=9)
+
+    update_o2_metric!()
+    on(toggle_flow.active) do _
+        update_o2_metric!()
+        reset_limits!(ax_rt)
+        reset_limits!(ax_tcr)
     end
 
     rowsize!(fig.layout, 1, Relative(0.6))
