@@ -14,6 +14,9 @@
 - Target Julia 1.12; 4-space indentation; aim for ~100-char lines.
 - Use `snake_case` for functions/variables, `UpperCamelCase` for structs/types, `ALL_CAPS` for constants; keep side effects explicit.
 - Prefer docstrings for public APIs and brief comments only where UI/GL hooks are non-obvious.
+- Find simple, stable, idiomatic solutions; avoid shortcuts.
+- Consider whether a cleaner solution emerges by refactoring first.
+- Don’t catch errors; let failures surface.
 
 ## Testing Guidelines
 - Tests live in `test/` with fixtures (sample CSVs) plus `runtests.jl` and feature-focused files.
