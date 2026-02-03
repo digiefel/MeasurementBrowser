@@ -4,7 +4,7 @@ using CSV
 using DataFrames
 using Dates
 
-export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p
+export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p, read_pund_fatigue_cycles, read_pund_fatigue_cycle
 
 include("PUND.jl")
 
@@ -13,14 +13,14 @@ Read I-V sweep data from CSV file, skipping header metadata
 """
 function read_iv_sweep(filename, workdir=".")
     filepath = joinpath(workdir, filename)
-    
+
     # 1. Find the header line index
     lines = readlines(filepath)
     header_line = 1
     for (i, line) in enumerate(lines)
         # A header line typically contains "Voltage" or "V" AND "Current" or "I"
         # and is NOT a data line (doesn't start with a number)
-        if (occursin("Voltage", line) || occursin("V", line)) && 
+        if (occursin("Voltage", line) || occursin("V", line)) &&
            (occursin("Current", line) || occursin("I", line)) &&
            !occursin(r"^-?\d", line)
             header_line = i
@@ -31,10 +31,10 @@ function read_iv_sweep(filename, workdir=".")
     # 2. Use CSV.read
     # silence warnings about empty lines or metadata
     df = CSV.read(filepath, DataFrame; header=header_line, silencewarnings=true)
-    
+
     # 3. Identify columns robustly
     cols = names(df)
-    
+
     # Helper to find column matching candidates
     function find_col(candidates)
         for cand in candidates
@@ -46,10 +46,10 @@ function read_iv_sweep(filename, workdir=".")
         end
         # Fallback: contains
         for cand in candidates
-             match = findfirst(c -> occursin(cand, c), cols)
-             if match !== nothing
-                 return cols[match]
-             end
+            match = findfirst(c -> occursin(cand, c), cols)
+            if match !== nothing
+                return cols[match]
+            end
         end
         return nothing
     end
@@ -67,10 +67,10 @@ function read_iv_sweep(filename, workdir=".")
             idx = findfirst(c -> occursin("I", c) && !occursin("Time", c) && !occursin("Info", c) && !occursin("Index", c), cols)
             i_col = idx !== nothing ? cols[idx] : nothing
         end
-        
+
         if v_col === nothing || i_col === nothing
-             @warn "Could not identify V/I columns in $filename. Columns: $cols"
-             return DataFrame()
+            @warn "Could not identify V/I columns in $filename. Columns: $cols"
+            return DataFrame()
         end
     end
 

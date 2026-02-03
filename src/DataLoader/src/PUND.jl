@@ -1,4 +1,4 @@
-export read_fe_pund, read_wakeup
+export read_fe_pund, read_wakeup, read_pund_fatigue_cycles, read_pund_fatigue_cycle
 
 """
 Read FE PUND data from CSV file
@@ -77,4 +77,57 @@ function read_wakeup(filename, workdir=".")
     amplitude = amplitude_match !== nothing ? parse(Float64, amplitude_match.captures[1]) : 0.0
 
     return DataFrame(pulse_count=data_lines, amplitude=amplitude)
+end
+
+"""
+Read unique cycle numbers from a PUND Fatigue CSV file.
+The CSV has columns: Cycle,Time_s,Voltage_V,Current_A
+Returns sorted Vector{Int} of unique cycle numbers.
+"""
+function read_pund_fatigue_cycles(filename, workdir=".")
+    filepath = joinpath(workdir, filename)
+    cycles = Set{Int}()
+    open(filepath, "r") do io
+        readline(io)  # skip header
+        for line in eachline(io)
+            isempty(line) && continue
+            idx = findfirst(',', line)
+            idx === nothing && continue
+            try
+                push!(cycles, parse(Int, @view line[1:idx-1]))
+            catch
+                continue
+            end
+        end
+    end
+    return sort!(collect(cycles))
+end
+
+"""
+Read a single cycle's data from a PUND Fatigue CSV file.
+Returns DataFrame with :time, :current, :voltage columns (matching analyze_pund() expectations).
+"""
+function read_pund_fatigue_cycle(filename, workdir, cycle::Int)
+    filepath = joinpath(workdir, filename)
+    time = Float64[]
+    current = Float64[]
+    voltage = Float64[]
+    open(filepath, "r") do io
+        readline(io)  # skip header
+        for line in eachline(io)
+            isempty(line) && continue
+            parts = split(line, ',')
+            length(parts) >= 4 || continue
+            try
+                c = parse(Int, parts[1])
+                c == cycle || continue
+                push!(time, parse(Float64, parts[2]))
+                push!(voltage, parse(Float64, parts[3]))
+                push!(current, parse(Float64, parts[4]))
+            catch
+                continue
+            end
+        end
+    end
+    return DataFrame(time=time, current=current, voltage=voltage)
 end

@@ -1,4 +1,150 @@
 """
+    detect_pund_pulses(t, V, I; smooth_window=9, dV_thresh_mult=5.0,
+        expand_win=5, min_pulse_len=20, min_V_amp_mult=5.0,
+        trough_thresh=0.05) -> NamedTuple
+
+Detect triangular voltage pulses in a PUND waveform and check polarity
+consistency. Returns a diagnostic NamedTuple with all intermediate results;
+never errors on inconsistent polarity.
+
+Detection has two stages (fallback chain):
+  1. Derivative-based: finds pulses via smoothed dV/dt threshold + expansion.
+     Works when there are flat inter-pulse gaps.
+  2. Trough-based (fallback): splits at near-zero |V| regions.
+     Used for continuous fatigue waveforms with no flat gaps.
+"""
+function detect_pund_pulses(t, V, I;
+        smooth_window::Int=9,
+        dV_thresh_mult::Float64=5.0,
+        expand_win::Int=5,
+        min_pulse_len::Int=20,
+        min_V_amp_mult::Float64=5.0,
+        trough_thresh::Float64=0.05)
+
+    N = length(t)
+
+    # Baseline current offset
+    n0 = min(10, N)
+    baseline_I = mean(skipmissing(filter(!isnan, I[1:n0])))
+    I_shifted = I .- baseline_I
+
+    # Smoothed derivative
+    baseline_dV = std(diff(V)[1:max(20, length(V) ÷ 10)])
+    dV_threshold = baseline_dV * dV_thresh_mult
+
+    dV = smoothdata([0.0; diff(V)], :movmedian, smooth_window)
+    baseline_V = mean(abs.(V[1:min(9, length(V))]))
+    min_V_amp = baseline_V * min_V_amp_mult
+
+    # Stage 1: derivative-based detection
+    pulses = UnitRange{Int}[]
+    detection_method = :none
+    pulse_mask = abs.(dV) .> dV_threshold
+    expanded_mask = copy(pulse_mask)
+
+    if baseline_dV > 1e-12
+        detection_method = :derivative
+        for i in (expand_win+1):(length(pulse_mask)-expand_win)
+            if any(pulse_mask[(i-expand_win):(i+expand_win)])
+                expanded_mask[i] = true
+            end
+        end
+        all_pulses = _true_runs(expanded_mask)
+
+        for pulse in all_pulses
+            if length(pulse) >= min_pulse_len
+                pulse_V_range = maximum(abs.(V[pulse]))
+                if pulse_V_range >= min_V_amp
+                    push!(pulses, pulse)
+                end
+            end
+        end
+    end
+
+    # Stage 2: trough-based fallback (only if stage 1 found nothing)
+    if isempty(pulses)
+        detection_method = :trough_fallback
+        absV = abs.(V)
+        V_peak = maximum(absV)
+        trough_threshold = V_peak * trough_thresh
+        in_trough = absV .< trough_threshold
+        i = 1
+        while i <= N
+            while i <= N && in_trough[i]; i += 1; end
+            i > N && break
+            pstart = i
+            while i <= N && !in_trough[i]; i += 1; end
+            pend = i > N ? N : i - 1
+            seg = pstart:pend
+            if length(seg) >= min_pulse_len
+                push!(pulses, seg)
+            end
+        end
+    end
+
+    # Per-pulse polarity check
+    polarity_info = NamedTuple{(:pulse_idx, :V_avg, :I_avg, :V_sign, :I_sign, :match),
+        Tuple{Int,Float64,Float64,Int,Int,Bool}}[]
+    mismatches = 0
+    total = 0
+    for (pi, pulse) in enumerate(pulses)
+        half = pulse[1:end÷2]
+        V_avg = mean(V[half])
+        I_avg = mean(I_shifted[half])
+        if abs(V_avg) > 0 && abs(I_avg) > 0
+            total += 1
+            sv = Int(sign(V_avg))
+            si = Int(sign(I_avg))
+            matched = sv == si
+            mismatches += !matched
+            push!(polarity_info, (pulse_idx=pi, V_avg=V_avg, I_avg=I_avg,
+                V_sign=sv, I_sign=si, match=matched))
+        else
+            push!(polarity_info, (pulse_idx=pi, V_avg=V_avg, I_avg=I_avg,
+                V_sign=0, I_sign=0, match=true))
+        end
+    end
+
+    verdict = if total == 0
+        :no_data
+    elseif mismatches == 0
+        :ok
+    elseif mismatches == total
+        :all_flipped
+    else
+        :inconsistent
+    end
+
+    n_groups = length(pulses) ÷ 5
+    remainder = length(pulses) % 5
+
+    return (;
+        t, V, I=I_shifted, dV, dV_threshold, baseline_dV,
+        pulse_mask, expanded_mask,
+        pulses, detection_method,
+        polarity_info, mismatches, total, verdict,
+        n_groups, remainder,
+        min_V_amp, baseline_V,
+    )
+end
+
+"Contiguous runs of `true` in a BitVector."
+function _true_runs(mask)
+    runs = UnitRange{Int}[]
+    start = nothing
+    for i in eachindex(mask)
+        if mask[i]
+            start === nothing && (start = i)
+        elseif start !== nothing
+            push!(runs, start:i-1)
+            start = nothing
+        end
+    end
+    start !== nothing && push!(runs, start:lastindex(mask))
+    return runs
+end
+
+"""
 Perform PUND analysis on the DataFrame
 
     # 1. identify triangular voltage pulse train
@@ -14,82 +160,25 @@ function analyze_pund(df::DataFrame; DEBUG::Bool=false)
     t, V, I = df[!, :time], df[!, :voltage], df[!, :current]
     N = length(t)
 
-    # offset current data to zero
-    n0 = min(10, N)
-    baseline_I = mean(skipmissing(filter(!isnan, I[1:n0])))
+    # ---- pulse detection & polarity check via shared helper --------------------
+    det = detect_pund_pulses(t, V, I)
+    pulses = det.pulses
+    I = det.I  # baseline-shifted
+
     if DEBUG
-        @info "analyze_pund: baseline current offset" n0 = n0 baseline = baseline_I
-    end
-    I .-= baseline_I
-
-    # ---- helper: contiguous true–runs --------------------------------------------------
-    function true_runs(mask::BitVector)
-        runs = UnitRange{Int}[]
-        start = nothing
-        for i ∈ eachindex(mask)
-            if mask[i]
-                start === nothing && (start = i)
-            elseif start !== nothing
-                push!(runs, start:i-1)
-                start = nothing
-            end
-        end
-        start !== nothing && push!(runs, start:lastindex(mask))
-        return runs
-    end
-
-    # ---- pulse detection ---------------------------------------------------------------
-    # Use smoothed derivative detection to capture full triangular pulses
-    dV = smoothdata([0.0; diff(V)], :movmedian, 9)
-    baseline_dV = std(dV[1:min(10, length(dV) ÷ 10)])
-    dV_threshold = baseline_dV * 5
-    # Find regions with significant voltage changes
-    pulse_mask = abs.(dV) .> dV_threshold
-
-    # expand pulse regions to capture full triangular waves
-    expanded_mask = copy(pulse_mask)
-    safe_win = 5  # Larger expansion window
-    for i in (safe_win+1):(length(pulse_mask)-safe_win)
-        if any(pulse_mask[(i-safe_win):(i+safe_win)])
-            expanded_mask[i] = true
-        end
-    end
-    all_pulses = true_runs(expanded_mask)
-
-    # Filter out short pulses and pulses with small voltage amplitudes
-    baseline_V = mean(abs.(V[1:min(9, length(V))]))
-    min_pulse_length = 20  # minimum points for a valid pulse
-    min_voltage_amplitude = baseline_V * 5  # minimum voltage amplitude
-
-    pulses = UnitRange{Int}[]
-    for pulse in all_pulses
-        if length(pulse) >= min_pulse_length
-            pulse_V_range = maximum(abs.(V[pulse]))
-            if pulse_V_range >= min_voltage_amplitude
-                push!(pulses, pulse)
-            end
-        end
+        n0 = min(10, N)
+        baseline_I = mean(skipmissing(filter(!isnan, df[!, :current][1:n0])))
+        @info "analyze_pund: baseline current offset" n0 baseline=baseline_I
+        @info "analyze_pund: detection" method=det.detection_method n_pulses=length(pulses) verdict=det.verdict
     end
 
     @assert !isempty(pulses) "no valid pulses found; adjust derivative threshold or filtering parameters"
 
     # ---- polarity alignment --------------------------------------------------------
-    mismatches = 0
-    total = 0
-    for pulse in pulses
-        # take only the first half of the pulse in case it is dominated by I=dV/dt
-        # (and thus mean(I) ~ 0)
-        V_avg, I_avg = mean(V[pulse[1:end÷2]]), mean(I[pulse[1:end÷2]])
-        if abs(V_avg) > 0 && abs(I_avg) > 0
-            total += 1
-            mismatches += sign(V_avg) != sign(I_avg)
-        end
-    end
-
-    if total > 0 && mismatches == total
+    if det.verdict == :all_flipped
         I = -I
-    elseif mismatches > 0
-        error("Inconsistent polarity: $(mismatches)/$(total) pulses misaligned")
+    elseif det.verdict == :inconsistent
+        error("Inconsistent polarity: $(det.mismatches)/$(det.total) pulses misaligned")
     end
 
     # ---- consistency check and grouping into quintuples --------------------------------
@@ -269,6 +358,9 @@ function analyze_pund_fatigue_combined(entries::Vector)
             n_groups = maxpid ÷ 5
             file_counter += 1
 
+            # If this entry has an explicit fatigue_cycle, use it directly
+            explicit_cycle = haskey(params, :fatigue_cycle) ? Int(params[:fatigue_cycle]) : nothing
+
             for rep in 1:n_groups
                 # Use only P and N pulses within this repetition
                 P_code = rep * 5 - 3
@@ -277,7 +369,7 @@ function analyze_pund_fatigue_combined(entries::Vector)
 
                 valid = rep_mask .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
                 if any(valid)
-                    cyc = cycles_accum + 1
+                    cyc = explicit_cycle !== nothing ? explicit_cycle : cycles_accum + 1
 
                     xv = collect(x_all[valid])
                     yv = collect(y_all[valid])
@@ -299,8 +391,8 @@ function analyze_pund_fatigue_combined(entries::Vector)
                         end
                     end
 
-                    # Increment cumulative cycles after this repetition
-                    cycles_accum += 1
+                    # Update cumulative cycle counter
+                    cycles_accum = explicit_cycle !== nothing ? explicit_cycle : cycles_accum + 1
                 end
             end
         end

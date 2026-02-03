@@ -710,7 +710,7 @@ function render_plot_window(ui_state)
             fig = nothing
             try
                 filepaths = [m.filepath for m in compatible_measurements]
-                device_params_list = [m.device_info.parameters for m in compatible_measurements]
+                device_params_list = [merge(m.device_info.parameters, m.parameters) for m in compatible_measurements]
                 fig = figure_for_files(filepaths, combined_type; device_params_list=device_params_list)
             catch err
                 @warn "Combined plot generation failed" error = err
@@ -730,13 +730,13 @@ function render_plot_window(ui_state)
         m = selected_measurements[1]
         filepath = m.filepath
         mtime = Dates.unix2datetime(stat(filepath).mtime)
-        current_plot_key = (filepath, mtime)
+        current_plot_key = (filepath, mtime, m.parameters)
         last_plot_key = get(ui_state, :_last_plot_key, nothing)
 
         if current_plot_key != last_plot_key
             # Merge device parameters and measurement parameters
             all_params = merge(m.device_info.parameters, m.parameters)
-            fig = _ensure_plot_figure(ui_state, filepath; kind=detect_measurement_kind(m.filename), device_params=all_params)
+            fig = _ensure_plot_figure(ui_state, filepath; kind=m.measurement_kind, device_params=all_params)
             if fig !== nothing
                 ui_state[:plot_figure] = fig
                 ui_state[:_last_plot_key] = current_plot_key
@@ -856,7 +856,7 @@ function render_combined_plots_window(ui_state)
                         if length(comp_meas) >= 2
                             try
                                 local paths = [m.filepath for m in comp_meas]
-                                local dev_params = [m.device_info.parameters for m in comp_meas]
+                                local dev_params = [merge(m.device_info.parameters, m.parameters) for m in comp_meas]
                                 local fig = figure_for_files(paths, current_type; device_params_list=dev_params)
                                 if fig !== nothing
                                     local open_plots = get!(ui_state, :open_plot_windows) do

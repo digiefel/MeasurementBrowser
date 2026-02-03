@@ -218,6 +218,9 @@ function plot_pund_fatigue(paths::Vector{String}; device_params_list::Vector{Dic
         if occursin("wakeup", fname)
             df_w = read_wakeup(basename(path), dirpath)
             push!(entries, (kind=:wakeup, df=df_w, params=params, timestamp=ts))
+        elseif haskey(params, :fatigue_cycle)
+            df_p = read_pund_fatigue_cycle(basename(path), dirpath, Int(params[:fatigue_cycle]))
+            push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
         else
             df_p = read_fe_pund(basename(path), dirpath)
             push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))

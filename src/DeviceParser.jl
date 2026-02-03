@@ -65,7 +65,7 @@ function MeasurementInfo(filepath::AbstractString)
     parameters = parse_parameters(filename)
     file_info = extract_file_info(filepath)
     exp_label = measurement_label(measurement_kind)
-    
+
     device_label = ""
     if (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
         device_label = join(m.captures, "_")
@@ -186,7 +186,9 @@ end
 
 function detect_measurement_kind(filename::String)::Symbol
     lower = lowercase(filename)
-    if occursin("fe pund", lower) || occursin("fepund", lower)
+    if occursin("pund_fatigue", lower) || occursin("pund fatigue", lower)
+        return :pund_fatigue
+    elseif occursin("fe pund", lower) || occursin("fepund", lower)
         return :pund
     elseif occursin("i_v sweep", lower) || occursin("iv sweep", lower)
         return :iv
@@ -203,6 +205,7 @@ end
 
 function measurement_label(kind::Symbol)::String
     kind === :pund && return "FE PUND"
+    kind === :pund_fatigue && return "PUND Fatigue"
     kind === :iv && return "I-V Sweep"
     kind === :tlm4p && return "TLM 4-Point"
     kind === :breakdown && return "Breakdown"
@@ -250,7 +253,7 @@ end
 
 function display_label(meas::MeasurementInfo)
     label = measurement_label(meas.measurement_kind)
-    
+
     temp_str = ""
     if haskey(meas.parameters, :temperature_K)
         temp_str = " $(meas.parameters[:temperature_K])K"
@@ -261,15 +264,22 @@ function display_label(meas::MeasurementInfo)
             return "$(meas.timestamp) $(label) $(meas.wakeup_pulse_count)×$(temp_str)"
         end
     elseif meas.measurement_kind == :pund
+        fatigue_str = ""
+        if haskey(meas.parameters, :fatigue_cycle)
+            fatigue_str = " cycle $(meas.parameters[:fatigue_cycle]) (fatigue)"
+        end
         try
             amplitude_match = match(r"(\d+(?:\.\d+)?)V", meas.filename)
             if amplitude_match !== nothing
                 voltage = parse(Float64, amplitude_match.captures[1])
                 voltage_str = voltage == floor(voltage) ? "$(Int(voltage))V" : "$(voltage)V"
-                return "$(meas.timestamp) $(label) $(voltage_str)$(temp_str)"
+                return "$(meas.timestamp) $(label) $(voltage_str)$(fatigue_str)$(temp_str)"
             end
         catch
             # ignore, fall through to default
+        end
+        if !isempty(fatigue_str)
+            return "$(meas.timestamp) $(label)$(fatigue_str)$(temp_str)"
         end
     end
     return "$(meas.timestamp) $(label)$(temp_str)"
@@ -283,7 +293,7 @@ end
 function expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
     meas.measurement_kind == :breakdown || return [meas]
     dev = last(meas.device_info.location)
-        if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
+    if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
         return [meas]
     end
     parts = m.captures
@@ -298,6 +308,48 @@ function expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
         deepcopy(meas.parameters),
         meas.wakeup_pulse_count,
     ) for p in parts]
+end
+
+# ---------------------------------------------------------------------------
+# PUND Fatigue expansion into virtual per-cycle measurements
+# ---------------------------------------------------------------------------
+function _read_fatigue_cycle_numbers(filepath::AbstractString)::Vector{Int}
+    cycles = Set{Int}()
+    open(filepath, "r") do io
+        readline(io)  # skip header
+        for line in eachline(io)
+            isempty(line) && continue
+            idx = findfirst(',', line)
+            idx === nothing && continue
+            try
+                push!(cycles, parse(Int, @view line[1:idx-1]))
+            catch
+                continue
+            end
+        end
+    end
+    return sort!(collect(cycles))
+end
+
+function expand_pund_fatigue(meas::MeasurementInfo)::Vector{MeasurementInfo}
+    meas.measurement_kind == :pund_fatigue || return [meas]
+    cycles = try
+        _read_fatigue_cycle_numbers(meas.filepath)
+    catch e
+        @warn "Could not read fatigue cycles from $(meas.filepath)" error = e
+        return MeasurementInfo[]
+    end
+    isempty(cycles) && return MeasurementInfo[]
+    return [MeasurementInfo(
+        meas.filename,
+        meas.filepath,
+        meas.clean_title * " cycle $c",
+        :pund,
+        meas.timestamp,
+        DeviceInfo(copy(meas.device_info.location), deepcopy(meas.device_info.parameters)),
+        merge(deepcopy(meas.parameters), Dict{Symbol,Any}(:fatigue_cycle => c)),
+        nothing,
+    ) for c in cycles]
 end
 
 # ---------------------------------------------------------------------------
@@ -528,8 +580,10 @@ function scan_directory(root_path::String)::MeasurementHierarchy
                 filepath = joinpath(root, file)
                 try
                     measurement_info = MeasurementInfo(filepath)
-                    # expand (may duplicate)
-                    for m in expand_multi_device(measurement_info)
+                    # expand (may duplicate for breakdown or fatigue)
+                    expanded = expand_multi_device(measurement_info)
+                    expanded = vcat([expand_pund_fatigue(m) for m in expanded]...)
+                    for m in expanded
                         if meta !== nothing
                             dev_params = _lookup_device_params(meta, m.device_info.location)
                             if dev_params !== nothing

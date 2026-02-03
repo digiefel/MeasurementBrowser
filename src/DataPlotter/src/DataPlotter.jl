@@ -5,7 +5,7 @@ using DataFrames
 using Statistics
 
 using DataAnalysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup
+using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue_cycle
 
 include("PUND.jl")
 include("TLM.jl")
@@ -28,12 +28,22 @@ function figure_for_file(path::AbstractString, kind::Union{Symbol,Nothing}; kwar
     # Helper to derive a title (strip .csv)
     title = strip(replace(fname, r"\.csv$" => ""))
 
+    # Extract device parameters dict (passed from GUI as merged device_info + measurement params)
+    device_params = get(kwargs, :device_params, nothing)
+    area_um2 = device_params isa Dict ? get(device_params, :area_um2, nothing) : nothing
+
     df = nothing
     fig = nothing
     try
         if kind === :pund
-            df = read_fe_pund(fname, dir)
-            fig = plot_fe_pund(df, title; kwargs...)
+            fatigue_cycle = device_params isa Dict ? get(device_params, :fatigue_cycle, nothing) : nothing
+            if fatigue_cycle !== nothing
+                df = read_pund_fatigue_cycle(fname, dir, Int(fatigue_cycle))
+                fig = plot_fe_pund(df, title * " cycle $fatigue_cycle (fatigue)"; area_um2, kwargs...)
+            else
+                df = read_fe_pund(fname, dir)
+                fig = plot_fe_pund(df, title; area_um2, kwargs...)
+            end
         elseif kind === :iv
             df = read_iv_sweep(fname, dir)
             fig = plot_iv_sweep_single(df, title; kwargs...)
