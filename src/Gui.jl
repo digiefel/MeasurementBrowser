@@ -11,7 +11,65 @@ using Statistics: mean
 include("MakieIntegration.jl")
 using .MakieImguiIntegration
 
-using DataPlotter: figure_for_file, figure_for_files, get_combined_plot_types
+using DataPlotter
+using TOML
+
+# ---------------------------------------------------------------------------
+# Preferences (persistent project selection)
+# ---------------------------------------------------------------------------
+
+function _prefs_path()
+    return joinpath(homedir(), ".config", "MeasurementBrowser", "prefs.toml")
+end
+
+function _load_prefs()
+    path = _prefs_path()
+    isfile(path) || return Dict{String,Any}()
+    try
+        return TOML.parsefile(path)
+    catch
+        return Dict{String,Any}()
+    end
+end
+
+function _save_prefs(data::Dict)
+    path = _prefs_path()
+    mkpath(dirname(path))
+    open(path, "w") do io
+        TOML.print(io, data)
+    end
+end
+
+# Return the preferred AbstractProject (nothing = auto-detect)
+function _preferred_project(ui_state)
+    pref = get(ui_state, :project_preference, "auto")
+    pref == "auto" && return nothing
+    for p in KNOWN_PROJECTS
+        project_name(p) == pref && return p
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Centralised scan helper (used by menu bar, project window, initial load)
+# ---------------------------------------------------------------------------
+
+function _do_scan!(ui_state, path::String)
+    hierarchy = scan_directory(path; project=_preferred_project(ui_state))
+    ui_state[:hierarchy_root] = hierarchy.root
+    ui_state[:all_measurements] = hierarchy.all_measurements
+    ui_state[:root_path] = path
+    ui_state[:has_device_metadata] = hierarchy.has_device_metadata
+    ui_state[:project] = hierarchy.project
+    ui_state[:skipped_count] = hierarchy.skipped_count
+    all_params = Set{Symbol}()
+    for m in hierarchy.all_measurements
+        for k in keys(m.device_info.parameters)
+            push!(all_params, k)
+        end
+    end
+    ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
+end
 
 # Timing & allocation utilities
 # usage: _time!(ui_state, :key) do ... end
@@ -152,37 +210,20 @@ function render_menu_bar(ui_state)
                 end
                 if !isnothing(path) && !isempty(path)
                     @info "Selected path: $path"
-                    hierarchy = scan_directory(path)
-                    ui_state[:hierarchy_root] = hierarchy.root
-                    ui_state[:all_measurements] = hierarchy.all_measurements
-                    ui_state[:root_path] = path
-                    ui_state[:has_device_metadata] = hierarchy.has_device_metadata
-                    # Collect device-level metadata keys (union)
-                    all_params = Set{Symbol}()
-                    for m in hierarchy.all_measurements
-                        for k in keys(m.device_info.parameters)
-                            push!(all_params, k)
-                        end
-                    end
-                    ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
+                    _do_scan!(ui_state, path)
                 end
             end
             if ig.MenuItem("Reload")
                 if haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
                     @info "Reloading path: $(ui_state[:root_path])"
-                    hierarchy = scan_directory(ui_state[:root_path])
-                    ui_state[:hierarchy_root] = hierarchy.root
-                    ui_state[:all_measurements] = hierarchy.all_measurements
-                    ui_state[:has_device_metadata] = hierarchy.has_device_metadata
-                    # Collect device-level metadata keys (union)
-                    all_params = Set{Symbol}()
-                    for m in hierarchy.all_measurements
-                        for k in keys(m.device_info.parameters)
-                            push!(all_params, k)
-                        end
-                    end
-                    ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
+                    _do_scan!(ui_state, ui_state[:root_path])
                 end
+            end
+            ig.EndMenu()
+        end
+        if ig.BeginMenu("View")
+            if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
+                ui_state[:show_project_window] = !get(ui_state, :show_project_window, false)
             end
             ig.EndMenu()
         end
@@ -216,6 +257,23 @@ end
 function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
+
+    # Project indicator
+    if haskey(ui_state, :project)
+        proj = ui_state[:project]
+        pname = project_name(proj)
+        pdesc = project_description(proj)
+        ig.TextColored((0.4, 0.8, 1.0, 1.0), "Project: $pname")
+        ig.SameLine()
+        _helpmarker(pdesc)
+        skipped = get(ui_state, :skipped_count, 0)
+        if skipped > 0
+            ig.SameLine()
+            ig.TextColored((1.0, 0.6, 0.2, 1.0), "  ⚠ $skipped CSV files skipped")
+            ig.SameLine()
+            _helpmarker("$skipped CSV file(s) were not loaded because they don't match the '$pname' project filter.\nOpen View → Project Settings to change the active project.")
+        end
+    end
 
     # Show selection count
     selected_devices = get!(ui_state, :selected_devices, HierarchyNode[])
@@ -516,6 +574,7 @@ end
 
 # Right panel (measurements list) rendering
 function _render_measurements_panel(ui_state, filter_meas)
+    proj = get(ui_state, :project, RUO2_PROJECT)
     ig.BeginChild("Measurements", (0, 0), true)
     ig.SeparatorText("Measurement Selection")
 
@@ -539,9 +598,9 @@ function _render_measurements_panel(ui_state, filter_meas)
         end
         # Evaluate the filter against a single combined string so negative tokens work reliably
         filter_text = string(
-            display_label(m), "\n",
+            display_label(proj, m), "\n",
             m.clean_title, "\n",
-            measurement_label(m.measurement_kind)
+            kind_label(proj, m.measurement_kind)
         )
         return ig.ImGuiTextFilter_PassFilter(filter_obj, filter_text, C_NULL)
     end
@@ -613,7 +672,7 @@ function _render_measurements_panel(ui_state, filter_meas)
             selected_measurements = get!(ui_state, :selected_measurements, MeasurementInfo[])
             is_selected = m in selected_measurements
 
-            if ig.Selectable(display_label(m), is_selected)
+            if ig.Selectable(display_label(proj, m), is_selected)
                 io = ig.GetIO()
                 shift_held = unsafe_load(io.KeyShift)
                 ctrl_held = unsafe_load(io.KeyCtrl)
@@ -677,11 +736,12 @@ function _ensure_plot_figure(ui_state, filepath; kind=nothing, params...)
     # windows because sharing a single GLMakie.Figure/Screen texture in multiple
     # ImGui contexts can trigger crashes.
     isfile(filepath) || return nothing
+    proj = get(ui_state, :project, RUO2_PROJECT)
     try
         if get(ui_state, :debug_plot_mode, false)
             @info "Debug mode is ON: plots pass DEBUG flag."
         end
-        return figure_for_file(filepath, kind; DEBUG=get(ui_state, :debug_plot_mode, false), params...)
+        return figure_for_file(proj, filepath, kind; DEBUG=get(ui_state, :debug_plot_mode, false), params...)
     catch err
         @warn "figure_for_file failed" filepath error = err
         return nothing
@@ -689,6 +749,7 @@ function _ensure_plot_figure(ui_state, filepath; kind=nothing, params...)
 end
 
 function render_plot_window(ui_state)
+    proj = get(ui_state, :project, RUO2_PROJECT)
     selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
     combined_type = get(ui_state, :combined_plot_type, nothing)
 
@@ -703,7 +764,7 @@ function render_plot_window(ui_state)
         ui_state[:generate_combined_plot] = false  # Reset flag
 
         # Filter measurements for the selected plot type
-        compatible_measurements = filter_measurements_for_plot_type(selected_measurements, combined_type)
+        compatible_measurements = filter(m -> m.measurement_kind in compatible_kinds(proj, combined_type), selected_measurements)
 
         if length(compatible_measurements) >= 2
             # Generate combined plot
@@ -711,7 +772,7 @@ function render_plot_window(ui_state)
             try
                 filepaths = [m.filepath for m in compatible_measurements]
                 device_params_list = [merge(m.device_info.parameters, m.parameters) for m in compatible_measurements]
-                fig = figure_for_files(filepaths, combined_type; device_params_list=device_params_list)
+                fig = figure_for_files(proj, filepaths, combined_type; device_params_list=device_params_list)
             catch err
                 @warn "Combined plot generation failed" error = err
             end
@@ -765,7 +826,7 @@ function render_plot_window(ui_state)
         else
             # Show appropriate message based on state
             if length(selected_measurements) > 1 && combined_type !== nothing
-                compatible_files = filter_measurements_for_plot_type(selected_measurements, combined_type)
+                compatible_files = filter(m -> m.measurement_kind in compatible_kinds(proj, combined_type), selected_measurements)
                 if length(compatible_files) < 2
                     ig.TextColored((1.0, 0.6, 0.2, 1.0), "Not enough compatible measurements for $(combined_type)")
                     ig.Text("Selected: $(length(selected_measurements)), Compatible: $(length(compatible_files))")
@@ -799,6 +860,7 @@ end
 
 
 function render_combined_plots_window(ui_state)
+    proj = get(ui_state, :project, RUO2_PROJECT)
     if ig.Begin("Combined Plots")
         ig.Text("Select Combined Plot Type:")
 
@@ -814,7 +876,7 @@ function render_combined_plots_window(ui_state)
 
         if ig.BeginCombo("Plot Type", type_label)
             # Use extensible plot type system
-            for (type_key, type_name, type_description) in get_combined_plot_types()
+            for (type_key, type_name, type_description) in combined_plot_types(proj)
                 if ig.Selectable(type_name, current_type === type_key)
                     ui_state[:combined_plot_type] = type_key
                 end
@@ -841,7 +903,7 @@ function render_combined_plots_window(ui_state)
 
         # Compatibility check and generate button
         if current_type !== nothing && length(selected_measurements) > 1
-            compatible_count = count_compatible_measurements(selected_measurements, current_type)
+            compatible_count = count(m -> m.measurement_kind in compatible_kinds(proj, current_type), selected_measurements)
             if compatible_count >= 2
                 ig.TextColored((0.2, 0.8, 0.2, 1.0), "Ready: $compatible_count compatible measurements")
                 ig.Separator()
@@ -852,12 +914,12 @@ function render_combined_plots_window(ui_state)
                     if ig.MenuItem("Open in New Window")
                         # Prepare compatible selections
                         local sel_meas = get(ui_state, :selected_measurements, MeasurementInfo[])
-                        local comp_meas = filter_measurements_for_plot_type(sel_meas, current_type)
+                        local comp_meas = filter(m -> m.measurement_kind in compatible_kinds(proj, current_type), sel_meas)
                         if length(comp_meas) >= 2
                             try
                                 local paths = [m.filepath for m in comp_meas]
                                 local dev_params = [merge(m.device_info.parameters, m.parameters) for m in comp_meas]
-                                local fig = figure_for_files(paths, current_type; device_params_list=dev_params)
+                                local fig = figure_for_files(proj, paths, current_type; device_params_list=dev_params)
                                 if fig !== nothing
                                     local open_plots = get!(ui_state, :open_plot_windows) do
                                         Vector{Dict{Symbol,Any}}()
@@ -903,27 +965,87 @@ function render_combined_plots_window(ui_state)
     ig.End()
 end
 
-function count_compatible_measurements(measurements::Vector{MeasurementInfo}, plot_type::Symbol)
-    if plot_type === :tlm_analysis || plot_type === :tlm_temperature
-        return count(m -> m.measurement_kind === :tlm4p, measurements)
-    elseif plot_type === :pund_fatigue
-        return count(m -> (m.measurement_kind === :pund || m.measurement_kind === :wakeup), measurements)
+
+
+
+function render_project_window(ui_state)
+    get(ui_state, :show_project_window, false) || return
+
+    open_ref = Ref(true)
+    if ig.Begin("Project Settings###project_window", open_ref, ig.ImGuiWindowFlags_AlwaysAutoResize)
+        # ── Status ──────────────────────────────────────────────────────────
+        if haskey(ui_state, :project)
+            proj = ui_state[:project]
+            n_meas = length(get(ui_state, :all_measurements, MeasurementInfo[]))
+            skipped = get(ui_state, :skipped_count, 0)
+            ig.TextColored((0.4, 0.8, 1.0, 1.0), "Active: $(project_name(proj))")
+            ig.SameLine()
+            ig.TextDisabled("— $(project_description(proj))")
+            ig.Text("$n_meas measurements loaded")
+            if skipped > 0
+                ig.TextColored((1.0, 0.6, 0.2, 1.0), "⚠ $skipped CSV file(s) skipped")
+                ig.SameLine()
+                _helpmarker("These CSV files were skipped because they don't match the active project filter.\nTry selecting a different project below.")
+            else
+                ig.TextDisabled("0 files skipped")
+            end
+        else
+            ig.TextDisabled("No folder loaded yet")
+        end
+
+        ig.Separator()
+        ig.Text("Select project:")
+        ig.Spacing()
+
+        # ── Radio buttons ────────────────────────────────────────────────────
+        pref = get(ui_state, :project_preference, "auto")
+        changed = false
+
+        if ig.RadioButton("Auto-detect", pref == "auto")
+            ui_state[:project_preference] = "auto"
+            changed = true
+        end
+        ig.SameLine()
+        _helpmarker("Detect project automatically from the first matching CSV file found in the folder")
+
+        for p in KNOWN_PROJECTS
+            pn = project_name(p)
+            if ig.RadioButton(pn, pref == pn)
+                ui_state[:project_preference] = pn
+                changed = true
+            end
+            ig.SameLine()
+            _helpmarker(project_description(p))
+        end
+
+        # ── Persist + rescan on change ───────────────────────────────────────
+        if changed
+            _save_prefs(Dict{String,Any}("project" => ui_state[:project_preference]))
+            if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
+                @info "Project preference changed to '$(ui_state[:project_preference])' — rescanning"
+                _do_scan!(ui_state, ui_state[:root_path])
+            end
+        end
+
+        ig.Separator()
+        if ig.Button("Rescan current folder", (-1, 0))
+            if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
+                _do_scan!(ui_state, ui_state[:root_path])
+            else
+                ig.OpenPopup("no_folder_popup")
+            end
+        end
+        if ig.BeginPopup("no_folder_popup")
+            ig.Text("No folder loaded. Use File → Open Folder first.")
+            ig.EndPopup()
+        end
     end
-    return 0
+    open_ref[] || (ui_state[:show_project_window] = false)
+    ig.End()
 end
-
-function filter_measurements_for_plot_type(measurements::Vector{MeasurementInfo}, plot_type::Symbol)
-    if plot_type === :tlm_analysis || plot_type === :tlm_temperature
-        return filter(m -> m.measurement_kind === :tlm4p, measurements)
-    elseif plot_type === :pund_fatigue
-        return filter(m -> (m.measurement_kind === :pund || m.measurement_kind === :wakeup), measurements)
-    end
-    return MeasurementInfo[]
-end
-
-
 
 function render_info_window(ui_state)
+    proj = get(ui_state, :project, RUO2_PROJECT)
     if ig.Begin("Information Panel")
         flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_ScrollY
         ig.BeginTable("info_cols", 2, flags)
@@ -940,7 +1062,7 @@ function render_info_window(ui_state)
             ig.Separator()
             stats = begin
                 try
-                    get_measurements_stats(meas_vec)
+                    get_measurements_stats(meas_vec, proj)
                 catch err
                     @warn "Failed to compute stats" error = err
                     Dict{Symbol,Any}()
@@ -979,7 +1101,7 @@ function render_info_window(ui_state)
             m = ui_state[:selected_measurement]
             ig.Text("Title: $(m.clean_title)")
             ig.Separator()
-            ig.BulletText("Type: $(measurement_label(m.measurement_kind))")
+            ig.BulletText("Type: $(kind_label(proj, m.measurement_kind))")
             ig.BulletText("Timestamp: $(m.timestamp)")
             ig.BulletText("Filename:")
             ig.SameLine()
@@ -1054,6 +1176,7 @@ end
 
 # Render any additional plot windows opened via right-click context menu.
 function render_additional_plot_windows(ui_state)
+    proj = get(ui_state, :project, RUO2_PROJECT)
     open_plots = get(ui_state, :open_plot_windows, nothing)
     open_plots === nothing && return
     isempty(open_plots) && return
@@ -1087,7 +1210,7 @@ function render_additional_plot_windows(ui_state)
         existing_mtime = get(entry, :mtime, nothing)
         refresh = !haskey(entry, :figure) || existing_mtime != mtime
         if refresh
-            k = detect_measurement_kind(basename(filepath))
+            k = detect_kind(proj, basename(filepath))
             fig = haskey(entry, :params) ?
                   _ensure_plot_figure(ui_state, filepath; kind=k, entry[:params]...) :
                   _ensure_plot_figure(ui_state, filepath; kind=k)
@@ -1127,19 +1250,13 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_ViewportsEnable
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_NavEnableKeyboard
     ig.StyleColorsDark()
+
+    # Load persisted preferences
+    prefs = _load_prefs()
+    ui_state[:project_preference] = get(prefs, "project", "auto")
+
     if root_path !== nothing && root_path != ""
-        hierarchy = scan_directory(root_path)
-        ui_state[:hierarchy_root] = hierarchy.root
-        ui_state[:all_measurements] = hierarchy.all_measurements
-        ui_state[:root_path] = root_path
-        ui_state[:has_device_metadata] = hierarchy.has_device_metadata
-        all_params = Set{Symbol}()
-        for m in hierarchy.all_measurements
-            for k in keys(m.device_info.parameters)
-                push!(all_params, k)
-            end
-        end
-        ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
+        _do_scan!(ui_state, root_path)
     end
     first_frame = Ref(true)
     ig.render(
@@ -1166,6 +1283,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         _time!(ui_state, :device_tree) do
             render_selection_window(ui_state)
         end
+        render_project_window(ui_state)
         _time!(ui_state, :info) do
             render_info_window(ui_state)
         end

@@ -19,6 +19,7 @@ PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SmoothData = "0112b07a-89eb-48f6-acf7-65d97704274c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [compat]
 CImGui = "6.1.0"
@@ -28,6 +29,7 @@ ModernGL = "1.1.8"
 PrecompileTools = "1.2.1"
 Printf = "1.11.0"
 SmoothData = "0.1.0"
+TOML = "1.0.3"
 julia = "1.12"
 
 [extras]
