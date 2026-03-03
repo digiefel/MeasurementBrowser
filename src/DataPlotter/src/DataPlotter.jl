@@ -5,115 +5,14 @@ using DataFrames
 using Statistics
 
 using DataAnalysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue_cycle
+using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue
 
 include("PUND.jl")
 include("TLM.jl")
 
-export figure_for_file, figure_for_files, get_combined_plot_types
-
-"""
-    figure_for_file(path::AbstractString; kind::Union{Symbol,Nothing}=nothing) -> Union{Figure,Nothing}
-
-Given a filepath to a measurement CSV, detect its measurement type
-from the filename alone (no MeasurementInfo dependency), load the data
-with the appropriate reader, and return a Makie Figure. Returns `nothing`
-if unsupported or loading/plotting fails.
-"""
-function figure_for_file(path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    isfile(path) || return nothing
-    fname = basename(path)
-    dir = dirname(path)
-
-    # Helper to derive a title (strip .csv)
-    title = strip(replace(fname, r"\.csv$" => ""))
-
-    # Extract device parameters dict (passed from GUI as merged device_info + measurement params)
-    device_params = get(kwargs, :device_params, nothing)
-    area_um2 = device_params isa Dict ? get(device_params, :area_um2, nothing) : nothing
-
-    df = nothing
-    fig = nothing
-    try
-        if kind === :pund
-            fatigue_cycle = device_params isa Dict ? get(device_params, :fatigue_cycle, nothing) : nothing
-            if fatigue_cycle !== nothing
-                df = read_pund_fatigue_cycle(fname, dir, Int(fatigue_cycle))
-                fig = plot_fe_pund(df, title * " cycle $fatigue_cycle (fatigue)"; area_um2, kwargs...)
-            else
-                df = read_fe_pund(fname, dir)
-                fig = plot_fe_pund(df, title; area_um2, kwargs...)
-            end
-        elseif kind === :iv
-            df = read_iv_sweep(fname, dir)
-            fig = plot_iv_sweep_single(df, title; kwargs...)
-        elseif kind === :tlm4p
-            df = read_tlm_4p(fname, dir)
-            fig = plot_tlm_4p(df, title; kwargs...)
-        elseif kind === :breakdown
-            # Treat as breakdown I-V for now
-            df = read_iv_sweep(fname, dir)
-            fig = plot_iv_sweep_single(df, title * " (Breakdown)"; kwargs...)
-        elseif kind === :wakeup
-            df = read_wakeup(fname, dir)
-            fig = plot_wakeup(df, title; kwargs...)
-        else
-            # Fallback attempt: try I-V sweep reader
-            try
-                @warn "figure_for_file: Invalid measurement type. Attempting I-V sweep reader."
-                df = read_iv_sweep(fname, dir)
-                fig = plot_iv_sweep_single(df, title; kwargs...)
-            catch
-                @warn "figure_for_file: Failed to plot."
-                return nothing
-            end
-        end
-    catch err
-        @warn "figure_for_file failed" path error = err
-        return nothing
-    end
-
-    return fig
-end
-
-"""
-Available combined plot types - easily extensible
-"""
-function get_combined_plot_types()
-    return [
-        (nothing, "None", "No combined plot selected"),
-        (:tlm_analysis, "TLM Analysis", "Width-normalized resistance vs length from multiple TLM 4-point measurements"),
-        (:tlm_temperature, "TLM vs Temperature", "Sheet resistance vs temperature (groups by site/chip)"),
-        (:pund_fatigue, "PUND Fatigue", "P-E curve evolution or remnant polarization vs fatigue cycles from PUND measurements"),
-    ]
-end
-
-"""
-    figure_for_files(paths::Vector{String}, combined_kind::Symbol; device_params_list=[], kwargs...) -> Union{Figure,Nothing}
-
-Given a vector of file paths, a combined plot type, and device parameters,
-load the data and return a combined Makie Figure. Returns `nothing`
-if unsupported or loading/plotting fails.
-"""
-function figure_for_files(paths::Vector{String}, combined_kind::Symbol; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
-    isempty(paths) && return nothing
-
-    try
-        if combined_kind === :tlm_analysis
-            return plot_tlm_combined(paths; device_params_list=device_params_list, kwargs...)
-        elseif combined_kind === :tlm_temperature
-            return plot_tlm_temperature(paths; device_params_list=device_params_list, kwargs...)
-        elseif combined_kind === :pund_fatigue
-            return plot_pund_fatigue(paths; device_params_list=device_params_list, kwargs...)
-        else
-            @warn "figure_for_files: Unknown combined plot kind: $combined_kind"
-            return nothing
-        end
-    catch err
-        @warn "figure_for_files failed" paths combined_kind error = err
-        return nothing
-    end
-end
+export plot_fe_pund, plot_wakeup, plot_pund_fatigue
+export plot_tlm_4p, plot_tlm_combined, plot_tlm_temperature
+export plot_iv_sweep_single
 
 # Extract temperature in Kelvin from device params or filename
 function _extract_temperature_K(params::Dict{Symbol,Any}, filepath::String)

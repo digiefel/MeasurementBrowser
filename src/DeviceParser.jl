@@ -5,11 +5,32 @@ DeviceParser.jl - Parse device hierarchy from measurement filenames
 using Dates
 
 # ---------------------------------------------------------------------------
-# Constants / Regex patterns
+# Constants
 # ---------------------------------------------------------------------------
 const MAX_HEADER_LINES = 50
-const REGEX_DEVICE = r"RuO2test_([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+(?:W[0-9]+)?)"
-const REGEX_DEVICE_NEW = r"^RuO2test_([^_]+)_([^_]+)_([^_]+)_([^_]+)_"
+
+# ---------------------------------------------------------------------------
+# Project dispatch types
+# ---------------------------------------------------------------------------
+
+abstract type AbstractProject end
+struct RuO2Project <: AbstractProject end
+struct TASEProject <: AbstractProject end
+
+const KNOWN_PROJECTS = AbstractProject[]
+const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
+
+# Interface (implemented by each project via multiple dispatch):
+#   accepts_file(::P, filename) → Bool
+#   parse_device_info(::P, filename) → DeviceInfo
+#   detect_kind(::P, filename) → Symbol
+#   kind_label(::P, kind) → String
+#   display_label(::P, meas) → String
+#   expand_measurement(::P, meas) → Vector{MeasurementInfo}
+#   figure_for_file(::P, path, kind; kwargs...) → Union{Figure,Nothing}
+#   figure_for_files(::P, paths, combined_kind; kwargs...) → Union{Figure,Nothing}
+#   combined_plot_types(::P) → Vector{Tuple}
+#   compatible_kinds(::P, combined_kind) → Vector{Symbol}
 
 # ---------------------------------------------------------------------------
 # DeviceInfo
@@ -49,6 +70,8 @@ struct MeasurementHierarchy
     root_path::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
     has_device_metadata::Bool
+    project::AbstractProject
+    skipped_count::Int          # CSV files rejected by accepts_file in last scan
 end
 
 HierarchyNode(name::String, kind::Symbol) = HierarchyNode(name, kind, HierarchyNode[], MeasurementInfo[])
@@ -57,21 +80,16 @@ HierarchyNode(name::String, kind::Symbol) = HierarchyNode(name, kind, HierarchyN
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
-function MeasurementInfo(filepath::AbstractString)
+function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
     filename = basename(filepath)
-    device_info = parse_device_info(filename)
-    measurement_kind = detect_measurement_kind(filename)
+    device_info = parse_device_info(project, filename)
+    measurement_kind = detect_kind(project, filename)
     timestamp = parse_timestamp(filename)
     parameters = parse_parameters(filename)
     file_info = extract_file_info(filepath)
-    exp_label = measurement_label(measurement_kind)
+    exp_label = kind_label(project, measurement_kind)
 
-    device_label = ""
-    if (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
-        device_label = join(m.captures, "_")
-    elseif (m = match(REGEX_DEVICE, filename)) !== nothing
-        device_label = join(m.captures, "_")
-    end
+    device_label = join(device_info.location, "_")
 
     date_str = ""
     d = get(file_info, "test_date", "")
@@ -128,6 +146,9 @@ function MeasurementInfo(filepath::AbstractString)
     return MeasurementInfo(filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters, wakeup_count)
 end
 
+# Backwards-compat: use the registered default project
+MeasurementInfo(filepath::AbstractString) = MeasurementInfo(filepath, _default_project[])
+
 function extract_file_info(path::AbstractString)
     file_stat = stat(path)
     size_bytes = file_stat.size
@@ -161,56 +182,6 @@ function extract_file_info(path::AbstractString)
         "device_id" => device_id,
         "size_bytes" => size_bytes,
     )
-end
-
-function parse_device_info(filename::String)
-    if (m = match(REGEX_DEVICE_NEW, filename)) !== nothing
-        caps = String[]
-        for c in m.captures
-            c === nothing && continue
-            push!(caps, String(c))
-        end
-        loc = vcat("RuO2test_" * caps[1], caps[2:end])
-        return DeviceInfo(loc)
-    elseif (m = match(REGEX_DEVICE, filename)) !== nothing
-        caps = String[]
-        for c in m.captures
-            c === nothing && continue
-            push!(caps, String(c))
-        end
-        loc = vcat("RuO2test_" * caps[1], caps[2:end])
-        return DeviceInfo(loc)
-    end
-    error("Unrecognized device filename format: $filename")
-end
-
-function detect_measurement_kind(filename::String)::Symbol
-    lower = lowercase(filename)
-    if occursin("pund_fatigue", lower) || occursin("pund fatigue", lower)
-        return :pund_fatigue
-    elseif occursin("fe pund", lower) || occursin("fepund", lower)
-        return :pund
-    elseif occursin("i_v sweep", lower) || occursin("iv sweep", lower)
-        return :iv
-    elseif occursin("tlm_4p", lower) || occursin("tlm", lower)
-        return :tlm4p
-    elseif occursin("break", lower) || occursin("breakdown", lower)
-        return :breakdown
-    elseif occursin("wakeup", lower)
-        return :wakeup
-    else
-        return :unknown
-    end
-end
-
-function measurement_label(kind::Symbol)::String
-    kind === :pund && return "FE PUND"
-    kind === :pund_fatigue && return "PUND Fatigue"
-    kind === :iv && return "I-V Sweep"
-    kind === :tlm4p && return "TLM 4-Point"
-    kind === :breakdown && return "Breakdown"
-    kind === :wakeup && return "Wakeup"
-    return "Unknown"
 end
 
 function parse_timestamp(filename::String)
@@ -249,107 +220,6 @@ function parse_parameters(filename::String)
         params[:temperature_K] = parse(Int, m.captures[1])
     end
     return params
-end
-
-function display_label(meas::MeasurementInfo)
-    label = measurement_label(meas.measurement_kind)
-
-    temp_str = ""
-    if haskey(meas.parameters, :temperature_K)
-        temp_str = " $(meas.parameters[:temperature_K])K"
-    end
-
-    if meas.measurement_kind == :wakeup
-        if meas.wakeup_pulse_count !== nothing && meas.wakeup_pulse_count > 0
-            return "$(meas.timestamp) $(label) $(meas.wakeup_pulse_count)×$(temp_str)"
-        end
-    elseif meas.measurement_kind == :pund
-        fatigue_str = ""
-        if haskey(meas.parameters, :fatigue_cycle)
-            fatigue_str = " cycle $(meas.parameters[:fatigue_cycle]) (fatigue)"
-        end
-        try
-            amplitude_match = match(r"(\d+(?:\.\d+)?)V", meas.filename)
-            if amplitude_match !== nothing
-                voltage = parse(Float64, amplitude_match.captures[1])
-                voltage_str = voltage == floor(voltage) ? "$(Int(voltage))V" : "$(voltage)V"
-                return "$(meas.timestamp) $(label) $(voltage_str)$(fatigue_str)$(temp_str)"
-            end
-        catch
-            # ignore, fall through to default
-        end
-        if !isempty(fatigue_str)
-            return "$(meas.timestamp) $(label)$(fatigue_str)$(temp_str)"
-        end
-    end
-    return "$(meas.timestamp) $(label)$(temp_str)"
-end
-
-
-
-# ---------------------------------------------------------------------------
-# Multi-device (Breakdown) expansion
-# ---------------------------------------------------------------------------
-function expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
-    meas.measurement_kind == :breakdown || return [meas]
-    dev = last(meas.device_info.location)
-    if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
-        return [meas]
-    end
-    parts = m.captures
-    loc = copy(meas.device_info.location)
-    return [MeasurementInfo(
-        meas.filename,
-        meas.filepath,
-        replace(meas.clean_title, dev => p),
-        meas.measurement_kind,
-        meas.timestamp,
-        DeviceInfo(vcat(loc[1:end-1], [p]), deepcopy(meas.device_info.parameters)),
-        deepcopy(meas.parameters),
-        meas.wakeup_pulse_count,
-    ) for p in parts]
-end
-
-# ---------------------------------------------------------------------------
-# PUND Fatigue expansion into virtual per-cycle measurements
-# ---------------------------------------------------------------------------
-function _read_fatigue_cycle_numbers(filepath::AbstractString)::Vector{Int}
-    cycles = Set{Int}()
-    open(filepath, "r") do io
-        readline(io)  # skip header
-        for line in eachline(io)
-            isempty(line) && continue
-            idx = findfirst(',', line)
-            idx === nothing && continue
-            try
-                push!(cycles, parse(Int, @view line[1:idx-1]))
-            catch
-                continue
-            end
-        end
-    end
-    return sort!(collect(cycles))
-end
-
-function expand_pund_fatigue(meas::MeasurementInfo)::Vector{MeasurementInfo}
-    meas.measurement_kind == :pund_fatigue || return [meas]
-    cycles = try
-        _read_fatigue_cycle_numbers(meas.filepath)
-    catch e
-        @warn "Could not read fatigue cycles from $(meas.filepath)" error = e
-        return MeasurementInfo[]
-    end
-    isempty(cycles) && return MeasurementInfo[]
-    return [MeasurementInfo(
-        meas.filename,
-        meas.filepath,
-        meas.clean_title * " cycle $c",
-        :pund,
-        meas.timestamp,
-        DeviceInfo(copy(meas.device_info.location), deepcopy(meas.device_info.parameters)),
-        merge(deepcopy(meas.parameters), Dict{Symbol,Any}(:fatigue_cycle => c)),
-        nothing,
-    ) for c in cycles]
 end
 
 # ---------------------------------------------------------------------------
@@ -417,7 +287,7 @@ end
 # ---------------------------------------------------------------------------
 # Hierarchy construction
 # ---------------------------------------------------------------------------
-function MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String, has_dev_metadata::Bool)
+function MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String, has_dev_metadata::Bool, project::AbstractProject, skipped_count::Int=0)
     root = HierarchyNode("/", :root)
     index = Dict{Tuple{Vararg{String}},HierarchyNode}()
     function ensure_child(parent::HierarchyNode, name::String, kind::Symbol, path_tuple::Tuple{Vararg{String}})
@@ -441,13 +311,14 @@ function MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::
         end
         push!(parent.measurements, m)
     end
-    mh = MeasurementHierarchy(root, measurements, root_path, index, has_dev_metadata)
+    mh = MeasurementHierarchy(root, measurements, root_path, index, has_dev_metadata, project, skipped_count)
     sort!(mh)
     return mh
 end
-# Backwards-compatible convenience constructor (assumes no metadata)
+
+# Backwards-compat convenience constructors
 MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String) =
-    MeasurementHierarchy(measurements, root_path, false)
+    MeasurementHierarchy(measurements, root_path, false, _default_project[], 0)
 
 children(node::HierarchyNode) = node.children
 isleaf(node::HierarchyNode) = isempty(node.children)
@@ -494,22 +365,7 @@ end
     _load_device_info_txt(path) -> Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
 
 Reads device_info.txt where first column is `device_path` (slash-separated),
-remaining columns are arbitrary device-level parameters. Keys may optionally
-include the `RuO2test_` chip prefix (e.g. `RuO2test_A9/...`) to disambiguate
-chip IDs like `A9` from other devices; both prefixed and unprefixed keys are
-honored during lookup.
-
-Example device_info.txt format for TLM measurements (including oxide and electrode thickness):
-```
-device_path,length_um,width_um,area_um2,t_HZO_nm,t_RuO2_nm,notes
-TLML800W2,800,2,1600,10,30,TLM structure L800 W2
-TLML800W4,800,4,3200,10,30,TLM structure L800 W4
-TLML400W2,400,2,800,10,30,TLM structure L400 W2
-TLML400W4,400,4,1600,10,30,TLM structure L400 W4
-```
-
-For TLM combined analysis, the length_um and width_um parameters are required
-to calculate width-normalized resistance and extract sheet resistance.
+remaining columns are arbitrary device-level parameters.
 """
 function _load_device_info_txt(path::AbstractString)
     lines = readlines(path)
@@ -540,15 +396,12 @@ function _load_device_info_txt(path::AbstractString)
     return meta
 end
 
-# ---------------------------------------------------------------------------
-# Scanning
-# ---------------------------------------------------------------------------
 function _lookup_device_params(meta::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}, loc::Vector{String})
     isempty(loc) && return nothing
 
     candidates = Tuple{Vararg{String}}[]
     push!(candidates, (last(loc),))           # geometry-only (e.g., L100W2)
-    push!(candidates, (loc[1],))              # chip (includes prefix if present)
+    push!(candidates, (loc[1],))              # chip
     for k in reverse(1:length(loc)-1)
         push!(candidates, Tuple(loc[1:k]))    # chip/block...
     end
@@ -567,8 +420,28 @@ function _lookup_device_params(meta::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}
     return isempty(merged) ? nothing : merged
 end
 
-function scan_directory(root_path::String)::MeasurementHierarchy
+function _auto_detect_project(root_path::String)
+    for (r, _, files) in walkdir(root_path)
+        for file in files
+            endswith(lowercase(file), ".csv") || continue
+            for proj in KNOWN_PROJECTS
+                accepts_file(proj, file) && return proj
+            end
+        end
+    end
+    return nothing
+end
+
+function scan_directory(root_path::String; project::Union{AbstractProject,Nothing}=nothing)::MeasurementHierarchy
+    proj = if project !== nothing
+        project
+    else
+        p = _auto_detect_project(root_path)
+        p !== nothing ? p : _default_project[]
+    end
+
     measurements = MeasurementInfo[]
+    skipped_count = 0
 
     # load device_info.txt at root level if present
     meta_path = joinpath(root_path, "device_info.txt")
@@ -578,11 +451,13 @@ function scan_directory(root_path::String)::MeasurementHierarchy
         for file in files
             if endswith(lowercase(file), ".csv")
                 filepath = joinpath(root, file)
+                if !accepts_file(proj, file)
+                    skipped_count += 1
+                    continue
+                end
                 try
-                    measurement_info = MeasurementInfo(filepath)
-                    # expand (may duplicate for breakdown or fatigue)
-                    expanded = expand_multi_device(measurement_info)
-                    expanded = vcat([expand_pund_fatigue(m) for m in expanded]...)
+                    measurement_info = MeasurementInfo(filepath, proj)
+                    expanded = expand_measurement(proj, measurement_info)
                     for m in expanded
                         if meta !== nothing
                             dev_params = _lookup_device_params(meta, m.device_info.location)
@@ -598,16 +473,16 @@ function scan_directory(root_path::String)::MeasurementHierarchy
             end
         end
     end
-    return MeasurementHierarchy(measurements, root_path, meta !== nothing)
+    return MeasurementHierarchy(measurements, root_path, meta !== nothing, proj, skipped_count)
 end
 
 """
 Get statistics about a set of measurements.
 """
-function get_measurements_stats(measurements::Vector{MeasurementInfo})
+function get_measurements_stats(measurements::Vector{MeasurementInfo}, project::AbstractProject)
     stats = Dict{Symbol,Any}()
     stats[:total_measurements] = length(measurements)
-    stats[:measurement_types] = unique([measurement_label(m.measurement_kind) for m in measurements])
+    stats[:measurement_types] = unique([kind_label(project, m.measurement_kind) for m in measurements])
     timestamps = [m.timestamp for m in measurements if m.timestamp !== nothing]
     if !isempty(timestamps)
         stats[:first_measurement] = minimum(timestamps)
