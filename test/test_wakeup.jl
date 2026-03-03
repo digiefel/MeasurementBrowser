@@ -32,12 +32,7 @@ using Dates
 
 using DataLoader
 using DataPlotter
-# Import the modules we need to test
-# include("../src/DataLoader.jl")
-# using .DataLoader: read_wakeup
-
-include("../src/DeviceParser.jl")
-# DeviceParser functions are not in a module, so we can use them directly
+using MeasurementBrowser
 
 # include("../src/PlotGenerator.jl")
 # using .PlotGenerator: plot_wakeup, figure_for_file
@@ -109,7 +104,7 @@ include("../src/DeviceParser.jl")
         @testset "MeasurementInfo Integration" begin
             meas_info = MeasurementInfo(wakeup_path)
 
-            @test measurement_label(meas_info.measurement_kind) == "Wakeup"
+            @test kind_label(RUO2_PROJECT, meas_info.measurement_kind) == "Wakeup"
 
             # Test that the clean title follows expected pattern (original format with device info)
             expected_title = "Wakeup A9_VI_D1 2025-10-01"
@@ -153,9 +148,9 @@ include("../src/DeviceParser.jl")
         @test fig === nothing
 
         # Test measurement type detection
-        @test detect_measurement_kind("Wakeup 5V test.csv") == :wakeup
-        @test detect_measurement_kind("wakeup lowercase.csv") == :wakeup
-        @test detect_measurement_kind("WAKEUP UPPERCASE.csv") == :wakeup
+        @test detect_kind(RUO2_PROJECT, "Wakeup 5V test.csv") == :wakeup
+        @test detect_kind(RUO2_PROJECT, "wakeup lowercase.csv") == :wakeup
+        @test detect_kind(RUO2_PROJECT, "WAKEUP UPPERCASE.csv") == :wakeup
     end
 
     @testset "GUI Display Verification" begin
@@ -163,7 +158,7 @@ include("../src/DeviceParser.jl")
             meas_info = MeasurementInfo(wakeup_path)
 
             # Test that GUI shows pulse count while info panel shows original format
-            gui_display = display_label(meas_info)  # What GUI actually shows
+            gui_display = display_label(RUO2_PROJECT, meas_info)  # What GUI actually shows
             info_display = meas_info.clean_title  # What info panel shows
 
             @test gui_display == "2025-10-01T17:10:48 Wakeup 100×"  # GUI shows pulse count
@@ -178,8 +173,8 @@ include("../src/DeviceParser.jl")
             pund_meas = MeasurementInfo(pund_path)
 
             # GUI display should include voltage for FE PUND files
-            gui_display = display_label(pund_meas)
-            @test gui_display == "2025-10-01T17:12:33 FE PUND 3V"
+            gui_display = display_label(RUO2_PROJECT, pund_meas)
+            @test gui_display == "2025-10-01T17:12:33 FE PUND 3.0V"
 
             # Info panel should show normal format (unchanged)
             info_display = pund_meas.clean_title
@@ -194,7 +189,7 @@ include("../src/DeviceParser.jl")
             tlm_meas = MeasurementInfo(tlm_path)
 
             # GUI display should NOT have pulse count or voltage for TLM files
-            gui_display = display_label(tlm_meas)
+            gui_display = display_label(RUO2_PROJECT, tlm_meas)
             @test gui_display == "2025-10-01T16:21:45 TLM 4-Point"
 
             # Info panel should show normal format
