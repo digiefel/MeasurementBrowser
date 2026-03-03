@@ -13,6 +13,7 @@ using .MakieImguiIntegration
 
 using DataPlotter
 using TOML
+using NativeFileDialog: pick_folder
 
 # ---------------------------------------------------------------------------
 # Preferences (persistent project selection)
@@ -204,10 +205,7 @@ function render_menu_bar(ui_state)
     if ig.BeginMenuBar()
         if ig.BeginMenu("File")
             if ig.MenuItem("Open Folder...")
-                path = try
-                    String(readchomp(`kdialog --getexistingdirectory`))
-                catch
-                end
+                path = pick_folder()
                 if !isnothing(path) && !isempty(path)
                     @info "Selected path: $path"
                     _do_scan!(ui_state, path)
