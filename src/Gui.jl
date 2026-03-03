@@ -1238,6 +1238,37 @@ function render_additional_plot_windows(ui_state)
     ui_state[:open_plot_windows] = to_keep
 end
 
+function _setup_docking_layout!(dockspace_id)
+    vp = ig.GetMainViewport()
+    sz = unsafe_load(vp.Size)
+
+    ig.DockBuilderRemoveNode(dockspace_id)
+    ig.DockBuilderAddNode(dockspace_id, ig.ImGuiDockNodeFlags_DockSpace)
+    ig.DockBuilderSetNodeSize(dockspace_id, sz)
+
+    # Vertical split: left column 2/5, right column 3/5
+    left  = Ref{UInt32}(0)
+    right = Ref{UInt32}(0)
+    ig.DockBuilderSplitNode(dockspace_id, ig.ImGuiDir_Left, 2/5, left, right)
+
+    # Left column: top 3/4 hierarchy, bottom 1/4 info
+    top_left    = Ref{UInt32}(0)
+    bottom_left = Ref{UInt32}(0)
+    ig.DockBuilderSplitNode(left[], ig.ImGuiDir_Up, 3/4, top_left, bottom_left)
+
+    # Right column: top 3/4 plot, bottom 1/4 combined plots
+    top_right    = Ref{UInt32}(0)
+    bottom_right = Ref{UInt32}(0)
+    ig.DockBuilderSplitNode(right[], ig.ImGuiDir_Up, 3/4, top_right, bottom_right)
+
+    ig.DockBuilderDockWindow("Hierarchy",         top_left[])
+    ig.DockBuilderDockWindow("Plot Area",          top_right[])
+    ig.DockBuilderDockWindow("Information Panel",  bottom_left[])
+    ig.DockBuilderDockWindow("Combined Plots",     bottom_right[])
+
+    ig.DockBuilderFinish(dockspace_id)
+end
+
 function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; engine=nothing, spawn=1)
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
@@ -1247,6 +1278,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_DockingEnable
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_ViewportsEnable
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_NavEnableKeyboard
+    io.IniFilename = Ptr{Cchar}(C_NULL)   # disable layout persistence
     ig.StyleColorsDark()
 
     # Load persisted preferences
@@ -1256,7 +1288,8 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     if root_path !== nothing && root_path != ""
         _do_scan!(ui_state, root_path)
     end
-    first_frame = Ref(true)
+    first_frame   = Ref(true)
+    setup_layout  = Ref(true)
     ig.render(
         ctx;
         engine,
@@ -1271,13 +1304,12 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         if first_frame[] && !haskey(ui_state, :_gl_info)
             ui_state[:_gl_info] = _collect_gl_info!()
             first_frame[] = false
-            # try
-            #     GLFW.SwapInterval(0)  # disable vsync
-            # catch err
-            #     @warn "Failed to disable vsync" error = err
-            # end
         end
-        ig.DockSpaceOverViewport(0, ig.GetMainViewport())
+        dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
+        if setup_layout[]
+            setup_layout[] = false
+            _setup_docking_layout!(dockspace_id)
+        end
         _time!(ui_state, :device_tree) do
             render_selection_window(ui_state)
         end
