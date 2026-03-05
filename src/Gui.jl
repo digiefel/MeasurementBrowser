@@ -108,6 +108,15 @@ function _open_project_path!(ui_state, path::String; persist=true)
     persist && _persist_preferences!(ui_state; path=norm_path)
 end
 
+function _project_status_text(ui_state)
+    if haskey(ui_state, :project)
+        pname = project_name(ui_state[:project])
+        skipped = get(ui_state, :skipped_count, 0)
+        return skipped > 0 ? "Active: $pname ($skipped skipped)" : "Active: $pname"
+    end
+    return "No project loaded"
+end
+
 # Return the preferred AbstractProject (nothing = auto-detect)
 function _preferred_project(ui_state)
     pref = get(ui_state, :project_preference, "auto")
@@ -270,7 +279,10 @@ end
 
 function render_menu_bar(ui_state)
     if ig.BeginMenuBar()
-        if ig.BeginMenu("File")
+        if ig.BeginMenu("Project")
+            ig.TextDisabled(_project_status_text(ui_state))
+            ig.Separator()
+
             if ig.MenuItem("Open Folder...")
                 path = pick_folder()
                 if !isnothing(path) && !isempty(path)
@@ -307,9 +319,8 @@ function render_menu_bar(ui_state)
                     _do_scan!(ui_state, ui_state[:root_path])
                 end
             end
-            ig.EndMenu()
-        end
-        if ig.BeginMenu("View")
+
+            ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
                 ui_state[:show_project_window] = !get(ui_state, :show_project_window, false)
             end
@@ -345,23 +356,6 @@ end
 function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
-
-    # Project indicator
-    if haskey(ui_state, :project)
-        proj = ui_state[:project]
-        pname = project_name(proj)
-        pdesc = project_description(proj)
-        ig.TextColored((0.4, 0.8, 1.0, 1.0), "Project: $pname")
-        ig.SameLine()
-        _helpmarker(pdesc)
-        skipped = get(ui_state, :skipped_count, 0)
-        if skipped > 0
-            ig.SameLine()
-            ig.TextColored((1.0, 0.6, 0.2, 1.0), "  ⚠ $skipped CSV files skipped")
-            ig.SameLine()
-            _helpmarker("$skipped CSV file(s) were not loaded because they don't match the '$pname' project filter.\nOpen View → Project Settings to change the active project.")
-        end
-    end
 
     # Show selection count
     selected_devices = get!(ui_state, :selected_devices, HierarchyNode[])
@@ -1129,7 +1123,7 @@ function render_project_window(ui_state)
             end
         end
         if ig.BeginPopup("no_folder_popup")
-            ig.Text("No folder loaded. Use File → Open Folder first.")
+            ig.Text("No folder loaded. Use Project → Open Folder first.")
             ig.EndPopup()
         end
     end
