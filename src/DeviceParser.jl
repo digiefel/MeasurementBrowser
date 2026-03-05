@@ -326,6 +326,53 @@ isleaf(node::HierarchyNode) = isempty(node.children)
 # ---------------------------------------------------------------------------
 # Scanning
 # ---------------------------------------------------------------------------
+
+struct ScanCancelled <: Exception end
+
+function _check_cancel(should_cancel::Union{Nothing,Function})
+    should_cancel !== nothing && should_cancel() && throw(ScanCancelled())
+end
+
+function _emit_progress(
+    on_progress::Union{Nothing,Function};
+    phase::Symbol,
+    total_csv::Int,
+    processed_csv::Int,
+    loaded_measurements::Int,
+    skipped_csv::Int,
+    current_path::String="",
+)
+    on_progress === nothing && return
+    on_progress((
+        phase=phase,
+        total_csv=total_csv,
+        processed_csv=processed_csv,
+        loaded_measurements=loaded_measurements,
+        skipped_csv=skipped_csv,
+        current_path=current_path,
+    ))
+end
+
+function _count_csv(root_path::String; should_cancel::Union{Nothing,Function}=nothing, on_progress::Union{Nothing,Function}=nothing)
+    total = 0
+    for (root, _, files) in walkdir(root_path)
+        for file in files
+            _check_cancel(should_cancel)
+            endswith(lowercase(file), ".csv") || continue
+            total += 1
+            _emit_progress(on_progress;
+                phase=:counting,
+                total_csv=total,
+                processed_csv=total,
+                loaded_measurements=0,
+                skipped_csv=0,
+                current_path=joinpath(root, file),
+            )
+        end
+    end
+    return total
+end
+
 "infer primitive types from string"
 function _infer_meta_value(s::AbstractString)
     v = strip(s)
@@ -460,18 +507,43 @@ function _scan_accepted_csv!(measurements::Vector{MeasurementInfo}, proj::Abstra
     end
 end
 
-function scan_directory(root_path::String; project::Union{AbstractProject,Nothing}=nothing)::MeasurementHierarchy
+function scan_directory(
+    root_path::String;
+    project::Union{AbstractProject,Nothing}=nothing,
+    on_progress::Union{Nothing,Function}=nothing,
+    should_cancel::Union{Nothing,Function}=nothing,
+    count_first::Bool=false,
+)::MeasurementHierarchy
     proj = _resolve_scan_project(root_path, project)
     measurements = MeasurementInfo[]
     skipped_count = 0
     meta = _load_scan_metadata(root_path)
+    processed_csv = 0
+    total_csv = count_first ? _count_csv(root_path; should_cancel, on_progress) : 0
+    _emit_progress(on_progress;
+        phase=:scanning,
+        total_csv=total_csv,
+        processed_csv=processed_csv,
+        loaded_measurements=length(measurements),
+        skipped_csv=skipped_count,
+    )
 
     for (root, dirs, files) in walkdir(root_path)
         for file in files
+            _check_cancel(should_cancel)
             if endswith(lowercase(file), ".csv")
                 filepath = joinpath(root, file)
+                processed_csv += 1
                 if !accepts_file(proj, file)
                     skipped_count += 1
+                    _emit_progress(on_progress;
+                        phase=:scanning,
+                        total_csv=total_csv,
+                        processed_csv=processed_csv,
+                        loaded_measurements=length(measurements),
+                        skipped_csv=skipped_count,
+                        current_path=filepath,
+                    )
                     continue
                 end
                 try
@@ -479,6 +551,15 @@ function scan_directory(root_path::String; project::Union{AbstractProject,Nothin
                 catch e
                     @warn "Could not parse measurement file $filepath" error = e
                 end
+                _emit_progress(on_progress;
+                    phase=:scanning,
+                    total_csv=total_csv,
+                    processed_csv=processed_csv,
+                    loaded_measurements=length(measurements),
+                    skipped_csv=skipped_count,
+                    current_path=filepath,
+                )
+                yield()
             end
         end
     end
