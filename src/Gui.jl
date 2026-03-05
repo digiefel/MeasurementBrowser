@@ -131,8 +131,7 @@ end
 # Centralised scan helper (used by menu bar, project window, initial load)
 # ---------------------------------------------------------------------------
 
-function _do_scan!(ui_state, path::String)
-    hierarchy = scan_directory(path; project=_preferred_project(ui_state))
+function _apply_scan_result!(ui_state, path::String, hierarchy)
     ui_state[:hierarchy_root] = hierarchy.root
     ui_state[:all_measurements] = hierarchy.all_measurements
     ui_state[:root_path] = path
@@ -146,6 +145,11 @@ function _do_scan!(ui_state, path::String)
         end
     end
     ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
+end
+
+function _do_scan!(ui_state, path::String)
+    hierarchy = scan_directory(path; project=_preferred_project(ui_state))
+    _apply_scan_result!(ui_state, path, hierarchy)
 end
 
 # Timing & allocation utilities

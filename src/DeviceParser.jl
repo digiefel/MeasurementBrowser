@@ -432,20 +432,39 @@ function _auto_detect_project(root_path::String)
     return nothing
 end
 
-function scan_directory(root_path::String; project::Union{AbstractProject,Nothing}=nothing)::MeasurementHierarchy
-    proj = if project !== nothing
+function _resolve_scan_project(root_path::String, project::Union{AbstractProject,Nothing})
+    return if project !== nothing
         project
     else
         p = _auto_detect_project(root_path)
         p !== nothing ? p : _default_project[]
     end
+end
 
+function _load_scan_metadata(root_path::String)
+    meta_path = joinpath(root_path, "device_info.txt")
+    return isfile(meta_path) ? _load_device_info_txt(meta_path) : nothing
+end
+
+function _scan_accepted_csv!(measurements::Vector{MeasurementInfo}, proj::AbstractProject, filepath::String, meta)
+    measurement_info = MeasurementInfo(filepath, proj)
+    expanded = expand_measurement(proj, measurement_info)
+    for m in expanded
+        if meta !== nothing
+            dev_params = _lookup_device_params(meta, m.device_info.location)
+            if dev_params !== nothing
+                merge!(m.device_info.parameters, dev_params)
+            end
+        end
+        push!(measurements, m)
+    end
+end
+
+function scan_directory(root_path::String; project::Union{AbstractProject,Nothing}=nothing)::MeasurementHierarchy
+    proj = _resolve_scan_project(root_path, project)
     measurements = MeasurementInfo[]
     skipped_count = 0
-
-    # load device_info.txt at root level if present
-    meta_path = joinpath(root_path, "device_info.txt")
-    meta = isfile(meta_path) ? _load_device_info_txt(meta_path) : nothing
+    meta = _load_scan_metadata(root_path)
 
     for (root, dirs, files) in walkdir(root_path)
         for file in files
@@ -456,17 +475,7 @@ function scan_directory(root_path::String; project::Union{AbstractProject,Nothin
                     continue
                 end
                 try
-                    measurement_info = MeasurementInfo(filepath, proj)
-                    expanded = expand_measurement(proj, measurement_info)
-                    for m in expanded
-                        if meta !== nothing
-                            dev_params = _lookup_device_params(meta, m.device_info.location)
-                            if dev_params !== nothing
-                                merge!(m.device_info.parameters, dev_params)
-                            end
-                        end
-                        push!(measurements, m)
-                    end
+                    _scan_accepted_csv!(measurements, proj, filepath, meta)
                 catch e
                     @warn "Could not parse measurement file $filepath" error = e
                 end
