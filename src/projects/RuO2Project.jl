@@ -167,7 +167,14 @@ end
 # Plot dispatch
 # ---------------------------------------------------------------------------
 
-function figure_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
+struct RuO2PlotPayload
+    kind::Symbol
+    df::DataFrame
+    title::String
+    area_um2
+end
+
+function prepare_plot_data_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
     isfile(path) || return nothing
     fname = basename(path)
     dir = dirname(path)
@@ -182,37 +189,63 @@ function figure_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol
             if fatigue_cycle !== nothing
                 all_cycles = read_pund_fatigue(fname, dir)
                 df = get(all_cycles, Int(fatigue_cycle), DataFrame())
-                return plot_fe_pund(df, title * " cycle $fatigue_cycle (fatigue)"; area_um2, kwargs...)
+                return RuO2PlotPayload(:pund, df, title * " cycle $fatigue_cycle (fatigue)", area_um2)
             else
                 df = read_fe_pund(fname, dir)
-                return plot_fe_pund(df, title; area_um2, kwargs...)
+                return RuO2PlotPayload(:pund, df, title, area_um2)
             end
         elseif kind === :iv
             df = read_iv_sweep(fname, dir)
-            return plot_iv_sweep_single(df, title; kwargs...)
+            return RuO2PlotPayload(:iv, df, title, area_um2)
         elseif kind === :tlm4p
             df = read_tlm_4p(fname, dir)
-            return plot_tlm_4p(df, title; kwargs...)
+            return RuO2PlotPayload(:tlm4p, df, title, area_um2)
         elseif kind === :breakdown
             df = read_iv_sweep(fname, dir)
-            return plot_iv_sweep_single(df, title * " (Breakdown)"; kwargs...)
+            return RuO2PlotPayload(:breakdown, df, title * " (Breakdown)", area_um2)
         elseif kind === :wakeup
             df = read_wakeup(fname, dir)
-            return plot_wakeup(df, title; kwargs...)
+            return RuO2PlotPayload(:wakeup, df, title, area_um2)
         else
             try
                 @warn "figure_for_file: Invalid measurement type. Attempting I-V sweep reader."
                 df = read_iv_sweep(fname, dir)
-                return plot_iv_sweep_single(df, title; kwargs...)
+                return RuO2PlotPayload(:iv, df, title, area_um2)
             catch
                 @warn "figure_for_file: Failed to plot."
                 return nothing
             end
         end
     catch err
-        @warn "figure_for_file failed" path error = err
+        @warn "prepare_plot_data_for_file failed" path kind error = err
         return nothing
     end
+end
+
+function build_plot_figure(::RuO2Project, payload::RuO2PlotPayload; kwargs...)
+    try
+        if payload.kind === :pund
+            return plot_fe_pund(payload.df, payload.title; area_um2=payload.area_um2, kwargs...)
+        elseif payload.kind === :iv || payload.kind === :breakdown
+            return plot_iv_sweep_single(payload.df, payload.title; kwargs...)
+        elseif payload.kind === :tlm4p
+            return plot_tlm_4p(payload.df, payload.title; kwargs...)
+        elseif payload.kind === :wakeup
+            return plot_wakeup(payload.df, payload.title; kwargs...)
+        end
+        return nothing
+    catch err
+        @warn "build_plot_figure failed" payload_kind = payload.kind error = err
+        return nothing
+    end
+end
+
+build_plot_figure(::RuO2Project, payload; kwargs...) = nothing
+
+function figure_for_file(proj::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
+    payload = prepare_plot_data_for_file(proj, path, kind; kwargs...)
+    payload === nothing && return nothing
+    return build_plot_figure(proj, payload; kwargs...)
 end
 
 function figure_for_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol;

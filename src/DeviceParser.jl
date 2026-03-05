@@ -27,10 +27,15 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   expand_measurement(::P, meas) → Vector{MeasurementInfo}
+#   prepare_plot_data_for_file(::P, path, kind; kwargs...) → Any
+#   build_plot_figure(::P, payload; kwargs...) → Union{Figure,Nothing}
 #   figure_for_file(::P, path, kind; kwargs...) → Union{Figure,Nothing}
 #   figure_for_files(::P, paths, combined_kind; kwargs...) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
+
+prepare_plot_data_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
+build_plot_figure(::AbstractProject, payload; kwargs...) = nothing
 
 # ---------------------------------------------------------------------------
 # DeviceInfo

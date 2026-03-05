@@ -157,6 +157,199 @@ function _init_scan_state!(ui_state)
     ui_state[:pending_scan_persist_on_success] = false
 end
 
+function _init_plot_state!(ui_state)
+    ui_state[:plot_state] = :idle
+    ui_state[:plot_error] = ""
+    ui_state[:plot_seq] = 0
+    ui_state[:active_plot_id] = 0
+    ui_state[:plot_events] = nothing
+    ui_state[:active_plot_request] = nothing
+    ui_state[:pending_plot_request] = nothing
+end
+
+function _plot_running(ui_state)
+    return get(ui_state, :plot_state, :idle) in (:loading, :building, :canceling)
+end
+
+function _clear_plot_jobs!(ui_state)
+    ui_state[:plot_state] = :idle
+    ui_state[:plot_error] = ""
+    ui_state[:plot_events] = nothing
+    ui_state[:active_plot_request] = nothing
+    ui_state[:pending_plot_request] = nothing
+    ui_state[:active_plot_id] = get(ui_state, :active_plot_id, 0) + 1
+end
+
+function _request_plot_cancel!(ui_state)
+    _plot_running(ui_state) || return
+    ui_state[:plot_state] = :canceling
+end
+
+function _plot_params_key(params::Dict{Symbol,Any})
+    pairs = sort(collect(params); by=x -> String(first(x)))
+    return Tuple((k, repr(v)) for (k, v) in pairs)
+end
+
+function _single_plot_job_request(
+    ui_state,
+    proj,
+    filepath::String,
+    mtime,
+    measurement_kind::Symbol,
+    device_params::Dict{Symbol,Any},
+    target::Symbol;
+    target_id::String,
+    plot_key=nothing,
+)
+    debug_plot_mode = get(ui_state, :debug_plot_mode, false)
+    job_key = (
+        project_name(proj),
+        target,
+        target_id,
+        filepath,
+        mtime,
+        measurement_kind,
+        _plot_params_key(device_params),
+        debug_plot_mode,
+    )
+    return Dict{Symbol,Any}(
+        :kind => :single_file,
+        :job_key => job_key,
+        :plot_key => plot_key,
+        :project => proj,
+        :filepath => filepath,
+        :mtime => mtime,
+        :measurement_kind => measurement_kind,
+        :device_params => device_params,
+        :debug_plot_mode => debug_plot_mode,
+        :target => target,
+        :target_id => target_id,
+    )
+end
+
+function _launch_plot_job!(ui_state, request::Dict{Symbol,Any})
+    plot_id = get(ui_state, :plot_seq, 0) + 1
+    ui_state[:plot_seq] = plot_id
+    ui_state[:active_plot_id] = plot_id
+    ui_state[:active_plot_request] = request
+    ui_state[:plot_state] = :loading
+    ui_state[:plot_error] = ""
+    ui_state[:pending_plot_request] = nothing
+
+    events = Channel{NamedTuple}(8)
+    ui_state[:plot_events] = events
+
+    Base.Threads.@spawn begin
+        try
+            payload = prepare_plot_data_for_file(
+                request[:project],
+                request[:filepath],
+                request[:measurement_kind];
+                device_params=request[:device_params],
+            )
+            put!(events, (kind=:prepared, plot_id=plot_id, payload=payload))
+        catch err
+            put!(events, (kind=:error, plot_id=plot_id, error=err, bt=catch_backtrace()))
+        finally
+            close(events)
+        end
+    end
+end
+
+function _queue_plot_job!(ui_state, request::Dict{Symbol,Any})
+    request_job_key = get(request, :job_key, nothing)
+    if _plot_running(ui_state)
+        active_request = get(ui_state, :active_plot_request, nothing)
+        pending_request = get(ui_state, :pending_plot_request, nothing)
+        if active_request !== nothing && get(active_request, :job_key, nothing) == request_job_key
+            return
+        end
+        if pending_request !== nothing && get(pending_request, :job_key, nothing) == request_job_key
+            return
+        end
+        ui_state[:pending_plot_request] = request
+        _request_plot_cancel!(ui_state)
+        return
+    end
+    _launch_plot_job!(ui_state, request)
+end
+
+function _finalize_plot_job!(ui_state)
+    ui_state[:plot_events] = nothing
+    ui_state[:active_plot_request] = nothing
+    pending_request = get(ui_state, :pending_plot_request, nothing)
+    ui_state[:pending_plot_request] = nothing
+    if pending_request !== nothing
+        _launch_plot_job!(ui_state, pending_request)
+        return
+    end
+end
+
+function _apply_plot_result!(ui_state, request::Dict{Symbol,Any}, fig)
+    target = get(request, :target, :main)
+    if target == :main
+        _set_main_plot_figure!(ui_state, fig, get(request, :plot_key, nothing))
+        return
+    end
+
+    target_id = get(request, :target_id, "")
+    open_plots = get(ui_state, :open_plot_windows, nothing)
+    open_plots === nothing && return
+
+    for entry in open_plots
+        entry_target_id = get(entry, :target_id, get(entry, :filepath, ""))
+        entry_target_id == target_id || continue
+        if fig === nothing
+            delete!(entry, :figure)
+        else
+            entry[:figure] = fig
+        end
+        entry[:mtime] = get(request, :mtime, nothing)
+        return
+    end
+end
+
+function _poll_plot_events!(ui_state)
+    events = get(ui_state, :plot_events, nothing)
+    events === nothing && return
+
+    while isready(events)
+        msg = take!(events)
+        msg.plot_id == get(ui_state, :active_plot_id, 0) || continue
+
+        if msg.kind == :prepared
+            request = get(ui_state, :active_plot_request, nothing)
+            request === nothing && continue
+            ui_state[:plot_state] = :building
+            fig = msg.payload === nothing ? nothing : build_plot_figure(
+                request[:project],
+                msg.payload;
+                DEBUG=request[:debug_plot_mode],
+            )
+            _apply_plot_result!(ui_state, request, fig)
+            ui_state[:plot_state] = :done
+            _finalize_plot_job!(ui_state)
+        elseif msg.kind == :error
+            ui_state[:plot_state] = :error
+            ui_state[:plot_error] = sprint(showerror, msg.error, msg.bt)
+            @error "Plot job failed" exception = (msg.error, msg.bt)
+            _finalize_plot_job!(ui_state)
+        end
+    end
+end
+
+function _plot_target_loading(ui_state, target::Symbol; target_id::String="")
+    _plot_running(ui_state) || return false
+    active_request = get(ui_state, :active_plot_request, nothing)
+    pending_request = get(ui_state, :pending_plot_request, nothing)
+    for req in (active_request, pending_request)
+        req === nothing && continue
+        get(req, :target, :main) == target || continue
+        get(req, :target_id, "") == target_id && return true
+    end
+    return false
+end
+
 function _scan_status_summary(ui_state)
     state = get(ui_state, :scan_state, :idle)
     progress = get(ui_state, :scan_progress, _new_scan_progress())
@@ -217,6 +410,19 @@ function _render_scan_indicator!(ui_state)
     end
 
     ig.TextDisabled(@sprintf("Scan: %d", processed))
+end
+
+function _render_plot_indicator!(ui_state)
+    _plot_running(ui_state) || return
+
+    state = get(ui_state, :plot_state, :idle)
+    if state == :loading
+        ig.TextDisabled("Plot: loading data...")
+    elseif state == :building
+        ig.TextDisabled("Plot: building figure...")
+    elseif state == :canceling
+        ig.TextDisabled("Plot: canceling...")
+    end
 end
 
 function _scan_running(ui_state)
@@ -360,6 +566,7 @@ end
 # ---------------------------------------------------------------------------
 
 function _apply_scan_result!(ui_state, path::String, hierarchy)
+    _clear_plot_jobs!(ui_state)
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
     delete!(ui_state, :plot_figure)
@@ -570,6 +777,7 @@ function render_menu_bar(ui_state)
             if ig.MenuItem("Debug Plot Mode", C_NULL, get(ui_state, :debug_plot_mode, false))
                 ui_state[:debug_plot_mode] = !get(ui_state, :debug_plot_mode, false)
                 # Invalidate cached figures when toggled
+                _clear_plot_jobs!(ui_state)
                 delete!(ui_state, :plot_figure)
                 delete!(ui_state, :_last_plot_key)
             end
@@ -933,6 +1141,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                         Vector{Dict{Symbol,Any}}()
                     end
                     push!(open_plots, Dict(
+                        :target_id => m.filepath,
                         :filepath => m.filepath,
                         :title => m.clean_title,
                         :params => deepcopy(m.device_info.parameters),
@@ -967,25 +1176,6 @@ function render_selection_window(ui_state)
     ig.End()
 end
 
-# Unified helper: ensure (and cache) a Figure for a filepath with params
-function _ensure_plot_figure(ui_state, filepath; kind=nothing, params...)
-    # Produce a fresh Figure every time this is called (caller controls call frequency).
-    # Avoid caching and reusing the same Figure object across multiple ImGui/Makie
-    # windows because sharing a single GLMakie.Figure/Screen texture in multiple
-    # ImGui contexts can trigger crashes.
-    isfile(filepath) || return nothing
-    proj = get(ui_state, :project, RUO2_PROJECT)
-    try
-        if get(ui_state, :debug_plot_mode, false)
-            @info "Debug mode is ON: plots pass DEBUG flag."
-        end
-        return figure_for_file(proj, filepath, kind; DEBUG=get(ui_state, :debug_plot_mode, false), params...)
-    catch err
-        @warn "figure_for_file failed" filepath error = err
-        return nothing
-    end
-end
-
 function _set_main_plot_figure!(ui_state, fig, key)
     if fig === nothing
         delete!(ui_state, :plot_figure)
@@ -994,6 +1184,29 @@ function _set_main_plot_figure!(ui_state, fig, key)
     end
     ui_state[:plot_figure] = fig
     ui_state[:_last_plot_key] = key
+end
+
+function _queue_main_plot_request!(ui_state, proj, measurement::MeasurementInfo)
+    filepath = measurement.filepath
+    isfile(filepath) || return
+    mtime = Dates.unix2datetime(stat(filepath).mtime)
+    plot_key = (filepath, mtime, measurement.parameters)
+    last_plot_key = get(ui_state, :_last_plot_key, nothing)
+    plot_key == last_plot_key && return
+
+    device_params = merge(measurement.device_info.parameters, measurement.parameters)
+    request = _single_plot_job_request(
+        ui_state,
+        proj,
+        filepath,
+        mtime,
+        measurement.measurement_kind,
+        device_params,
+        :main;
+        target_id="main",
+        plot_key=plot_key,
+    )
+    _queue_plot_job!(ui_state, request)
 end
 
 function _compatible_measurements(proj, measurements::Vector{MeasurementInfo}, combined_type)
@@ -1037,30 +1250,18 @@ function render_plot_window(ui_state)
     selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
     combined_type = get(ui_state, :combined_plot_type, nothing)
 
-    current_plot_key = nothing
-
     # Check if user requested combined plot generation
     if get(ui_state, :generate_combined_plot, false) &&
        length(selected_measurements) > 1 && combined_type !== nothing
 
         ui_state[:generate_combined_plot] = false  # Reset flag
+        _clear_plot_jobs!(ui_state)
 
         fig, compatible = _build_combined_plot_figure(proj, selected_measurements, combined_type)
         key = (combined_type, sort([m.filepath for m in compatible]))
         _set_main_plot_figure!(ui_state, fig, key)
     elseif length(selected_measurements) == 1
-        m = selected_measurements[1]
-        filepath = m.filepath
-        mtime = Dates.unix2datetime(stat(filepath).mtime)
-        current_plot_key = (filepath, mtime, m.parameters)
-        last_plot_key = get(ui_state, :_last_plot_key, nothing)
-
-        if current_plot_key != last_plot_key
-            all_params = merge(m.device_info.parameters, m.parameters)
-            fig = _ensure_plot_figure(ui_state, filepath; kind=m.measurement_kind, device_params=all_params)
-            _set_main_plot_figure!(ui_state, fig, current_plot_key)
-        end
-
+        _queue_main_plot_request!(ui_state, proj, selected_measurements[1])
     end
 
     if ig.Begin("Plot Area")
@@ -1069,6 +1270,7 @@ function render_plot_window(ui_state)
             ig.SameLine()
             _helpmarker("Debug mode is ON: plots have DEBUG flag.")
         end
+        _render_plot_indicator!(ui_state)
 
         if haskey(ui_state, :plot_figure)
             f = ui_state[:plot_figure]
@@ -1097,6 +1299,8 @@ function render_plot_window(ui_state)
                 ig.TextDisabled("Select measurements from the Hierarchy panel")
                 ig.TextDisabled("• Single measurement: regular plot")
                 ig.TextDisabled("• Multiple measurements + plot type: combined plot")
+            elseif _plot_target_loading(ui_state, :main; target_id="main")
+                ig.TextDisabled("Loading plot...")
             else
                 ig.TextColored((1.0, 0.4, 0.4, 1.0), "Plot generation failed")
                 ig.Text("Check file format and measurement type")
@@ -1438,18 +1642,29 @@ function render_additional_plot_windows(ui_state)
             continue
         end
         title = get(entry, :title, basename(filepath))
+        target_id = string(get(entry, :target_id, filepath))
+        entry[:target_id] = target_id
         # Refresh / create figure (per-window; no global shared Figure)
         mtime = Dates.unix2datetime(stat(filepath).mtime)
         existing_mtime = get(entry, :mtime, nothing)
         refresh = !haskey(entry, :figure) || existing_mtime != mtime
         if refresh
             k = detect_kind(proj, basename(filepath))
-            fig = haskey(entry, :params) ?
-                  _ensure_plot_figure(ui_state, filepath; kind=k, entry[:params]...) :
-                  _ensure_plot_figure(ui_state, filepath; kind=k)
-            fig === nothing && continue
-            entry[:figure] = fig
-            entry[:mtime] = mtime
+            device_params = get(entry, :params, Dict{Symbol,Any}())
+            if !(device_params isa Dict{Symbol,Any})
+                device_params = Dict{Symbol,Any}()
+            end
+            request = _single_plot_job_request(
+                ui_state,
+                proj,
+                filepath,
+                mtime,
+                k,
+                device_params,
+                :extra;
+                target_id=target_id,
+            )
+            _queue_plot_job!(ui_state, request)
         end
         # Window (allow user to close)
         open_ref = Ref(true)
@@ -1461,6 +1676,8 @@ function render_additional_plot_windows(ui_state)
                 _time!(ui_state, :makie_fig) do
                     MakieFigure("measurement_plot_$id_str", f; auto_resize_x=true, auto_resize_y=true)
                 end
+            elseif _plot_target_loading(ui_state, :extra; target_id=target_id)
+                ig.TextDisabled("Loading plot...")
             else
                 ig.Text("No plot available")
             end
@@ -1508,6 +1725,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
     _init_scan_state!(ui_state)
+    _init_plot_state!(ui_state)
     ui_state[:_frame] = 0
     ctx = ig.CreateContext()
     io = ig.GetIO()
@@ -1539,6 +1757,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     ) do
         ui_state[:_frame] += 1
         _poll_scan_events!(ui_state)
+        _poll_plot_events!(ui_state)
         if first_frame[] && !haskey(ui_state, :_gl_info)
             ui_state[:_gl_info] = _collect_gl_info!()
             first_frame[] = false

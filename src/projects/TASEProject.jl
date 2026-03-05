@@ -51,7 +51,12 @@ expand_measurement(::TASEProject, meas::MeasurementInfo) = [meas]
 # Plot dispatch
 # ---------------------------------------------------------------------------
 
-function figure_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
+struct TASEPlotPayload
+    df
+    title::String
+end
+
+function prepare_plot_data_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
     isfile(path) || return nothing
     fname = basename(path)
     dir = dirname(path)
@@ -60,11 +65,28 @@ function figure_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol
     kind === :four_terminal_iv || return nothing
     try
         df = read_tlm_4p(fname, dir)
-        return _tase_plot_four_terminal_iv(df, title)
+        return TASEPlotPayload(df, title)
     catch err
-        @warn "figure_for_file (TASE) failed" path error = err
+        @warn "prepare_plot_data_for_file (TASE) failed" path kind error = err
         return nothing
     end
+end
+
+function build_plot_figure(::TASEProject, payload::TASEPlotPayload; kwargs...)
+    try
+        return _tase_plot_four_terminal_iv(payload.df, payload.title)
+    catch err
+        @warn "build_plot_figure (TASE) failed" error = err
+        return nothing
+    end
+end
+
+build_plot_figure(::TASEProject, payload; kwargs...) = nothing
+
+function figure_for_file(proj::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
+    payload = prepare_plot_data_for_file(proj, path, kind; kwargs...)
+    payload === nothing && return nothing
+    return build_plot_figure(proj, payload; kwargs...)
 end
 
 figure_for_files(::TASEProject, paths, combined_kind; kwargs...) = nothing
