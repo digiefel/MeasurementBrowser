@@ -9,7 +9,7 @@ Example:
 """
 
 using GLMakie
-using DataLoader: read_tlm_4p
+using DataPlotter: load_tase_four_terminal_iv
 
 const REGEX_TASE = r"^([^_]+)_([^_]+)_([^_]+)_(\d+)_\d{8}_\d{6}_\d+K_FourTerminalIV\.csv"i
 
@@ -51,18 +51,29 @@ expand_measurement(::TASEProject, meas::MeasurementInfo) = [meas]
 # Plot dispatch
 # ---------------------------------------------------------------------------
 
-function figure_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    isfile(path) || return nothing
-    fname = basename(path)
-    dir = dirname(path)
-    title = strip(replace(fname, r"\.csv$" => ""))
-
+function load_plot_input_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
     kind === :four_terminal_iv || return nothing
+    return load_tase_four_terminal_iv(path)
+end
+
+function draw_plot_from_input(::TASEProject, kind::Union{Symbol,Nothing}, loaded; kwargs...)
+    kind === :four_terminal_iv || return nothing
+    loaded === nothing && return nothing
+
     try
-        df = read_tlm_4p(fname, dir)
-        return _tase_plot_four_terminal_iv(df, title)
+        return _tase_plot_four_terminal_iv(loaded.df, loaded.title)
     catch err
-        @warn "figure_for_file (TASE) failed" path error = err
+        @warn "draw_plot_from_input (TASE) failed" error = err
+        return nothing
+    end
+end
+
+function figure_for_file(proj::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
+    try
+        loaded = load_plot_input_for_file(proj, path, kind; kwargs...)
+        return draw_plot_from_input(proj, kind, loaded; kwargs...)
+    catch err
+        @warn "figure_for_file (TASE) failed" path kind error = err
         return nothing
     end
 end

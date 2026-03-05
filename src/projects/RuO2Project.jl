@@ -4,9 +4,9 @@ RuO2Project.jl - Project dispatch methods for RuO2test ferroelectric measurement
 
 using Dates
 using DataFrames
-using DataPlotter: plot_fe_pund, plot_iv_sweep_single, plot_tlm_4p, plot_wakeup,
+using DataPlotter: load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single, load_wakeup_single,
+                   plot_fe_pund, plot_iv_sweep_single, plot_tlm_4p, plot_wakeup,
                    plot_tlm_combined, plot_tlm_temperature, plot_pund_fatigue
-using DataLoader: read_fe_pund, read_iv_sweep, read_tlm_4p, read_wakeup, read_pund_fatigue
 
 # ---------------------------------------------------------------------------
 # Regex patterns (RuO2-specific)
@@ -167,50 +167,50 @@ end
 # Plot dispatch
 # ---------------------------------------------------------------------------
 
-function figure_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    isfile(path) || return nothing
-    fname = basename(path)
-    dir = dirname(path)
-    title = strip(replace(fname, r"\.csv$" => ""))
-
+function load_plot_input_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
     device_params = get(kwargs, :device_params, nothing)
-    area_um2 = device_params isa Dict ? get(device_params, :area_um2, nothing) : nothing
+    if kind === :pund
+        return load_fe_pund_single(path; device_params)
+    elseif kind === :iv
+        return load_iv_sweep_single(path)
+    elseif kind === :tlm4p
+        return load_tlm_4p_single(path)
+    elseif kind === :breakdown
+        loaded = load_iv_sweep_single(path)
+        loaded === nothing && return nothing
+        return (df=loaded.df, title=loaded.title * " (Breakdown)")
+    elseif kind === :wakeup
+        return load_wakeup_single(path)
+    else
+        # Keep historical fallback behavior for unknown kinds.
+        @warn "figure_for_file: Invalid measurement type. Attempting I-V sweep reader."
+        return load_iv_sweep_single(path)
+    end
+end
 
+function draw_plot_from_input(::RuO2Project, kind::Union{Symbol,Nothing}, loaded; kwargs...)
+    loaded === nothing && return nothing
+
+    if kind === :pund
+        area_um2 = hasproperty(loaded, :area_um2) ? loaded.area_um2 : nothing
+        return plot_fe_pund(loaded.df, loaded.title; area_um2, kwargs...)
+    elseif kind === :iv || kind === :breakdown || kind === :unknown || kind === nothing
+        return plot_iv_sweep_single(loaded.df, loaded.title; kwargs...)
+    elseif kind === :tlm4p
+        return plot_tlm_4p(loaded.df, loaded.title; kwargs...)
+    elseif kind === :wakeup
+        return plot_wakeup(loaded.df, loaded.title; kwargs...)
+    end
+
+    return nothing
+end
+
+function figure_for_file(proj::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
     try
-        if kind === :pund
-            fatigue_cycle = device_params isa Dict ? get(device_params, :fatigue_cycle, nothing) : nothing
-            if fatigue_cycle !== nothing
-                all_cycles = read_pund_fatigue(fname, dir)
-                df = get(all_cycles, Int(fatigue_cycle), DataFrame())
-                return plot_fe_pund(df, title * " cycle $fatigue_cycle (fatigue)"; area_um2, kwargs...)
-            else
-                df = read_fe_pund(fname, dir)
-                return plot_fe_pund(df, title; area_um2, kwargs...)
-            end
-        elseif kind === :iv
-            df = read_iv_sweep(fname, dir)
-            return plot_iv_sweep_single(df, title; kwargs...)
-        elseif kind === :tlm4p
-            df = read_tlm_4p(fname, dir)
-            return plot_tlm_4p(df, title; kwargs...)
-        elseif kind === :breakdown
-            df = read_iv_sweep(fname, dir)
-            return plot_iv_sweep_single(df, title * " (Breakdown)"; kwargs...)
-        elseif kind === :wakeup
-            df = read_wakeup(fname, dir)
-            return plot_wakeup(df, title; kwargs...)
-        else
-            try
-                @warn "figure_for_file: Invalid measurement type. Attempting I-V sweep reader."
-                df = read_iv_sweep(fname, dir)
-                return plot_iv_sweep_single(df, title; kwargs...)
-            catch
-                @warn "figure_for_file: Failed to plot."
-                return nothing
-            end
-        end
+        loaded = load_plot_input_for_file(proj, path, kind; kwargs...)
+        return draw_plot_from_input(proj, kind, loaded; kwargs...)
     catch err
-        @warn "figure_for_file failed" path error = err
+        @warn "figure_for_file failed" path kind error = err
         return nothing
     end
 end

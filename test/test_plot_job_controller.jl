@@ -15,9 +15,11 @@ using Dates
         :plot_key => :fresh_key,
         :project => MeasurementBrowser.RUO2_PROJECT,
         :debug_plot_mode => false,
+        :measurement_kind => :iv,
+        :device_params => Dict{Symbol,Any}(),
     )
     put!(ui[:plot_events], (kind=:error, plot_id=1, error=ErrorException("stale"), bt=nothing))
-    put!(ui[:plot_events], (kind=:result, plot_id=2, fig=nothing))
+    put!(ui[:plot_events], (kind=:loaded, plot_id=2, loaded=nothing))
     MeasurementBrowser._poll_plot_events!(ui)
     @test ui[:plot_state] == :done
     @test ui[:plot_error] == ""

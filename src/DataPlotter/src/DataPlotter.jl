@@ -13,6 +13,8 @@ include("TLM.jl")
 export plot_fe_pund, plot_wakeup, plot_pund_fatigue
 export plot_tlm_4p, plot_tlm_combined, plot_tlm_temperature
 export plot_iv_sweep_single
+export load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single, load_wakeup_single
+export load_tase_four_terminal_iv
 
 # Extract temperature in Kelvin from device params or filename
 function _extract_temperature_K(params::Dict{Symbol,Any}, filepath::String)
@@ -121,6 +123,50 @@ ols_ab(x::AbstractVector{<:Real}, y::AbstractVector{<:Real}) = begin
         a = (sy - b * sx) / n
         (a, b, true)
     end
+end
+
+function _plot_title(path::AbstractString)
+    return strip(replace(basename(String(path)), r"\.csv$" => ""))
+end
+
+function load_iv_sweep_single(path::AbstractString)
+    isfile(path) || return nothing
+    df = read_iv_sweep(basename(path), dirname(path))
+    return (df=df, title=_plot_title(path))
+end
+
+function load_tlm_4p_single(path::AbstractString)
+    isfile(path) || return nothing
+    df = read_tlm_4p(basename(path), dirname(path))
+    return (df=df, title=_plot_title(path))
+end
+
+function load_wakeup_single(path::AbstractString)
+    isfile(path) || return nothing
+    df = read_wakeup(basename(path), dirname(path))
+    return (df=df, title=_plot_title(path))
+end
+
+function load_fe_pund_single(path::AbstractString; device_params=nothing)
+    isfile(path) || return nothing
+    params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
+    area_um2 = get(params, :area_um2, nothing)
+    title = _plot_title(path)
+    fatigue_cycle = get(params, :fatigue_cycle, nothing)
+
+    if fatigue_cycle !== nothing
+        all_cycles = read_pund_fatigue(basename(path), dirname(path))
+        df = get(all_cycles, Int(fatigue_cycle), DataFrame())
+        return (df=df, title=title * " cycle $fatigue_cycle (fatigue)", area_um2=area_um2)
+    end
+
+    df = read_fe_pund(basename(path), dirname(path))
+    return (df=df, title=title, area_um2=area_um2)
+end
+
+function load_tase_four_terminal_iv(path::AbstractString)
+    # TASE uses the same raw reader as TLM 4-point files.
+    return load_tlm_4p_single(path)
 end
 
 
