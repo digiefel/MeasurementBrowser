@@ -193,6 +193,32 @@ function _scan_progress_fraction(ui_state)
     return Float32(clamp(processed / total, 0, 1))
 end
 
+function _render_scan_indicator!(ui_state)
+    _scan_running(ui_state) || return
+
+    state = get(ui_state, :scan_state, :idle)
+    progress = get(ui_state, :scan_progress, _new_scan_progress())
+    total = get(progress, :total_csv, 0)
+    processed = get(progress, :processed_csv, 0)
+
+    if state == :counting
+        ig.TextDisabled("Scan: counting files...")
+        return
+    elseif state == :canceling
+        ig.TextDisabled("Scan: canceling...")
+        return
+    end
+
+    if total > 0
+        ig.TextDisabled(@sprintf("Scan: %d/%d", processed, total))
+        ig.SameLine()
+        ig.ProgressBar(_scan_progress_fraction(ui_state), (80, 0))
+        return
+    end
+
+    ig.TextDisabled(@sprintf("Scan: %d", processed))
+end
+
 function _scan_running(ui_state)
     return get(ui_state, :scan_state, :idle) in (:counting, :scanning, :canceling)
 end
@@ -557,6 +583,7 @@ end
 function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
+    _render_scan_indicator!(ui_state)
 
     device_filter = (device, filter_obj) -> ig.ImGuiTextFilter_PassFilter(filter_obj, device.name, C_NULL)
     _render_selection_toolbar!(
