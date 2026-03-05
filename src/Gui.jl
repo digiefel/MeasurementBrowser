@@ -132,6 +132,11 @@ function _init_scan_state!(ui_state)
     ui_state[:scan_state] = :idle
     ui_state[:scan_progress] = _new_scan_progress()
     ui_state[:scan_error] = ""
+    ui_state[:scan_seq] = 0
+    ui_state[:active_scan_id] = 0
+    ui_state[:scan_events] = nothing
+    ui_state[:scan_cancel_token] = nothing
+    ui_state[:scan_path] = ""
 end
 
 function _scan_status_summary(ui_state)
@@ -164,6 +169,92 @@ function _scan_progress_fraction(ui_state)
     processed = get(progress, :processed_csv, 0)
     total <= 0 && return 0.0f0
     return Float32(clamp(processed / total, 0, 1))
+end
+
+function _scan_active(ui_state)
+    return get(ui_state, :scan_state, :idle) in (:counting, :scanning, :canceling)
+end
+
+function _cancel_scan!(ui_state)
+    token = get(ui_state, :scan_cancel_token, nothing)
+    token === nothing && return
+    Base.Threads.atomic_xchg!(token, true)
+    ui_state[:scan_state] = :canceling
+end
+
+function _start_scan_job!(ui_state, path::String)
+    _cancel_scan!(ui_state)
+    scan_id = get(ui_state, :scan_seq, 0) + 1
+    ui_state[:scan_seq] = scan_id
+    ui_state[:active_scan_id] = scan_id
+    ui_state[:scan_path] = path
+    ui_state[:scan_state] = :counting
+    ui_state[:scan_progress] = _new_scan_progress()
+    ui_state[:scan_error] = ""
+
+    events = Channel{NamedTuple}(512)
+    cancel_token = Base.Threads.Atomic{Bool}(false)
+    ui_state[:scan_events] = events
+    ui_state[:scan_cancel_token] = cancel_token
+    preferred_project = _preferred_project(ui_state)
+
+    Base.Threads.@spawn begin
+        try
+            hierarchy = scan_directory(
+                path;
+                project=preferred_project,
+                on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
+                should_cancel=() -> Base.Threads.atomic_load(cancel_token),
+                count_first=true,
+            )
+            put!(events, (kind=:result, scan_id=scan_id, path=path, hierarchy=hierarchy))
+        catch err
+            if err isa ScanCancelled
+                put!(events, (kind=:canceled, scan_id=scan_id))
+            else
+                put!(events, (kind=:error, scan_id=scan_id, error=sprint(showerror, err)))
+            end
+        finally
+            close(events)
+        end
+    end
+end
+
+function _poll_scan_job!(ui_state)
+    events = get(ui_state, :scan_events, nothing)
+    events === nothing && return
+
+    while isready(events)
+        msg = take!(events)
+        msg.scan_id == get(ui_state, :active_scan_id, 0) || continue
+
+        if msg.kind == :progress
+            p = msg.progress
+            ui_state[:scan_progress] = Dict{Symbol,Any}(
+                :phase => p.phase,
+                :total_csv => p.total_csv,
+                :processed_csv => p.processed_csv,
+                :loaded_measurements => p.loaded_measurements,
+                :skipped_csv => p.skipped_csv,
+                :current_path => p.current_path,
+            )
+            ui_state[:scan_state] = p.phase
+        elseif msg.kind == :result
+            _apply_scan_result!(ui_state, msg.path, msg.hierarchy)
+            ui_state[:scan_state] = :done
+            ui_state[:scan_events] = nothing
+            ui_state[:scan_cancel_token] = nothing
+        elseif msg.kind == :canceled
+            ui_state[:scan_state] = :canceled
+            ui_state[:scan_events] = nothing
+            ui_state[:scan_cancel_token] = nothing
+        elseif msg.kind == :error
+            ui_state[:scan_state] = :error
+            ui_state[:scan_error] = msg.error
+            ui_state[:scan_events] = nothing
+            ui_state[:scan_cancel_token] = nothing
+        end
+    end
 end
 
 # Return the preferred AbstractProject (nothing = auto-detect)
