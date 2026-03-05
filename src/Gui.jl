@@ -117,6 +117,55 @@ function _project_status_text(ui_state)
     return "No project loaded"
 end
 
+function _new_scan_progress()
+    return Dict{Symbol,Any}(
+        :phase => :idle,
+        :total_csv => 0,
+        :processed_csv => 0,
+        :loaded_measurements => 0,
+        :skipped_csv => 0,
+        :current_path => "",
+    )
+end
+
+function _init_scan_state!(ui_state)
+    ui_state[:scan_state] = :idle
+    ui_state[:scan_progress] = _new_scan_progress()
+    ui_state[:scan_error] = ""
+end
+
+function _scan_status_summary(ui_state)
+    state = get(ui_state, :scan_state, :idle)
+    progress = get(ui_state, :scan_progress, _new_scan_progress())
+    total = get(progress, :total_csv, 0)
+    processed = get(progress, :processed_csv, 0)
+    loaded = get(progress, :loaded_measurements, 0)
+    skipped = get(progress, :skipped_csv, 0)
+
+    if state == :counting
+        return "Counting CSV files... ($processed found)"
+    elseif state == :scanning
+        if total > 0
+            pct = 100 * processed / total
+            return @sprintf("Scanning... %d/%d (%.1f%%), loaded %d, skipped %d", processed, total, pct, loaded, skipped)
+        end
+        return @sprintf("Scanning... %d processed, loaded %d, skipped %d", processed, loaded, skipped)
+    elseif state == :error
+        return "Scan failed"
+    elseif state == :done
+        return "Scan complete"
+    end
+    return "Idle"
+end
+
+function _scan_progress_fraction(ui_state)
+    progress = get(ui_state, :scan_progress, _new_scan_progress())
+    total = get(progress, :total_csv, 0)
+    processed = get(progress, :processed_csv, 0)
+    total <= 0 && return 0.0f0
+    return Float32(clamp(processed / total, 0, 1))
+end
+
 # Return the preferred AbstractProject (nothing = auto-detect)
 function _preferred_project(ui_state)
     pref = get(ui_state, :project_preference, "auto")
@@ -148,8 +197,33 @@ function _apply_scan_result!(ui_state, path::String, hierarchy)
 end
 
 function _do_scan!(ui_state, path::String)
-    hierarchy = scan_directory(path; project=_preferred_project(ui_state))
-    _apply_scan_result!(ui_state, path, hierarchy)
+    ui_state[:scan_state] = :counting
+    ui_state[:scan_progress] = _new_scan_progress()
+    ui_state[:scan_error] = ""
+    try
+        hierarchy = scan_directory(
+            path;
+            project=_preferred_project(ui_state),
+            on_progress=(p) -> begin
+                ui_state[:scan_progress] = Dict{Symbol,Any}(
+                    :phase => p.phase,
+                    :total_csv => p.total_csv,
+                    :processed_csv => p.processed_csv,
+                    :loaded_measurements => p.loaded_measurements,
+                    :skipped_csv => p.skipped_csv,
+                    :current_path => p.current_path,
+                )
+                ui_state[:scan_state] = p.phase
+            end,
+            count_first=true,
+        )
+        _apply_scan_result!(ui_state, path, hierarchy)
+        ui_state[:scan_state] = :done
+    catch err
+        ui_state[:scan_state] = :error
+        ui_state[:scan_error] = sprint(showerror, err)
+        rethrow(err)
+    end
 end
 
 # Timing & allocation utilities
@@ -324,6 +398,11 @@ function render_menu_bar(ui_state)
                 end
             end
 
+            ig.Separator()
+            ig.TextDisabled(_scan_status_summary(ui_state))
+            if get(ui_state, :scan_state, :idle) in (:counting, :scanning)
+                ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
+            end
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
                 ui_state[:show_project_window] = !get(ui_state, :show_project_window, false)
@@ -1119,6 +1198,15 @@ function render_project_window(ui_state)
         end
 
         ig.Separator()
+        ig.TextDisabled(_scan_status_summary(ui_state))
+        if get(ui_state, :scan_state, :idle) in (:counting, :scanning)
+            ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
+            ig.Spacing()
+        elseif get(ui_state, :scan_state, :idle) == :error
+            err = get(ui_state, :scan_error, "")
+            !isempty(err) && ig.TextWrapped(err)
+            ig.Spacing()
+        end
         if ig.Button("Rescan current folder", (-1, 0))
             if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
                 _do_scan!(ui_state, ui_state[:root_path])
@@ -1365,6 +1453,7 @@ end
 function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; engine=nothing, spawn=1)
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
+    _init_scan_state!(ui_state)
     ui_state[:_frame] = 0
     ctx = ig.CreateContext()
     io = ig.GetIO()
