@@ -43,8 +43,17 @@ end
 
 const _MAX_RECENT_PROJECTS = 12
 
-function _normalize_project_path(path::String)
-    return abspath(expanduser(path))
+function _normalize_project_path(path::AbstractString)
+    norm_path = abspath(expanduser(String(path)))
+    return ispath(norm_path) ? realpath(norm_path) : norm_path
+end
+
+function _sanitize_project_preference(pref::String)
+    pref == "auto" && return "auto"
+    for p in KNOWN_PROJECTS
+        project_name(p) == pref && return pref
+    end
+    return "auto"
 end
 
 function _parse_recent_projects(prefs::Dict{String,Any})
@@ -53,12 +62,17 @@ function _parse_recent_projects(prefs::Dict{String,Any})
     raw isa Vector || return recents
 
     for entry in raw
-        entry isa Dict || continue
-        haskey(entry, "path") || continue
-        path = string(entry["path"])
+        entry isa AbstractDict || continue
+        path = get(entry, "path", nothing)
+        path isa AbstractString || continue
+        path = strip(path)
         isempty(path) && continue
-        pref = string(get(entry, "project_preference", "auto"))
-        push!(recents, Dict{String,String}("path" => path, "project_preference" => pref))
+        pref = get(entry, "project_preference", "auto")
+        pref = pref isa AbstractString ? pref : "auto"
+        push!(recents, Dict{String,String}(
+            "path" => _normalize_project_path(path),
+            "project_preference" => _sanitize_project_preference(pref),
+        ))
     end
 
     return recents
@@ -77,7 +91,8 @@ end
 
 function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
     prefs = _load_prefs()
-    pref = string(get(ui_state, :project_preference, "auto"))
+    pref = _sanitize_project_preference(string(get(ui_state, :project_preference, "auto")))
+    ui_state[:project_preference] = pref
     prefs["project"] = pref
 
     recents = _parse_recent_projects(prefs)
@@ -91,20 +106,21 @@ function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
 end
 
 function _project_preference_for_path(ui_state, path::String)
-    norm_path = _normalize_project_path(path)
     recents = get(ui_state, :recent_projects, Dict{String,String}[])
     for entry in recents
-        if get(entry, "path", "") == norm_path
-            return get(entry, "project_preference", "auto")
+        if get(entry, "path", "") == path
+            pref = get(entry, "project_preference", "auto")
+            return _sanitize_project_preference(pref)
         end
     end
-    return get(ui_state, :project_preference, "auto")
+    pref = string(get(ui_state, :project_preference, "auto"))
+    return _sanitize_project_preference(pref)
 end
 
 function _open_project_path!(ui_state, path::String; persist=true)
     norm_path = _normalize_project_path(path)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
-    _do_scan!(ui_state, norm_path; persist_on_success=persist)
+    _scan!(ui_state, norm_path; persist_on_success=persist)
 end
 
 function _project_status_text(ui_state)
@@ -177,18 +193,18 @@ function _scan_progress_fraction(ui_state)
     return Float32(clamp(processed / total, 0, 1))
 end
 
-function _scan_active(ui_state)
+function _scan_running(ui_state)
     return get(ui_state, :scan_state, :idle) in (:counting, :scanning, :canceling)
 end
 
-function _cancel_scan!(ui_state)
+function _request_scan_cancel!(ui_state)
     token = get(ui_state, :scan_cancel_token, nothing)
     token === nothing && return
     Base.Threads.atomic_xchg!(token, true)
     ui_state[:scan_state] = :canceling
 end
 
-function _start_scan_job!(ui_state, path::String; persist_on_success=false)
+function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
     scan_id = get(ui_state, :scan_seq, 0) + 1
     ui_state[:scan_seq] = scan_id
     ui_state[:active_scan_id] = scan_id
@@ -228,30 +244,32 @@ function _start_scan_job!(ui_state, path::String; persist_on_success=false)
     end
 end
 
-function _request_scan!(ui_state, path::String; persist_on_success=false)
+function _queue_scan!(ui_state, path::String; persist_on_success=false, force_restart=false)
     norm_path = _normalize_project_path(path)
-    if _scan_active(ui_state)
+    if _scan_running(ui_state)
         active_path = get(ui_state, :scan_path, "")
         pending_path = get(ui_state, :pending_scan_path, nothing)
 
-        if !isempty(active_path) && norm_path == active_path
+        if !force_restart && !isempty(active_path) && norm_path == active_path
             ui_state[:scan_persist_on_success] = get(ui_state, :scan_persist_on_success, false) || persist_on_success
+            ui_state[:pending_scan_path] = nothing
+            ui_state[:pending_scan_persist_on_success] = false
             return
         end
-        if pending_path !== nothing && norm_path == pending_path
+        if !force_restart && pending_path !== nothing && norm_path == pending_path
             ui_state[:pending_scan_persist_on_success] = get(ui_state, :pending_scan_persist_on_success, false) || persist_on_success
             return
         end
 
         ui_state[:pending_scan_path] = norm_path
         ui_state[:pending_scan_persist_on_success] = persist_on_success
-        _cancel_scan!(ui_state)
+        _request_scan_cancel!(ui_state)
         return
     end
-    _start_scan_job!(ui_state, norm_path; persist_on_success)
+    _launch_scan_job!(ui_state, norm_path; persist_on_success)
 end
 
-function _finish_scan_and_maybe_start_pending!(ui_state)
+function _finalize_scan!(ui_state)
     ui_state[:scan_events] = nothing
     ui_state[:scan_cancel_token] = nothing
     pending_path = get(ui_state, :pending_scan_path, nothing)
@@ -259,11 +277,11 @@ function _finish_scan_and_maybe_start_pending!(ui_state)
     ui_state[:pending_scan_path] = nothing
     ui_state[:pending_scan_persist_on_success] = false
     if pending_path !== nothing && !isempty(pending_path)
-        _start_scan_job!(ui_state, pending_path; persist_on_success=pending_persist)
+        _launch_scan_job!(ui_state, pending_path; persist_on_success=pending_persist)
     end
 end
 
-function _poll_scan_job!(ui_state)
+function _poll_scan_events!(ui_state)
     events = get(ui_state, :scan_events, nothing)
     events === nothing && return
 
@@ -288,15 +306,15 @@ function _poll_scan_job!(ui_state)
                 _persist_preferences!(ui_state; path=msg.path)
             end
             ui_state[:scan_state] = :done
-            _finish_scan_and_maybe_start_pending!(ui_state)
+            _finalize_scan!(ui_state)
         elseif msg.kind == :canceled
             ui_state[:scan_state] = :canceled
-            _finish_scan_and_maybe_start_pending!(ui_state)
+            _finalize_scan!(ui_state)
         elseif msg.kind == :error
             ui_state[:scan_state] = :error
             ui_state[:scan_error] = sprint(showerror, msg.error, msg.bt)
             @error "Scan job failed" exception = (msg.error, msg.bt)
-            _finish_scan_and_maybe_start_pending!(ui_state)
+            _finalize_scan!(ui_state)
         end
     end
 end
@@ -316,8 +334,6 @@ end
 # ---------------------------------------------------------------------------
 
 function _apply_scan_result!(ui_state, path::String, hierarchy)
-    delete!(ui_state, :selected_device)
-    delete!(ui_state, :selected_measurement)
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
     delete!(ui_state, :plot_figure)
@@ -338,8 +354,8 @@ function _apply_scan_result!(ui_state, path::String, hierarchy)
     ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
 end
 
-function _do_scan!(ui_state, path::String; persist_on_success=false)
-    _request_scan!(ui_state, path; persist_on_success)
+function _scan!(ui_state, path::String; persist_on_success=false, force_restart=false)
+    _queue_scan!(ui_state, path; persist_on_success, force_restart)
 end
 
 # Timing & allocation utilities
@@ -464,13 +480,6 @@ function render_perf_window(ui_state)
     ig.End()
 end
 
-function render_main_window(ui_state)
-    if ig.Begin("Measurement Browser", C_NULL,
-        ig.ImGuiWindowFlags_MenuBar)
-    end
-    ig.End()
-end
-
 function render_menu_bar(ui_state)
     if ig.BeginMenuBar()
         if ig.BeginMenu("Project")
@@ -510,16 +519,16 @@ function render_menu_bar(ui_state)
             if ig.MenuItem("Reload")
                 if haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
                     @info "Reloading path: $(ui_state[:root_path])"
-                    _do_scan!(ui_state, ui_state[:root_path])
+                    _scan!(ui_state, ui_state[:root_path])
                 end
             end
 
             ig.Separator()
             ig.TextDisabled(_scan_status_summary(ui_state))
-            if _scan_active(ui_state)
+            if _scan_running(ui_state)
                 ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
                 if ig.MenuItem("Cancel Scan")
-                    _cancel_scan!(ui_state)
+                    _request_scan_cancel!(ui_state)
                 end
             end
             ig.Separator()
@@ -536,17 +545,7 @@ function render_menu_bar(ui_state)
                 ui_state[:debug_plot_mode] = !get(ui_state, :debug_plot_mode, false)
                 # Invalidate cached figures when toggled
                 delete!(ui_state, :plot_figure)
-                delete!(ui_state, :_last_plotted_path)
-                delete!(ui_state, :_last_plotted_mtime)
-                # Invalidate additional plot windows
-                # (disabled for now since we want to print from the active figure only, usually)
-                # if haskey(ui_state, :open_plot_windows)
-                #     for entry in ui_state[:open_plot_windows]
-                #         if haskey(entry, :figure)
-                #             delete!(entry, :figure)
-                #         end
-                #     end
-                # end
+                delete!(ui_state, :_last_plot_key)
             end
             ig.EndMenu()
         end
@@ -559,36 +558,11 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
 
-    # Show selection count
-    selected_devices = get!(ui_state, :selected_devices, HierarchyNode[])
-    all_devices = HierarchyNode[]
-    if haskey(ui_state, :hierarchy_root)
-        collect_leaf_nodes!(all_devices, ui_state[:hierarchy_root])
-    end
-    device_filter_func = (device, filter_obj) -> ig.ImGuiTextFilter_PassFilter(filter_obj, device.name, C_NULL)
-    filtered_devices = count_filtered_items(all_devices, filter_tree, device_filter_func)
-
-    render_selection_status(length(selected_devices), filtered_devices, length(all_devices), "devices")
-
-    ig.Text("Filter")
-    ig.SameLine()
-    _helpmarker("incl,-excl")
-    ig.SameLine()
-    ig.SetNextItemShortcut(
-        ig.ImGuiMod_Ctrl | ig.ImGuiKey_F,
-        ig.ImGuiInputFlags_Tooltip
+    device_filter = (device, filter_obj) -> ig.ImGuiTextFilter_PassFilter(filter_obj, device.name, C_NULL)
+    _render_selection_toolbar!(
+        ui_state, filter_tree, :selected_devices, _all_devices(ui_state), device_filter;
+        item_label="devices", filter_id="##tree_filter"
     )
-    ig.ImGuiTextFilter_Draw(filter_tree, "##tree_filter", -1)
-
-    # Handle Ctrl+A to select all devices
-    get_all_devices_func = (ui_state) -> begin
-        devices = HierarchyNode[]
-        if haskey(ui_state, :hierarchy_root)
-            collect_leaf_nodes!(devices, ui_state[:hierarchy_root])
-        end
-        devices
-    end
-    _handle_ctrl_a_selection!(ui_state, :selected_devices, get_all_devices_func, device_filter_func, filter_tree)
 
     meta_keys = get(ui_state, :device_metadata_keys, Symbol[])
 
@@ -646,20 +620,12 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 ctrl_held = unsafe_load(io.KeyCtrl)
                 selected_devices = get!(ui_state, :selected_devices, HierarchyNode[])
 
-                all_devices = get_all_devices(ui_state)
-                _handle_multi_select!(selected_devices, node, all_devices, shift_held, ctrl_held)
+                all_devices = _all_devices(ui_state)
+                _update_multi_selection!(selected_devices, node, all_devices, shift_held, ctrl_held)
                 ui_state[:selected_devices] = selected_devices
 
-                # Maintain backwards compatibility
-                if length(selected_devices) == 1
-                    ui_state[:selected_device] = selected_devices[1]
-                elseif haskey(ui_state, :selected_device)
-                    delete!(ui_state, :selected_device)
-                end
-
                 # Note: measurements are selected independently in the measurements panel
-            elseif haskey(ui_state, :selected_device)
-                delete!(ui_state, :selected_device)
+            elseif !isempty(get(ui_state, :selected_devices, HierarchyNode[]))
                 ui_state[:selected_devices] = HierarchyNode[]
             end
         end
@@ -719,13 +685,13 @@ end
 # Shared multi-select utility functions
 
 """
-    _handle_multi_select!(selected_items, item, all_items, shift_held, ctrl_held)
+    _update_multi_selection!(selected_items, item, all_items, shift_held, ctrl_held)
 
 Common multi-select logic for both device and measurement panels.
 Handles range selection (Shift), toggle selection (Ctrl), and single selection.
 Modifies selected_items in place.
 """
-function _handle_multi_select!(selected_items::Vector{T}, item::T, all_items::Vector{T}, shift_held::Bool, ctrl_held::Bool) where {T}
+function _update_multi_selection!(selected_items::Vector{T}, item::T, all_items::Vector{T}, shift_held::Bool, ctrl_held::Bool) where {T}
     if shift_held && !isempty(selected_items)
         # Range selection: select from last selected to current
         last_item = selected_items[end]
@@ -756,21 +722,22 @@ function _handle_multi_select!(selected_items::Vector{T}, item::T, all_items::Ve
 end
 
 """
-    _handle_ctrl_a_selection!(ui_state, state_key, all_items_func, filter_func, filter_obj)
+    _select_all_visible!(ui_state, state_key, all_items, item_filter, filter_obj)
 
 Handles Ctrl+A "select all visible" functionality for both device and measurement panels.
 Only selects items that pass the current filter. Updates ui_state[state_key] with filtered selection.
 """
-function _handle_ctrl_a_selection!(ui_state, state_key::Symbol, all_items_func::Function, filter_func::Function, filter_obj)
+function _select_all_visible!(ui_state, state_key::Symbol, all_items::Vector{T}, item_filter::Function, filter_obj) where {T}
     if ig.IsKeyPressed(ig.ImGuiKey_A) && ig.IsWindowFocused()
         io = ig.GetIO()
         if unsafe_load(io.KeyCtrl)
-            selected_items = get!(ui_state, state_key, [])
+            selected_items = get!(ui_state, state_key) do
+                T[]
+            end
             empty!(selected_items)
 
-            all_items = all_items_func(ui_state)
             for item in all_items
-                if filter_func(item, filter_obj)
+                if item_filter(item, filter_obj)
                     push!(selected_items, item)
                 end
             end
@@ -781,13 +748,13 @@ function _handle_ctrl_a_selection!(ui_state, state_key::Symbol, all_items_func::
 end
 
 """
-    render_selection_status(selected_count, filtered_count, total_count, item_type)
+    _render_selection_status!(selected_count, filtered_count, total_count, item_type)
 
 Renders consistent selection status display for both device and measurement panels.
 Shows "X/Y items selected" with total count if filtering is active.
 Uses appropriate colors: green for multi-select, blue for single, disabled for none.
 """
-function render_selection_status(selected_count::Int, filtered_count::Int, total_count::Int, item_type::String)
+function _render_selection_status!(selected_count::Int, filtered_count::Int, total_count::Int, item_type::String)
     if selected_count > 1
         ig.TextColored((0.2, 0.8, 0.2, 1.0), "$selected_count/$filtered_count $item_type selected")
     elseif selected_count == 1
@@ -805,56 +772,74 @@ function render_selection_status(selected_count::Int, filtered_count::Int, total
 end
 
 """
-    count_filtered_items(items, filter_obj, filter_func)
+    _count_visible_items(items, filter_obj, item_filter)
 
 Counts how many items pass the current filter. Used for consistent status display
-across device and measurement panels. filter_func should return true for items that pass.
+across device and measurement panels. item_filter should return true for items that pass.
 """
-function count_filtered_items(items::Vector{T}, filter_obj, filter_func::Function) where {T}
-    return count(item -> filter_func(item, filter_obj), items)
+function _count_visible_items(items::Vector{T}, filter_obj, item_filter::Function) where {T}
+    return count(item -> item_filter(item, filter_obj), items)
+end
+
+function _render_selection_toolbar!(
+    ui_state,
+    filter_obj,
+    state_key::Symbol,
+    all_items::Vector{T},
+    item_filter::Function;
+    item_label::String,
+    filter_id::String,
+) where {T}
+    selected_items = get!(ui_state, state_key) do
+        T[]
+    end
+    visible_count = _count_visible_items(all_items, filter_obj, item_filter)
+    _render_selection_status!(length(selected_items), visible_count, length(all_items), item_label)
+
+    ig.Text("Filter")
+    ig.SameLine()
+    _helpmarker("incl,-excl")
+    ig.SameLine()
+    ig.SetNextItemShortcut(
+        ig.ImGuiMod_Ctrl | ig.ImGuiKey_F,
+        ig.ImGuiInputFlags_Tooltip
+    )
+    ig.ImGuiTextFilter_Draw(filter_obj, filter_id, -1)
+    _select_all_visible!(ui_state, state_key, all_items, item_filter, filter_obj)
 end
 
 # Helper function to collect all leaf nodes (devices) from hierarchy
-function collect_leaf_nodes!(devices::Vector{HierarchyNode}, node::HierarchyNode)
+function _collect_leaf_nodes!(devices::Vector{HierarchyNode}, node::HierarchyNode)
     if isempty(children(node))
         # This is a leaf node (device)
         push!(devices, node)
     else
         # Recursively collect from children
         for child in children(node)
-            collect_leaf_nodes!(devices, child)
+            _collect_leaf_nodes!(devices, child)
         end
     end
 end
-
-# Helper function to get device path from hierarchy traversal
-function get_device_path(target_device::HierarchyNode, current_node::HierarchyNode, path::Vector{String}=String[])
-    if current_node == target_device
-        return vcat(path, current_node.name)
-    end
-
-    for child in children(current_node)
-        result = get_device_path(target_device, child, vcat(path, current_node.name))
-        if !isnothing(result)
-            return result
-        end
-    end
-    return nothing
-end
-
 
 # Helper function to get all devices for range selection
-function get_all_devices(ui_state)
+function _all_devices(ui_state)
     if !haskey(ui_state, :hierarchy_root)
         return HierarchyNode[]
     end
 
     all_devices = HierarchyNode[]
-    collect_leaf_nodes!(all_devices, ui_state[:hierarchy_root])
+    _collect_leaf_nodes!(all_devices, ui_state[:hierarchy_root])
     return all_devices
 end
 
-# Helper function to update measurements from selected devices - removed as measurements are selected independently
+function _selected_measurements(ui_state)
+    selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
+    measurements = MeasurementInfo[]
+    for device in selected_devices
+        append!(measurements, device.measurements)
+    end
+    return measurements
+end
 
 # Right panel (measurements list) rendering
 function _render_measurements_panel(ui_state, filter_meas)
@@ -862,19 +847,8 @@ function _render_measurements_panel(ui_state, filter_meas)
     ig.BeginChild("Measurements", (0, 0), true)
     ig.SeparatorText("Measurement Selection")
 
-    # Show selection count and calculate measurement statistics
-    selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-
-    # Get all measurements from currently selected devices
     selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-    all_measurements = MeasurementInfo[]
-    if !isempty(selected_devices)
-        for device in selected_devices
-            append!(all_measurements, device.measurements)
-        end
-    elseif haskey(ui_state, :selected_device)
-        append!(all_measurements, ui_state[:selected_device].measurements)
-    end
+    all_measurements = _selected_measurements(ui_state)
 
     measurement_filter_func = (m, filter_obj) -> begin
         if !ig.ImGuiTextFilter_IsActive(filter_obj)
@@ -888,63 +862,23 @@ function _render_measurements_panel(ui_state, filter_meas)
         )
         return ig.ImGuiTextFilter_PassFilter(filter_obj, filter_text, C_NULL)
     end
-    filtered_count = count_filtered_items(all_measurements, filter_meas, measurement_filter_func)
-
-    render_selection_status(length(selected_measurements), filtered_count, length(all_measurements), "measurements")
-
-    ig.Text("Filter")
-    ig.SameLine()
-    _helpmarker("incl,-excl")
-    ig.SameLine()
-    ig.SetNextItemShortcut(
-        ig.ImGuiMod_Ctrl | ig.ImGuiKey_F,
-        ig.ImGuiInputFlags_Tooltip
+    _render_selection_toolbar!(
+        ui_state, filter_meas, :selected_measurements, all_measurements, measurement_filter_func;
+        item_label="measurements", filter_id="##measurements_filter"
     )
-    ig.ImGuiTextFilter_Draw(filter_meas, "##measurements_filter", -1)
 
-    # Handle Ctrl+A for measurements
-    get_all_measurements_func = (ui_state) -> begin
-        selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-        candidate_measurements = MeasurementInfo[]
-        if !isempty(selected_devices)
-            for device in selected_devices
-                append!(candidate_measurements, device.measurements)
-            end
-        elseif haskey(ui_state, :selected_device)
-            append!(candidate_measurements, ui_state[:selected_device].measurements)
-        end
-        candidate_measurements
-    end
-    _handle_ctrl_a_selection!(ui_state, :selected_measurements, get_all_measurements_func, measurement_filter_func, filter_meas)
-
-
-    # Determine which measurements to show based on selected devices
-    meas_vec = MeasurementInfo[]
+    meas_vec = all_measurements
 
     if !isempty(selected_devices)
         if length(selected_devices) == 1
-            # Single device selected
-            device = selected_devices[1]
             sel_name = join(get(ui_state, :selected_path, [""]), "/")
             ig.Text("Measurements for $sel_name")
             ig.Separator()
-            meas_vec = device.measurements
         else
-            # Multiple devices selected - show combined measurements
             device_names = [d.name for d in selected_devices]
             ig.Text("Measurements from $(length(selected_devices)) devices: $(join(device_names[1:min(3, end)], ", "))$(length(device_names) > 3 ? "..." : "")")
             ig.Separator()
-            for device in selected_devices
-                append!(meas_vec, device.measurements)
-            end
         end
-    elseif haskey(ui_state, :selected_device)
-        # Backwards compatibility - single device selection
-        device = ui_state[:selected_device]
-        sel_name = join(get(ui_state, :selected_path, [""]), "/")
-        ig.Text("Measurements for $sel_name")
-        ig.Separator()
-        meas_vec = device.measurements
     end
 
     if !isempty(meas_vec)
@@ -962,15 +896,8 @@ function _render_measurements_panel(ui_state, filter_meas)
                 ctrl_held = unsafe_load(io.KeyCtrl)
 
                 # Use common multi-select logic
-                _handle_multi_select!(selected_measurements, m, meas_vec, shift_held, ctrl_held)
+                _update_multi_selection!(selected_measurements, m, meas_vec, shift_held, ctrl_held)
                 ui_state[:selected_measurements] = selected_measurements
-
-                # Maintain backwards compatibility
-                if length(selected_measurements) == 1
-                    ui_state[:selected_measurement] = selected_measurements[1]
-                elseif haskey(ui_state, :selected_measurement)
-                    delete!(ui_state, :selected_measurement)
-                end
             end
             # Right-click context menu per measurement entry
             if ig.BeginPopupContextItem()
@@ -1032,13 +959,57 @@ function _ensure_plot_figure(ui_state, filepath; kind=nothing, params...)
     end
 end
 
+function _set_main_plot_figure!(ui_state, fig, key)
+    if fig === nothing
+        delete!(ui_state, :plot_figure)
+        delete!(ui_state, :_last_plot_key)
+        return
+    end
+    ui_state[:plot_figure] = fig
+    ui_state[:_last_plot_key] = key
+end
+
+function _compatible_measurements(proj, measurements::Vector{MeasurementInfo}, combined_type)
+    combined_type === nothing && return MeasurementInfo[]
+    return filter(m -> m.measurement_kind in compatible_kinds(proj, combined_type), measurements)
+end
+
+function _build_combined_plot_figure(proj, measurements::Vector{MeasurementInfo}, combined_type)
+    compatible = _compatible_measurements(proj, measurements, combined_type)
+    length(compatible) < 2 && return nothing, compatible
+
+    try
+        paths = [m.filepath for m in compatible]
+        dev_params = [merge(m.device_info.parameters, m.parameters) for m in compatible]
+        fig = figure_for_files(proj, paths, combined_type; device_params_list=dev_params)
+        return fig, compatible
+    catch err
+        @warn "Combined plot generation failed" error = err
+        return nothing, compatible
+    end
+end
+
+function _open_combined_plot_window!(ui_state, fig, combined_type)
+    fig === nothing && return
+    open_plots = get!(ui_state, :open_plot_windows) do
+        Vector{Dict{Symbol,Any}}()
+    end
+    counter = get!(ui_state, :_combined_plot_counter) do
+        0
+    end
+    ui_state[:_combined_plot_counter] = counter + 1
+    push!(open_plots, Dict(
+        :figure => fig,
+        :title => "Combined: $(string(combined_type))",
+        :id => "combined_$(counter + 1)",
+    ))
+end
+
 function render_plot_window(ui_state)
     proj = get(ui_state, :project, RUO2_PROJECT)
     selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
     combined_type = get(ui_state, :combined_plot_type, nothing)
 
-    # Determine what to plot
-    should_update_plot = false
     current_plot_key = nothing
 
     # Check if user requested combined plot generation
@@ -1047,31 +1018,10 @@ function render_plot_window(ui_state)
 
         ui_state[:generate_combined_plot] = false  # Reset flag
 
-        # Filter measurements for the selected plot type
-        compatible_measurements = filter(m -> m.measurement_kind in compatible_kinds(proj, combined_type), selected_measurements)
-
-        if length(compatible_measurements) >= 2
-            # Generate combined plot
-            fig = nothing
-            try
-                filepaths = [m.filepath for m in compatible_measurements]
-                device_params_list = [merge(m.device_info.parameters, m.parameters) for m in compatible_measurements]
-                fig = figure_for_files(proj, filepaths, combined_type; device_params_list=device_params_list)
-            catch err
-                @warn "Combined plot generation failed" error = err
-            end
-
-            if fig !== nothing
-                ui_state[:plot_figure] = fig
-                # Store info for reference
-                ui_state[:_last_plot_key] = (combined_type, sort([m.filepath for m in compatible_measurements]))
-            else
-                delete!(ui_state, :plot_figure)
-                delete!(ui_state, :_last_plot_key)
-            end
-        end
+        fig, compatible = _build_combined_plot_figure(proj, selected_measurements, combined_type)
+        key = (combined_type, sort([m.filepath for m in compatible]))
+        _set_main_plot_figure!(ui_state, fig, key)
     elseif length(selected_measurements) == 1
-        # Single file plot mode (backwards compatibility)
         m = selected_measurements[1]
         filepath = m.filepath
         mtime = Dates.unix2datetime(stat(filepath).mtime)
@@ -1079,20 +1029,11 @@ function render_plot_window(ui_state)
         last_plot_key = get(ui_state, :_last_plot_key, nothing)
 
         if current_plot_key != last_plot_key
-            # Merge device parameters and measurement parameters
             all_params = merge(m.device_info.parameters, m.parameters)
             fig = _ensure_plot_figure(ui_state, filepath; kind=m.measurement_kind, device_params=all_params)
-            if fig !== nothing
-                ui_state[:plot_figure] = fig
-                ui_state[:_last_plot_key] = current_plot_key
-            else
-                delete!(ui_state, :plot_figure)
-                delete!(ui_state, :_last_plot_key)
-            end
+            _set_main_plot_figure!(ui_state, fig, current_plot_key)
         end
 
-        # Maintain backwards compatibility
-        ui_state[:selected_measurement] = m
     end
 
     if ig.Begin("Plot Area")
@@ -1108,12 +1049,11 @@ function render_plot_window(ui_state)
                 MakieFigure("measurement_plot", f; auto_resize_x=true, auto_resize_y=true)
             end
         else
-            # Show appropriate message based on state
             if length(selected_measurements) > 1 && combined_type !== nothing
-                compatible_files = filter(m -> m.measurement_kind in compatible_kinds(proj, combined_type), selected_measurements)
-                if length(compatible_files) < 2
+                compatible = _compatible_measurements(proj, selected_measurements, combined_type)
+                if length(compatible) < 2
                     ig.TextColored((1.0, 0.6, 0.2, 1.0), "Not enough compatible measurements for $(combined_type)")
-                    ig.Text("Selected: $(length(selected_measurements)), Compatible: $(length(compatible_files))")
+                    ig.Text("Selected: $(length(selected_measurements)), Compatible: $(length(compatible))")
                     if combined_type === :tlm_analysis
                         ig.TextDisabled("TLM Analysis requires ≥2 TLM 4-point measurements")
                     elseif combined_type === :pund_fatigue
@@ -1148,23 +1088,20 @@ function render_combined_plots_window(ui_state)
     if ig.Begin("Combined Plots")
         ig.Text("Select Combined Plot Type:")
 
-        # Instructions
         ig.TextDisabled("1. Select measurements from the Hierarchy panel")
         ig.TextDisabled("2. Choose a plot type below")
         ig.TextDisabled("3. Click Generate to create combined plot")
         ig.Separator()
 
-        # Plot type selector
         current_type = get(ui_state, :combined_plot_type, nothing)
         type_label = current_type === nothing ? "None" : string(current_type)
 
         if ig.BeginCombo("Plot Type", type_label)
-            # Use extensible plot type system
             for (type_key, type_name, type_description) in combined_plot_types(proj)
                 if ig.Selectable(type_name, current_type === type_key)
                     ui_state[:combined_plot_type] = type_key
                 end
-                if type_key !== nothing  # Don't show help for "None"
+                if type_key !== nothing
                     ig.SameLine()
                     _helpmarker(type_description)
                 end
@@ -1172,77 +1109,43 @@ function render_combined_plots_window(ui_state)
             ig.EndCombo()
         end
 
-
-
-        # Show info about current selection
         selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
+        compatible_measurements = _compatible_measurements(proj, selected_measurements, current_type)
+        compatible_count = length(compatible_measurements)
+        can_generate = current_type !== nothing && compatible_count >= 2
         ig.Separator()
 
-        # Selection status
         if !isempty(selected_measurements)
             ig.TextColored((0.6, 0.8, 1.0, 1.0), "Selected: $(length(selected_measurements)) measurements")
         else
             ig.TextDisabled("No measurements selected")
         end
 
-        # Compatibility check and generate button
-        if current_type !== nothing && length(selected_measurements) > 1
-            compatible_count = count(m -> m.measurement_kind in compatible_kinds(proj, current_type), selected_measurements)
-            if compatible_count >= 2
-                ig.TextColored((0.2, 0.8, 0.2, 1.0), "Ready: $compatible_count compatible measurements")
-                ig.Separator()
-                if ig.Button("Generate Combined Plot", (-1, 0))
-                    ui_state[:generate_combined_plot] = true
-                end
-                if ig.BeginPopupContextItem()
-                    if ig.MenuItem("Open in New Window")
-                        # Prepare compatible selections
-                        local sel_meas = get(ui_state, :selected_measurements, MeasurementInfo[])
-                        local comp_meas = filter(m -> m.measurement_kind in compatible_kinds(proj, current_type), sel_meas)
-                        if length(comp_meas) >= 2
-                            try
-                                local paths = [m.filepath for m in comp_meas]
-                                local dev_params = [merge(m.device_info.parameters, m.parameters) for m in comp_meas]
-                                local fig = figure_for_files(proj, paths, current_type; device_params_list=dev_params)
-                                if fig !== nothing
-                                    local open_plots = get!(ui_state, :open_plot_windows) do
-                                        Vector{Dict{Symbol,Any}}()
-                                    end
-                                    local counter = get!(ui_state, :_combined_plot_counter) do
-                                        0
-                                    end
-                                    ui_state[:_combined_plot_counter] = counter + 1
-                                    push!(open_plots, Dict(
-                                        :figure => fig,
-                                        :title => "Combined: $(string(current_type))",
-                                        :id => "combined_$(counter + 1)",
-                                    ))
-                                end
-                            catch err
-                                @warn "Failed to generate combined plot in new window" error = err
-                            end
-                        end
-                    end
-                    ig.EndPopup()
-                end
-            else
-                ig.TextColored((1.0, 0.6, 0.2, 1.0), "Warning: Only $compatible_count compatible (need 2+)")
-                ig.Separator()
-                ig.BeginDisabled()
-                ig.Button("Generate Combined Plot", (-1, 0))
-                ig.EndDisabled()
-            end
-        elseif current_type !== nothing && length(selected_measurements) <= 1
+        if can_generate
+            ig.TextColored((0.2, 0.8, 0.2, 1.0), "Ready: $compatible_count compatible measurements")
+        elseif current_type !== nothing && length(selected_measurements) > 1
+            ig.TextColored((1.0, 0.6, 0.2, 1.0), "Warning: Only $compatible_count compatible (need 2+)")
+        elseif current_type !== nothing
             ig.TextDisabled("Select multiple measurements for combined plots")
-            ig.Separator()
-            ig.BeginDisabled()
-            ig.Button("Generate Combined Plot", (-1, 0))
-            ig.EndDisabled()
         elseif length(selected_measurements) > 1
             ig.TextColored((0.8, 0.8, 0.2, 1.0), "Select a plot type above to continue")
-            ig.Separator()
+        end
+
+        ig.Separator()
+        if !can_generate
             ig.BeginDisabled()
-            ig.Button("Generate Combined Plot", (-1, 0))
+        end
+        if ig.Button("Generate Combined Plot", (-1, 0))
+            ui_state[:generate_combined_plot] = true
+        end
+        if can_generate && ig.BeginPopupContextItem()
+            if ig.MenuItem("Open in New Window")
+                fig, _ = _build_combined_plot_figure(proj, selected_measurements, current_type)
+                _open_combined_plot_window!(ui_state, fig, current_type)
+            end
+            ig.EndPopup()
+        end
+        if !can_generate
             ig.EndDisabled()
         end
     end
@@ -1305,23 +1208,19 @@ function render_project_window(ui_state)
         # ── Persist + rescan on change ───────────────────────────────────────
         if changed
             current_root = get(ui_state, :root_path, "")
+            _persist_preferences!(ui_state; path=isempty(current_root) ? nothing : current_root)
             if !isempty(current_root)
-                _persist_preferences!(ui_state; path=current_root)
-            else
-                _persist_preferences!(ui_state)
-            end
-            if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
                 @info "Project preference changed to '$(ui_state[:project_preference])' — rescanning"
-                _do_scan!(ui_state, ui_state[:root_path])
+                _scan!(ui_state, current_root; force_restart=true)
             end
         end
 
         ig.Separator()
         ig.TextDisabled(_scan_status_summary(ui_state))
-        if _scan_active(ui_state)
+        if _scan_running(ui_state)
             ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
             if ig.Button("Cancel Scan", (-1, 0))
-                _cancel_scan!(ui_state)
+                _request_scan_cancel!(ui_state)
             end
             ig.Spacing()
         elseif get(ui_state, :scan_state, :idle) == :error
@@ -1331,7 +1230,7 @@ function render_project_window(ui_state)
         end
         if ig.Button("Rescan current folder", (-1, 0))
             if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
-                _do_scan!(ui_state, ui_state[:root_path])
+                _scan!(ui_state, ui_state[:root_path])
             else
                 ig.OpenPopup("no_folder_popup")
             end
@@ -1347,6 +1246,8 @@ end
 
 function render_info_window(ui_state)
     proj = get(ui_state, :project, RUO2_PROJECT)
+    selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
+    selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
     if ig.Begin("Information Panel")
         flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_ScrollY
         ig.BeginTable("info_cols", 2, flags)
@@ -1356,8 +1257,8 @@ function render_info_window(ui_state)
         ig.TableNextRow()
         ig.TableNextColumn()
 
-        if haskey(ui_state, :selected_device)
-            meas_vec = ui_state[:selected_device].measurements
+        if length(selected_devices) == 1
+            meas_vec = selected_devices[1].measurements
             sel_name = join(get(ui_state, :selected_path, [""]), "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
@@ -1393,13 +1294,15 @@ function render_info_window(ui_state)
                     ig.TextDisabled("No metadata parameters found")
                 end
             end
-        else
+        elseif isempty(selected_devices)
             ig.TextDisabled("Select a device to see details")
+        else
+            ig.TextDisabled("Select a single device to see details")
         end
 
         ig.TableNextColumn()
-        if haskey(ui_state, :selected_measurement)
-            m = ui_state[:selected_measurement]
+        if length(selected_measurements) == 1
+            m = selected_measurements[1]
             ig.Text("Title: $(m.clean_title)")
             ig.Separator()
             ig.BulletText("Type: $(kind_label(proj, m.measurement_kind))")
@@ -1417,8 +1320,10 @@ function render_info_window(ui_state)
                 ig.TextDisabled("No parameters extracted")
             end
 
-        else
+        elseif isempty(selected_measurements)
             ig.TextDisabled("Select a measurement to view details")
+        else
+            ig.TextDisabled("Select a single measurement to view details")
         end
         ig.EndTable()
     end
@@ -1606,7 +1511,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         on_exit=() -> _print_perf_summary(ui_state),
     ) do
         ui_state[:_frame] += 1
-        _poll_scan_job!(ui_state)
+        _poll_scan_events!(ui_state)
         if first_frame[] && !haskey(ui_state, :_gl_info)
             ui_state[:_gl_info] = _collect_gl_info!()
             first_frame[] = false
