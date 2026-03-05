@@ -104,8 +104,7 @@ end
 function _open_project_path!(ui_state, path::String; persist=true)
     norm_path = _normalize_project_path(path)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
-    _do_scan!(ui_state, norm_path)
-    persist && _persist_preferences!(ui_state; path=norm_path)
+    _do_scan!(ui_state, norm_path; persist_on_success=persist)
 end
 
 function _project_status_text(ui_state)
@@ -137,6 +136,9 @@ function _init_scan_state!(ui_state)
     ui_state[:scan_events] = nothing
     ui_state[:scan_cancel_token] = nothing
     ui_state[:scan_path] = ""
+    ui_state[:scan_persist_on_success] = false
+    ui_state[:pending_scan_path] = nothing
+    ui_state[:pending_scan_persist_on_success] = false
 end
 
 function _scan_status_summary(ui_state)
@@ -186,15 +188,17 @@ function _cancel_scan!(ui_state)
     ui_state[:scan_state] = :canceling
 end
 
-function _start_scan_job!(ui_state, path::String)
-    _cancel_scan!(ui_state)
+function _start_scan_job!(ui_state, path::String; persist_on_success=false)
     scan_id = get(ui_state, :scan_seq, 0) + 1
     ui_state[:scan_seq] = scan_id
     ui_state[:active_scan_id] = scan_id
     ui_state[:scan_path] = path
+    ui_state[:scan_persist_on_success] = persist_on_success
     ui_state[:scan_state] = :counting
     ui_state[:scan_progress] = _new_scan_progress()
     ui_state[:scan_error] = ""
+    ui_state[:pending_scan_path] = nothing
+    ui_state[:pending_scan_persist_on_success] = false
 
     events = Channel{NamedTuple}(512)
     cancel_token = Base.Threads.Atomic{Bool}(false)
@@ -208,7 +212,7 @@ function _start_scan_job!(ui_state, path::String)
                 path;
                 project=preferred_project,
                 on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
-                should_cancel=() -> Base.Threads.atomic_load(cancel_token),
+                should_cancel=() -> cancel_token[],
                 count_first=true,
             )
             put!(events, (kind=:result, scan_id=scan_id, path=path, hierarchy=hierarchy))
@@ -216,11 +220,33 @@ function _start_scan_job!(ui_state, path::String)
             if err isa ScanCancelled
                 put!(events, (kind=:canceled, scan_id=scan_id))
             else
-                put!(events, (kind=:error, scan_id=scan_id, error=sprint(showerror, err)))
+                put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
             end
         finally
             close(events)
         end
+    end
+end
+
+function _request_scan!(ui_state, path::String; persist_on_success=false)
+    if _scan_active(ui_state)
+        ui_state[:pending_scan_path] = path
+        ui_state[:pending_scan_persist_on_success] = persist_on_success
+        _cancel_scan!(ui_state)
+        return
+    end
+    _start_scan_job!(ui_state, path; persist_on_success)
+end
+
+function _finish_scan_and_maybe_start_pending!(ui_state)
+    ui_state[:scan_events] = nothing
+    ui_state[:scan_cancel_token] = nothing
+    pending_path = get(ui_state, :pending_scan_path, nothing)
+    pending_persist = get(ui_state, :pending_scan_persist_on_success, false)
+    ui_state[:pending_scan_path] = nothing
+    ui_state[:pending_scan_persist_on_success] = false
+    if pending_path !== nothing && !isempty(pending_path)
+        _start_scan_job!(ui_state, pending_path; persist_on_success=pending_persist)
     end
 end
 
@@ -245,18 +271,19 @@ function _poll_scan_job!(ui_state)
             ui_state[:scan_state] = p.phase
         elseif msg.kind == :result
             _apply_scan_result!(ui_state, msg.path, msg.hierarchy)
+            if get(ui_state, :scan_persist_on_success, false)
+                _persist_preferences!(ui_state; path=msg.path)
+            end
             ui_state[:scan_state] = :done
-            ui_state[:scan_events] = nothing
-            ui_state[:scan_cancel_token] = nothing
+            _finish_scan_and_maybe_start_pending!(ui_state)
         elseif msg.kind == :canceled
             ui_state[:scan_state] = :canceled
-            ui_state[:scan_events] = nothing
-            ui_state[:scan_cancel_token] = nothing
+            _finish_scan_and_maybe_start_pending!(ui_state)
         elseif msg.kind == :error
             ui_state[:scan_state] = :error
-            ui_state[:scan_error] = msg.error
-            ui_state[:scan_events] = nothing
-            ui_state[:scan_cancel_token] = nothing
+            ui_state[:scan_error] = sprint(showerror, msg.error, msg.bt)
+            @error "Scan job failed" exception = (msg.error, msg.bt)
+            _finish_scan_and_maybe_start_pending!(ui_state)
         end
     end
 end
@@ -298,8 +325,8 @@ function _apply_scan_result!(ui_state, path::String, hierarchy)
     ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
 end
 
-function _do_scan!(ui_state, path::String)
-    _start_scan_job!(ui_state, path)
+function _do_scan!(ui_state, path::String; persist_on_success=false)
+    _request_scan!(ui_state, path; persist_on_success)
 end
 
 # Timing & allocation utilities
