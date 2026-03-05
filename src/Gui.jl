@@ -16,7 +16,7 @@ using TOML
 using NativeFileDialog: pick_folder
 
 # ---------------------------------------------------------------------------
-# Preferences (persistent project selection)
+# Preferences (persistent project selection + recent folders)
 # ---------------------------------------------------------------------------
 
 function _prefs_path()
@@ -39,6 +39,73 @@ function _save_prefs(data::Dict)
     open(path, "w") do io
         TOML.print(io, data)
     end
+end
+
+const _MAX_RECENT_PROJECTS = 12
+
+function _normalize_project_path(path::String)
+    return abspath(expanduser(path))
+end
+
+function _parse_recent_projects(prefs::Dict{String,Any})
+    recents = Dict{String,String}[]
+    raw = get(prefs, "recent_projects", Any[])
+    raw isa Vector || return recents
+
+    for entry in raw
+        entry isa Dict || continue
+        haskey(entry, "path") || continue
+        path = string(entry["path"])
+        isempty(path) && continue
+        pref = string(get(entry, "project_preference", "auto"))
+        push!(recents, Dict{String,String}("path" => path, "project_preference" => pref))
+    end
+
+    return recents
+end
+
+function _update_recent_projects(recents::Vector{Dict{String,String}}, path::String, pref::String)
+    norm_path = _normalize_project_path(path)
+    filter!(entry -> get(entry, "path", "") != norm_path, recents)
+    pushfirst!(recents, Dict{String,String}(
+        "path" => norm_path,
+        "project_preference" => pref,
+    ))
+    length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
+    return recents
+end
+
+function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
+    prefs = _load_prefs()
+    pref = string(get(ui_state, :project_preference, "auto"))
+    prefs["project"] = pref
+
+    recents = _parse_recent_projects(prefs)
+    if path !== nothing && !isempty(path)
+        _update_recent_projects(recents, path, pref)
+        prefs["recent_projects"] = recents
+    end
+
+    _save_prefs(prefs)
+    ui_state[:recent_projects] = recents
+end
+
+function _project_preference_for_path(ui_state, path::String)
+    norm_path = _normalize_project_path(path)
+    recents = get(ui_state, :recent_projects, Dict{String,String}[])
+    for entry in recents
+        if get(entry, "path", "") == norm_path
+            return get(entry, "project_preference", "auto")
+        end
+    end
+    return get(ui_state, :project_preference, "auto")
+end
+
+function _open_project_path!(ui_state, path::String; persist=true)
+    norm_path = _normalize_project_path(path)
+    ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
+    _do_scan!(ui_state, norm_path)
+    persist && _persist_preferences!(ui_state; path=norm_path)
 end
 
 # Return the preferred AbstractProject (nothing = auto-detect)
@@ -208,9 +275,32 @@ function render_menu_bar(ui_state)
                 path = pick_folder()
                 if !isnothing(path) && !isempty(path)
                     @info "Selected path: $path"
-                    _do_scan!(ui_state, path)
+                    _open_project_path!(ui_state, path)
                 end
             end
+
+            recents = get(ui_state, :recent_projects, Dict{String,String}[])
+            if ig.BeginMenu("Recent Projects")
+                if isempty(recents)
+                    ig.TextDisabled("No recent projects")
+                else
+                    for (idx, entry) in enumerate(recents)
+                        path = get(entry, "path", "")
+                        isempty(path) && continue
+                        pref = get(entry, "project_preference", "auto")
+                        label = "$(basename(path)) [$pref]###recent_project_$idx"
+                        if ig.MenuItem(label)
+                            _open_project_path!(ui_state, path)
+                        end
+                        if ig.BeginItemTooltip()
+                            ig.TextUnformatted(path)
+                            ig.EndTooltip()
+                        end
+                    end
+                end
+                ig.EndMenu()
+            end
+
             if ig.MenuItem("Reload")
                 if haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
                     @info "Reloading path: $(ui_state[:root_path])"
@@ -1018,7 +1108,12 @@ function render_project_window(ui_state)
 
         # ── Persist + rescan on change ───────────────────────────────────────
         if changed
-            _save_prefs(Dict{String,Any}("project" => ui_state[:project_preference]))
+            current_root = get(ui_state, :root_path, "")
+            if !isempty(current_root)
+                _persist_preferences!(ui_state; path=current_root)
+            else
+                _persist_preferences!(ui_state)
+            end
             if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
                 @info "Project preference changed to '$(ui_state[:project_preference])' — rescanning"
                 _do_scan!(ui_state, ui_state[:root_path])
@@ -1243,7 +1338,7 @@ function _setup_docking_layout!(dockspace_id)
     sz = unsafe_load(vp.Size)
 
     ig.DockBuilderRemoveNode(dockspace_id)
-    ig.DockBuilderAddNode(dockspace_id, ig.ImGuiDockNodeFlags_DockSpace)
+    ig.DockBuilderAddNode(dockspace_id, Int(ig.ImGuiDockNodeFlags_DockSpace))
     ig.DockBuilderSetNodeSize(dockspace_id, sz)
 
     # Vertical split: left column 2/5, right column 3/5
@@ -1284,9 +1379,10 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     # Load persisted preferences
     prefs = _load_prefs()
     ui_state[:project_preference] = get(prefs, "project", "auto")
+    ui_state[:recent_projects] = _parse_recent_projects(prefs)
 
     if root_path !== nothing && root_path != ""
-        _do_scan!(ui_state, root_path)
+        _open_project_path!(ui_state, root_path)
     end
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
