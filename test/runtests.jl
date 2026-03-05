@@ -4,4 +4,5 @@ using Test
     include("test_wakeup.jl")
     include("test_scan_directory_progress.jl")
     include("test_scan_job_controller.jl")
+    include("test_gui_helpers.jl")
 end

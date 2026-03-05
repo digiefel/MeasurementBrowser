@@ -33,7 +33,7 @@ using Test
             current_path="fresh",
         ),
     ))
-    MeasurementBrowser._poll_scan_job!(ui)
+    MeasurementBrowser._poll_scan_events!(ui)
     @test ui[:scan_state] == :scanning
     @test ui[:scan_progress][:processed_csv] == 2
     @test ui[:scan_progress][:current_path] == "fresh"
@@ -44,7 +44,7 @@ using Test
     ui[:scan_state] = :scanning
     ui[:scan_cancel_token] = token
     ui[:scan_events] = current_events
-    MeasurementBrowser._request_scan!(ui, "/tmp/queued_path"; persist_on_success=true)
+    MeasurementBrowser._queue_scan!(ui, "/tmp/queued_path"; persist_on_success=true)
     @test ui[:pending_scan_path] == "/tmp/queued_path"
     @test ui[:pending_scan_persist_on_success] == true
     @test token[] == true
@@ -60,9 +60,35 @@ using Test
     ui2[:scan_events] = Channel{NamedTuple}(8)
     token2 = Base.Threads.Atomic{Bool}(false)
     ui2[:scan_cancel_token] = token2
-    MeasurementBrowser._request_scan!(ui2, "/tmp/same_path"; persist_on_success=true)
+    MeasurementBrowser._queue_scan!(ui2, "/tmp/same_path"; persist_on_success=true)
     @test ui2[:pending_scan_path] === nothing
     @test token2[] == false
     @test ui2[:scan_state] == :scanning
     @test ui2[:scan_persist_on_success] == true
+
+    # Same-path request should clear stale queued path.
+    ui3 = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui3)
+    ui3[:scan_state] = :scanning
+    ui3[:scan_path] = "/tmp/active"
+    ui3[:pending_scan_path] = "/tmp/old_pending"
+    ui3[:pending_scan_persist_on_success] = true
+    token3 = Base.Threads.Atomic{Bool}(false)
+    ui3[:scan_cancel_token] = token3
+    MeasurementBrowser._queue_scan!(ui3, "/tmp/active")
+    @test ui3[:pending_scan_path] === nothing
+    @test ui3[:pending_scan_persist_on_success] == false
+    @test token3[] == false
+
+    # Force restart should queue and cancel even for same path.
+    ui4 = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui4)
+    ui4[:scan_state] = :scanning
+    ui4[:scan_path] = "/tmp/active"
+    token4 = Base.Threads.Atomic{Bool}(false)
+    ui4[:scan_cancel_token] = token4
+    MeasurementBrowser._queue_scan!(ui4, "/tmp/active"; force_restart=true)
+    @test ui4[:pending_scan_path] == "/tmp/active"
+    @test ui4[:scan_state] == :canceling
+    @test token4[] == true
 end
