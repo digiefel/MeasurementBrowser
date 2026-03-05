@@ -168,7 +168,7 @@ function _init_plot_state!(ui_state)
 end
 
 function _plot_running(ui_state)
-    return get(ui_state, :plot_state, :idle) in (:loading, :building, :canceling)
+    return get(ui_state, :plot_state, :idle) in (:loading, :canceling)
 end
 
 function _clear_plot_jobs!(ui_state)
@@ -241,13 +241,14 @@ function _launch_plot_job!(ui_state, request::Dict{Symbol,Any})
 
     Base.Threads.@spawn begin
         try
-            payload = prepare_plot_data_for_file(
+            fig = figure_for_file(
                 request[:project],
                 request[:filepath],
                 request[:measurement_kind];
+                DEBUG=request[:debug_plot_mode],
                 device_params=request[:device_params],
             )
-            put!(events, (kind=:prepared, plot_id=plot_id, payload=payload))
+            put!(events, (kind=:result, plot_id=plot_id, fig=fig))
         catch err
             put!(events, (kind=:error, plot_id=plot_id, error=err, bt=catch_backtrace()))
         finally
@@ -317,16 +318,10 @@ function _poll_plot_events!(ui_state)
         msg = take!(events)
         msg.plot_id == get(ui_state, :active_plot_id, 0) || continue
 
-        if msg.kind == :prepared
+        if msg.kind == :result
             request = get(ui_state, :active_plot_request, nothing)
             request === nothing && continue
-            ui_state[:plot_state] = :building
-            fig = msg.payload === nothing ? nothing : build_plot_figure(
-                request[:project],
-                msg.payload;
-                DEBUG=request[:debug_plot_mode],
-            )
-            _apply_plot_result!(ui_state, request, fig)
+            _apply_plot_result!(ui_state, request, msg.fig)
             ui_state[:plot_state] = :done
             _finalize_plot_job!(ui_state)
         elseif msg.kind == :error
@@ -418,8 +413,6 @@ function _render_plot_indicator!(ui_state)
     state = get(ui_state, :plot_state, :idle)
     if state == :loading
         ig.TextDisabled("Plot: loading data...")
-    elseif state == :building
-        ig.TextDisabled("Plot: building figure...")
     elseif state == :canceling
         ig.TextDisabled("Plot: canceling...")
     end

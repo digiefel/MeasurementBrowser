@@ -27,35 +27,10 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   expand_measurement(::P, meas) → Vector{MeasurementInfo}
-# Optional async hooks (projects can ignore these and only implement
-# `figure_for_file`; fallback build path will use that).
-#   prepare_plot_data_for_file(::P, path, kind; kwargs...) → Any
-#   build_plot_figure(::P, payload; kwargs...) → Union{Figure,Nothing}
 #   figure_for_file(::P, path, kind; kwargs...) → Union{Figure,Nothing}
 #   figure_for_files(::P, paths, combined_kind; kwargs...) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
-
-function prepare_plot_data_for_file(proj::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    return (
-        fallback=true,
-        project=proj,
-        path=String(path),
-        kind=kind,
-        kwargs=Dict{Symbol,Any}(pairs(kwargs)),
-    )
-end
-
-function build_plot_figure(::AbstractProject, payload; kwargs...)
-    if payload isa NamedTuple && hasproperty(payload, :fallback) && payload.fallback == true
-        call_kwargs = Dict{Symbol,Any}(pairs(kwargs))
-        if hasproperty(payload, :kwargs)
-            merge!(call_kwargs, payload.kwargs)
-        end
-        return figure_for_file(payload.project, payload.path, payload.kind; call_kwargs...)
-    end
-    return nothing
-end
 
 # ---------------------------------------------------------------------------
 # DeviceInfo
