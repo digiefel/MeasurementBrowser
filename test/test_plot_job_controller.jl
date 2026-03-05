@@ -11,6 +11,7 @@ using Dates
     ui[:active_plot_id] = 2
     ui[:plot_events] = Channel{NamedTuple}(8)
     ui[:active_plot_request] = Dict{Symbol,Any}(
+        :kind => :single_file,
         :target => :main,
         :plot_key => :fresh_key,
         :project => MeasurementBrowser.RUO2_PROJECT,

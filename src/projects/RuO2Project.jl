@@ -6,6 +6,7 @@ using Dates
 using DataFrames
 using DataPlotter: load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single, load_wakeup_single,
                    plot_fe_pund, plot_iv_sweep_single, plot_tlm_4p, plot_wakeup,
+                   load_tlm_analysis_combined, draw_tlm_analysis_combined,
                    plot_tlm_combined, plot_tlm_temperature, plot_pund_fatigue
 
 # ---------------------------------------------------------------------------
@@ -215,12 +216,27 @@ function figure_for_file(proj::RuO2Project, path::AbstractString, kind::Union{Sy
     end
 end
 
-function figure_for_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol;
+function load_plot_input_for_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
+    if combined_kind === :tlm_analysis
+        return load_tlm_analysis_combined(paths; device_params_list, kwargs...)
+    end
+    return nothing
+end
+
+function draw_plot_from_input_for_files(::RuO2Project, combined_kind::Symbol, loaded; kwargs...)
+    if combined_kind === :tlm_analysis
+        return draw_tlm_analysis_combined(loaded; kwargs...)
+    end
+    return nothing
+end
+
+function figure_for_files(proj::RuO2Project, paths::Vector{String}, combined_kind::Symbol;
                           device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
     isempty(paths) && return nothing
     try
         if combined_kind === :tlm_analysis
-            return plot_tlm_combined(paths; device_params_list=device_params_list, kwargs...)
+            loaded = load_plot_input_for_files(proj, paths, combined_kind; device_params_list, kwargs...)
+            return draw_plot_from_input_for_files(proj, combined_kind, loaded; kwargs...)
         elseif combined_kind === :tlm_temperature
             return plot_tlm_temperature(paths; device_params_list=device_params_list, kwargs...)
         elseif combined_kind === :pund_fatigue

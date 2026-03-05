@@ -29,6 +29,8 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   expand_measurement(::P, meas) → Vector{MeasurementInfo}
 #   load_plot_input_for_file(::P, path, kind; kwargs...) → Any
 #   draw_plot_from_input(::P, kind, loaded; kwargs...) → Union{Figure,Nothing}
+#   load_plot_input_for_files(::P, paths, combined_kind; kwargs...) → Any
+#   draw_plot_from_input_for_files(::P, combined_kind, loaded; kwargs...) → Union{Figure,Nothing}
 #   figure_for_file(::P, path, kind; kwargs...) → Union{Figure,Nothing}
 #   figure_for_files(::P, paths, combined_kind; kwargs...) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
@@ -36,6 +38,8 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
 load_plot_input_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
 draw_plot_from_input(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = nothing
+load_plot_input_for_files(::AbstractProject, paths, combined_kind; kwargs...) = nothing
+draw_plot_from_input_for_files(::AbstractProject, combined_kind, loaded; kwargs...) = nothing
 
 # ---------------------------------------------------------------------------
 # DeviceInfo

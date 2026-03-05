@@ -15,6 +15,7 @@ export plot_tlm_4p, plot_tlm_combined, plot_tlm_temperature
 export plot_iv_sweep_single
 export load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single, load_wakeup_single
 export load_tase_four_terminal_iv
+export load_tlm_analysis_combined, draw_tlm_analysis_combined
 
 # Extract temperature in Kelvin from device params or filename
 function _extract_temperature_K(params::Dict{Symbol,Any}, filepath::String)

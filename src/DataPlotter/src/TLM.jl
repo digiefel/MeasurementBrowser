@@ -1,4 +1,5 @@
 export plot_tlm_4p, plot_tlm_combined, plot_tlm_temperature
+export load_tlm_analysis_combined, draw_tlm_analysis_combined
 
 """
 Plot TLM 4-point data with detailed analysis
@@ -143,15 +144,12 @@ Bottom axis always shows the mean of width-normalized resistance vs length.
 
 Requires: calculate_sheet_resistance(::DataFrame) -> (R_sheet, R_cprime, rho_c, R2)
 """
-function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
-    @info "plot_tlm_combined called with $(length(paths)) files"
-
+function load_tlm_analysis_combined(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
     if isempty(paths)
         @warn "No files provided for TLM combined analysis"
         return nothing
     end
 
-    # Load all TLM files
     files_data_params = Tuple{String,DataFrame,Dict{Symbol,Any}}[]
     for (i, path) in enumerate(paths)
         try
@@ -170,15 +168,19 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
         return nothing
     end
 
-    # Perform combined analysis
     analysis_df = analyze_tlm_combined(files_data_params)
-
     if nrow(analysis_df) == 0
         @warn "TLM combined analysis produced no data"
         return nothing
     end
+    return (analysis_df=analysis_df, files_data_params=files_data_params)
+end
 
-    # Width-invariant fit → (R_sheet, R_c', rho_c, R2)
+function draw_tlm_analysis_combined(loaded; kwargs...)
+    loaded === nothing && return nothing
+    analysis_df = loaded.analysis_df
+    files_data_params = loaded.files_data_params
+
     R_sheet, R_cprime, rho_c, r_squared = calculate_sheet_resistance(analysis_df)
 
     # Create the plot with two rows: main and secondary+info
@@ -275,6 +277,11 @@ function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dic
     end
 
     return fig
+end
+
+function plot_tlm_combined(paths::Vector{String}; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
+    loaded = load_tlm_analysis_combined(paths; device_params_list, kwargs...)
+    return draw_tlm_analysis_combined(loaded; kwargs...)
 end
 
 """

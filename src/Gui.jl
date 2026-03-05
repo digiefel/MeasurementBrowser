@@ -227,6 +227,40 @@ function _single_plot_job_request(
     )
 end
 
+function _combined_plot_job_request(
+    ui_state,
+    proj,
+    combined_kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+    target::Symbol;
+    target_id::String,
+    plot_key=nothing,
+)
+    debug_plot_mode = get(ui_state, :debug_plot_mode, false)
+    paths = [m.filepath for m in measurements]
+    device_params_list = [merge(m.device_info.parameters, m.parameters) for m in measurements]
+    job_key = (
+        project_name(proj),
+        target,
+        target_id,
+        combined_kind,
+        sort(paths),
+        debug_plot_mode,
+    )
+    return Dict{Symbol,Any}(
+        :kind => :combined_files,
+        :job_key => job_key,
+        :plot_key => plot_key,
+        :project => proj,
+        :combined_kind => combined_kind,
+        :paths => paths,
+        :device_params_list => device_params_list,
+        :debug_plot_mode => debug_plot_mode,
+        :target => target,
+        :target_id => target_id,
+    )
+end
+
 function _launch_plot_job!(ui_state, request::Dict{Symbol,Any})
     plot_id = get(ui_state, :plot_seq, 0) + 1
     ui_state[:plot_seq] = plot_id
@@ -241,12 +275,21 @@ function _launch_plot_job!(ui_state, request::Dict{Symbol,Any})
 
     Base.Threads.@spawn begin
         try
-            loaded = load_plot_input_for_file(
-                request[:project],
-                request[:filepath],
-                request[:measurement_kind];
-                device_params=request[:device_params],
-            )
+            loaded = if request[:kind] == :single_file
+                load_plot_input_for_file(
+                    request[:project],
+                    request[:filepath],
+                    request[:measurement_kind];
+                    device_params=request[:device_params],
+                )
+            else
+                load_plot_input_for_files(
+                    request[:project],
+                    request[:paths],
+                    request[:combined_kind];
+                    device_params_list=request[:device_params_list],
+                )
+            end
             put!(events, (kind=:loaded, plot_id=plot_id, loaded=loaded))
         catch err
             put!(events, (kind=:error, plot_id=plot_id, error=err, bt=catch_backtrace()))
@@ -321,13 +364,22 @@ function _poll_plot_events!(ui_state)
             request = get(ui_state, :active_plot_request, nothing)
             request === nothing && continue
             ui_state[:plot_state] = :building
-            fig = draw_plot_from_input(
-                request[:project],
-                request[:measurement_kind],
-                msg.loaded;
-                DEBUG=request[:debug_plot_mode],
-                device_params=request[:device_params],
-            )
+            fig = if request[:kind] == :single_file
+                draw_plot_from_input(
+                    request[:project],
+                    request[:measurement_kind],
+                    msg.loaded;
+                    DEBUG=request[:debug_plot_mode],
+                    device_params=request[:device_params],
+                )
+            else
+                draw_plot_from_input_for_files(
+                    request[:project],
+                    request[:combined_kind],
+                    msg.loaded;
+                    DEBUG=request[:debug_plot_mode],
+                )
+            end
             _apply_plot_result!(ui_state, request, fig)
             ui_state[:plot_state] = :done
             _finalize_plot_job!(ui_state)
@@ -1259,9 +1311,23 @@ function render_plot_window(ui_state)
         ui_state[:generate_combined_plot] = false  # Reset flag
         _clear_plot_jobs!(ui_state)
 
-        fig, compatible = _build_combined_plot_figure(proj, selected_measurements, combined_type)
+        compatible = _compatible_measurements(proj, selected_measurements, combined_type)
         key = (combined_type, sort([m.filepath for m in compatible]))
-        _set_main_plot_figure!(ui_state, fig, key)
+        if combined_type === :tlm_analysis && length(compatible) >= 2
+            request = _combined_plot_job_request(
+                ui_state,
+                proj,
+                combined_type,
+                compatible,
+                :main;
+                target_id="main",
+                plot_key=key,
+            )
+            _queue_plot_job!(ui_state, request)
+        else
+            fig, _ = _build_combined_plot_figure(proj, selected_measurements, combined_type)
+            _set_main_plot_figure!(ui_state, fig, key)
+        end
     elseif length(selected_measurements) == 1
         _queue_main_plot_request!(ui_state, proj, selected_measurements[1])
     end
@@ -1290,6 +1356,8 @@ function render_plot_window(ui_state)
                     elseif combined_type === :pund_fatigue
                         ig.TextDisabled("PUND Fatigue requires ≥2 PUND measurements")
                     end
+                elseif combined_type === :tlm_analysis && _plot_target_loading(ui_state, :main; target_id="main")
+                    ig.TextDisabled("Loading combined plot...")
                 else
                     ig.TextColored((1.0, 0.4, 0.4, 1.0), "Combined plot generation failed")
                     ig.Text("Check file formats and data quality")
