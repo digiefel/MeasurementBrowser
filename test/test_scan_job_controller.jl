@@ -50,4 +50,19 @@ using Test
     @test token[] == true
     @test ui[:scan_state] == :canceling
     @test ui[:scan_events] === current_events
+
+    # Same-path request while active should not queue/restart.
+    ui2 = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui2)
+    ui2[:scan_state] = :scanning
+    ui2[:scan_path] = "/tmp/same_path"
+    ui2[:scan_persist_on_success] = false
+    ui2[:scan_events] = Channel{NamedTuple}(8)
+    token2 = Base.Threads.Atomic{Bool}(false)
+    ui2[:scan_cancel_token] = token2
+    MeasurementBrowser._request_scan!(ui2, "/tmp/same_path"; persist_on_success=true)
+    @test ui2[:pending_scan_path] === nothing
+    @test token2[] == false
+    @test ui2[:scan_state] == :scanning
+    @test ui2[:scan_persist_on_success] == true
 end

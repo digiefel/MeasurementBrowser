@@ -229,13 +229,26 @@ function _start_scan_job!(ui_state, path::String; persist_on_success=false)
 end
 
 function _request_scan!(ui_state, path::String; persist_on_success=false)
+    norm_path = _normalize_project_path(path)
     if _scan_active(ui_state)
-        ui_state[:pending_scan_path] = path
+        active_path = get(ui_state, :scan_path, "")
+        pending_path = get(ui_state, :pending_scan_path, nothing)
+
+        if !isempty(active_path) && norm_path == active_path
+            ui_state[:scan_persist_on_success] = get(ui_state, :scan_persist_on_success, false) || persist_on_success
+            return
+        end
+        if pending_path !== nothing && norm_path == pending_path
+            ui_state[:pending_scan_persist_on_success] = get(ui_state, :pending_scan_persist_on_success, false) || persist_on_success
+            return
+        end
+
+        ui_state[:pending_scan_path] = norm_path
         ui_state[:pending_scan_persist_on_success] = persist_on_success
         _cancel_scan!(ui_state)
         return
     end
-    _start_scan_job!(ui_state, path; persist_on_success)
+    _start_scan_job!(ui_state, norm_path; persist_on_success)
 end
 
 function _finish_scan_and_maybe_start_pending!(ui_state)
