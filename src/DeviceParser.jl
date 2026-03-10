@@ -33,6 +33,9 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   load_plot_for_files(::P, paths, combined_kind; kwargs...) → Any
 #   analyze_plot_for_files(::P, combined_kind, loaded; kwargs...) → Any
 #   draw_plot_for_files(::P, combined_kind, analyzed; kwargs...) → Union{Figure,Nothing}
+#   available_analyses(::P, measurements) → Vector{NamedTuple}
+#   run_analysis(::P, key, measurements; kwargs...) → Union{AnalysisResult,Nothing}
+#   draw_analysis_view(result, view) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
 
@@ -42,6 +45,9 @@ draw_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, analyzed; kwa
 load_plot_for_files(::AbstractProject, paths, combined_kind; kwargs...) = nothing
 analyze_plot_for_files(::AbstractProject, combined_kind, loaded; kwargs...) = loaded
 draw_plot_for_files(::AbstractProject, combined_kind, analyzed; kwargs...) = nothing
+available_analyses(::AbstractProject, measurements) = NamedTuple[]
+run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
+draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
 interpret_file(::AbstractProject, indexed::IndexedCsvFile; kwargs...) = MeasurementItem[]
 
 struct PlotCancelled <: Exception end

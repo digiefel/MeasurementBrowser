@@ -1,4 +1,5 @@
 test/*
+!test/test_*.jl
 !test/test_pund_fatigue.jl
 !test/3V PUND Fatigue \[RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33\].csv
 imgui.ini

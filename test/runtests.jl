@@ -1,6 +1,7 @@
 using Test
 
 @testset "MeasurementBrowser Tests" begin
+    include("test_analysis_core.jl")
     include("test_wakeup.jl")
     include("test_pund_fatigue.jl")
     include("test_scan_directory_progress.jl")
