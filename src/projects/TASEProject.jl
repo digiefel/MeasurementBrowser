@@ -11,6 +11,7 @@ Example:
 using GLMakie
 include("TASE/Display.jl")
 include("TASE/Interpretation.jl")
+include("TASE/Analysis.jl")
 include("TASE/Plotting.jl")
 
 const REGEX_TASE = r"^([^_]+)_([^_]+)_([^_]+)_(\d+)_\d{8}_\d{6}_\d+K_FourTerminalIV\.csv"i

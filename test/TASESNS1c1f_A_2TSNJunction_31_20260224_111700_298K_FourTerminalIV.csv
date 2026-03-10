@@ -1,0 +1,4 @@
+Current_A,VoltageHigh_V,VoltageLow_V
+1e-6,0.002,0.0
+2e-6,0.004,0.0
+3e-6,0.006,0.0

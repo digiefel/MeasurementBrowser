@@ -2,4 +2,6 @@ test/*
 !test/test_*.jl
 !test/test_pund_fatigue.jl
 !test/3V PUND Fatigue \[RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33\].csv
+!test/TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv
+!test/TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv
 imgui.ini
