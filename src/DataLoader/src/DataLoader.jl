@@ -4,7 +4,7 @@ using CSV
 using DataFrames
 using Dates
 
-export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p, read_pund_fatigue_cycles, read_pund_fatigue_cycle
+export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p, read_pund_fatigue_cycles, read_pund_fatigue_cycle, read_wakeup_summary
 
 include("PUND.jl")
 

@@ -15,7 +15,7 @@ end
         # Backwards-compatible call shape
         h = scan_directory(dir)
         @test h isa MeasurementHierarchy
-        @test h.skipped_count >= 1
+        @test h.skipped_count == 1
 
         # Progress callback shape
         events = NamedTuple[]

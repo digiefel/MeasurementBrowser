@@ -79,6 +79,31 @@ function read_wakeup(filename, workdir=".")
     return DataFrame(pulse_count=data_lines, amplitude=amplitude)
 end
 
+function read_wakeup_summary(filename, workdir=".")
+    filepath = joinpath(workdir, filename)
+    data_start = false
+    pulse_count = 0
+
+    open(filepath, "r") do io
+        for line in eachline(io)
+            if !data_start
+                if occursin("Time,MeasResult1_value,MeasResult2_value", line)
+                    data_start = true
+                end
+                continue
+            end
+            if !isempty(strip(line)) && occursin(',', line)
+                pulse_count += 1
+            end
+        end
+    end
+
+    amplitude_match = match(r"(\d+(?:\.\d+)?)V", filename)
+    amplitude = amplitude_match !== nothing ? parse(Float64, amplitude_match.captures[1]) : 0.0
+
+    return (pulse_count=pulse_count, amplitude=amplitude)
+end
+
 """
 Read unique cycle numbers from a PUND Fatigue CSV file.
 The CSV has columns: Cycle,Time_s,Voltage_V,Current_A

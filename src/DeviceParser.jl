@@ -21,9 +21,9 @@ const KNOWN_PROJECTS = AbstractProject[]
 const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
 # Interface (implemented by each project via multiple dispatch):
-#   accepts_file(::P, filename) → Bool
 #   parse_device_info(::P, filename) → DeviceInfo
 #   detect_kind(::P, filename) → Symbol
+#   interpret_file(::P, indexed) → Vector{MeasurementItem}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   expand_measurement(::P, meas) → Vector{MeasurementInfo}
@@ -40,6 +40,7 @@ load_plot_input_for_file(::AbstractProject, path::AbstractString, kind::Union{Sy
 draw_plot_from_input(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = nothing
 load_plot_input_for_files(::AbstractProject, paths, combined_kind; kwargs...) = nothing
 draw_plot_from_input_for_files(::AbstractProject, combined_kind, loaded; kwargs...) = nothing
+interpret_file(::AbstractProject, indexed::IndexedCsvFile; kwargs...) = MeasurementItem[]
 
 # ---------------------------------------------------------------------------
 # DeviceInfo
@@ -80,7 +81,7 @@ struct MeasurementHierarchy
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
     has_device_metadata::Bool
     project::AbstractProject
-    skipped_count::Int          # CSV files rejected by accepts_file in last scan
+    skipped_count::Int          # CSV files not interpreted into visible measurements in last scan
 end
 
 HierarchyNode(name::String, kind::Symbol) = HierarchyNode(name, kind, HierarchyNode[], MeasurementInfo[])
@@ -325,6 +326,47 @@ function MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::
     return mh
 end
 
+function MeasurementHierarchy(root_path::String, has_dev_metadata::Bool, project::AbstractProject, skipped_count::Int=0)
+    return MeasurementHierarchy(
+        HierarchyNode("/", :root),
+        MeasurementInfo[],
+        root_path,
+        Dict{Tuple{Vararg{String}},HierarchyNode}(),
+        has_dev_metadata,
+        project,
+        skipped_count,
+    )
+end
+
+function _ensure_hierarchy_child!(
+    parent::HierarchyNode,
+    index::Dict{Tuple{Vararg{String}},HierarchyNode},
+    name::String,
+    kind::Symbol,
+    path_tuple::Tuple{Vararg{String}},
+)
+    existing = get(index, path_tuple, nothing)
+    if existing !== nothing
+        return existing
+    end
+    node = HierarchyNode(name, kind)
+    push!(parent.children, node)
+    index[path_tuple] = node
+    return node
+end
+
+function insert_measurement!(mh::MeasurementHierarchy, measurement::MeasurementInfo)
+    parent = mh.root
+    for (i, seg) in enumerate(measurement.device_info.location)
+        kind = i == length(measurement.device_info.location) ? :leaf : :level
+        path_tuple = Tuple(measurement.device_info.location[1:i])
+        parent = _ensure_hierarchy_child!(parent, mh.index, seg, kind, path_tuple)
+    end
+    push!(parent.measurements, measurement)
+    push!(mh.all_measurements, measurement)
+    return measurement
+end
+
 # Backwards-compat convenience constructors
 MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String) =
     MeasurementHierarchy(measurements, root_path, false, _default_project[], 0)
@@ -476,44 +518,81 @@ function _lookup_device_params(meta::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}
     return isempty(merged) ? nothing : merged
 end
 
-function _auto_detect_project(root_path::String)
-    for (r, _, files) in walkdir(root_path)
-        for file in files
-            endswith(lowercase(file), ".csv") || continue
-            for proj in KNOWN_PROJECTS
-                accepts_file(proj, file) && return proj
-            end
-        end
-    end
-    return nothing
-end
-
-function _resolve_scan_project(root_path::String, project::Union{AbstractProject,Nothing})
-    return if project !== nothing
-        project
-    else
-        p = _auto_detect_project(root_path)
-        p !== nothing ? p : _default_project[]
-    end
-end
+_resolve_scan_project(project::Union{AbstractProject,Nothing}) = project !== nothing ? project : _default_project[]
 
 function _load_scan_metadata(root_path::String)
     meta_path = joinpath(root_path, "device_info.txt")
     return isfile(meta_path) ? _load_device_info_txt(meta_path) : nothing
 end
 
-function _scan_accepted_csv!(measurements::Vector{MeasurementInfo}, proj::AbstractProject, filepath::String, meta)
-    measurement_info = MeasurementInfo(filepath, proj)
-    expanded = expand_measurement(proj, measurement_info)
-    for m in expanded
-        if meta !== nothing
-            dev_params = _lookup_device_params(meta, m.device_info.location)
-            if dev_params !== nothing
-                merge!(m.device_info.parameters, dev_params)
+function build_clean_title(
+    project::AbstractProject,
+    filename::String,
+    measurement_kind::Symbol,
+    device_info::DeviceInfo,
+    header_summary::Dict{Symbol,Any},
+)
+    exp_label = kind_label(project, measurement_kind)
+    device_label = join(device_info.location, "_")
+    date_str = ""
+    d = get(header_summary, :test_date, "")
+    if d isa AbstractString && !isempty(d)
+        date_str = try
+            parts = split(d)
+            if length(parts) >= 3
+                month = parts[2]
+                day = try
+                    parse(Int, parts[3])
+                catch
+                    nothing
+                end
+                day !== nothing ? "$(month)$(day)" : d
+            else
+                d
             end
+        catch
+            d
         end
-        push!(measurements, m)
     end
+    parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label, date_str))
+    return isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
+end
+
+function _measurement_info_from_item(item::MeasurementItem)
+    wakeup_count = get(item.parameters, :wakeup_pulse_count, nothing)
+    wakeup_count isa Int || (wakeup_count = nothing)
+    return MeasurementInfo(
+        basename(item.filepath),
+        item.filepath,
+        item.title,
+        item.kind,
+        item.timestamp,
+        DeviceInfo(copy(item.device_path), deepcopy(item.device_parameters)),
+        deepcopy(item.parameters),
+        wakeup_count,
+    )
+end
+
+function interpret_measurements(
+    project::AbstractProject,
+    indexed::IndexedCsvFile,
+    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    items = interpret_file(project, indexed; should_cancel=should_cancel)
+    if meta !== nothing
+        for item in items
+            dev_params = _lookup_device_params(meta, item.device_path)
+            dev_params !== nothing && merge!(item.device_parameters, dev_params)
+        end
+    end
+    return items
+end
+
+function _is_scan_cancel_error(err)
+    err isa ScanCancelled && return true
+    err isa CompositeException || return false
+    return any(_is_scan_cancel_error, err.exceptions)
 end
 
 function scan_directory(
@@ -523,56 +602,48 @@ function scan_directory(
     should_cancel::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::MeasurementHierarchy
-    proj = _resolve_scan_project(root_path, project)
+    proj = _resolve_scan_project(project)
     measurements = MeasurementInfo[]
-    skipped_count = 0
     meta = _load_scan_metadata(root_path)
     processed_csv = 0
+    skipped_csv = 0
     total_csv = count_first ? _count_csv(root_path; should_cancel, on_progress) : 0
     _emit_progress(on_progress;
         phase=:scanning,
         total_csv=total_csv,
         processed_csv=processed_csv,
         loaded_measurements=length(measurements),
-        skipped_csv=skipped_count,
+        skipped_csv=skipped_csv,
     )
 
-    for (root, dirs, files) in walkdir(root_path)
-        for file in files
-            _check_cancel(should_cancel)
-            if endswith(lowercase(file), ".csv")
-                filepath = joinpath(root, file)
-                processed_csv += 1
-                if !accepts_file(proj, file)
-                    skipped_count += 1
-                    _emit_progress(on_progress;
-                        phase=:scanning,
-                        total_csv=total_csv,
-                        processed_csv=processed_csv,
-                        loaded_measurements=length(measurements),
-                        skipped_csv=skipped_count,
-                        current_path=filepath,
-                    )
-                    continue
+    walk_indexed_csv_files(
+        root_path;
+        should_cancel=should_cancel,
+        on_file=(indexed) -> begin
+            processed_csv += 1
+            try
+                interpreted = interpret_measurements(proj, indexed, meta; should_cancel=should_cancel)
+                isempty(interpreted) && (skipped_csv += 1)
+                for item in interpreted
+                    push!(measurements, _measurement_info_from_item(item))
                 end
-                try
-                    _scan_accepted_csv!(measurements, proj, filepath, meta)
-                catch e
-                    @warn "Could not parse measurement file $filepath" error = e
-                end
-                _emit_progress(on_progress;
-                    phase=:scanning,
-                    total_csv=total_csv,
-                    processed_csv=processed_csv,
-                    loaded_measurements=length(measurements),
-                    skipped_csv=skipped_count,
-                    current_path=filepath,
-                )
-                yield()
+            catch e
+                _is_scan_cancel_error(e) && rethrow()
+                skipped_csv += 1
+                @warn "Could not interpret measurement file $(indexed.filepath)" error = e
             end
-        end
-    end
-    return MeasurementHierarchy(measurements, root_path, meta !== nothing, proj, skipped_count)
+            _emit_progress(on_progress;
+                phase=:scanning,
+                total_csv=total_csv,
+                processed_csv=processed_csv,
+                loaded_measurements=length(measurements),
+                skipped_csv=skipped_csv,
+                current_path=indexed.filepath,
+            )
+            yield()
+        end,
+    )
+    return MeasurementHierarchy(measurements, root_path, meta !== nothing, proj, skipped_csv)
 end
 
 """

@@ -10,6 +10,8 @@ Example:
 
 using GLMakie
 using DataPlotter: load_tase_four_terminal_iv
+include("TASE/Display.jl")
+include("TASE/Interpretation.jl")
 
 const REGEX_TASE = r"^([^_]+)_([^_]+)_([^_]+)_(\d+)_\d{8}_\d{6}_\d+K_FourTerminalIV\.csv"i
 
@@ -19,32 +21,6 @@ const REGEX_TASE = r"^([^_]+)_([^_]+)_([^_]+)_(\d+)_\d{8}_\d{6}_\d+K_FourTermina
 
 project_name(::TASEProject) = "TASE"
 project_description(::TASEProject) = "GaN TASE four-terminal IV"
-
-accepts_file(::TASEProject, filename::String) = match(REGEX_TASE, filename) !== nothing
-
-function parse_device_info(::TASEProject, filename::String)
-    m = match(REGEX_TASE, filename)
-    m === nothing && error("Unrecognized TASE filename format: $filename")
-    chip, facet, device_type, device_id = String.(m.captures)
-    return DeviceInfo([chip, facet, device_type, device_id])
-end
-
-detect_kind(::TASEProject, filename::String)::Symbol =
-    match(REGEX_TASE, filename) !== nothing ? :four_terminal_iv : :unknown
-
-function kind_label(::TASEProject, kind::Symbol)::String
-    kind === :four_terminal_iv && return "Four-Terminal I-V"
-    return "Unknown"
-end
-
-function display_label(proj::TASEProject, meas::MeasurementInfo)
-    label = kind_label(proj, meas.measurement_kind)
-    temp = get(meas.parameters, :temperature_K, nothing)
-    parts = Any[meas.timestamp, label]
-    temp !== nothing && push!(parts, "$(temp)K")
-    return join(parts, " ")
-end
-
 expand_measurement(::TASEProject, meas::MeasurementInfo) = [meas]
 
 # ---------------------------------------------------------------------------

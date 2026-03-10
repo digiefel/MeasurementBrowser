@@ -125,9 +125,7 @@ end
 
 function _project_status_text(ui_state)
     if haskey(ui_state, :project)
-        pname = project_name(ui_state[:project])
-        skipped = get(ui_state, :skipped_count, 0)
-        return skipped > 0 ? "Active: $pname ($skipped skipped)" : "Active: $pname"
+        return "Active: $(project_name(ui_state[:project]))"
     end
     return "No project loaded"
 end
@@ -153,6 +151,7 @@ function _init_scan_state!(ui_state)
     ui_state[:scan_cancel_token] = nothing
     ui_state[:scan_path] = ""
     ui_state[:scan_persist_on_success] = false
+    ui_state[:scan_restore_state] = nothing
     ui_state[:pending_scan_path] = nothing
     ui_state[:pending_scan_persist_on_success] = false
 end
@@ -490,7 +489,86 @@ function _request_scan_cancel!(ui_state)
     ui_state[:scan_state] = :canceling
 end
 
+function _capture_scan_restore_state!(ui_state)
+    keys_to_capture = (
+        :selected_devices,
+        :selected_measurements,
+        :selected_path,
+        :plot_figure,
+        :_last_plot_key,
+        :hierarchy_root,
+        :all_measurements,
+        :root_path,
+        :has_device_metadata,
+        :project,
+        :skipped_count,
+        :device_metadata_keys,
+        :scan_hierarchy,
+    )
+
+    snapshot = Dict{Symbol,Tuple{Bool,Any}}()
+    for key in keys_to_capture
+        if haskey(ui_state, key)
+            value = ui_state[key]
+            if value isa Vector
+                value = copy(value)
+            end
+            snapshot[key] = (true, value)
+        else
+            snapshot[key] = (false, nothing)
+        end
+    end
+    ui_state[:scan_restore_state] = snapshot
+end
+
+function _restore_scan_restore_state!(ui_state)
+    snapshot = get(ui_state, :scan_restore_state, nothing)
+    snapshot === nothing && return
+    for (key, (present, value)) in snapshot
+        if present
+            ui_state[key] = value
+        elseif haskey(ui_state, key)
+            delete!(ui_state, key)
+        end
+    end
+    ui_state[:scan_restore_state] = nothing
+end
+
+function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
+    _clear_plot_jobs!(ui_state)
+    ui_state[:selected_devices] = HierarchyNode[]
+    ui_state[:selected_measurements] = MeasurementInfo[]
+    delete!(ui_state, :plot_figure)
+    delete!(ui_state, :_last_plot_key)
+
+    hierarchy = MeasurementHierarchy(path, has_device_metadata, proj, 0)
+    ui_state[:scan_hierarchy] = hierarchy
+    ui_state[:hierarchy_root] = hierarchy.root
+    ui_state[:all_measurements] = hierarchy.all_measurements
+    ui_state[:root_path] = path
+    ui_state[:has_device_metadata] = has_device_metadata
+    ui_state[:project] = proj
+    ui_state[:skipped_count] = 0
+    ui_state[:device_metadata_keys] = Symbol[]
+end
+
+function _apply_scan_items!(ui_state, items::Vector{MeasurementItem})
+    hierarchy = get(ui_state, :scan_hierarchy, nothing)
+    hierarchy === nothing && return
+
+    metadata_keys = Set(get(ui_state, :device_metadata_keys, Symbol[]))
+    for item in items
+        measurement = _measurement_info_from_item(item)
+        insert_measurement!(hierarchy, measurement)
+        for key in keys(item.device_parameters)
+            push!(metadata_keys, key)
+        end
+    end
+    ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
+end
+
 function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
+    _capture_scan_restore_state!(ui_state)
     scan_id = get(ui_state, :scan_seq, 0) + 1
     ui_state[:scan_seq] = scan_id
     ui_state[:active_scan_id] = scan_id
@@ -510,16 +588,101 @@ function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
 
     Base.Threads.@spawn begin
         try
-            hierarchy = scan_directory(
+            proj = preferred_project === nothing ? _default_project[] : preferred_project
+            meta = _load_scan_metadata(path)
+            put!(events, (
+                kind=:scan_start,
+                scan_id=scan_id,
+                path=path,
+                project=proj,
+                has_device_metadata=meta !== nothing,
+            ))
+
+            total_csv = _count_csv(
                 path;
-                project=preferred_project,
-                on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
                 should_cancel=() -> cancel_token[],
-                count_first=true,
+                on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
             )
-            put!(events, (kind=:result, scan_id=scan_id, path=path, hierarchy=hierarchy))
+            processed_csv = Base.Threads.Atomic{Int}(0)
+            loaded_measurements = Base.Threads.Atomic{Int}(0)
+            skipped_csv = Base.Threads.Atomic{Int}(0)
+            worker_limit = Base.Semaphore(max(1, min(Base.Threads.nthreads(), 4)))
+
+            @sync begin
+                walk_indexed_csv_files(
+                    path;
+                    should_cancel=() -> cancel_token[],
+                    on_file=(indexed) -> begin
+                        Base.Threads.atomic_add!(processed_csv, 1)
+                        kind = detect_kind(proj, indexed.filename)
+
+                        function emit_items(items)
+                            if isempty(items)
+                                Base.Threads.atomic_add!(skipped_csv, 1)
+                            else
+                                Base.Threads.atomic_add!(loaded_measurements, length(items))
+                                put!(events, (kind=:items, scan_id=scan_id, items=items))
+                            end
+                            put!(events, (
+                                kind=:progress,
+                                scan_id=scan_id,
+                                progress=(
+                                    phase=:scanning,
+                                    total_csv=total_csv,
+                                    processed_csv=processed_csv[],
+                                    loaded_measurements=loaded_measurements[],
+                                    skipped_csv=skipped_csv[],
+                                    current_path=indexed.filepath,
+                                ),
+                            ))
+                        end
+
+                        if kind === :pund_fatigue
+                            Base.acquire(worker_limit)
+                            Base.Threads.@spawn begin
+                                try
+                                    items = try
+                                        interpret_measurements(proj, indexed, meta; should_cancel=() -> cancel_token[])
+                                    catch e
+                                        _is_scan_cancel_error(e) && rethrow()
+                                        @warn "Could not interpret measurement file $(indexed.filepath)" error = e
+                                        MeasurementItem[]
+                                    end
+                                    emit_items(items)
+                                finally
+                                    Base.release(worker_limit)
+                                end
+                            end
+                        else
+                            items = try
+                                interpret_measurements(proj, indexed, meta; should_cancel=() -> cancel_token[])
+                            catch e
+                                _is_scan_cancel_error(e) && rethrow()
+                                @warn "Could not interpret measurement file $(indexed.filepath)" error = e
+                                MeasurementItem[]
+                            end
+                            emit_items(items)
+                        end
+
+                        put!(events, (
+                            kind=:progress,
+                            scan_id=scan_id,
+                            progress=(
+                                phase=:scanning,
+                                total_csv=total_csv,
+                                processed_csv=processed_csv[],
+                                loaded_measurements=loaded_measurements[],
+                                skipped_csv=skipped_csv[],
+                                current_path=indexed.filepath,
+                            ),
+                        ))
+                    end,
+                )
+            end
+
+            put!(events, (kind=:result, scan_id=scan_id, path=path))
         catch err
-            if err isa ScanCancelled
+            if _is_scan_cancel_error(err)
                 put!(events, (kind=:canceled, scan_id=scan_id))
             else
                 put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
@@ -585,18 +748,27 @@ function _poll_scan_events!(ui_state)
                 :skipped_csv => p.skipped_csv,
                 :current_path => p.current_path,
             )
+            ui_state[:skipped_count] = p.skipped_csv
             ui_state[:scan_state] = p.phase
+        elseif msg.kind == :scan_start
+            _begin_incremental_scan!(ui_state, msg.path, msg.project, msg.has_device_metadata)
+        elseif msg.kind == :items
+            _apply_scan_items!(ui_state, msg.items)
         elseif msg.kind == :result
-            _apply_scan_result!(ui_state, msg.path, msg.hierarchy)
+            hierarchy = get(ui_state, :scan_hierarchy, nothing)
+            hierarchy !== nothing && sort!(hierarchy)
             if get(ui_state, :scan_persist_on_success, false)
                 _persist_preferences!(ui_state; path=msg.path)
             end
+            ui_state[:scan_restore_state] = nothing
             ui_state[:scan_state] = :done
             _finalize_scan!(ui_state)
         elseif msg.kind == :canceled
+            _restore_scan_restore_state!(ui_state)
             ui_state[:scan_state] = :canceled
             _finalize_scan!(ui_state)
         elseif msg.kind == :error
+            _restore_scan_restore_state!(ui_state)
             ui_state[:scan_state] = :error
             ui_state[:scan_error] = sprint(showerror, msg.error, msg.bt)
             @error "Scan job failed" exception = (msg.error, msg.bt)
@@ -605,7 +777,7 @@ function _poll_scan_events!(ui_state)
     end
 end
 
-# Return the preferred AbstractProject (nothing = auto-detect)
+# Return the preferred AbstractProject (nothing = use default project)
 function _preferred_project(ui_state)
     pref = get(ui_state, :project_preference, "auto")
     pref == "auto" && return nothing
@@ -618,28 +790,6 @@ end
 # ---------------------------------------------------------------------------
 # Centralised scan helper (used by menu bar, project window, initial load)
 # ---------------------------------------------------------------------------
-
-function _apply_scan_result!(ui_state, path::String, hierarchy)
-    _clear_plot_jobs!(ui_state)
-    ui_state[:selected_devices] = HierarchyNode[]
-    ui_state[:selected_measurements] = MeasurementInfo[]
-    delete!(ui_state, :plot_figure)
-    delete!(ui_state, :_last_plot_key)
-
-    ui_state[:hierarchy_root] = hierarchy.root
-    ui_state[:all_measurements] = hierarchy.all_measurements
-    ui_state[:root_path] = path
-    ui_state[:has_device_metadata] = hierarchy.has_device_metadata
-    ui_state[:project] = hierarchy.project
-    ui_state[:skipped_count] = hierarchy.skipped_count
-    all_params = Set{Symbol}()
-    for m in hierarchy.all_measurements
-        for k in keys(m.device_info.parameters)
-            push!(all_params, k)
-        end
-    end
-    ui_state[:device_metadata_keys] = sort!(collect(all_params); by=String)
-end
 
 function _scan!(ui_state, path::String; persist_on_success=false, force_restart=false)
     _queue_scan!(ui_state, path; persist_on_success, force_restart)
@@ -1489,12 +1639,15 @@ function render_project_window(ui_state)
         pref = get(ui_state, :project_preference, "auto")
         changed = false
 
-        if ig.RadioButton("Auto-detect", pref == "auto")
+        default_project = something(_default_project[], RUO2_PROJECT)
+        default_label = "Default ($(project_name(default_project)))"
+
+        if ig.RadioButton(default_label, pref == "auto")
             ui_state[:project_preference] = "auto"
             changed = true
         end
         ig.SameLine()
-        _helpmarker("Detect project automatically from the first matching CSV file found in the folder")
+        _helpmarker("Use the default project without trying to infer the project from the files in the folder.")
 
         for p in KNOWN_PROJECTS
             pn = project_name(p)

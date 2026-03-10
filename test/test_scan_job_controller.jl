@@ -91,4 +91,98 @@ using Test
     @test ui4[:pending_scan_path] == "/tmp/active"
     @test ui4[:scan_state] == :canceling
     @test token4[] == true
+
+    # Incremental scan events should populate live state before completion.
+    ui5 = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui5)
+    MeasurementBrowser._init_plot_state!(ui5)
+    ui5[:active_scan_id] = 7
+    ui5[:scan_events] = Channel{NamedTuple}(8)
+    ui5[:scan_persist_on_success] = false
+
+    indexed = IndexedCsvFile(
+        "/tmp/file.csv",
+        "/tmp/file.csv",
+        "file.csv",
+        nothing,
+        Dict{Symbol,Any}(),
+    )
+    item = MeasurementItem(
+        "/tmp/file.csv",
+        "/tmp/file.csv",
+        "/tmp/file.csv",
+        :pund,
+        ["Chip", "Block", "D1"],
+        nothing,
+        Dict{Symbol,Any}(:area_um2 => 10.0),
+        Dict{Symbol,Any}(:voltage_V => 3.0),
+        "FE PUND Chip_Block_D1",
+    )
+
+    put!(ui5[:scan_events], (
+        kind=:scan_start,
+        scan_id=7,
+        path="/tmp",
+        project=MeasurementBrowser.RUO2_PROJECT,
+        has_device_metadata=true,
+    ))
+    put!(ui5[:scan_events], (kind=:items, scan_id=7, items=MeasurementItem[item]))
+    put!(ui5[:scan_events], (
+        kind=:progress,
+        scan_id=7,
+        progress=(
+            phase=:scanning,
+            total_csv=1,
+            processed_csv=1,
+            loaded_measurements=1,
+            skipped_csv=0,
+            current_path="/tmp/file.csv",
+        ),
+    ))
+    put!(ui5[:scan_events], (kind=:result, scan_id=7, path="/tmp"))
+    MeasurementBrowser._poll_scan_events!(ui5)
+    @test ui5[:scan_state] == :done
+    @test length(ui5[:all_measurements]) == 1
+    @test ui5[:all_measurements][1].filepath == "/tmp/file.csv"
+    @test ui5[:device_metadata_keys] == [:area_um2]
+
+    # Canceling an incremental rescan should restore the previous visible state.
+    ui6 = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui6)
+    MeasurementBrowser._init_plot_state!(ui6)
+    old_measurement = MeasurementInfo(
+        "old.csv",
+        "/old/old.csv",
+        "old",
+        :pund,
+        nothing,
+        DeviceInfo(["Chip", "Block", "D1"], Dict{Symbol,Any}()),
+        Dict{Symbol,Any}(:voltage_V => 2.0),
+        nothing,
+    )
+    old_hierarchy = MeasurementHierarchy([old_measurement], "/old", false, MeasurementBrowser.RUO2_PROJECT, 0)
+    ui6[:scan_hierarchy] = old_hierarchy
+    ui6[:hierarchy_root] = old_hierarchy.root
+    ui6[:all_measurements] = old_hierarchy.all_measurements
+    ui6[:root_path] = "/old"
+    ui6[:project] = MeasurementBrowser.RUO2_PROJECT
+    ui6[:device_metadata_keys] = Symbol[]
+    ui6[:active_scan_id] = 9
+    ui6[:scan_events] = Channel{NamedTuple}(8)
+    ui6[:scan_persist_on_success] = false
+    MeasurementBrowser._capture_scan_restore_state!(ui6)
+
+    put!(ui6[:scan_events], (
+        kind=:scan_start,
+        scan_id=9,
+        path="/new",
+        project=MeasurementBrowser.RUO2_PROJECT,
+        has_device_metadata=false,
+    ))
+    put!(ui6[:scan_events], (kind=:items, scan_id=9, items=MeasurementItem[item]))
+    put!(ui6[:scan_events], (kind=:canceled, scan_id=9))
+    MeasurementBrowser._poll_scan_events!(ui6)
+    @test ui6[:root_path] == "/old"
+    @test length(ui6[:all_measurements]) == 1
+    @test ui6[:all_measurements][1].filepath == "/old/old.csv"
 end
