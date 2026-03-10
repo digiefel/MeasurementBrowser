@@ -27,20 +27,28 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   expand_measurement(::P, meas) → Vector{MeasurementInfo}
-#   load_plot_input_for_file(::P, path, kind; kwargs...) → Any
-#   draw_plot_from_input(::P, kind, loaded; kwargs...) → Union{Figure,Nothing}
-#   load_plot_input_for_files(::P, paths, combined_kind; kwargs...) → Any
-#   draw_plot_from_input_for_files(::P, combined_kind, loaded; kwargs...) → Union{Figure,Nothing}
-#   figure_for_file(::P, path, kind; kwargs...) → Union{Figure,Nothing}
-#   figure_for_files(::P, paths, combined_kind; kwargs...) → Union{Figure,Nothing}
+#   load_plot_for_file(::P, path, kind; kwargs...) → Any
+#   analyze_plot_for_file(::P, kind, loaded; kwargs...) → Any
+#   draw_plot_for_file(::P, kind, analyzed; kwargs...) → Union{Figure,Nothing}
+#   load_plot_for_files(::P, paths, combined_kind; kwargs...) → Any
+#   analyze_plot_for_files(::P, combined_kind, loaded; kwargs...) → Any
+#   draw_plot_for_files(::P, combined_kind, analyzed; kwargs...) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
 
-load_plot_input_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
-draw_plot_from_input(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = nothing
-load_plot_input_for_files(::AbstractProject, paths, combined_kind; kwargs...) = nothing
-draw_plot_from_input_for_files(::AbstractProject, combined_kind, loaded; kwargs...) = nothing
+load_plot_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
+analyze_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = loaded
+draw_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, analyzed; kwargs...) = nothing
+load_plot_for_files(::AbstractProject, paths, combined_kind; kwargs...) = nothing
+analyze_plot_for_files(::AbstractProject, combined_kind, loaded; kwargs...) = loaded
+draw_plot_for_files(::AbstractProject, combined_kind, analyzed; kwargs...) = nothing
 interpret_file(::AbstractProject, indexed::IndexedCsvFile; kwargs...) = MeasurementItem[]
+
+struct PlotCancelled <: Exception end
+
+function _check_plot_cancel(should_cancel::Union{Nothing,Function})
+    should_cancel !== nothing && should_cancel() && throw(PlotCancelled())
+end
 
 # ---------------------------------------------------------------------------
 # DeviceInfo

@@ -11,7 +11,6 @@ using Statistics: mean
 include("MakieIntegration.jl")
 using .MakieImguiIntegration
 
-using DataPlotter
 using TOML
 using NativeFileDialog: pick_folder
 
@@ -162,18 +161,21 @@ function _init_plot_state!(ui_state)
     ui_state[:plot_seq] = 0
     ui_state[:active_plot_id] = 0
     ui_state[:plot_events] = nothing
+    ui_state[:plot_cancel_token] = nothing
     ui_state[:active_plot_request] = nothing
     ui_state[:pending_plot_request] = nothing
+    ui_state[:plot_runtime_warmed] = false
 end
 
 function _plot_running(ui_state)
-    return get(ui_state, :plot_state, :idle) in (:loading, :building, :canceling)
+    return get(ui_state, :plot_state, :idle) in (:loading, :analyzing, :drawing, :canceling)
 end
 
 function _clear_plot_jobs!(ui_state)
     ui_state[:plot_state] = :idle
     ui_state[:plot_error] = ""
     ui_state[:plot_events] = nothing
+    ui_state[:plot_cancel_token] = nothing
     ui_state[:active_plot_request] = nothing
     ui_state[:pending_plot_request] = nothing
     ui_state[:active_plot_id] = get(ui_state, :active_plot_id, 0) + 1
@@ -181,6 +183,8 @@ end
 
 function _request_plot_cancel!(ui_state)
     _plot_running(ui_state) || return
+    token = get(ui_state, :plot_cancel_token, nothing)
+    token !== nothing && Base.Threads.atomic_xchg!(token, true)
     ui_state[:plot_state] = :canceling
 end
 
@@ -271,27 +275,56 @@ function _launch_plot_job!(ui_state, request::Dict{Symbol,Any})
 
     events = Channel{NamedTuple}(8)
     ui_state[:plot_events] = events
+    cancel_token = Base.Threads.Atomic{Bool}(false)
+    ui_state[:plot_cancel_token] = cancel_token
 
     Base.Threads.@spawn begin
         try
             loaded = if request[:kind] == :single_file
-                load_plot_input_for_file(
+                load_plot_for_file(
                     request[:project],
                     request[:filepath],
                     request[:measurement_kind];
                     device_params=request[:device_params],
+                    should_cancel=() -> cancel_token[],
                 )
             else
-                load_plot_input_for_files(
+                load_plot_for_files(
                     request[:project],
                     request[:paths],
                     request[:combined_kind];
                     device_params_list=request[:device_params_list],
+                    should_cancel=() -> cancel_token[],
                 )
             end
-            put!(events, (kind=:loaded, plot_id=plot_id, loaded=loaded))
+            cancel_token[] && throw(PlotCancelled())
+            put!(events, (kind=:loaded, plot_id=plot_id))
+            analyzed = if request[:kind] == :single_file
+                analyze_plot_for_file(
+                    request[:project],
+                    request[:measurement_kind],
+                    loaded;
+                    DEBUG=request[:debug_plot_mode],
+                    device_params=request[:device_params],
+                    should_cancel=() -> cancel_token[],
+                )
+            else
+                analyze_plot_for_files(
+                    request[:project],
+                    request[:combined_kind],
+                    loaded;
+                    DEBUG=request[:debug_plot_mode],
+                    should_cancel=() -> cancel_token[],
+                )
+            end
+            cancel_token[] && throw(PlotCancelled())
+            put!(events, (kind=:analyzed, plot_id=plot_id, analyzed=analyzed))
         catch err
-            put!(events, (kind=:error, plot_id=plot_id, error=err, bt=catch_backtrace()))
+            if err isa PlotCancelled
+                put!(events, (kind=:canceled, plot_id=plot_id))
+            else
+                put!(events, (kind=:error, plot_id=plot_id, error=err, bt=catch_backtrace()))
+            end
         finally
             close(events)
         end
@@ -318,6 +351,7 @@ end
 
 function _finalize_plot_job!(ui_state)
     ui_state[:plot_events] = nothing
+    ui_state[:plot_cancel_token] = nothing
     ui_state[:active_plot_request] = nothing
     pending_request = get(ui_state, :pending_plot_request, nothing)
     ui_state[:pending_plot_request] = nothing
@@ -360,27 +394,32 @@ function _poll_plot_events!(ui_state)
         msg.plot_id == get(ui_state, :active_plot_id, 0) || continue
 
         if msg.kind == :loaded
+            ui_state[:plot_state] = :analyzing
+        elseif msg.kind == :analyzed
             request = get(ui_state, :active_plot_request, nothing)
             request === nothing && continue
-            ui_state[:plot_state] = :building
+            ui_state[:plot_state] = :drawing
             fig = if request[:kind] == :single_file
-                draw_plot_from_input(
+                draw_plot_for_file(
                     request[:project],
                     request[:measurement_kind],
-                    msg.loaded;
+                    msg.analyzed;
                     DEBUG=request[:debug_plot_mode],
                     device_params=request[:device_params],
                 )
             else
-                draw_plot_from_input_for_files(
+                draw_plot_for_files(
                     request[:project],
                     request[:combined_kind],
-                    msg.loaded;
+                    msg.analyzed;
                     DEBUG=request[:debug_plot_mode],
                 )
             end
             _apply_plot_result!(ui_state, request, fig)
             ui_state[:plot_state] = :done
+            _finalize_plot_job!(ui_state)
+        elseif msg.kind == :canceled
+            ui_state[:plot_state] = :canceled
             _finalize_plot_job!(ui_state)
         elseif msg.kind == :error
             ui_state[:plot_state] = :error
@@ -471,11 +510,48 @@ function _render_plot_indicator!(ui_state)
     state = get(ui_state, :plot_state, :idle)
     if state == :loading
         ig.TextDisabled("Plot: loading data...")
-    elseif state == :building
-        ig.TextDisabled("Plot: building figure...")
+    elseif state == :analyzing
+        ig.TextDisabled("Plot: analyzing data...")
+    elseif state == :drawing
+        ig.TextDisabled("Plot: drawing figure...")
     elseif state == :canceling
         ig.TextDisabled("Plot: canceling...")
     end
+end
+
+function _plot_runtime_warmup_figure()
+    fig = Figure(size=(64, 48))
+    ax1 = Axis(fig[1, 1], xlabel="x", ylabel="y", title="warm")
+    ax2 = Axis(fig[1, 2], xlabel="x", ylabel="y")
+    lineplot = lines!(ax1, [0.0, 1.0], [0.0, 1.0], color=:blue, linewidth=2)
+    scatter!(ax1, [0.5], [0.5], color=:red, markersize=8)
+    lines!(ax2, [0.0, 1.0], [1.0, 0.0], color=:green, linewidth=2)
+    Legend(fig[0, 1], [lineplot], ["warm"], tellwidth=false, tellheight=false)
+    return fig
+end
+
+function _ensure_plot_runtime_warmed!(ui_state)
+    get(ui_state, :plot_runtime_warmed, false) && return
+
+    flags = ig.ImGuiWindowFlags_NoDecoration |
+            ig.ImGuiWindowFlags_NoInputs |
+            ig.ImGuiWindowFlags_NoBackground |
+            ig.ImGuiWindowFlags_NoSavedSettings |
+            ig.ImGuiWindowFlags_NoNav |
+            ig.ImGuiWindowFlags_NoFocusOnAppearing
+    ig.SetNextWindowPos((-10_000.0, -10_000.0), ig.ImGuiCond_Always)
+    ig.SetNextWindowSize((8.0, 8.0), ig.ImGuiCond_Always)
+
+    if ig.Begin("###plot_runtime_warmup", C_NULL, flags)
+        fig = get(ui_state, :plot_runtime_warmup_figure, nothing)
+        if fig === nothing
+            fig = _plot_runtime_warmup_figure()
+            ui_state[:plot_runtime_warmup_figure] = fig
+        end
+        MakieFigure("_plot_runtime_warmup", fig; auto_resize_x=false, auto_resize_y=false, tooltip=false, stats=false)
+        ui_state[:plot_runtime_warmed] = true
+    end
+    ig.End()
 end
 
 function _scan_running(ui_state)
@@ -1418,23 +1494,24 @@ function _compatible_measurements(proj, measurements::Vector{MeasurementInfo}, c
     return filter(m -> m.measurement_kind in compatible_kinds(proj, combined_type), measurements)
 end
 
-function _build_combined_plot_figure(proj, measurements::Vector{MeasurementInfo}, combined_type)
+function _queue_combined_plot_request!(ui_state, proj, measurements::Vector{MeasurementInfo}, combined_type;
+                                       target::Symbol, target_id::String, plot_key=nothing)
     compatible = _compatible_measurements(proj, measurements, combined_type)
-    length(compatible) < 2 && return nothing, compatible
-
-    try
-        paths = [m.filepath for m in compatible]
-        dev_params = [merge(m.device_info.parameters, m.parameters) for m in compatible]
-        fig = figure_for_files(proj, paths, combined_type; device_params_list=dev_params)
-        return fig, compatible
-    catch err
-        @warn "Combined plot generation failed" error = err
-        return nothing, compatible
-    end
+    length(compatible) < 2 && return compatible
+    request = _combined_plot_job_request(
+        ui_state,
+        proj,
+        combined_type,
+        compatible,
+        target;
+        target_id=target_id,
+        plot_key=plot_key,
+    )
+    _queue_plot_job!(ui_state, request)
+    return compatible
 end
 
-function _open_combined_plot_window!(ui_state, fig, combined_type)
-    fig === nothing && return
+function _open_combined_plot_window!(ui_state, proj, measurements::Vector{MeasurementInfo}, combined_type)
     open_plots = get!(ui_state, :open_plot_windows) do
         Vector{Dict{Symbol,Any}}()
     end
@@ -1442,11 +1519,15 @@ function _open_combined_plot_window!(ui_state, fig, combined_type)
         0
     end
     ui_state[:_combined_plot_counter] = counter + 1
-    push!(open_plots, Dict(
-        :figure => fig,
+    target_id = "combined_$(counter + 1)"
+    entry = Dict(
         :title => "Combined: $(string(combined_type))",
-        :id => "combined_$(counter + 1)",
-    ))
+        :id => target_id,
+        :target_id => target_id,
+        :combined_kind => combined_type,
+    )
+    push!(open_plots, entry)
+    _queue_combined_plot_request!(ui_state, proj, measurements, combined_type; target=:extra, target_id)
 end
 
 function render_plot_window(ui_state)
@@ -1463,20 +1544,10 @@ function render_plot_window(ui_state)
 
         compatible = _compatible_measurements(proj, selected_measurements, combined_type)
         key = (combined_type, sort([m.filepath for m in compatible]))
-        if combined_type === :tlm_analysis && length(compatible) >= 2
-            request = _combined_plot_job_request(
-                ui_state,
-                proj,
-                combined_type,
-                compatible,
-                :main;
-                target_id="main",
-                plot_key=key,
-            )
-            _queue_plot_job!(ui_state, request)
+        if length(compatible) >= 2
+            _queue_combined_plot_request!(ui_state, proj, compatible, combined_type; target=:main, target_id="main", plot_key=key)
         else
-            fig, _ = _build_combined_plot_figure(proj, selected_measurements, combined_type)
-            _set_main_plot_figure!(ui_state, fig, key)
+            _set_main_plot_figure!(ui_state, nothing, key)
         end
     elseif length(selected_measurements) == 1
         _queue_main_plot_request!(ui_state, proj, selected_measurements[1])
@@ -1506,7 +1577,7 @@ function render_plot_window(ui_state)
                     elseif combined_type === :pund_fatigue
                         ig.TextDisabled("PUND Fatigue requires ≥2 PUND measurements")
                     end
-                elseif combined_type === :tlm_analysis && _plot_target_loading(ui_state, :main; target_id="main")
+                elseif _plot_target_loading(ui_state, :main; target_id="main")
                     ig.TextDisabled("Loading combined plot...")
                 else
                     ig.TextColored((1.0, 0.4, 0.4, 1.0), "Combined plot generation failed")
@@ -1591,8 +1662,7 @@ function render_combined_plots_window(ui_state)
         end
         if can_generate && ig.BeginPopupContextItem()
             if ig.MenuItem("Open in New Window")
-                fig, _ = _build_combined_plot_figure(proj, selected_measurements, current_type)
-                _open_combined_plot_window!(ui_state, fig, current_type)
+                _open_combined_plot_window!(ui_state, proj, compatible_measurements, current_type)
             end
             ig.EndPopup()
         end
@@ -1843,15 +1913,21 @@ function render_additional_plot_windows(ui_state)
     to_keep = Vector{Dict{Symbol,Any}}()
     for entry in open_plots
         filepath = get(entry, :filepath, "")
-        # Support figure-only entries (no filepath)
-        if isempty(filepath) && haskey(entry, :figure)
+        if isempty(filepath) && haskey(entry, :combined_kind)
             title = get(entry, :title, "Combined Plot")
             id = get(entry, :id, "combined_plot")
+            target_id = string(get(entry, :target_id, id))
             open_ref = Ref(true)
             if ig.Begin("Plot: $title###plot_window_$id", open_ref)
-                f = entry[:figure]
-                _time!(ui_state, :makie_fig) do
-                    MakieFigure("measurement_plot_$id", f; auto_resize_x=true, auto_resize_y=true)
+                if haskey(entry, :figure)
+                    f = entry[:figure]
+                    _time!(ui_state, :makie_fig) do
+                        MakieFigure("measurement_plot_$id", f; auto_resize_x=true, auto_resize_y=true)
+                    end
+                elseif _plot_target_loading(ui_state, :extra; target_id=target_id)
+                    ig.TextDisabled("Loading plot...")
+                else
+                    ig.Text("No plot available")
                 end
                 ig.Separator()
                 ig.TextDisabled(title)
@@ -1989,6 +2065,9 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         if setup_layout[]
             setup_layout[] = false
             _setup_docking_layout!(dockspace_id)
+        end
+        _time!(ui_state, :plot_warmup) do
+            _ensure_plot_runtime_warmed!(ui_state)
         end
         _time!(ui_state, :device_tree) do
             render_selection_window(ui_state)

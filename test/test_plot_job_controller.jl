@@ -20,7 +20,7 @@ using Dates
         :device_params => Dict{Symbol,Any}(),
     )
     put!(ui[:plot_events], (kind=:error, plot_id=1, error=ErrorException("stale"), bt=nothing))
-    put!(ui[:plot_events], (kind=:loaded, plot_id=2, loaded=nothing))
+    put!(ui[:plot_events], (kind=:analyzed, plot_id=2, analyzed=nothing))
     MeasurementBrowser._poll_plot_events!(ui)
     @test ui[:plot_state] == :done
     @test ui[:plot_error] == ""

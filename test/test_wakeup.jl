@@ -31,7 +31,6 @@ using DataFrames
 using Dates
 
 using DataLoader
-using DataPlotter
 using MeasurementBrowser
 
 # include("../src/PlotGenerator.jl")
@@ -84,21 +83,19 @@ using MeasurementBrowser
             end
         end
 
-        @testset "plot_wakeup Function" begin
-            # Create test data
-            test_df = DataFrame(pulse_count=[100], amplitude=[3.0])
+        @testset "Staged wakeup plotting" begin
+            loaded = MeasurementBrowser.load_plot_for_file(RUO2_PROJECT, wakeup_path, :wakeup)
+            @test loaded !== nothing
+            @test loaded.title == "Wakeup 3V [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_10_48]"
 
-            fig = plot_wakeup(test_df, "Test Wakeup")
+            analyzed = MeasurementBrowser.analyze_plot_for_file(RUO2_PROJECT, :wakeup, loaded)
+            @test analyzed !== nothing
+            @test analyzed.pulse_count == 100
+            @test analyzed.amplitude == 3.0
+            @test analyzed.text_content == "100× wakeup pulses\namplitude = 3.0 V"
 
+            fig = MeasurementBrowser.draw_plot_for_file(RUO2_PROJECT, :wakeup, analyzed)
             @test fig !== nothing
-            # Note: We can't easily test the visual content without complex Makie internals,
-            # but we can test that it doesn't crash and returns a figure
-        end
-
-        @testset "figure_for_file(s)" begin
-            # TODO
-            # test that figure_for_file and figure_for_files return expected figures
-            @test true
         end
 
         @testset "MeasurementInfo Integration" begin
@@ -142,9 +139,14 @@ using MeasurementBrowser
     end
 
     @testset "Edge Cases" begin
-        # Test with empty DataFrame
-        empty_df = DataFrame(pulse_count=Int[], amplitude=Float64[])
-        fig = plot_wakeup(empty_df, "Empty Test")
+        empty_analyzed = (
+            df=DataFrame(pulse_count=Int[], amplitude=Float64[]),
+            title="Empty Test",
+            pulse_count=0,
+            amplitude=0.0,
+            text_content="",
+        )
+        fig = MeasurementBrowser.draw_plot_for_file(RUO2_PROJECT, :wakeup, empty_analyzed)
         @test fig === nothing
 
         # Test measurement type detection

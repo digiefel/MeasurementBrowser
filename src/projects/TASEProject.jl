@@ -9,9 +9,9 @@ Example:
 """
 
 using GLMakie
-using DataPlotter: load_tase_four_terminal_iv
 include("TASE/Display.jl")
 include("TASE/Interpretation.jl")
+include("TASE/Plotting.jl")
 
 const REGEX_TASE = r"^([^_]+)_([^_]+)_([^_]+)_(\d+)_\d{8}_\d{6}_\d+K_FourTerminalIV\.csv"i
 
@@ -23,62 +23,9 @@ project_name(::TASEProject) = "TASE"
 project_description(::TASEProject) = "GaN TASE four-terminal IV"
 expand_measurement(::TASEProject, meas::MeasurementInfo) = [meas]
 
-# ---------------------------------------------------------------------------
-# Plot dispatch
-# ---------------------------------------------------------------------------
-
-function load_plot_input_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    kind === :four_terminal_iv || return nothing
-    return load_tase_four_terminal_iv(path)
-end
-
-function draw_plot_from_input(::TASEProject, kind::Union{Symbol,Nothing}, loaded; kwargs...)
-    kind === :four_terminal_iv || return nothing
-    loaded === nothing && return nothing
-
-    try
-        return _tase_plot_four_terminal_iv(loaded.df, loaded.title)
-    catch err
-        @warn "draw_plot_from_input (TASE) failed" error = err
-        return nothing
-    end
-end
-
-function figure_for_file(proj::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    try
-        loaded = load_plot_input_for_file(proj, path, kind; kwargs...)
-        return draw_plot_from_input(proj, kind, loaded; kwargs...)
-    catch err
-        @warn "figure_for_file (TASE) failed" path kind error = err
-        return nothing
-    end
-end
-
-figure_for_files(::TASEProject, paths, combined_kind; kwargs...) = nothing
-
 combined_plot_types(::TASEProject) = [(nothing, "None", "No combined plot")]
 
 compatible_kinds(::TASEProject, ::Symbol) = Symbol[]
-
-# ---------------------------------------------------------------------------
-# Plot implementation
-# ---------------------------------------------------------------------------
-
-function _tase_plot_four_terminal_iv(df, title_str="Four-Terminal I-V")
-    nrow(df) == 0 && return nothing
-
-    current_uA = df.current_source .* 1e6   # A → µA
-    voltage_mV = df.voltage_drop .* 1e3      # V → mV
-
-    fig = Figure(size=(700, 500))
-    ax = Axis(fig[1, 1],
-        xlabel="Current (µA)",
-        ylabel="Voltage Drop (mV)",
-        title=title_str)
-    lines!(ax, current_uA, voltage_mV, linewidth=2)
-    scatter!(ax, current_uA, voltage_mV, markersize=4)
-    return fig
-end
 
 # ---------------------------------------------------------------------------
 # Registration

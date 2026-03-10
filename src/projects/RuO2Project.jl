@@ -3,13 +3,11 @@ RuO2Project.jl - Project dispatch methods for RuO2test ferroelectric measurement
 """
 
 using Dates
-using DataFrames
-using DataPlotter: load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single, load_wakeup_single,
-                   plot_fe_pund, plot_iv_sweep_single, plot_tlm_4p, plot_wakeup,
-                   load_tlm_analysis_combined, draw_tlm_analysis_combined,
-                   plot_tlm_combined, plot_tlm_temperature, plot_pund_fatigue
 include("RuO2/Display.jl")
 include("RuO2/Interpretation.jl")
+include("RuO2/PlotHelpers.jl")
+include("RuO2/PlotSingle.jl")
+include("RuO2/PlotCombined.jl")
 
 # ---------------------------------------------------------------------------
 # Regex patterns (RuO2-specific)
@@ -106,93 +104,6 @@ function _ruo2_expand_pund_fatigue(meas::MeasurementInfo)::Vector{MeasurementInf
         merge(deepcopy(meas.parameters), extra, Dict{Symbol,Any}(:fatigue_cycle => c)),
         nothing,
     ) for c in cycles]
-end
-
-# ---------------------------------------------------------------------------
-# Plot dispatch
-# ---------------------------------------------------------------------------
-
-function load_plot_input_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    device_params = get(kwargs, :device_params, nothing)
-    if kind === :pund
-        return load_fe_pund_single(path; device_params)
-    elseif kind === :iv
-        return load_iv_sweep_single(path)
-    elseif kind === :tlm4p
-        return load_tlm_4p_single(path)
-    elseif kind === :breakdown
-        loaded = load_iv_sweep_single(path)
-        loaded === nothing && return nothing
-        return (df=loaded.df, title=loaded.title * " (Breakdown)")
-    elseif kind === :wakeup
-        return load_wakeup_single(path)
-    else
-        # Keep historical fallback behavior for unknown kinds.
-        @warn "figure_for_file: Invalid measurement type. Attempting I-V sweep reader."
-        return load_iv_sweep_single(path)
-    end
-end
-
-function draw_plot_from_input(::RuO2Project, kind::Union{Symbol,Nothing}, loaded; kwargs...)
-    loaded === nothing && return nothing
-
-    if kind === :pund
-        area_um2 = hasproperty(loaded, :area_um2) ? loaded.area_um2 : nothing
-        return plot_fe_pund(loaded.df, loaded.title; area_um2, kwargs...)
-    elseif kind === :iv || kind === :breakdown || kind === :unknown || kind === nothing
-        return plot_iv_sweep_single(loaded.df, loaded.title; kwargs...)
-    elseif kind === :tlm4p
-        return plot_tlm_4p(loaded.df, loaded.title; kwargs...)
-    elseif kind === :wakeup
-        return plot_wakeup(loaded.df, loaded.title; kwargs...)
-    end
-
-    return nothing
-end
-
-function figure_for_file(proj::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...)
-    try
-        loaded = load_plot_input_for_file(proj, path, kind; kwargs...)
-        return draw_plot_from_input(proj, kind, loaded; kwargs...)
-    catch err
-        @warn "figure_for_file failed" path kind error = err
-        return nothing
-    end
-end
-
-function load_plot_input_for_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol; device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
-    if combined_kind === :tlm_analysis
-        return load_tlm_analysis_combined(paths; device_params_list, kwargs...)
-    end
-    return nothing
-end
-
-function draw_plot_from_input_for_files(::RuO2Project, combined_kind::Symbol, loaded; kwargs...)
-    if combined_kind === :tlm_analysis
-        return draw_tlm_analysis_combined(loaded; kwargs...)
-    end
-    return nothing
-end
-
-function figure_for_files(proj::RuO2Project, paths::Vector{String}, combined_kind::Symbol;
-                          device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[], kwargs...)
-    isempty(paths) && return nothing
-    try
-        if combined_kind === :tlm_analysis
-            loaded = load_plot_input_for_files(proj, paths, combined_kind; device_params_list, kwargs...)
-            return draw_plot_from_input_for_files(proj, combined_kind, loaded; kwargs...)
-        elseif combined_kind === :tlm_temperature
-            return plot_tlm_temperature(paths; device_params_list=device_params_list, kwargs...)
-        elseif combined_kind === :pund_fatigue
-            return plot_pund_fatigue(paths; device_params_list=device_params_list, kwargs...)
-        else
-            @warn "figure_for_files: Unknown combined plot kind: $combined_kind"
-            return nothing
-        end
-    catch err
-        @warn "figure_for_files failed" paths combined_kind error = err
-        return nothing
-    end
 end
 
 function combined_plot_types(::RuO2Project)

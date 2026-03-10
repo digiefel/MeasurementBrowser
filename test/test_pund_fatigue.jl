@@ -21,7 +21,7 @@ using MeasurementBrowser
         @test cycle_df.current == [1.5e-9, 2.5e-6, -2.5e-6]
     end
 
-    @testset "RuO2 expansion and plot loading" begin
+    @testset "RuO2 expansion and staged plot loading" begin
         meas = MeasurementInfo(fixture)
         @test meas.measurement_kind == :pund_fatigue
 
@@ -33,7 +33,7 @@ using MeasurementBrowser
         @test display_label(RUO2_PROJECT, expanded[1]) == "2025-10-01T17:12:33 FE PUND 3.0V cycle 1 (fatigue)"
 
         device_params = merge(expanded[2].device_info.parameters, expanded[2].parameters)
-        loaded = MeasurementBrowser.load_plot_input_for_file(
+        loaded = MeasurementBrowser.load_plot_for_file(
             RUO2_PROJECT,
             fixture,
             :pund;
