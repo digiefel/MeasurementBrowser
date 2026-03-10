@@ -5,7 +5,7 @@ using DataFrames
 using Statistics
 
 using DataAnalysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue
+using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue_cycle
 
 include("PUND.jl")
 include("TLM.jl")
@@ -156,8 +156,7 @@ function load_fe_pund_single(path::AbstractString; device_params=nothing)
     fatigue_cycle = get(params, :fatigue_cycle, nothing)
 
     if fatigue_cycle !== nothing
-        all_cycles = read_pund_fatigue(basename(path), dirname(path))
-        df = get(all_cycles, Int(fatigue_cycle), DataFrame())
+        df = read_pund_fatigue_cycle(basename(path), dirname(path), Int(fatigue_cycle))
         return (df=df, title=title * " cycle $fatigue_cycle (fatigue)", area_um2=area_um2)
     end
 

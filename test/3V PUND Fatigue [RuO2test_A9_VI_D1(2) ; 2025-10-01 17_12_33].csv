@@ -1,0 +1,13 @@
+Setup title,"3V PUND Fatigue"
+Application test name,"Synthetic Test Fixture"
+Test date,2025-10-01
+Test time,17:12:33
+Device ID,RuO2test_A9_VI_D1
+Count,2
+Cycle,Time_s,Voltage_V,Current_A
+1,0.0,0.0,1.0e-9
+1,1.0e-6,3.0,2.0e-6
+1,2.0e-6,-3.0,-2.0e-6
+2,0.0,0.0,1.5e-9
+2,1.0e-6,3.0,2.5e-6
+2,2.0e-6,-3.0,-2.5e-6
