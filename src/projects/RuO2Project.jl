@@ -12,8 +12,9 @@ include("RuO2/PlotCombined.jl")
 # ---------------------------------------------------------------------------
 # Regex patterns (RuO2-specific)
 # ---------------------------------------------------------------------------
-const REGEX_DEVICE = r"RuO2test_([A-Z0-9]+)_([A-Z0-9]+)_([A-Z0-9]+(?:W[0-9]+)?)"
-const REGEX_DEVICE_NEW = r"^RuO2test_([^_]+)_([^_]+)_([^_]+)_([^_]+)_"
+const REGEX_RUO2_CHIP_DIR = r"^RuO2[^/]*_[^/]*$"
+const REGEX_RUO2_IDENTIFIER = r"^((?:RuO2)[^()\[\];\s]+)$"
+const REGEX_RUO2_BRACKET_IDENTIFIER = r"\[((?:RuO2)[^()\[\];\s]+)"
 
 # ---------------------------------------------------------------------------
 # Interface implementations

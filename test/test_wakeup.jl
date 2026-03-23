@@ -99,9 +99,10 @@ using MeasurementBrowser
         end
 
         @testset "MeasurementInfo Integration" begin
-            meas_info = MeasurementInfo(wakeup_path)
+            meas_info = MeasurementInfo(wakeup_path, RUO2_PROJECT)
 
             @test kind_label(RUO2_PROJECT, meas_info.measurement_kind) == "Wakeup"
+            @test meas_info.device_info.location == ["RuO2test", "A9", "VI", "D1"]
 
             # Test that the clean title follows expected pattern (original format with device info)
             expected_title = "Wakeup A9_VI_D1 2025-10-01"
@@ -157,7 +158,7 @@ using MeasurementBrowser
 
     @testset "GUI Display Verification" begin
         if isfile(wakeup_path)
-            meas_info = MeasurementInfo(wakeup_path)
+            meas_info = MeasurementInfo(wakeup_path, RUO2_PROJECT)
 
             # Test that GUI shows pulse count while info panel shows original format
             gui_display = display_label(RUO2_PROJECT, meas_info)  # What GUI actually shows
@@ -172,7 +173,7 @@ using MeasurementBrowser
         # Test that FE PUND files get voltage added to GUI display
         pund_path = joinpath(test_dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
         if isfile(pund_path)
-            pund_meas = MeasurementInfo(pund_path)
+            pund_meas = MeasurementInfo(pund_path, RUO2_PROJECT)
 
             # GUI display should include voltage for FE PUND files
             gui_display = display_label(RUO2_PROJECT, pund_meas)
@@ -188,7 +189,7 @@ using MeasurementBrowser
         # Test that non-wakeup, non-FE PUND files are not affected by the changes
         tlm_path = joinpath(test_dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
         if isfile(tlm_path)
-            tlm_meas = MeasurementInfo(tlm_path)
+            tlm_meas = MeasurementInfo(tlm_path, RUO2_PROJECT)
 
             # GUI display should NOT have pulse count or voltage for TLM files
             gui_display = display_label(RUO2_PROJECT, tlm_meas)

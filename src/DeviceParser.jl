@@ -5,11 +5,6 @@ DeviceParser.jl - Parse device hierarchy from measurement filenames
 using Dates
 
 # ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-const MAX_HEADER_LINES = 50
-
-# ---------------------------------------------------------------------------
 # Project dispatch types
 # ---------------------------------------------------------------------------
 
@@ -22,6 +17,7 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
 # Interface (implemented by each project via multiple dispatch):
 #   parse_device_info(::P, filename) → DeviceInfo
+#   parse_device_info(::P, indexed::IndexedCsvFile) → DeviceInfo
 #   detect_kind(::P, filename) → Symbol
 #   interpret_file(::P, indexed) → Vector{MeasurementItem}
 #   kind_label(::P, kind) → String
@@ -49,6 +45,7 @@ available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
 interpret_file(::AbstractProject, indexed::IndexedCsvFile; kwargs...) = MeasurementItem[]
+parse_device_info(project::AbstractProject, indexed::IndexedCsvFile) = parse_device_info(project, indexed.filename)
 
 struct PlotCancelled <: Exception end
 
@@ -66,6 +63,7 @@ struct DeviceInfo
 end
 
 DeviceInfo(location::Vector{String}) = DeviceInfo(location, Dict{Symbol,Any}())
+device_path_label(::AbstractProject, device_info::DeviceInfo) = join(device_info.location, "_")
 
 # ---------------------------------------------------------------------------
 # Measurement related structs
@@ -105,18 +103,18 @@ HierarchyNode(name::String, kind::Symbol) = HierarchyNode(name, kind, HierarchyN
 # ---------------------------------------------------------------------------
 
 function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
-    filename = basename(filepath)
-    device_info = parse_device_info(project, filename)
+    indexed = index_csv_file(filepath)
+    filename = indexed.filename
+    device_info = parse_device_info(project, indexed)
     measurement_kind = detect_kind(project, filename)
-    timestamp = parse_timestamp(filename)
+    timestamp = indexed.timestamp
     parameters = parse_parameters(filename)
-    file_info = extract_file_info(filepath)
     exp_label = kind_label(project, measurement_kind)
 
-    device_label = join(device_info.location, "_")
+    device_label = device_path_label(project, device_info)
 
     date_str = ""
-    d = get(file_info, "test_date", "")
+    d = get(indexed.header_summary, :test_date, "")
     if !isempty(d)
         date_str = try
             parts = split(d)
@@ -168,44 +166,6 @@ function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
     end
 
     return MeasurementInfo(filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters, wakeup_count)
-end
-
-# Backwards-compat: use the registered default project
-MeasurementInfo(filepath::AbstractString) = MeasurementInfo(filepath, _default_project[])
-
-function extract_file_info(path::AbstractString)
-    file_stat = stat(path)
-    size_bytes = file_stat.size
-    setup_title = test_date = test_time = device_id = ""
-    line_count = 0
-    open(path, "r") do io
-        for line in eachline(io)
-            line_count += 1
-            if startswith(line, "Setup title,")
-                parts = split(line, ',')
-                if length(parts) > 1
-                    setup_title = strip(parts[2], '"')
-                end
-            elseif startswith(line, "Test date,")
-                parts = split(line, ',')
-                length(parts) > 1 && (test_date = parts[2])
-            elseif startswith(line, "Test time,")
-                parts = split(line, ',')
-                length(parts) > 1 && (test_time = parts[2])
-            elseif startswith(line, "Device ID,")
-                parts = split(line, ',')
-                device_id = length(parts) > 1 ? parts[2] : ""
-            end
-            line_count >= MAX_HEADER_LINES && break
-        end
-    end
-    return Dict(
-        "setup_title" => setup_title,
-        "test_date" => test_date,
-        "test_time" => test_time,
-        "device_id" => device_id,
-        "size_bytes" => size_bytes,
-    )
 end
 
 function parse_timestamp(filename::String)
@@ -381,10 +341,6 @@ function insert_measurement!(mh::MeasurementHierarchy, measurement::MeasurementI
     return measurement
 end
 
-# Backwards-compat convenience constructors
-MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String) =
-    MeasurementHierarchy(measurements, root_path, false, _default_project[], 0)
-
 children(node::HierarchyNode) = node.children
 isleaf(node::HierarchyNode) = isempty(node.children)
 
@@ -476,7 +432,8 @@ end
 """
     _load_device_info_txt(path) -> Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
 
-Reads device_info.txt where first column is `device_path` (slash-separated),
+Reads device_info.txt where the first column contains an exact unit path
+(`device`, `device_path`, etc.; slash-separated for multi-unit scopes) and the
 remaining columns are arbitrary device-level parameters.
 """
 function _load_device_info_txt(path::AbstractString)
@@ -511,21 +468,15 @@ end
 function _lookup_device_params(meta::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}, loc::Vector{String})
     isempty(loc) && return nothing
 
-    candidates = Tuple{Vararg{String}}[]
-    push!(candidates, (last(loc),))           # geometry-only (e.g., L100W2)
-    push!(candidates, (loc[1],))              # chip
-    for k in reverse(1:length(loc)-1)
-        push!(candidates, Tuple(loc[1:k]))    # chip/block...
-    end
-    push!(candidates, Tuple(loc))             # full path
-
     merged = Dict{Symbol,Any}()
-    seen = Set{Tuple{Vararg{String}}}()
-    for cand in candidates
-        cand in seen && continue
-        push!(seen, cand)
-        if haskey(meta, cand)
-            merge!(merged, meta[cand])
+    # Match exact slash-separated unit sequences anywhere in the parsed path.
+    # More specific matches win because longer sequences are merged later.
+    for width in 1:length(loc)
+        for start_idx in 1:(length(loc) - width + 1)
+            candidate = Tuple(loc[start_idx:start_idx + width - 1])
+            if haskey(meta, candidate)
+                merge!(merged, meta[candidate])
+            end
         end
     end
 
@@ -547,7 +498,7 @@ function build_clean_title(
     header_summary::Dict{Symbol,Any},
 )
     exp_label = kind_label(project, measurement_kind)
-    device_label = join(device_info.location, "_")
+    device_label = device_path_label(project, device_info)
     date_str = ""
     d = get(header_summary, :test_date, "")
     if d isa AbstractString && !isempty(d)

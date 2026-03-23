@@ -6,7 +6,7 @@
 
     @compile_workload begin
         if isfile(pund_path)
-            pund_meas = MeasurementInfo(pund_path)
+            pund_meas = MeasurementInfo(pund_path, RUO2_PROJECT)
             pund_params = merge(pund_meas.device_info.parameters, pund_meas.parameters)
             loaded = load_plot_for_file(RUO2_PROJECT, pund_path, :pund; device_params=pund_params)
             analyzed = analyze_plot_for_file(RUO2_PROJECT, :pund, loaded; device_params=pund_params)
@@ -20,7 +20,7 @@
         end
 
         if isfile(tlm_path)
-            tlm_meas = MeasurementInfo(tlm_path)
+            tlm_meas = MeasurementInfo(tlm_path, RUO2_PROJECT)
             tlm_params = merge(tlm_meas.device_info.parameters, tlm_meas.parameters)
             loaded = load_plot_for_file(RUO2_PROJECT, tlm_path, :tlm4p; device_params=tlm_params)
             analyzed = analyze_plot_for_file(RUO2_PROJECT, :tlm4p, loaded; device_params=tlm_params)

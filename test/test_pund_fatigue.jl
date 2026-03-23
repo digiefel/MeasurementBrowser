@@ -22,7 +22,7 @@ using MeasurementBrowser
     end
 
     @testset "RuO2 expansion and staged plot loading" begin
-        meas = MeasurementInfo(fixture)
+        meas = MeasurementInfo(fixture, RUO2_PROJECT)
         @test meas.measurement_kind == :pund_fatigue
 
         expanded = expand_measurement(RUO2_PROJECT, meas)
