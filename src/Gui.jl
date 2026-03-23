@@ -387,6 +387,41 @@ function _push_bad_text_style!(bad::Bool)
     return true
 end
 
+function _measurement_plot_window_entry(measurement::MeasurementInfo)
+    return Dict{Symbol,Any}(
+        :target_id => measurement.id,
+        :filepath => measurement.filepath,
+        :title => measurement.clean_title,
+        :measurement_kind => measurement.measurement_kind,
+        :params => merge(deepcopy(measurement.device_info.parameters), deepcopy(measurement.parameters)),
+    )
+end
+
+function _extra_plot_window_request(ui_state, proj, entry::Dict{Symbol,Any}, mtime)
+    filepath = get(entry, :filepath, "")
+    isempty(filepath) && error("Extra plot window entry is missing filepath")
+
+    target_id = string(get(entry, :target_id, ""))
+    isempty(target_id) && error("Extra plot window entry is missing target_id")
+
+    measurement_kind = get(entry, :measurement_kind, nothing)
+    measurement_kind isa Symbol || error("Extra plot window entry for '$filepath' is missing measurement_kind")
+
+    device_params = get(entry, :params, nothing)
+    device_params isa Dict{Symbol,Any} || error("Extra plot window entry for '$filepath' has invalid params")
+
+    return _single_plot_job_request(
+        ui_state,
+        proj,
+        filepath,
+        mtime,
+        measurement_kind,
+        device_params,
+        :extra;
+        target_id=target_id,
+    )
+end
+
 function _plot_running(ui_state)
     return get(ui_state, :plot_state, :idle) in (:loading, :analyzing, :drawing, :canceling)
 end
@@ -1742,12 +1777,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                         open_plots = get!(ui_state, :open_plot_windows) do
                             Vector{Dict{Symbol,Any}}()
                         end
-                        push!(open_plots, Dict(
-                            :target_id => measurement.filepath,
-                            :filepath => measurement.filepath,
-                            :title => measurement.clean_title,
-                            :params => deepcopy(measurement.device_info.parameters),
-                        ))
+                        push!(open_plots, _measurement_plot_window_entry(measurement))
                     end
 
                     editable = _bad_registry_ready(ui_state)
@@ -2289,32 +2319,17 @@ function render_additional_plot_windows(ui_state)
         existing_mtime = get(entry, :mtime, nothing)
         refresh = !haskey(entry, :figure) || existing_mtime != mtime
         if refresh
-            k = detect_kind(proj, basename(filepath))
-            device_params = get(entry, :params, Dict{Symbol,Any}())
-            if !(device_params isa Dict{Symbol,Any})
-                device_params = Dict{Symbol,Any}()
-            end
-            request = _single_plot_job_request(
-                ui_state,
-                proj,
-                filepath,
-                mtime,
-                k,
-                device_params,
-                :extra;
-                target_id=target_id,
-            )
+            request = _extra_plot_window_request(ui_state, proj, entry, mtime)
             _queue_plot_job!(ui_state, request)
         end
         # Window (allow user to close)
         open_ref = Ref(true)
-        if ig.Begin("Plot: $title###plot_window_$filepath", open_ref)
+        window_id = replace(target_id, '/' => '_')
+        if ig.Begin("Plot: $title###plot_window_$window_id", open_ref)
             if haskey(entry, :figure)
                 f = entry[:figure]
-                # Sanitize id for ImGui (avoid slashes)
-                id_str = replace(filepath, '/' => '_')
                 _time!(ui_state, :makie_fig) do
-                    MakieFigure("measurement_plot_$id_str", f; auto_resize_x=true, auto_resize_y=true)
+                    MakieFigure("measurement_plot_$window_id", f; auto_resize_x=true, auto_resize_y=true)
                 end
             elseif _plot_target_loading(ui_state, :extra; target_id=target_id)
                 ig.TextDisabled("Loading plot...")

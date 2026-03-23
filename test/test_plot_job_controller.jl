@@ -63,3 +63,34 @@ using Dates
     @test entry_a[:mtime] == ts
     @test entry_b[:figure] == :figure_b
 end
+
+@testset "extra plot windows preserve logical measurement identity" begin
+    fixture = joinpath(
+        @__DIR__,
+        "3V PUND Fatigue [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv",
+    )
+    meas = MeasurementInfo(fixture, MeasurementBrowser.RUO2_PROJECT)
+    expanded = expand_measurement(MeasurementBrowser.RUO2_PROJECT, meas)
+    cycle_two = only(filter(m -> m.parameters[:fatigue_cycle] == 2, expanded))
+
+    entry = MeasurementBrowser._measurement_plot_window_entry(cycle_two)
+    @test entry[:target_id] == cycle_two.id
+    @test entry[:measurement_kind] == :pund
+    @test entry[:params][:fatigue_cycle] == 2
+    @test entry[:params][:voltage_V] == 3.0
+
+    ui = Dict{Symbol,Any}()
+    mtime = Dates.unix2datetime(stat(fixture).mtime)
+    request = MeasurementBrowser._extra_plot_window_request(
+        ui,
+        MeasurementBrowser.RUO2_PROJECT,
+        entry,
+        mtime,
+    )
+
+    @test request[:target] == :extra
+    @test request[:target_id] == cycle_two.id
+    @test request[:measurement_kind] == :pund
+    @test request[:device_params][:fatigue_cycle] == 2
+    @test request[:device_params][:voltage_V] == 3.0
+end
