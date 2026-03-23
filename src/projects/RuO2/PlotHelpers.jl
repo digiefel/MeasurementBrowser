@@ -4,10 +4,17 @@ using Statistics
 
 using DataAnalysis: analyze_pund, analyze_tlm_combined, calculate_sheet_resistance,
                     extract_tlm_geometry_from_params, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue_cycle
+using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup,
+                  read_pund_fatigue_cycle, read_cv_sweep
 
 function _plot_title(path::AbstractString)
     return strip(replace(basename(String(path)), r"\.csv$" => ""))
+end
+
+function _format_frequency_label(freq_Hz::Real)
+    freq_Hz >= 1e6 && return "$(round(freq_Hz / 1e6; digits=3)) MHz"
+    freq_Hz >= 1e3 && return "$(round(freq_Hz / 1e3; digits=3)) kHz"
+    return "$(round(freq_Hz; digits=3)) Hz"
 end
 
 function _extract_temperature_K(params::Dict{Symbol,Any}, filepath::String)

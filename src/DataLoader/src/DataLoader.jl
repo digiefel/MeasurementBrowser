@@ -4,9 +4,12 @@ using CSV
 using DataFrames
 using Dates
 
-export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p, read_pund_fatigue_cycles, read_pund_fatigue_cycle, read_wakeup_summary
+export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p,
+       read_pund_fatigue_cycles, read_pund_fatigue_cycle, read_wakeup_summary,
+       read_cv_sweep
 
 include("PUND.jl")
+include("CVSweep.jl")
 
 """
 Read I-V sweep data from CSV file, skipping header metadata
@@ -185,7 +188,8 @@ function get_file_patterns()
         fe_pund=r"FE PUND",
         tlm_4p=r"TLM_4P",
         breakdown=r"Break.*oxide",
-        wakeup=r"Wakeup"
+        wakeup=r"Wakeup",
+        cv_sweep=r"CVSweep",
     )
 end
 

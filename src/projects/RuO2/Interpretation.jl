@@ -1,5 +1,24 @@
 using DataLoader: read_wakeup_summary
 
+function _ruo2_cvsweep_schema(path::AbstractString)
+    header = open(path, "r") do io
+        eof(io) && return nothing
+        return chomp(readline(io))
+    end
+    header === nothing && return nothing
+
+    columns = split(header, ',')
+    required = ("Frequency_Hz", "Bias_V", "Cp (F)", "Time_sec")
+    all(col -> col in columns, required) || return nothing
+
+    if "G (S)" in columns
+        return :conductance
+    elseif "Rp (Ohm)" in columns
+        return :parallel_resistance
+    end
+    return nothing
+end
+
 function device_path_label(::RuO2Project, device_info::DeviceInfo)
     length(device_info.location) <= 1 && return join(device_info.location, "_")
     return join(device_info.location[2:end], "_")
@@ -107,6 +126,8 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
         return :pund_fatigue
     elseif occursin("fe pund", lower) || occursin("fepund", lower) || occursin("_pund", lower)
         return :pund
+    elseif occursin("cvsweep", lower)
+        return :cvsweep
     elseif occursin("tlm_4p", lower) || occursin("tlm", lower)
         return :tlm4p
     elseif occursin("i_v sweep", lower) || occursin("iv sweep", lower) || occursin("fourterminaliv", lower)
@@ -123,6 +144,10 @@ end
 function interpret_file(::RuO2Project, indexed::IndexedCsvFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
     kind = detect_kind(RUO2_PROJECT, indexed.filename)
     kind == :unknown && return MeasurementItem[]
+    if kind == :cvsweep && _ruo2_cvsweep_schema(indexed.filepath) === nothing
+        @warn "Ignoring unsupported RuO2 CVSweep file" path = indexed.filepath
+        return MeasurementItem[]
+    end
     device_info = parse_device_info(RUO2_PROJECT, indexed)
 
     params = parse_parameters(indexed.filename)

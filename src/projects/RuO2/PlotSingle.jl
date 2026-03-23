@@ -24,6 +24,9 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
     elseif kind === :wakeup
         df = read_wakeup(basename(path), dirname(path))
         return (df=df, title=_plot_title(path))
+    elseif kind === :cvsweep
+        loaded = read_cv_sweep(basename(path), dirname(path))
+        return (df=loaded.df, title=_plot_title(path), secondary_kind=loaded.secondary_kind)
     end
     @warn "Unsupported RuO2 single-file plot kind" kind path
     return nothing
@@ -174,6 +177,18 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
         amplitude = loaded.df.amplitude[1]
         return (df=loaded.df, title=loaded.title, pulse_count=pulse_count, amplitude=amplitude,
                 text_content="$(pulse_count)× wakeup pulses\namplitude = $(amplitude) V")
+    elseif kind === :cvsweep
+        df = loaded.df
+        isempty(df) && return nothing
+        secondary_kind = loaded.secondary_kind
+        secondary_label = secondary_kind === :conductance ? "G (nS)" : "Rp (MΩ)"
+        return (
+            df=df,
+            title=loaded.title,
+            frequencies_Hz=sort(unique(df.frequency_Hz)),
+            secondary_kind=secondary_kind,
+            secondary_label=secondary_label,
+        )
     end
 
     return loaded
@@ -276,6 +291,31 @@ function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed
         text!(ax, 0.5, 0.5, text=analyzed.text_content, align=(:center, :center), fontsize=24, color=:black)
         xlims!(ax, 0, 1)
         ylims!(ax, 0, 1)
+        return fig
+    elseif kind === :cvsweep
+        df = analyzed.df
+        nrow(df) == 0 && return nothing
+
+        fig = Figure(size=(1100, 500))
+        ax_cp = Axis(fig[1, 1], xlabel="Bias (V)", ylabel="Cp (pF)", title="Capacitance")
+        ax_secondary = Axis(fig[1, 2], xlabel="Bias (V)", ylabel=analyzed.secondary_label, title="Secondary Channel")
+
+        colors = cgrad(:viridis, length(analyzed.frequencies_Hz); categorical=true)
+        for (idx, freq_Hz) in enumerate(analyzed.frequencies_Hz)
+            mask = df.frequency_Hz .== freq_Hz
+            color = colors[idx]
+            label = _format_frequency_label(freq_Hz)
+            lines!(ax_cp, df.bias_V[mask], df.cp_F[mask] .* 1e12, color=color, linewidth=2, label=label)
+
+            if analyzed.secondary_kind === :conductance
+                lines!(ax_secondary, df.bias_V[mask], df.secondary_value[mask] .* 1e9, color=color, linewidth=2)
+            else
+                lines!(ax_secondary, df.bias_V[mask], df.secondary_value[mask] ./ 1e6, color=color, linewidth=2)
+            end
+        end
+
+        Label(fig[0, :], analyzed.title, fontsize=20, font=:bold)
+        axislegend(ax_cp, position=:lt)
         return fig
     end
 

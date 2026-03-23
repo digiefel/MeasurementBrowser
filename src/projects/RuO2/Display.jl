@@ -1,6 +1,7 @@
 function kind_label(::RuO2Project, kind::Symbol)::String
     kind === :pund && return "FE PUND"
     kind === :pund_fatigue && return "PUND Fatigue"
+    kind === :cvsweep && return "C-V Sweep"
     kind === :iv && return "I-V Sweep"
     kind === :tlm4p && return "TLM 4-Point"
     kind === :breakdown && return "Breakdown"
