@@ -16,7 +16,6 @@ const KNOWN_PROJECTS = AbstractProject[]
 const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
 # Interface (implemented by each project via multiple dispatch):
-#   parse_device_info(::P, filename) → DeviceInfo
 #   parse_device_info(::P, indexed::IndexedCsvFile) → DeviceInfo
 #   detect_kind(::P, filename) → Symbol
 #   interpret_file(::P, indexed) → Vector{MeasurementItem}
@@ -45,7 +44,6 @@ available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
 interpret_file(::AbstractProject, indexed::IndexedCsvFile; kwargs...) = MeasurementItem[]
-parse_device_info(project::AbstractProject, indexed::IndexedCsvFile) = parse_device_info(project, indexed.filename)
 
 struct PlotCancelled <: Exception end
 

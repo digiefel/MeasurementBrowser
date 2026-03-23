@@ -157,7 +157,7 @@ end
 
 function _init_bad_state!(ui_state)
     ui_state[:show_bad] = true
-    ui_state[:bad_registry] = BadRegistry()
+    ui_state[:bad_registry] = nothing
     ui_state[:bad_registry_error] = ""
     ui_state[:selected_device_paths] = String[]
     ui_state[:selected_measurement_ids] = String[]
@@ -193,7 +193,7 @@ end
 
 function _load_bad_registry_for_root!(ui_state, root_path::String)
     if isempty(root_path)
-        ui_state[:bad_registry] = BadRegistry()
+        ui_state[:bad_registry] = nothing
         ui_state[:bad_registry_error] = ""
         return
     end
@@ -205,20 +205,21 @@ function _load_bad_registry_for_root!(ui_state, root_path::String)
         if err isa BadRegistryParseError || err isa BadRegistryIOError
             ui_state[:bad_registry] = nothing
             ui_state[:bad_registry_error] = sprint(showerror, err)
+            ui_state[:show_bad] = true
             return
         end
         rethrow()
     end
 end
 
-function _bad_registry_available(ui_state)
+function _bad_registry_ready(ui_state)
     return get(ui_state, :bad_registry, nothing) isa BadRegistry && isempty(get(ui_state, :bad_registry_error, ""))
 end
 
-function _current_bad_registry(ui_state)
+function _bad_registry_or_error(ui_state)
     registry = get(ui_state, :bad_registry, nothing)
-    registry isa BadRegistry && return registry
-    return BadRegistry()
+    registry isa BadRegistry || error("Bad registry unavailable: $(get(ui_state, :bad_registry_error, ""))")
+    return registry
 end
 
 function _device_path_key(node::HierarchyNode)
@@ -232,11 +233,11 @@ function _device_location(node::HierarchyNode)
 end
 
 function _device_is_explicitly_bad(ui_state, device_key::String)
-    return device_key in _current_bad_registry(ui_state).devices
+    return device_key in _bad_registry_or_error(ui_state).devices
 end
 
 function _measurement_is_explicitly_bad(ui_state, measurement_id::String)
-    return measurement_id in _current_bad_registry(ui_state).measurements
+    return measurement_id in _bad_registry_or_error(ui_state).measurements
 end
 
 function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
@@ -244,32 +245,27 @@ function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
            _device_is_explicitly_bad(ui_state, device_path_key(measurement.device_info))
 end
 
+function _assert_bad_registry_visibility_available(ui_state)
+    _bad_registry_ready(ui_state) && return
+    error("Cannot hide bad items while bad registry is unavailable: $(get(ui_state, :bad_registry_error, ""))")
+end
+
 function _device_is_visible(ui_state, device_key::String)
     get(ui_state, :show_bad, true) && return true
+    _assert_bad_registry_visibility_available(ui_state)
     return !_device_is_explicitly_bad(ui_state, device_key)
 end
 
 function _measurement_is_visible(ui_state, measurement::MeasurementInfo)
     get(ui_state, :show_bad, true) && return true
+    _assert_bad_registry_visibility_available(ui_state)
     return !_measurement_is_bad(ui_state, measurement)
 end
 
-function _sync_selected_path!(ui_state)
-    selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-    if length(selected_devices) == 1
-        ui_state[:selected_path] = _device_location(selected_devices[1])
-        return
-    end
-    ui_state[:selected_path] = String[]
-end
-
-function _sync_visible_selection!(ui_state)
+function _project_visible_selection(ui_state)
     hierarchy = get(ui_state, :scan_hierarchy, nothing)
     if hierarchy === nothing
-        ui_state[:selected_devices] = HierarchyNode[]
-        ui_state[:selected_measurements] = MeasurementInfo[]
-        ui_state[:selected_path] = String[]
-        return
+        return HierarchyNode[], MeasurementInfo[], String[]
     end
 
     selected_devices = HierarchyNode[]
@@ -277,10 +273,9 @@ function _sync_visible_selection!(ui_state)
         node = get(hierarchy.index, device_path_tuple(path_key), nothing)
         node === nothing && continue
         node.kind == :leaf || error("Selected device path '$path_key' does not point to a leaf device")
-        _device_is_visible(ui_state, path_key) || continue
+        !_device_is_visible(ui_state, path_key) && continue
         push!(selected_devices, node)
     end
-    ui_state[:selected_devices] = selected_devices
 
     visible_device_keys = Set(_device_path_key(node) for node in selected_devices)
     measurement_index = get(ui_state, :measurement_index, Dict{String,MeasurementInfo}())
@@ -289,15 +284,25 @@ function _sync_visible_selection!(ui_state)
         measurement = get(measurement_index, measurement_id, nothing)
         measurement === nothing && continue
         device_path_key(measurement.device_info) in visible_device_keys || continue
-        _measurement_is_visible(ui_state, measurement) || continue
+        !_measurement_is_visible(ui_state, measurement) && continue
         push!(selected_measurements, measurement)
     end
-    ui_state[:selected_measurements] = selected_measurements
-    _sync_selected_path!(ui_state)
+    selected_path = length(selected_devices) == 1 ? _device_location(selected_devices[1]) : String[]
+    return selected_devices, selected_measurements, selected_path
 end
 
-function _apply_bad_registry_update!(updater::Function, ui_state)
-    _bad_registry_available(ui_state) || return false
+function _apply_visible_selection!(ui_state)
+    selected_devices, selected_measurements, selected_path = _project_visible_selection(ui_state)
+    ui_state[:selected_devices] = selected_devices
+    ui_state[:selected_measurements] = selected_measurements
+    ui_state[:selected_path] = selected_path
+end
+
+function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
+    unique_keys = unique(copy(device_keys))
+    isempty(unique_keys) && return false
+    _bad_registry_ready(ui_state) || return false
+
     root_path = get(ui_state, :root_path, "")
     isempty(root_path) && error("Cannot update bad registry without an active project root")
 
@@ -305,7 +310,9 @@ function _apply_bad_registry_update!(updater::Function, ui_state)
     registry isa BadRegistry || error("Bad registry is unavailable for editing")
 
     updated = _copy_bad_registry(registry)
-    updater(updated)
+    for device_key in unique_keys
+        bad ? push!(updated.devices, device_key) : delete!(updated.devices, device_key)
+    end
 
     try
         save_bad_registry(root_path, updated)
@@ -319,28 +326,40 @@ function _apply_bad_registry_update!(updater::Function, ui_state)
 
     ui_state[:bad_registry] = updated
     ui_state[:bad_registry_error] = ""
-    _sync_visible_selection!(ui_state)
+    _apply_visible_selection!(ui_state)
     return true
-end
-
-function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
-    unique_keys = unique(copy(device_keys))
-    isempty(unique_keys) && return false
-    return _apply_bad_registry_update!(ui_state) do registry
-        for device_key in unique_keys
-            bad ? push!(registry.devices, device_key) : delete!(registry.devices, device_key)
-        end
-    end
 end
 
 function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::Bool)
     unique_ids = unique(copy(measurement_ids))
     isempty(unique_ids) && return false
-    return _apply_bad_registry_update!(ui_state) do registry
-        for measurement_id in unique_ids
-            bad ? push!(registry.measurements, measurement_id) : delete!(registry.measurements, measurement_id)
-        end
+    _bad_registry_ready(ui_state) || return false
+
+    root_path = get(ui_state, :root_path, "")
+    isempty(root_path) && error("Cannot update bad registry without an active project root")
+
+    registry = get(ui_state, :bad_registry, nothing)
+    registry isa BadRegistry || error("Bad registry is unavailable for editing")
+
+    updated = _copy_bad_registry(registry)
+    for measurement_id in unique_ids
+        bad ? push!(updated.measurements, measurement_id) : delete!(updated.measurements, measurement_id)
     end
+
+    try
+        save_bad_registry(root_path, updated)
+    catch err
+        if err isa BadRegistryIOError
+            ui_state[:bad_registry_error] = sprint(showerror, err)
+            return false
+        end
+        rethrow()
+    end
+
+    ui_state[:bad_registry] = updated
+    ui_state[:bad_registry_error] = ""
+    _apply_visible_selection!(ui_state)
+    return true
 end
 
 function _selection_targets(selected_items::Vector{T}, clicked_item::T) where {T}
@@ -1024,7 +1043,7 @@ function _poll_scan_events!(ui_state)
         msg = take!(events)
         msg.scan_id == get(ui_state, :active_scan_id, 0) || continue
 
-        if msg.kind == :progress
+    if msg.kind == :progress
             p = msg.progress
             ui_state[:scan_progress] = Dict{Symbol,Any}(
                 :phase => p.phase,
@@ -1039,6 +1058,7 @@ function _poll_scan_events!(ui_state)
         elseif msg.kind == :scan_start
             _begin_incremental_scan!(ui_state, msg.path, msg.project, msg.has_device_metadata)
             _load_bad_registry_for_root!(ui_state, msg.path)
+            _apply_visible_selection!(ui_state)
         elseif msg.kind == :items
             _apply_scan_items!(ui_state, msg.items)
         elseif msg.kind == :result
@@ -1261,9 +1281,18 @@ function render_menu_bar(ui_state)
             end
             ig.EndMenu()
         end
+        bad_visibility_toggle_enabled = isempty(get(ui_state, :bad_registry_error, "")) || get(ui_state, :show_bad, true)
+        !bad_visibility_toggle_enabled && ig.BeginDisabled()
         if ig.MenuItem("Show Bad", C_NULL, get(ui_state, :show_bad, true))
             ui_state[:show_bad] = !get(ui_state, :show_bad, true)
-            _sync_visible_selection!(ui_state)
+            _apply_visible_selection!(ui_state)
+        end
+        if !bad_visibility_toggle_enabled
+            ig.EndDisabled()
+            if ig.BeginItemTooltip()
+                ig.TextUnformatted("Fix bad_measurements and rescan before hiding bad items")
+                ig.EndTooltip()
+            end
         end
         if ig.BeginMenu("Debug")
             if ig.MenuItem("Performance Window", C_NULL, get(ui_state, :show_performance_window, false))
@@ -1364,7 +1393,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
         filter_tree,
         () -> begin
             ui_state[:selected_device_paths] = copy(visible_device_keys)
-            _sync_visible_selection!(ui_state)
+            _apply_visible_selection!(ui_state)
         end;
         item_label="devices", filter_id="##tree_filter"
     )
@@ -1412,6 +1441,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
 
         ig.TableSetColumnIndex(0)
         bad_text_pushed = is_leaf && device_key !== nothing &&
+                          _bad_registry_ready(ui_state) &&
                           _push_bad_text_style!(_device_is_explicitly_bad(ui_state, device_key))
         opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
         bad_text_pushed && ig.PopStyleColor()
@@ -1424,10 +1454,10 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 selected_device_paths = copy(get(ui_state, :selected_device_paths, String[]))
                 _update_multi_selection!(selected_device_paths, device_key, visible_device_keys, shift_held, ctrl_held)
                 ui_state[:selected_device_paths] = selected_device_paths
-                _sync_visible_selection!(ui_state)
+                _apply_visible_selection!(ui_state)
             elseif !isempty(get(ui_state, :selected_device_paths, String[]))
                 ui_state[:selected_device_paths] = String[]
-                _sync_visible_selection!(ui_state)
+                _apply_visible_selection!(ui_state)
             end
         end
 
@@ -1437,7 +1467,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             selected_count = length(target_keys)
             selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
 
-            editable = _bad_registry_available(ui_state)
+            editable = _bad_registry_ready(ui_state)
             if !editable
                 ig.TextDisabled("Fix bad_measurements and rescan to edit")
                 ig.Separator()
@@ -1639,6 +1669,7 @@ function _render_measurements_panel(ui_state, filter_meas)
     all_measurements = _selected_measurements(ui_state)
     visible_measurements = _visible_measurements(ui_state, proj, filter_meas)
     visible_measurement_ids = [measurement.id for measurement in visible_measurements]
+    registry_ready = _bad_registry_ready(ui_state)
 
     _render_selection_toolbar!(
         length(get(ui_state, :selected_measurements, MeasurementInfo[])),
@@ -1647,7 +1678,7 @@ function _render_measurements_panel(ui_state, filter_meas)
         filter_meas,
         () -> begin
             ui_state[:selected_measurement_ids] = copy(visible_measurement_ids)
-            _sync_visible_selection!(ui_state)
+            _apply_visible_selection!(ui_state)
         end;
         item_label="measurements", filter_id="##measurements_filter"
     )
@@ -1682,15 +1713,22 @@ function _render_measurements_panel(ui_state, filter_meas)
 
                 selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
                 is_selected = measurement in selected_measurements
-                bad_text_pushed = _push_bad_text_style!(_measurement_is_bad(ui_state, measurement))
+                bad_text_pushed = registry_ready &&
+                                  _push_bad_text_style!(_measurement_is_bad(ui_state, measurement))
                 if ig.Selectable(display_label(proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
                     io = ig.GetIO()
                     shift_held = unsafe_load(io.KeyShift)
                     ctrl_held = unsafe_load(io.KeyCtrl)
                     selected_measurement_ids = copy(get(ui_state, :selected_measurement_ids, String[]))
-                    _update_multi_selection!(selected_measurement_ids, measurement.id, visible_measurement_ids, shift_held, ctrl_held)
+                    _update_multi_selection!(
+                        selected_measurement_ids,
+                        measurement.id,
+                        visible_measurement_ids,
+                        shift_held,
+                        ctrl_held,
+                    )
                     ui_state[:selected_measurement_ids] = selected_measurement_ids
-                    _sync_visible_selection!(ui_state)
+                    _apply_visible_selection!(ui_state)
                 end
                 bad_text_pushed && ig.PopStyleColor()
 
@@ -1712,7 +1750,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                         ))
                     end
 
-                    editable = _bad_registry_available(ui_state)
+                    editable = _bad_registry_ready(ui_state)
                     if !editable
                         ig.TextDisabled("Fix bad_measurements and rescan to edit")
                         ig.Separator()

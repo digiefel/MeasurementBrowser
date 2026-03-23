@@ -5,12 +5,16 @@ function parse_device_info(::TASEProject, filename::String)
     return DeviceInfo([chip, facet, device_type, device_id])
 end
 
+function parse_device_info(project::TASEProject, indexed::IndexedCsvFile)
+    return parse_device_info(project, indexed.filename)
+end
+
 detect_kind(::TASEProject, filename::String)::Symbol =
     match(REGEX_TASE, filename) !== nothing ? :four_terminal_iv : :unknown
 
 function interpret_file(::TASEProject, indexed::IndexedCsvFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
     match(REGEX_TASE, indexed.filename) === nothing && return MeasurementItem[]
-    device_info = parse_device_info(TASE_PROJECT, indexed.filename)
+    device_info = parse_device_info(TASE_PROJECT, indexed)
     kind = detect_kind(TASE_PROJECT, indexed.filename)
     kind == :unknown && return MeasurementItem[]
     params = parse_parameters(indexed.filename)

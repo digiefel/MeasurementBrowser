@@ -73,17 +73,21 @@ using Test
         :bad_registry_error => "",
         :show_bad => true,
     )
-    MeasurementBrowser._sync_visible_selection!(ui2)
+    MeasurementBrowser._apply_visible_selection!(ui2)
     @test [node.name for node in ui2[:selected_devices]] == ["A", "B"]
     @test [m.id for m in ui2[:selected_measurements]] == ["m1", "m2"]
+    @test ui2[:selected_device_paths] == ["A", "B"]
+    @test ui2[:selected_measurement_ids] == ["m1", "m2"]
 
     ui2[:show_bad] = false
-    MeasurementBrowser._sync_visible_selection!(ui2)
+    MeasurementBrowser._apply_visible_selection!(ui2)
     @test [node.name for node in ui2[:selected_devices]] == ["A"]
     @test [m.id for m in ui2[:selected_measurements]] == ["m1"]
+    @test ui2[:selected_device_paths] == ["A", "B"]
+    @test ui2[:selected_measurement_ids] == ["m1", "m2"]
 
     ui2[:show_bad] = true
-    MeasurementBrowser._sync_visible_selection!(ui2)
+    MeasurementBrowser._apply_visible_selection!(ui2)
     @test [node.name for node in ui2[:selected_devices]] == ["A", "B"]
     @test [m.id for m in ui2[:selected_measurements]] == ["m1", "m2"]
 
@@ -101,7 +105,7 @@ using Test
             :selected_device_paths => ["A", "B"],
             :selected_measurement_ids => ["m1", "m2"],
         )
-        MeasurementBrowser._sync_visible_selection!(ui3)
+        MeasurementBrowser._apply_visible_selection!(ui3)
 
         @test MeasurementBrowser._set_devices_bad!(ui3, ["B"], true)
         @test ui3[:bad_registry].devices == Set(["B"])
@@ -112,5 +116,23 @@ using Test
 
         @test MeasurementBrowser._set_devices_bad!(ui3, ["B"], false)
         @test isempty(ui3[:bad_registry].devices)
+    end
+
+    ui4 = Dict{Symbol,Any}(
+        :bad_registry => nothing,
+        :bad_registry_error => "bad registry unavailable",
+        :show_bad => false,
+    )
+    @test !MeasurementBrowser._bad_registry_ready(ui4)
+    @test_throws ErrorException MeasurementBrowser._device_is_visible(ui4, "A")
+    @test_throws ErrorException MeasurementBrowser._measurement_is_visible(ui4, m1)
+
+    mktempdir() do dir
+        write(joinpath(dir, "bad_measurements"), "bogus\n")
+        ui5 = Dict{Symbol,Any}(:show_bad => false)
+        MeasurementBrowser._load_bad_registry_for_root!(ui5, dir)
+        @test ui5[:show_bad] == true
+        @test ui5[:bad_registry] === nothing
+        @test !isempty(ui5[:bad_registry_error])
     end
 end
