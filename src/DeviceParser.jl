@@ -64,11 +64,22 @@ end
 
 DeviceInfo(location::Vector{String}) = DeviceInfo(location, Dict{Symbol,Any}())
 device_path_label(::AbstractProject, device_info::DeviceInfo) = join(device_info.location, "_")
+device_path_key(location::AbstractVector{<:AbstractString}) = join(location, "/")
+device_path_key(device_info::DeviceInfo) = device_path_key(device_info.location)
+
+function device_path_tuple(key::AbstractString)
+    stripped = strip(String(key))
+    isempty(stripped) && error("Device path key cannot be empty")
+    segs = split(stripped, '/')
+    any(isempty, segs) && error("Invalid device path key '$key'")
+    return Tuple(String.(segs))
+end
 
 # ---------------------------------------------------------------------------
 # Measurement related structs
 # ---------------------------------------------------------------------------
 struct MeasurementInfo
+    id::String
     filename::String
     filepath::String
     clean_title::String
@@ -165,7 +176,7 @@ function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
         end
     end
 
-    return MeasurementInfo(filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters, wakeup_count)
+    return MeasurementInfo(indexed.id, filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters, wakeup_count)
 end
 
 function parse_timestamp(filename::String)
@@ -527,6 +538,7 @@ function _measurement_info_from_item(item::MeasurementItem)
     wakeup_count = get(item.parameters, :wakeup_pulse_count, nothing)
     wakeup_count isa Int || (wakeup_count = nothing)
     return MeasurementInfo(
+        item.id,
         basename(item.filepath),
         item.filepath,
         item.title,

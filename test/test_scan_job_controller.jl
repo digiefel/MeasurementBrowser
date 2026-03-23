@@ -151,6 +151,7 @@ using Test
     MeasurementBrowser._init_scan_state!(ui6)
     MeasurementBrowser._init_plot_state!(ui6)
     old_measurement = MeasurementInfo(
+        "/old/old.csv",
         "old.csv",
         "/old/old.csv",
         "old",

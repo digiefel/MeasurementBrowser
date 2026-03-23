@@ -41,6 +41,7 @@ function _ruo2_expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInf
     parts = m.captures
     loc = copy(meas.device_info.location)
     return [MeasurementInfo(
+        item_id(file_id(meas.filepath); split=p),
         meas.filename,
         meas.filepath,
         replace(meas.clean_title, dev => p),
@@ -96,6 +97,7 @@ function _ruo2_expand_pund_fatigue(meas::MeasurementInfo)::Vector{MeasurementInf
     extra = Dict{Symbol,Any}()
     voltage_V !== nothing && (extra[:voltage_V] = voltage_V)
     return [MeasurementInfo(
+        item_id(file_id(meas.filepath); cycle=c),
         meas.filename,
         meas.filepath,
         meas.clean_title * " cycle $c",
