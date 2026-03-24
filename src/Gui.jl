@@ -2459,8 +2459,8 @@ function render_figure_script_window(ui_state)
     get(ui_state, :show_figure_script_window, false) || return
 
     proj = get(ui_state, :project, RUO2_PROJECT)
-    selected_measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
-    selected_count = length(selected_measurement_ids)
+    selected_measurements = _selected_measurements_in_panel_order(ui_state)
+    selected_count = length(selected_measurements)
     groups = _figure_script_groups(ui_state)
     output_path = _figure_script_output_path(ui_state)
     overwrite_path = get(ui_state, :figure_script_overwrite_confirm, "")
