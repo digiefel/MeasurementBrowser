@@ -19,7 +19,8 @@ export IndexedCsvFile, MeasurementItem, index_csv_file
 export AnalysisResult
 export MeasurementHierarchy, HierarchyNode, MeasurementInfo, DeviceInfo
 export AbstractProject, RuO2Project, TASEProject, RUO2_PROJECT, TASE_PROJECT
-export NamedMeasurementGroup, prepare_measurement_groups
+export MeasurementFilterClause, MeasurementGroupFilter, NamedMeasurementGroup
+export FigureMeasurement, FigureScriptData, prepare_figure_script_data, infer_measurement_group
 export parse_device_info, detect_kind, kind_label, display_label
 export expand_measurement, load_plot_for_file, analyze_plot_for_file, draw_plot_for_file
 export load_plot_for_files, analyze_plot_for_files, draw_plot_for_files

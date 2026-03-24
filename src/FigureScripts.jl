@@ -3,16 +3,96 @@ FigureScripts.jl - Reusable helpers for publication script generation
 """
 
 """
-    NamedMeasurementGroup(name, measurement_ids)
+    MeasurementFilterClause(; source_file=nothing, measurement_kind=nothing,
+                             device_path=String[], device_path_mode=:exact,
+                             parameter_conditions=Pair{Symbol,Any}[])
 
-Plain data container describing one named ordered dataset in a generated figure script.
+One exact filter clause over logical measurements. All populated conditions must match.
+"""
+struct MeasurementFilterClause
+    source_file::Union{Nothing,String}
+    measurement_kind::Union{Nothing,Symbol}
+    device_path_mode::Symbol
+    device_path::Vector{String}
+    parameter_conditions::Vector{Pair{Symbol,Any}}
+end
 
-- `name::String` becomes the lookup key in `data[name]`
-- `measurement_ids::Vector{String}` stores exact `MeasurementInfo.id` values in script order
+function MeasurementFilterClause(;
+    source_file::Union{Nothing,AbstractString}=nothing,
+    measurement_kind::Union{Nothing,Symbol}=nothing,
+    device_path::AbstractVector{<:AbstractString}=String[],
+    device_path_mode::Symbol=:exact,
+    parameter_conditions::AbstractVector{<:Pair}=Pair{Symbol,Any}[],
+)
+    source = source_file === nothing ? nothing : String(source_file)
+    path = String.(device_path)
+    mode = isempty(path) ? :none : device_path_mode
+    mode in (:none, :exact, :prefix) || error("Invalid device_path_mode '$mode'")
+    mode == :none && !isempty(path) && error("device_path_mode=:none is only valid for an empty device_path")
+    normalized_conditions = _normalize_parameter_conditions(parameter_conditions)
+    isempty(path) || any(isempty, path) && error("device_path cannot contain empty segments")
+    return MeasurementFilterClause(source, measurement_kind, mode, path, normalized_conditions)
+end
+
+"""
+    MeasurementGroupFilter(clauses)
+
+An OR of exact `MeasurementFilterClause` values.
+"""
+struct MeasurementGroupFilter
+    clauses::Vector{MeasurementFilterClause}
+    function MeasurementGroupFilter(clauses::Vector{MeasurementFilterClause})
+        isempty(clauses) && throw(FigureScriptValidationError("Measurement group filters must contain at least one clause"))
+        return new(clauses)
+    end
+end
+
+function MeasurementGroupFilter(clauses::AbstractVector{<:MeasurementFilterClause})
+    return MeasurementGroupFilter(collect(clauses))
+end
+
+"""
+    NamedMeasurementGroup(name, filter)
+
+One fixed named group in a generated figure script.
 """
 struct NamedMeasurementGroup
     name::String
-    measurement_ids::Vector{String}
+    filter::MeasurementGroupFilter
+    function NamedMeasurementGroup(name::String, filter::MeasurementGroupFilter)
+        normalized_name = strip(name)
+        isempty(normalized_name) && throw(FigureScriptValidationError("Measurement group names cannot be empty"))
+        return new(normalized_name, filter)
+    end
+end
+
+function NamedMeasurementGroup(name::AbstractString, filter::MeasurementGroupFilter)
+    return NamedMeasurementGroup(String(name), filter)
+end
+
+"""
+    FigureMeasurement
+
+One logical measurement inside figure-script `data`.
+"""
+struct FigureMeasurement
+    measurement::MeasurementInfo
+    parameters::Dict{Symbol,Any}
+    loaded::Any
+    analyzed::Any
+end
+
+"""
+    FigureScriptData
+
+Typed container backing generated figure scripts.
+"""
+struct FigureScriptData
+    source_files::Vector{String}
+    measurements::Vector{FigureMeasurement}
+    groups::Dict{String,NamedMeasurementGroup}
+    group_names::Vector{String}
+    group_matches::Dict{String,Vector{Int}}
 end
 
 struct FigureScriptValidationError <: Exception
@@ -44,139 +124,49 @@ function Base.showerror(io::IO, err::FigureScriptIOError)
     showerror(io, err.cause)
 end
 
+function Base.haskey(data::FigureScriptData, name::AbstractString)
+    return haskey(data.groups, String(name))
+end
+
+function Base.keys(data::FigureScriptData)
+    return copy(data.group_names)
+end
+
+function Base.getindex(data::FigureScriptData, name::AbstractString)
+    group_name = String(name)
+    haskey(data.groups, group_name) || throw(FigureScriptResolutionError(
+        "Figure-script group '$group_name' is not defined",
+    ))
+    indices = get(data.group_matches, group_name, nothing)
+    indices === nothing && throw(FigureScriptResolutionError(
+        "Figure-script group '$group_name' has no computed matches",
+    ))
+    return [data.measurements[index] for index in indices]
+end
+
+function _normalize_parameter_conditions(parameter_conditions::AbstractVector{<:Pair})
+    normalized = Pair{Symbol,Any}[]
+    seen = Set{Symbol}()
+    for condition in parameter_conditions
+        name = Symbol(condition.first)
+        name in seen && error("Duplicate parameter condition for '$name'")
+        push!(seen, name)
+        push!(normalized, name => condition.second)
+    end
+    sort!(normalized; by=condition -> String(condition.first))
+    return normalized
+end
+
 function _validate_named_measurement_groups(groups::Vector{NamedMeasurementGroup})
     isempty(groups) && throw(FigureScriptValidationError("At least one measurement group is required"))
 
     seen_names = Set{String}()
     for group in groups
-        name = strip(group.name)
-        isempty(name) && throw(FigureScriptValidationError("Measurement group names cannot be empty"))
-        name in seen_names && throw(FigureScriptValidationError("Duplicate measurement group name '$name'"))
-        push!(seen_names, name)
-
-        isempty(group.measurement_ids) && throw(FigureScriptValidationError("Measurement group '$name' is empty"))
-        seen_ids = Set{String}()
-        for measurement_id in group.measurement_ids
-            id = strip(measurement_id)
-            isempty(id) && throw(FigureScriptValidationError("Measurement group '$name' contains an empty measurement id"))
-            id in seen_ids && throw(FigureScriptValidationError("Measurement group '$name' contains duplicate measurement id '$id'"))
-            push!(seen_ids, id)
-        end
+        group.name in seen_names && throw(FigureScriptValidationError("Duplicate measurement group name '$(group.name)'"))
+        push!(seen_names, group.name)
+        isempty(group.filter.clauses) && throw(FigureScriptValidationError("Measurement group '$(group.name)' is empty"))
     end
     return nothing
-end
-
-function _measurement_source_file_id(measurement_id::AbstractString)
-    id = strip(String(measurement_id))
-    isempty(id) && throw(FigureScriptResolutionError("Measurement id cannot be empty"))
-    return first(split(id, '#'; limit=2))
-end
-
-function _path_within_root(root_path::AbstractString, path::AbstractString)
-    root_abs = normpath(abspath(String(root_path)))
-    path_abs = normpath(abspath(String(path)))
-    root_parts = splitpath(root_abs)
-    path_parts = splitpath(path_abs)
-    length(path_parts) >= length(root_parts) || return false
-    return path_parts[1:length(root_parts)] == root_parts
-end
-
-function _validate_source_file_id(root_path::AbstractString, measurement_id::AbstractString)
-    source_file_id = _measurement_source_file_id(measurement_id)
-    isabspath(source_file_id) || throw(FigureScriptResolutionError(
-        "Measurement id '$measurement_id' must use an absolute source file path",
-    ))
-    _path_within_root(root_path, source_file_id) || throw(FigureScriptResolutionError(
-        "Measurement id '$measurement_id' is outside root path '$root_path'",
-    ))
-    isfile(source_file_id) || throw(FigureScriptResolutionError(
-        "Measurement source file does not exist: $source_file_id",
-    ))
-    return source_file_id
-end
-
-function _resolve_measurement_lookup(
-    root_path::AbstractString,
-    project::AbstractProject,
-    measurement_ids::Vector{String};
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    requested_ids = unique(copy(measurement_ids))
-    meta = _load_scan_metadata(String(root_path))
-    resolved = Dict{String,MeasurementInfo}()
-
-    for source_file_id in unique(_validate_source_file_id(root_path, id) for id in requested_ids)
-        indexed = index_csv_file(source_file_id)
-        items = interpret_measurements(project, indexed, meta; should_cancel=should_cancel)
-        isempty(items) && throw(FigureScriptResolutionError(
-            "Measurement source file '$source_file_id' did not produce any measurements for project $(project_name(project))",
-        ))
-        for item in items
-            measurement = _measurement_info_from_item(item)
-            resolved[measurement.id] = measurement
-        end
-    end
-
-    missing_ids = String[]
-    for measurement_id in requested_ids
-        haskey(resolved, measurement_id) || push!(missing_ids, measurement_id)
-    end
-    isempty(missing_ids) || throw(FigureScriptResolutionError(
-        "Could not resolve measurement id(s): $(join(sort!(missing_ids), ", "))",
-    ))
-    return resolved
-end
-
-"""
-    prepare_measurement_groups(root_path, project, groups; should_cancel=nothing)
-
-Resolve, load, and analyze exact measurement ids for publication scripting.
-Returns a dictionary keyed by group name with group order preserved.
-"""
-function prepare_measurement_groups(
-    root_path::AbstractString,
-    project::AbstractProject,
-    groups::Vector{NamedMeasurementGroup};
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    _validate_named_measurement_groups(groups)
-    all_ids = String[]
-    for group in groups
-        append!(all_ids, group.measurement_ids)
-    end
-
-    measurement_lookup = _resolve_measurement_lookup(root_path, project, all_ids; should_cancel=should_cancel)
-    data = Dict{String,Vector{NamedTuple}}()
-    for group in groups
-        data[group.name] = map(group.measurement_ids) do measurement_id
-                measurement = measurement_lookup[measurement_id]
-                plot_params = merge(
-                    deepcopy(measurement.device_info.parameters),
-                    deepcopy(measurement.parameters),
-                )
-                loaded = load_plot_for_file(
-                    project,
-                    measurement.filepath,
-                    measurement.measurement_kind;
-                    device_params=plot_params,
-                    should_cancel=should_cancel,
-                )
-                analyzed = analyze_plot_for_file(
-                    project,
-                    measurement.measurement_kind,
-                    loaded;
-                    device_params=plot_params,
-                    should_cancel=should_cancel,
-                )
-                (
-                    measurement=measurement,
-                    plot_params=plot_params,
-                    loaded=loaded,
-                    analyzed=analyzed,
-                )
-        end
-    end
-    return data
 end
 
 function _figure_script_output_directory(output_directory::AbstractString)
@@ -213,22 +203,539 @@ function _script_project_binding(::TASEProject)
     return "MeasurementBrowser.TASE_PROJECT"
 end
 
+function _path_within_root(root_path::AbstractString, path::AbstractString)
+    root_abs = normpath(abspath(String(root_path)))
+    path_abs = normpath(abspath(String(path)))
+    root_parts = splitpath(root_abs)
+    path_parts = splitpath(path_abs)
+    length(path_parts) >= length(root_parts) || return false
+    return path_parts[1:length(root_parts)] == root_parts
+end
+
+function _validate_source_file(root_path::AbstractString, source_file::AbstractString)
+    normalized = normpath(abspath(String(source_file)))
+    _path_within_root(root_path, normalized) || throw(FigureScriptResolutionError(
+        "Figure script source file is outside root path '$root_path': $normalized",
+    ))
+    isfile(normalized) || throw(FigureScriptResolutionError(
+        "Figure script source file does not exist: $normalized",
+    ))
+    return normalized
+end
+
+function _normalize_source_files(root_path::AbstractString, source_files::Vector{String})
+    isempty(source_files) && throw(FigureScriptValidationError("At least one source file is required"))
+    seen = Set{String}()
+    normalized = String[]
+    for source_file in source_files
+        file = _validate_source_file(root_path, source_file)
+        file in seen && continue
+        push!(seen, file)
+        push!(normalized, file)
+    end
+    return normalized
+end
+
+function _is_filterable_parameter_value(value)
+    return value isa Bool ||
+        value isa Integer ||
+        value isa AbstractFloat ||
+        value isa AbstractString ||
+        value isa Symbol ||
+        value isa Dates.TimeType
+end
+
+function _measurement_parameters(measurement::MeasurementInfo)
+    return merge(deepcopy(measurement.device_info.parameters), deepcopy(measurement.parameters))
+end
+
+function _measurement_parameter_conditions(measurement::MeasurementInfo)
+    return [name => value for (name, value) in sort!(collect(_measurement_parameters(measurement)); by=entry -> String(first(entry)))
+            if _is_filterable_parameter_value(value)]
+end
+
+function _measurement_matches_clause(measurement::MeasurementInfo, parameters::Dict{Symbol,Any}, clause::MeasurementFilterClause)
+    clause.source_file !== nothing && measurement.filepath != clause.source_file && return false
+    clause.measurement_kind !== nothing && measurement.measurement_kind != clause.measurement_kind && return false
+
+    if clause.device_path_mode == :exact
+        measurement.device_info.location == clause.device_path || return false
+    elseif clause.device_path_mode == :prefix
+        length(measurement.device_info.location) >= length(clause.device_path) || return false
+        measurement.device_info.location[1:length(clause.device_path)] == clause.device_path || return false
+    end
+
+    for condition in clause.parameter_conditions
+        haskey(parameters, condition.first) || return false
+        isequal(parameters[condition.first], condition.second) || return false
+    end
+    return true
+end
+
+function _measurement_matches_filter(measurement::MeasurementInfo, parameters::Dict{Symbol,Any}, filter::MeasurementGroupFilter)
+    for clause in filter.clauses
+        _measurement_matches_clause(measurement, parameters, clause) && return true
+    end
+    return false
+end
+
+function _matching_measurements(measurements::Vector{MeasurementInfo}, group::NamedMeasurementGroup)
+    matched = MeasurementInfo[]
+    for measurement in measurements
+        params = _measurement_parameters(measurement)
+        _measurement_matches_filter(measurement, params, group.filter) && push!(matched, measurement)
+    end
+    return matched
+end
+
+function _load_measurements_from_source_files(
+    root_path::AbstractString,
+    project::AbstractProject,
+    source_files::Vector{String};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    source_files = _normalize_source_files(root_path, source_files)
+    meta = _load_scan_metadata(String(root_path))
+    measurements = MeasurementInfo[]
+    for source_file in source_files
+        indexed = index_csv_file(source_file)
+        items = interpret_measurements(project, indexed, meta; should_cancel=should_cancel)
+        isempty(items) && throw(FigureScriptResolutionError(
+            "Measurement source file '$source_file' did not produce any measurements for project $(project_name(project))",
+        ))
+        append!(measurements, [_measurement_info_from_item(item) for item in items])
+    end
+    return measurements
+end
+
+function _group_matches(groups::Vector{NamedMeasurementGroup}, measurements::Vector{MeasurementInfo})
+    matches = Dict{String,Vector{MeasurementInfo}}()
+    for group in groups
+        matched = _matching_measurements(measurements, group)
+        isempty(matched) && throw(FigureScriptResolutionError(
+            "Measurement group '$(group.name)' matches no measurements in the current dataset",
+        ))
+        matches[group.name] = matched
+    end
+    return matches
+end
+
+function _build_figure_measurements(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    records = FigureMeasurement[]
+    for measurement in measurements
+        parameters = _measurement_parameters(measurement)
+        loaded = load_plot_for_file(
+            project,
+            measurement.filepath,
+            measurement.measurement_kind;
+            device_params=parameters,
+            should_cancel=should_cancel,
+        )
+        analyzed = analyze_plot_for_file(
+            project,
+            measurement.measurement_kind,
+            loaded;
+            device_params=parameters,
+            should_cancel=should_cancel,
+        )
+        push!(records, FigureMeasurement(measurement, parameters, loaded, analyzed))
+    end
+    return records
+end
+
+"""
+    prepare_figure_script_data(root_path, project, source_files, groups; should_cancel=nothing)
+
+Load the source-file union for a figure script and expose the fixed named groups as typed data.
+"""
+function prepare_figure_script_data(
+    root_path::AbstractString,
+    project::AbstractProject,
+    source_files::Vector{String},
+    groups::Vector{NamedMeasurementGroup};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    _validate_named_measurement_groups(groups)
+    normalized_source_files = _normalize_source_files(root_path, source_files)
+    measurements = _load_measurements_from_source_files(root_path, project, normalized_source_files; should_cancel=should_cancel)
+    _group_matches(groups, measurements)
+    records = _build_figure_measurements(project, measurements; should_cancel=should_cancel)
+
+    group_map = Dict(group.name => group for group in groups)
+    match_indices = Dict{String,Vector{Int}}()
+    for group in groups
+        indices = Int[]
+        for (index, record) in enumerate(records)
+            _measurement_matches_filter(record.measurement, record.parameters, group.filter) && push!(indices, index)
+        end
+        isempty(indices) && throw(FigureScriptResolutionError(
+            "Measurement group '$(group.name)' matches no logical measurements after loading",
+        ))
+        match_indices[group.name] = indices
+    end
+
+    return FigureScriptData(
+        copy(normalized_source_files),
+        records,
+        group_map,
+        [group.name for group in groups],
+        match_indices,
+    )
+end
+
+struct _CandidateClause
+    clause::MeasurementFilterClause
+    cover::BitVector
+    condition_count::Int
+    exact_source_selector::Int
+end
+
+function _clause_condition_count(clause::MeasurementFilterClause)
+    return (clause.source_file === nothing ? 0 : 1) +
+        (clause.measurement_kind === nothing ? 0 : 1) +
+        (clause.device_path_mode == :none ? 0 : 1) +
+        length(clause.parameter_conditions)
+end
+
+function _is_exact_source_selector_clause(clause::MeasurementFilterClause)
+    clause.source_file === nothing && return 0
+    clause.measurement_kind === nothing &&
+        clause.device_path_mode == :none &&
+        isempty(clause.parameter_conditions) && return 0
+    return 1
+end
+
+function _solution_score(chosen::Vector{_CandidateClause})
+    return (
+        sum((candidate.condition_count for candidate in chosen); init=0),
+        length(chosen),
+        sum((candidate.exact_source_selector for candidate in chosen); init=0),
+    )
+end
+
+function _score_lt(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
+    lhs[1] != rhs[1] && return lhs[1] < rhs[1]
+    lhs[2] != rhs[2] && return lhs[2] < rhs[2]
+    return lhs[3] < rhs[3]
+end
+
+function _score_le(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
+    lhs == rhs && return true
+    return _score_lt(lhs, rhs)
+end
+
+function _filter_fact_list(measurement::MeasurementInfo)
+    facts = Any[
+        (:source_file, measurement.filepath),
+        (:measurement_kind, measurement.measurement_kind),
+    ]
+
+    path = measurement.device_info.location
+    for prefix_length in 1:max(length(path) - 1, 0)
+        push!(facts, (:device_prefix, Tuple(path[1:prefix_length])))
+    end
+    !isempty(path) && push!(facts, (:device_exact, Tuple(path)))
+
+    for condition in _measurement_parameter_conditions(measurement)
+        push!(facts, (:parameter, condition.first, condition.second))
+    end
+    return facts
+end
+
+function _build_fact_matches(measurements::Vector{MeasurementInfo})
+    facts_by_measurement = Vector{Vector{Any}}(undef, length(measurements))
+    fact_matches = Dict{Any,BitVector}()
+    for (index, measurement) in enumerate(measurements)
+        facts = _filter_fact_list(measurement)
+        facts_by_measurement[index] = facts
+        for fact in facts
+            matches = get!(fact_matches, fact) do
+                falses(length(measurements))
+            end
+            matches[index] = true
+        end
+    end
+    return facts_by_measurement, fact_matches
+end
+
+function _clause_from_facts(facts::Vector{Any})
+    source_file = nothing
+    measurement_kind = nothing
+    device_path = String[]
+    device_path_mode = :none
+    parameter_conditions = Pair{Symbol,Any}[]
+
+    for fact in facts
+        tag = fact[1]
+        if tag == :source_file
+            source_file = String(fact[2])
+        elseif tag == :measurement_kind
+            measurement_kind = fact[2]
+        elseif tag == :device_prefix
+            device_path = collect(String, fact[2])
+            device_path_mode = :prefix
+        elseif tag == :device_exact
+            device_path = collect(String, fact[2])
+            device_path_mode = :exact
+        elseif tag == :parameter
+            push!(parameter_conditions, Symbol(fact[2]) => fact[3])
+        else
+            error("Unknown figure-script fact '$tag'")
+        end
+    end
+
+    return MeasurementFilterClause(
+        source_file=source_file,
+        measurement_kind=measurement_kind,
+        device_path=device_path,
+        device_path_mode=device_path_mode,
+        parameter_conditions=parameter_conditions,
+    )
+end
+
+function _clause_key(clause::MeasurementFilterClause)
+    return (
+        clause.source_file,
+        clause.measurement_kind,
+        clause.device_path_mode,
+        Tuple(clause.device_path),
+        Tuple((condition.first, condition.second) for condition in clause.parameter_conditions),
+    )
+end
+
+function _local_cover(mask::BitVector, selected_indices::Vector{Int})
+    return BitVector(mask[index] for index in selected_indices)
+end
+
+function _collect_exact_candidates(
+    measurements::Vector{MeasurementInfo},
+    selected_indices::Vector{Int},
+)
+    facts_by_measurement, fact_matches = _build_fact_matches(measurements)
+    selected_mask = falses(length(measurements))
+    selected_mask[selected_indices] .= true
+    candidates = Dict{Any,_CandidateClause}()
+
+    for anchor_index in selected_indices
+        anchor_facts = facts_by_measurement[anchor_index]
+        function search(start_index::Int, current_facts::Vector{Any}, current_mask::Union{Nothing,BitVector})
+            for fact_index in start_index:length(anchor_facts)
+                fact = anchor_facts[fact_index]
+                fact_mask = fact_matches[fact]
+                next_mask = current_mask === nothing ? copy(fact_mask) : (copy(current_mask) .& fact_mask)
+                any(next_mask) || continue
+
+                push!(current_facts, fact)
+                if !any(next_mask .& .!selected_mask)
+                    clause = _clause_from_facts(current_facts)
+                    key = _clause_key(clause)
+                    if !haskey(candidates, key)
+                        candidates[key] = _CandidateClause(
+                            clause,
+                            _local_cover(next_mask, selected_indices),
+                            _clause_condition_count(clause),
+                            _is_exact_source_selector_clause(clause),
+                        )
+                    end
+                else
+                    search(fact_index + 1, current_facts, next_mask)
+                end
+                pop!(current_facts)
+            end
+        end
+        search(1, Any[], nothing)
+    end
+
+    isempty(candidates) && throw(FigureScriptResolutionError(
+        "Could not infer any exact figure-script filter clauses from the current selection",
+    ))
+    return collect(values(candidates))
+end
+
+function _cover_superset(lhs::BitVector, rhs::BitVector)
+    length(lhs) == length(rhs) || error("Coverage vectors must have equal length")
+    for index in eachindex(lhs)
+        rhs[index] && !lhs[index] && return false
+    end
+    return true
+end
+
+function _remove_dominated_candidates(candidates::Vector{_CandidateClause})
+    keep = trues(length(candidates))
+    for i in eachindex(candidates)
+        keep[i] || continue
+        for j in eachindex(candidates)
+            i == j && continue
+            keep[j] || continue
+            _cover_superset(candidates[j].cover, candidates[i].cover) || continue
+            score_i = (
+                candidates[i].condition_count,
+                candidates[i].exact_source_selector,
+            )
+            score_j = (
+                candidates[j].condition_count,
+                candidates[j].exact_source_selector,
+            )
+            if score_j < score_i || (score_j == score_i && candidates[j].cover != candidates[i].cover)
+                keep[i] = false
+                break
+            end
+        end
+    end
+    return [candidates[index] for index in eachindex(candidates) if keep[index]]
+end
+
+function _choose_group_candidates(candidates::Vector{_CandidateClause}, selected_count::Int)
+    coverers = [Int[] for _ in 1:selected_count]
+    for (candidate_index, candidate) in enumerate(candidates)
+        for measurement_index in eachindex(candidate.cover)
+            candidate.cover[measurement_index] && push!(coverers[measurement_index], candidate_index)
+        end
+    end
+
+    any(isempty, coverers) && throw(FigureScriptResolutionError(
+        "Could not infer an exact figure-script filter for the current selection",
+    ))
+
+    order = sortperm(candidates; by=candidate -> (
+        -count(candidate.cover),
+        candidate.condition_count,
+        candidate.exact_source_selector,
+    ))
+    best_score = nothing
+    best_choice = _CandidateClause[]
+    uncovered = trues(selected_count)
+
+    function search(chosen::Vector{_CandidateClause}, uncovered_mask::BitVector)
+        if !any(uncovered_mask)
+            score = _solution_score(chosen)
+            if best_score === nothing || _score_lt(score, best_score)
+                best_score = score
+                best_choice = copy(chosen)
+            end
+            return
+        end
+
+        partial_score = _solution_score(chosen)
+        best_score !== nothing && _score_le(best_score, partial_score) && return
+
+        uncovered_indices = findall(uncovered_mask)
+        anchor = uncovered_indices[argmin(length(coverers[index]) for index in uncovered_indices)]
+        candidates_for_anchor = sort!(copy(coverers[anchor]); by=candidate_index -> findfirst(==(candidate_index), order))
+
+        for candidate_index in candidates_for_anchor
+            candidate = candidates[candidate_index]
+            next_uncovered = copy(uncovered_mask)
+            next_uncovered .&= .!candidate.cover
+            push!(chosen, candidate)
+            search(chosen, next_uncovered)
+            pop!(chosen)
+        end
+    end
+
+    search(_CandidateClause[], uncovered)
+    isempty(best_choice) && throw(FigureScriptResolutionError(
+        "Could not choose an exact figure-script filter for the current selection",
+    ))
+    return MeasurementGroupFilter([candidate.clause for candidate in best_choice])
+end
+
+function infer_measurement_group(
+    name::AbstractString,
+    selected_measurements::Vector{MeasurementInfo},
+    all_measurements::Vector{MeasurementInfo},
+)
+    isempty(selected_measurements) && throw(FigureScriptValidationError(
+        "Select one or more measurements before creating a figure-script group",
+    ))
+    isempty(all_measurements) && throw(FigureScriptValidationError(
+        "No scanned measurements are available for figure-script inference",
+    ))
+
+    selected_ids = Set(measurement.id for measurement in selected_measurements)
+    length(selected_ids) == length(selected_measurements) || throw(FigureScriptValidationError(
+        "Figure-script group selection contains duplicate logical measurements",
+    ))
+
+    selected_indices = findall(measurement -> measurement.id in selected_ids, all_measurements)
+    length(selected_indices) == length(selected_ids) || throw(FigureScriptResolutionError(
+        "Figure-script group selection references measurements that are not present in the current scan",
+    ))
+
+    candidates = _collect_exact_candidates(all_measurements, selected_indices)
+    candidates = _remove_dominated_candidates(candidates)
+    filter = _choose_group_candidates(candidates, length(selected_indices))
+    group = NamedMeasurementGroup(name, filter)
+
+    matched_ids = Set(measurement.id for measurement in _matching_measurements(all_measurements, group))
+    matched_ids == selected_ids || throw(FigureScriptResolutionError(
+        "Inferred figure-script group '$(group.name)' does not reproduce the selected logical measurements exactly",
+    ))
+    return group
+end
+
+function _group_source_files(groups::Vector{NamedMeasurementGroup}, measurements::Vector{MeasurementInfo})
+    matched = _group_matches(groups, measurements)
+    needed_files = Set{String}()
+    source_files = String[]
+    for measurement in measurements
+        needed = false
+        for group in groups
+            measurement in matched[group.name] && (needed = true; break)
+        end
+        if needed && measurement.filepath ∉ needed_files
+            push!(needed_files, measurement.filepath)
+            push!(source_files, measurement.filepath)
+        end
+    end
+    return source_files
+end
+
+function _render_clause(io::IO, clause::MeasurementFilterClause)
+    println(io, "            MeasurementBrowser.MeasurementFilterClause(")
+    clause.source_file !== nothing && println(io, "                source_file = ", repr(clause.source_file), ",")
+    clause.measurement_kind !== nothing && println(io, "                measurement_kind = ", repr(clause.measurement_kind), ",")
+    if clause.device_path_mode != :none
+        println(io, "                device_path = ", repr(clause.device_path), ",")
+        println(io, "                device_path_mode = ", repr(clause.device_path_mode), ",")
+    end
+    if !isempty(clause.parameter_conditions)
+        println(io, "                parameter_conditions = [")
+        for condition in clause.parameter_conditions
+            println(io, "                    ", repr(condition.first), " => ", repr(condition.second), ",")
+        end
+        println(io, "                ],")
+    end
+    println(io, "            ),")
+end
+
+function _render_group(io::IO, group::NamedMeasurementGroup)
+    println(io, "    MeasurementBrowser.NamedMeasurementGroup(")
+    println(io, "        ", repr(group.name), ",")
+    println(io, "        MeasurementBrowser.MeasurementGroupFilter([")
+    for clause in group.filter.clauses
+        _render_clause(io, clause)
+    end
+    println(io, "        ]),")
+    println(io, "    ),")
+end
+
 function _render_figure_script(
     root_path::AbstractString,
     project::AbstractProject,
+    source_files::Vector{String},
     groups::Vector{NamedMeasurementGroup},
-    measurement_lookup::AbstractDict{String,<:MeasurementInfo},
+    measurements::Vector{MeasurementInfo},
 )
     _validate_named_measurement_groups(groups)
+    normalized_source_files = _normalize_source_files(root_path, source_files)
+    _group_matches(groups, measurements)
     root_abs = normpath(abspath(String(root_path)))
     project_binding = _script_project_binding(project)
-    for group in groups
-        for measurement_id in group.measurement_ids
-            haskey(measurement_lookup, measurement_id) || throw(FigureScriptValidationError(
-                "Measurement id '$measurement_id' is not available in the current scan",
-            ))
-        end
-    end
 
     io = IOBuffer()
     println(io, "using MeasurementBrowser")
@@ -237,26 +744,24 @@ function _render_figure_script(
     println(io)
     println(io, "root_path = ", repr(root_abs))
     println(io, "project = ", project_binding)
-    println(io)
-    println(io, "groups = [")
-    for group in groups
-        println(io, "    MeasurementBrowser.NamedMeasurementGroup(")
-        println(io, "        ", repr(group.name), ",")
-        println(io, "        [")
-        for measurement_id in group.measurement_ids
-            println(io, "            ", repr(measurement_id), ",")
-        end
-        println(io, "        ],")
-        println(io, "    ),")
+    println(io, "source_files = [")
+    for source_file in normalized_source_files
+        println(io, "    ", repr(source_file), ",")
     end
     println(io, "]")
     println(io)
-    println(io, "data = MeasurementBrowser.prepare_measurement_groups(root_path, project, groups)")
+    println(io, "groups = [")
+    for group in groups
+        _render_group(io, group)
+    end
+    println(io, "]")
+    println(io)
+    println(io, "data = MeasurementBrowser.prepare_figure_script_data(root_path, project, source_files, groups)")
     return String(take!(io))
 end
 
 """
-    write_figure_script(output_directory, root_path, project, script_name, groups, measurement_lookup; overwrite=false)
+    write_figure_script(output_directory, root_path, project, script_name, groups, measurements; overwrite=false)
 
 Render and write a figure-preparation script.
 """
@@ -266,15 +771,18 @@ function write_figure_script(
     project::AbstractProject,
     script_name::AbstractString,
     groups::Vector{NamedMeasurementGroup},
-    measurement_lookup::AbstractDict{String,<:MeasurementInfo};
+    measurements::Vector{MeasurementInfo};
     overwrite::Bool=false,
 )
+    _validate_named_measurement_groups(groups)
+    isempty(measurements) && throw(FigureScriptValidationError("Current scan contains no measurements for figure-script generation"))
     path = figure_script_path(output_directory, script_name)
     if isfile(path) && !overwrite
         throw(FigureScriptExistsError(path))
     end
 
-    script_contents = _render_figure_script(root_path, project, groups, measurement_lookup)
+    source_files = _group_source_files(groups, measurements)
+    script_contents = _render_figure_script(root_path, project, source_files, groups, measurements)
     directory = dirname(path)
     try
         mkpath(directory)
@@ -284,18 +792,4 @@ function write_figure_script(
         rethrow()
     end
     return path
-end
-
-function _append_group_measurements(group::NamedMeasurementGroup, measurement_ids::Vector{String})
-    merged_ids = copy(group.measurement_ids)
-    for measurement_id in measurement_ids
-        measurement_id in merged_ids || push!(merged_ids, measurement_id)
-    end
-    return NamedMeasurementGroup(group.name, merged_ids)
-end
-
-function _remove_group_measurements(group::NamedMeasurementGroup, measurement_ids::Vector{String})
-    to_remove = Set(measurement_ids)
-    remaining_ids = [measurement_id for measurement_id in group.measurement_ids if measurement_id ∉ to_remove]
-    return NamedMeasurementGroup(group.name, remaining_ids)
 end

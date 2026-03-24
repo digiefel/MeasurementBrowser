@@ -145,10 +145,11 @@ using Test
     ui6 = Dict{Symbol,Any}(
         :selected_devices => HierarchyNode[device_leaf],
         :selected_measurement_ids => ["m3", "m1"],
+        :all_measurements => [m1, m2, m3],
     )
     MeasurementBrowser._init_figure_script_state!(ui6)
 
-    @test MeasurementBrowser._selected_measurement_ids_in_panel_order(ui6) == ["m1", "m3"]
+    @test [measurement.id for measurement in MeasurementBrowser._selected_measurements_in_panel_order(ui6)] == ["m1", "m3"]
     @test MeasurementBrowser._figure_script_output_path(ui6) === nothing
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_output_dir_buffer], "/tmp/figure_scripts")
@@ -159,11 +160,17 @@ using Test
     MeasurementBrowser._create_figure_script_group_from_selection!(ui6)
     @test length(MeasurementBrowser._figure_script_groups(ui6)) == 1
     @test MeasurementBrowser._figure_script_groups(ui6)[1].name == "primary"
-    @test MeasurementBrowser._figure_script_groups(ui6)[1].measurement_ids == ["m1", "m3"]
+    @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
+        ui6,
+        MeasurementBrowser._figure_script_groups(ui6)[1],
+    )] == ["m1", "m3"]
 
     ui6[:selected_measurement_ids] = ["m2", "m1"]
     MeasurementBrowser._add_selection_to_figure_script_group!(ui6)
-    @test MeasurementBrowser._figure_script_groups(ui6)[1].measurement_ids == ["m1", "m3", "m2"]
+    @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
+        ui6,
+        MeasurementBrowser._figure_script_groups(ui6)[1],
+    )] == ["m1", "m2", "m3"]
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_group_name_buffer], "renamed")
     MeasurementBrowser._rename_selected_figure_script_group!(ui6)
@@ -171,7 +178,10 @@ using Test
 
     ui6[:selected_measurement_ids] = ["m3"]
     MeasurementBrowser._remove_selection_from_figure_script_group!(ui6)
-    @test MeasurementBrowser._figure_script_groups(ui6)[1].measurement_ids == ["m1", "m2"]
+    @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
+        ui6,
+        MeasurementBrowser._figure_script_groups(ui6)[1],
+    )] == ["m1", "m2"]
 
     MeasurementBrowser._delete_selected_figure_script_group!(ui6)
     @test isempty(MeasurementBrowser._figure_script_groups(ui6))

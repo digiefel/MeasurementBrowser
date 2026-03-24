@@ -376,24 +376,33 @@ function _apply_visible_selection!(ui_state)
     ui_state[:selected_path] = selected_path
 end
 
-function _selected_measurement_ids_in_panel_order(ui_state)
+function _current_scan_measurements(ui_state)
+    return get(ui_state, :all_measurements, MeasurementInfo[])
+end
+
+function _selected_measurements_in_panel_order(ui_state)
     proj = get(ui_state, :project, RUO2_PROJECT)
     filter_meas = get(ui_state, :_imgui_text_filter_meas, nothing)
     visible_measurements = filter_meas === nothing ?
         _selected_measurements(ui_state) :
         _visible_measurements(ui_state, proj, filter_meas)
     selected_ids = Set(get(ui_state, :selected_measurement_ids, String[]))
-    return [measurement.id for measurement in visible_measurements if measurement.id in selected_ids]
+    return [measurement for measurement in visible_measurements if measurement.id in selected_ids]
+end
+
+function _group_measurements_in_current_scan(ui_state, group::NamedMeasurementGroup)
+    return _matching_measurements(_current_scan_measurements(ui_state), group)
 end
 
 function _create_figure_script_group_from_selection!(ui_state)
-    measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
-    isempty(measurement_ids) && throw(FigureScriptValidationError("Select one or more measurements before creating a group"))
+    selected_measurements = _selected_measurements_in_panel_order(ui_state)
+    isempty(selected_measurements) && throw(FigureScriptValidationError("Select one or more measurements before creating a group"))
     name = strip(_buffer_string(ui_state[:figure_script_group_name_buffer]))
     isempty(name) && throw(FigureScriptValidationError("Enter a group name before creating a group"))
 
+    all_measurements = _current_scan_measurements(ui_state)
     groups = copy(_figure_script_groups(ui_state))
-    push!(groups, NamedMeasurementGroup(name, measurement_ids))
+    push!(groups, infer_measurement_group(name, selected_measurements, all_measurements))
     _validate_named_measurement_groups(groups)
     ui_state[:figure_script_groups] = groups
     _set_selected_figure_script_group!(ui_state, length(groups))
@@ -403,11 +412,15 @@ end
 function _add_selection_to_figure_script_group!(ui_state)
     group = _selected_figure_script_group(ui_state)
     group === nothing && throw(FigureScriptValidationError("Select a group before adding measurements"))
-    measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
-    isempty(measurement_ids) && throw(FigureScriptValidationError("Select one or more measurements before adding them"))
+    selected_measurements = _selected_measurements_in_panel_order(ui_state)
+    isempty(selected_measurements) && throw(FigureScriptValidationError("Select one or more measurements before adding them"))
 
+    all_measurements = _current_scan_measurements(ui_state)
+    merged_ids = Set(measurement.id for measurement in _group_measurements_in_current_scan(ui_state, group))
+    foreach(measurement -> push!(merged_ids, measurement.id), selected_measurements)
+    merged_measurements = [measurement for measurement in all_measurements if measurement.id in merged_ids]
     groups = copy(_figure_script_groups(ui_state))
-    groups[get(ui_state, :figure_script_selected_group, 0)] = _append_group_measurements(group, measurement_ids)
+    groups[get(ui_state, :figure_script_selected_group, 0)] = infer_measurement_group(group.name, merged_measurements, all_measurements)
     _validate_named_measurement_groups(groups)
     ui_state[:figure_script_groups] = groups
     return nothing
@@ -416,11 +429,17 @@ end
 function _remove_selection_from_figure_script_group!(ui_state)
     group = _selected_figure_script_group(ui_state)
     group === nothing && throw(FigureScriptValidationError("Select a group before removing measurements"))
-    measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
-    isempty(measurement_ids) && throw(FigureScriptValidationError("Select one or more measurements before removing them"))
+    selected_measurements = _selected_measurements_in_panel_order(ui_state)
+    isempty(selected_measurements) && throw(FigureScriptValidationError("Select one or more measurements before removing them"))
 
+    remaining_ids = Set(measurement.id for measurement in _group_measurements_in_current_scan(ui_state, group))
+    foreach(measurement -> delete!(remaining_ids, measurement.id), selected_measurements)
+    isempty(remaining_ids) && throw(FigureScriptValidationError("Measurement groups cannot be empty"))
+    all_measurements = _current_scan_measurements(ui_state)
+    remaining_measurements = [measurement for measurement in all_measurements if measurement.id in remaining_ids]
     groups = copy(_figure_script_groups(ui_state))
-    groups[get(ui_state, :figure_script_selected_group, 0)] = _remove_group_measurements(group, measurement_ids)
+    groups[get(ui_state, :figure_script_selected_group, 0)] = infer_measurement_group(group.name, remaining_measurements, all_measurements)
+    _validate_named_measurement_groups(groups)
     ui_state[:figure_script_groups] = groups
     return nothing
 end
@@ -433,7 +452,7 @@ function _rename_selected_figure_script_group!(ui_state)
 
     groups = copy(_figure_script_groups(ui_state))
     selected_index = get(ui_state, :figure_script_selected_group, 0)
-    groups[selected_index] = NamedMeasurementGroup(name, copy(group.measurement_ids))
+    groups[selected_index] = NamedMeasurementGroup(name, group.filter)
     _validate_named_measurement_groups(groups)
     ui_state[:figure_script_groups] = groups
     _set_selected_figure_script_group!(ui_state, selected_index)
@@ -2418,7 +2437,7 @@ function _write_figure_script_from_ui!(ui_state; overwrite::Bool=false)
         project,
         _buffer_string(ui_state[:figure_script_name_buffer]),
         copy(_figure_script_groups(ui_state)),
-        get(ui_state, :measurement_index, Dict{String,MeasurementInfo}());
+        _current_scan_measurements(ui_state);
         overwrite=overwrite,
     )
     ui_state[:figure_script_overwrite_confirm] = ""
@@ -2428,17 +2447,11 @@ end
 
 function _render_figure_script_group_tooltip(ui_state, proj, group::NamedMeasurementGroup)
     ig.BeginItemTooltip() || return
-    measurement_lookup = get(ui_state, :measurement_index, Dict{String,MeasurementInfo}())
-    preview_ids = group.measurement_ids[1:min(6, end)]
-    for measurement_id in preview_ids
-        measurement = get(measurement_lookup, measurement_id, nothing)
-        if measurement === nothing
-            ig.BulletText(measurement_id)
-        else
-            ig.BulletText("$(display_label(proj, measurement))")
-        end
+    preview_measurements = _group_measurements_in_current_scan(ui_state, group)
+    for measurement in preview_measurements[1:min(6, end)]
+        ig.BulletText("$(display_label(proj, measurement))")
     end
-    length(group.measurement_ids) > length(preview_ids) && ig.TextDisabled("...")
+    length(preview_measurements) > 6 && ig.TextDisabled("...")
     ig.EndTooltip()
 end
 
@@ -2490,13 +2503,14 @@ function render_figure_script_window(ui_state)
         ig.Spacing()
         ig.Text("Groups")
         ig.SameLine()
-        _helpmarker("Each group becomes one entry in the generated script: data[\"group_name\"]::Vector{NamedTuple}")
+        _helpmarker("Each group becomes one entry in the generated script: data[\"group_name\"]::Vector{MeasurementBrowser.FigureMeasurement}")
         if ig.BeginChild("figure_script_groups", (0, 190), true)
             if isempty(groups)
                 ig.TextDisabled("No groups yet")
             else
                 for (index, group) in enumerate(groups)
-                    label = "$(group.name) ($(length(group.measurement_ids)))###figure_group_$index"
+                    match_count = length(_group_measurements_in_current_scan(ui_state, group))
+                    label = "$(group.name) ($(match_count))###figure_group_$index"
                     if ig.Selectable(label, get(ui_state, :figure_script_selected_group, 0) == index)
                         _set_selected_figure_script_group!(ui_state, index)
                     end
