@@ -55,6 +55,11 @@ function _sanitize_project_preference(pref::String)
     return "auto"
 end
 
+function _sanitize_figure_script_output_dir(value)
+    value isa AbstractString || return ""
+    return strip(String(value))
+end
+
 function _parse_recent_projects(prefs::Dict{String,Any})
     recents = Dict{String,String}[]
     raw = get(prefs, "recent_projects", Any[])
@@ -68,24 +73,37 @@ function _parse_recent_projects(prefs::Dict{String,Any})
         isempty(path) && continue
         pref = get(entry, "project_preference", "auto")
         pref = pref isa AbstractString ? pref : "auto"
+        figure_script_output_dir = _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
         push!(recents, Dict{String,String}(
             "path" => _normalize_project_path(path),
             "project_preference" => _sanitize_project_preference(pref),
+            "figure_script_output_dir" => figure_script_output_dir,
         ))
     end
 
     return recents
 end
 
-function _update_recent_projects(recents::Vector{Dict{String,String}}, path::String, pref::String)
+function _update_recent_projects(
+    recents::Vector{Dict{String,String}},
+    path::String,
+    pref::String,
+    figure_script_output_dir::String,
+)
     norm_path = _normalize_project_path(path)
     filter!(entry -> get(entry, "path", "") != norm_path, recents)
     pushfirst!(recents, Dict{String,String}(
         "path" => norm_path,
         "project_preference" => pref,
+        "figure_script_output_dir" => _sanitize_figure_script_output_dir(figure_script_output_dir),
     ))
     length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
     return recents
+end
+
+function _current_figure_script_output_dir(ui_state)
+    haskey(ui_state, :figure_script_output_dir_buffer) || return ""
+    return _sanitize_figure_script_output_dir(_buffer_string(ui_state[:figure_script_output_dir_buffer]))
 end
 
 function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
@@ -96,7 +114,7 @@ function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
 
     recents = _parse_recent_projects(prefs)
     if path !== nothing && !isempty(path)
-        _update_recent_projects(recents, path, pref)
+        _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state))
         prefs["recent_projects"] = recents
     end
 
@@ -104,16 +122,34 @@ function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
     ui_state[:recent_projects] = recents
 end
 
-function _project_preference_for_path(ui_state, path::String)
+function _recent_project_entry_for_path(ui_state, path::String)
     recents = get(ui_state, :recent_projects, Dict{String,String}[])
     for entry in recents
-        if get(entry, "path", "") == path
-            pref = get(entry, "project_preference", "auto")
-            return _sanitize_project_preference(pref)
-        end
+        get(entry, "path", "") == path && return entry
+    end
+    return nothing
+end
+
+function _project_preference_for_path(ui_state, path::String)
+    entry = _recent_project_entry_for_path(ui_state, path)
+    if entry !== nothing
+        pref = get(entry, "project_preference", "auto")
+        return _sanitize_project_preference(pref)
     end
     pref = string(get(ui_state, :project_preference, "auto"))
     return _sanitize_project_preference(pref)
+end
+
+function _figure_script_output_dir_for_path(ui_state, path::String)
+    entry = _recent_project_entry_for_path(ui_state, path)
+    entry === nothing && return ""
+    return _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
+end
+
+function _persist_current_project_preferences!(ui_state)
+    current_root = get(ui_state, :root_path, "")
+    isempty(current_root) && return
+    _persist_preferences!(ui_state; path=current_root)
 end
 
 function _open_project_path!(ui_state, path::String; persist=true)
@@ -266,7 +302,14 @@ end
 
 function _reset_figure_script_state!(ui_state, root_path::AbstractString="")
     _init_figure_script_state!(ui_state)
-    ui_state[:figure_script_root_path] = String(root_path)
+    normalized_root = String(root_path)
+    ui_state[:figure_script_root_path] = normalized_root
+    if !isempty(normalized_root)
+        _set_buffer_string!(
+            ui_state[:figure_script_output_dir_buffer],
+            _figure_script_output_dir_for_path(ui_state, normalized_root),
+        )
+    end
 end
 
 function _load_bad_registry_for_root!(ui_state, root_path::String)
@@ -2476,16 +2519,18 @@ function render_figure_script_window(ui_state)
         ig.Separator()
 
         ig.Text("Output Directory")
-        ig.InputText(
+        output_dir_changed = ig.InputText(
             "##figure_script_output_dir",
             ui_state[:figure_script_output_dir_buffer],
             length(ui_state[:figure_script_output_dir_buffer]),
         )
+        output_dir_changed && _persist_current_project_preferences!(ui_state)
         ig.SameLine()
         if ig.Button("Choose...")
             selected_dir = pick_folder()
             if !isnothing(selected_dir) && !isempty(selected_dir)
                 _set_buffer_string!(ui_state[:figure_script_output_dir_buffer], _normalize_project_path(selected_dir))
+                _persist_current_project_preferences!(ui_state)
             end
         end
         ig.SameLine()

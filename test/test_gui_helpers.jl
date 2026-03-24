@@ -10,7 +10,11 @@ using Test
     path_b = joinpath(pwd(), "missing_folder")
     prefs = Dict{String,Any}(
         "recent_projects" => Any[
-            Dict("path" => path_a, "project_preference" => "RuO2"),
+            Dict(
+                "path" => path_a,
+                "project_preference" => "RuO2",
+                "figure_script_output_dir" => "/tmp/figures_a",
+            ),
             Dict("path" => path_b, "project_preference" => 99),
             Dict("path" => 42, "project_preference" => "TASE"),
             "bad_entry",
@@ -20,8 +24,10 @@ using Test
     @test length(recents) == 2
     @test recents[1]["path"] == MeasurementBrowser._normalize_project_path(path_a)
     @test recents[1]["project_preference"] == "RuO2"
+    @test recents[1]["figure_script_output_dir"] == "/tmp/figures_a"
     @test recents[2]["path"] == MeasurementBrowser._normalize_project_path(path_b)
     @test recents[2]["project_preference"] == "auto"
+    @test recents[2]["figure_script_output_dir"] == ""
 
     items = [1, 2, 3, 4]
     selected = Int[]
@@ -154,6 +160,7 @@ using Test
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_output_dir_buffer], "/tmp/figure_scripts")
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_name_buffer], "figure_1")
+    @test MeasurementBrowser._current_figure_script_output_dir(ui6) == "/tmp/figure_scripts"
     @test MeasurementBrowser._figure_script_output_path(ui6) == "/tmp/figure_scripts/figure_1.jl"
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_group_name_buffer], "primary")
@@ -186,4 +193,18 @@ using Test
     MeasurementBrowser._delete_selected_figure_script_group!(ui6)
     @test isempty(MeasurementBrowser._figure_script_groups(ui6))
     @test ui6[:figure_script_selected_group] == 0
+
+    ui7 = Dict{Symbol,Any}(
+        :recent_projects => Dict{String,String}[
+            Dict(
+                "path" => "/tmp/project_a",
+                "project_preference" => "RuO2",
+                "figure_script_output_dir" => "/tmp/project_a/figures",
+            ),
+        ],
+    )
+    MeasurementBrowser._init_figure_script_state!(ui7)
+    MeasurementBrowser._reset_figure_script_state!(ui7, "/tmp/project_a")
+    @test MeasurementBrowser._figure_script_output_dir_for_path(ui7, "/tmp/project_a") == "/tmp/project_a/figures"
+    @test MeasurementBrowser._buffer_string(ui7[:figure_script_output_dir_buffer]) == "/tmp/project_a/figures"
 end
