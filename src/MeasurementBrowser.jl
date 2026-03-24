@@ -8,6 +8,7 @@ include("scan/Indexer.jl")
 include("AnalysisResult.jl")
 include("DeviceParser.jl")
 include("BadRegistry.jl")
+include("FigureScripts.jl")
 include("projects/RuO2Project.jl")   # defines methods + registers RUO2_PROJECT
 include("projects/TASEProject.jl")   # defines methods + registers TASE_PROJECT
 include("Precompile.jl")
@@ -18,6 +19,7 @@ export IndexedCsvFile, MeasurementItem, index_csv_file
 export AnalysisResult
 export MeasurementHierarchy, HierarchyNode, MeasurementInfo, DeviceInfo
 export AbstractProject, RuO2Project, TASEProject, RUO2_PROJECT, TASE_PROJECT
+export NamedMeasurementGroup, prepare_measurement_groups
 export parse_device_info, detect_kind, kind_label, display_label
 export expand_measurement, load_plot_for_file, analyze_plot_for_file, draw_plot_for_file
 export load_plot_for_files, analyze_plot_for_files, draw_plot_for_files

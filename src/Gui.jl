@@ -179,6 +179,42 @@ function _init_plot_state!(ui_state)
     ui_state[:plot_runtime_warmed] = false
 end
 
+const _FIGURE_SCRIPT_NAME_BUFFER_SIZE = 192
+const _FIGURE_GROUP_NAME_BUFFER_SIZE = 192
+const _FIGURE_OUTPUT_DIR_BUFFER_SIZE = 512
+
+function _text_buffer(capacity::Int)
+    capacity > 1 || error("Text buffer capacity must be greater than 1")
+    return fill(UInt8(0), capacity)
+end
+
+function _buffer_string(buffer::Vector{UInt8})
+    terminator = findfirst(==(0x00), buffer)
+    end_index = something(terminator, length(buffer) + 1) - 1
+    return String(buffer[1:end_index])
+end
+
+function _set_buffer_string!(buffer::Vector{UInt8}, value::AbstractString)
+    bytes = collect(codeunits(String(value)))
+    length(bytes) < length(buffer) || error("String value exceeds text buffer capacity")
+    fill!(buffer, 0x00)
+    buffer[1:length(bytes)] = bytes
+    return buffer
+end
+
+function _init_figure_script_state!(ui_state)
+    ui_state[:show_figure_script_window] = false
+    ui_state[:figure_script_root_path] = ""
+    ui_state[:figure_script_output_dir_buffer] = _text_buffer(_FIGURE_OUTPUT_DIR_BUFFER_SIZE)
+    ui_state[:figure_script_name_buffer] = _text_buffer(_FIGURE_SCRIPT_NAME_BUFFER_SIZE)
+    ui_state[:figure_script_group_name_buffer] = _text_buffer(_FIGURE_GROUP_NAME_BUFFER_SIZE)
+    ui_state[:figure_script_groups] = NamedMeasurementGroup[]
+    ui_state[:figure_script_selected_group] = 0
+    ui_state[:figure_script_error] = ""
+    ui_state[:figure_script_status] = ""
+    ui_state[:figure_script_overwrite_confirm] = ""
+end
+
 function _copy_bad_registry(registry::BadRegistry)
     return BadRegistry(copy(registry.devices), copy(registry.measurements))
 end
@@ -189,6 +225,48 @@ function _clear_selection!(ui_state)
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
     ui_state[:selected_path] = String[]
+end
+
+function _figure_script_groups(ui_state)
+    return get(ui_state, :figure_script_groups, NamedMeasurementGroup[])
+end
+
+function _selected_figure_script_group(ui_state)
+    index = get(ui_state, :figure_script_selected_group, 0)
+    groups = _figure_script_groups(ui_state)
+    1 <= index <= length(groups) || return nothing
+    return groups[index]
+end
+
+function _set_selected_figure_script_group!(ui_state, index::Int)
+    groups = _figure_script_groups(ui_state)
+    if 1 <= index <= length(groups)
+        ui_state[:figure_script_selected_group] = index
+        _set_buffer_string!(ui_state[:figure_script_group_name_buffer], groups[index].name)
+        return
+    end
+    ui_state[:figure_script_selected_group] = 0
+    _set_buffer_string!(ui_state[:figure_script_group_name_buffer], "")
+end
+
+function _clear_figure_script_messages!(ui_state)
+    ui_state[:figure_script_error] = ""
+    ui_state[:figure_script_status] = ""
+end
+
+function _set_figure_script_error!(ui_state, err::Exception)
+    ui_state[:figure_script_error] = sprint(showerror, err)
+    ui_state[:figure_script_status] = ""
+end
+
+function _set_figure_script_status!(ui_state, message::AbstractString)
+    ui_state[:figure_script_status] = String(message)
+    ui_state[:figure_script_error] = ""
+end
+
+function _reset_figure_script_state!(ui_state, root_path::AbstractString="")
+    _init_figure_script_state!(ui_state)
+    ui_state[:figure_script_root_path] = String(root_path)
 end
 
 function _load_bad_registry_for_root!(ui_state, root_path::String)
@@ -296,6 +374,80 @@ function _apply_visible_selection!(ui_state)
     ui_state[:selected_devices] = selected_devices
     ui_state[:selected_measurements] = selected_measurements
     ui_state[:selected_path] = selected_path
+end
+
+function _selected_measurement_ids_in_panel_order(ui_state)
+    proj = get(ui_state, :project, RUO2_PROJECT)
+    filter_meas = get(ui_state, :_imgui_text_filter_meas, nothing)
+    visible_measurements = filter_meas === nothing ?
+        _selected_measurements(ui_state) :
+        _visible_measurements(ui_state, proj, filter_meas)
+    selected_ids = Set(get(ui_state, :selected_measurement_ids, String[]))
+    return [measurement.id for measurement in visible_measurements if measurement.id in selected_ids]
+end
+
+function _create_figure_script_group_from_selection!(ui_state)
+    measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
+    isempty(measurement_ids) && throw(FigureScriptValidationError("Select one or more measurements before creating a group"))
+    name = strip(_buffer_string(ui_state[:figure_script_group_name_buffer]))
+    isempty(name) && throw(FigureScriptValidationError("Enter a group name before creating a group"))
+
+    groups = copy(_figure_script_groups(ui_state))
+    push!(groups, NamedMeasurementGroup(name, measurement_ids))
+    _validate_named_measurement_groups(groups)
+    ui_state[:figure_script_groups] = groups
+    _set_selected_figure_script_group!(ui_state, length(groups))
+    return nothing
+end
+
+function _add_selection_to_figure_script_group!(ui_state)
+    group = _selected_figure_script_group(ui_state)
+    group === nothing && throw(FigureScriptValidationError("Select a group before adding measurements"))
+    measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
+    isempty(measurement_ids) && throw(FigureScriptValidationError("Select one or more measurements before adding them"))
+
+    groups = copy(_figure_script_groups(ui_state))
+    groups[get(ui_state, :figure_script_selected_group, 0)] = _append_group_measurements(group, measurement_ids)
+    _validate_named_measurement_groups(groups)
+    ui_state[:figure_script_groups] = groups
+    return nothing
+end
+
+function _remove_selection_from_figure_script_group!(ui_state)
+    group = _selected_figure_script_group(ui_state)
+    group === nothing && throw(FigureScriptValidationError("Select a group before removing measurements"))
+    measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
+    isempty(measurement_ids) && throw(FigureScriptValidationError("Select one or more measurements before removing them"))
+
+    groups = copy(_figure_script_groups(ui_state))
+    groups[get(ui_state, :figure_script_selected_group, 0)] = _remove_group_measurements(group, measurement_ids)
+    ui_state[:figure_script_groups] = groups
+    return nothing
+end
+
+function _rename_selected_figure_script_group!(ui_state)
+    group = _selected_figure_script_group(ui_state)
+    group === nothing && throw(FigureScriptValidationError("Select a group before renaming it"))
+    name = strip(_buffer_string(ui_state[:figure_script_group_name_buffer]))
+    isempty(name) && throw(FigureScriptValidationError("Group name cannot be empty"))
+
+    groups = copy(_figure_script_groups(ui_state))
+    selected_index = get(ui_state, :figure_script_selected_group, 0)
+    groups[selected_index] = NamedMeasurementGroup(name, copy(group.measurement_ids))
+    _validate_named_measurement_groups(groups)
+    ui_state[:figure_script_groups] = groups
+    _set_selected_figure_script_group!(ui_state, selected_index)
+    return nothing
+end
+
+function _delete_selected_figure_script_group!(ui_state)
+    group = _selected_figure_script_group(ui_state)
+    group === nothing && throw(FigureScriptValidationError("Select a group before deleting it"))
+    groups = copy(_figure_script_groups(ui_state))
+    deleteat!(groups, get(ui_state, :figure_script_selected_group, 0))
+    ui_state[:figure_script_groups] = groups
+    _set_selected_figure_script_group!(ui_state, min(get(ui_state, :figure_script_selected_group, 0), length(groups)))
+    return nothing
 end
 
 function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
@@ -875,6 +1027,11 @@ function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject,
     _clear_selection!(ui_state)
     delete!(ui_state, :plot_figure)
     delete!(ui_state, :_last_plot_key)
+    if get(ui_state, :figure_script_root_path, "") != path
+        _reset_figure_script_state!(ui_state, path)
+    else
+        ui_state[:figure_script_root_path] = path
+    end
 
     hierarchy = MeasurementHierarchy(path, has_device_metadata, proj, 0)
     ui_state[:scan_hierarchy] = hierarchy
@@ -1326,6 +1483,22 @@ function render_menu_bar(ui_state)
             ig.EndDisabled()
             if ig.BeginItemTooltip()
                 ig.TextUnformatted("Fix bad_measurements and rescan before hiding bad items")
+                ig.EndTooltip()
+            end
+        end
+        has_measurement_selection = !isempty(get(ui_state, :selected_measurements, MeasurementInfo[]))
+        can_open_figure_scripts = has_measurement_selection ||
+                                  !isempty(_figure_script_groups(ui_state)) ||
+                                  get(ui_state, :show_figure_script_window, false)
+        !can_open_figure_scripts && ig.BeginDisabled()
+        if ig.MenuItem("Figure Script", C_NULL, get(ui_state, :show_figure_script_window, false))
+            ui_state[:show_figure_script_window] = !get(ui_state, :show_figure_script_window, false)
+            ui_state[:figure_script_root_path] = get(ui_state, :root_path, "")
+        end
+        if !can_open_figure_scripts
+            ig.EndDisabled()
+            if ig.BeginItemTooltip()
+                ig.TextUnformatted("Select one or more measurements to build a figure script")
                 ig.EndTooltip()
             end
         end
@@ -2223,6 +2396,240 @@ function render_info_window(ui_state)
     ig.End()
 end
 
+function _figure_script_output_path(ui_state)
+    output_directory = _buffer_string(ui_state[:figure_script_output_dir_buffer])
+    script_name = _buffer_string(ui_state[:figure_script_name_buffer])
+    try
+        return figure_script_path(output_directory, script_name)
+    catch err
+        err isa FigureScriptValidationError || rethrow()
+        return nothing
+    end
+end
+
+function _write_figure_script_from_ui!(ui_state; overwrite::Bool=false)
+    root_path = get(ui_state, :root_path, "")
+    isempty(root_path) && throw(FigureScriptValidationError("Open a project folder before generating a figure script"))
+    project = get(ui_state, :project, nothing)
+    project isa AbstractProject || error("Figure script generation requires an active project")
+    path = write_figure_script(
+        _buffer_string(ui_state[:figure_script_output_dir_buffer]),
+        root_path,
+        project,
+        _buffer_string(ui_state[:figure_script_name_buffer]),
+        copy(_figure_script_groups(ui_state)),
+        get(ui_state, :measurement_index, Dict{String,MeasurementInfo}());
+        overwrite=overwrite,
+    )
+    ui_state[:figure_script_overwrite_confirm] = ""
+    _set_figure_script_status!(ui_state, "Wrote $(basename(path))")
+    return path
+end
+
+function _render_figure_script_group_tooltip(ui_state, proj, group::NamedMeasurementGroup)
+    ig.BeginItemTooltip() || return
+    measurement_lookup = get(ui_state, :measurement_index, Dict{String,MeasurementInfo}())
+    preview_ids = group.measurement_ids[1:min(6, end)]
+    for measurement_id in preview_ids
+        measurement = get(measurement_lookup, measurement_id, nothing)
+        if measurement === nothing
+            ig.BulletText(measurement_id)
+        else
+            ig.BulletText("$(display_label(proj, measurement))")
+        end
+    end
+    length(group.measurement_ids) > length(preview_ids) && ig.TextDisabled("...")
+    ig.EndTooltip()
+end
+
+function render_figure_script_window(ui_state)
+    get(ui_state, :show_figure_script_window, false) || return
+
+    proj = get(ui_state, :project, RUO2_PROJECT)
+    selected_measurement_ids = _selected_measurement_ids_in_panel_order(ui_state)
+    selected_count = length(selected_measurement_ids)
+    groups = _figure_script_groups(ui_state)
+    output_path = _figure_script_output_path(ui_state)
+    overwrite_path = get(ui_state, :figure_script_overwrite_confirm, "")
+    if output_path === nothing || output_path != overwrite_path
+        ui_state[:figure_script_overwrite_confirm] = ""
+        overwrite_path = ""
+    end
+
+    open_ref = Ref(true)
+    ig.SetNextWindowSize((520, 430), ig.ImGuiCond_FirstUseEver)
+    if ig.Begin("Figure Script", open_ref, ig.ImGuiWindowFlags_NoDocking)
+        ig.TextDisabled("$selected_count measurements selected")
+        ig.Separator()
+
+        ig.Text("Output Directory")
+        ig.InputText(
+            "##figure_script_output_dir",
+            ui_state[:figure_script_output_dir_buffer],
+            length(ui_state[:figure_script_output_dir_buffer]),
+        )
+        ig.SameLine()
+        if ig.Button("Choose...")
+            selected_dir = pick_folder()
+            if !isnothing(selected_dir) && !isempty(selected_dir)
+                _set_buffer_string!(ui_state[:figure_script_output_dir_buffer], _normalize_project_path(selected_dir))
+            end
+        end
+        ig.SameLine()
+        _helpmarker("Scripts are written to this directory.")
+
+        ig.Spacing()
+        ig.Text("Script Name")
+        ig.InputText("##figure_script_name", ui_state[:figure_script_name_buffer], length(ui_state[:figure_script_name_buffer]))
+        ig.TextDisabled(output_path === nothing ? "<choose output directory and enter script name>" : output_path)
+
+        ig.Spacing()
+        ig.Text("Group Name")
+        ig.InputText("##figure_group_name", ui_state[:figure_script_group_name_buffer], length(ui_state[:figure_script_group_name_buffer]))
+
+        ig.Spacing()
+        ig.Text("Groups")
+        ig.SameLine()
+        _helpmarker("Each group becomes one entry in the generated script: data[\"group_name\"]::Vector{NamedTuple}")
+        if ig.BeginChild("figure_script_groups", (0, 190), true)
+            if isempty(groups)
+                ig.TextDisabled("No groups yet")
+            else
+                for (index, group) in enumerate(groups)
+                    label = "$(group.name) ($(length(group.measurement_ids)))###figure_group_$index"
+                    if ig.Selectable(label, get(ui_state, :figure_script_selected_group, 0) == index)
+                        _set_selected_figure_script_group!(ui_state, index)
+                    end
+                    ig.IsItemHovered() && _render_figure_script_group_tooltip(ui_state, proj, group)
+                end
+            end
+        end
+        ig.EndChild()
+
+        group_selected = _selected_figure_script_group(ui_state) !== nothing
+        can_apply_selection = selected_count > 0
+
+        !can_apply_selection && ig.BeginDisabled()
+        if ig.Button("New Group From Selection")
+            _clear_figure_script_messages!(ui_state)
+            try
+                _create_figure_script_group_from_selection!(ui_state)
+            catch err
+                if err isa FigureScriptValidationError
+                    _set_figure_script_error!(ui_state, err)
+                else
+                    rethrow()
+                end
+            end
+        end
+        !can_apply_selection && ig.EndDisabled()
+
+        !group_selected && ig.BeginDisabled()
+        ig.SameLine()
+        if ig.Button("Rename Group")
+            _clear_figure_script_messages!(ui_state)
+            try
+                _rename_selected_figure_script_group!(ui_state)
+            catch err
+                if err isa FigureScriptValidationError
+                    _set_figure_script_error!(ui_state, err)
+                else
+                    rethrow()
+                end
+            end
+        end
+        ig.SameLine()
+        if ig.Button("Delete Group")
+            _clear_figure_script_messages!(ui_state)
+            try
+                _delete_selected_figure_script_group!(ui_state)
+            catch err
+                if err isa FigureScriptValidationError
+                    _set_figure_script_error!(ui_state, err)
+                else
+                    rethrow()
+                end
+            end
+        end
+        !group_selected && ig.EndDisabled()
+
+        (!group_selected || !can_apply_selection) && ig.BeginDisabled()
+        if group_selected || can_apply_selection
+            ig.SameLine()
+        end
+        if ig.Button("Add Selection")
+            _clear_figure_script_messages!(ui_state)
+            try
+                _add_selection_to_figure_script_group!(ui_state)
+            catch err
+                if err isa FigureScriptValidationError
+                    _set_figure_script_error!(ui_state, err)
+                else
+                    rethrow()
+                end
+            end
+        end
+        ig.SameLine()
+        if ig.Button("Remove Selection")
+            _clear_figure_script_messages!(ui_state)
+            try
+                _remove_selection_from_figure_script_group!(ui_state)
+            catch err
+                if err isa FigureScriptValidationError
+                    _set_figure_script_error!(ui_state, err)
+                else
+                    rethrow()
+                end
+            end
+        end
+        (!group_selected || !can_apply_selection) && ig.EndDisabled()
+
+        ig.Separator()
+        if ig.Button("Generate Script")
+            _clear_figure_script_messages!(ui_state)
+            try
+                _write_figure_script_from_ui!(ui_state)
+            catch err
+                if err isa FigureScriptExistsError
+                    ui_state[:figure_script_overwrite_confirm] = err.path
+                    _set_figure_script_error!(ui_state, err)
+                elseif err isa FigureScriptValidationError || err isa FigureScriptIOError
+                    _set_figure_script_error!(ui_state, err)
+                else
+                    rethrow()
+                end
+            end
+        end
+
+        if !isempty(overwrite_path)
+            ig.SameLine()
+            if ig.Button("Overwrite Existing")
+                _clear_figure_script_messages!(ui_state)
+                try
+                    _write_figure_script_from_ui!(ui_state; overwrite=true)
+                catch err
+                    if err isa FigureScriptValidationError || err isa FigureScriptIOError
+                        _set_figure_script_error!(ui_state, err)
+                    else
+                        rethrow()
+                    end
+                end
+            end
+            ig.SameLine()
+            if ig.Button("Cancel Overwrite")
+                ui_state[:figure_script_overwrite_confirm] = ""
+            end
+        end
+
+        error_message = get(ui_state, :figure_script_error, "")
+        !isempty(error_message) && ig.TextColored((1.0, 0.45, 0.45, 1.0), error_message)
+        status_message = get(ui_state, :figure_script_status, "")
+        !isempty(status_message) && ig.TextColored((0.45, 0.85, 0.55, 1.0), status_message)
+    end
+    open_ref[] || (ui_state[:show_figure_script_window] = false)
+    ig.End()
+end
+
 # ------------------------------------------------------------------
 # Modal for missing device metadata (shown each scan when missing)
 # ------------------------------------------------------------------
@@ -2381,6 +2788,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     ui_state = Dict{Symbol,Any}()
     _init_scan_state!(ui_state)
     _init_bad_state!(ui_state)
+    _init_figure_script_state!(ui_state)
     _init_plot_state!(ui_state)
     ui_state[:_frame] = 0
     ctx = ig.CreateContext()
@@ -2432,6 +2840,9 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         render_project_window(ui_state)
         _time!(ui_state, :info) do
             render_info_window(ui_state)
+        end
+        _time!(ui_state, :figure_scripts) do
+            render_figure_script_window(ui_state)
         end
         _time!(ui_state, :plot) do
             render_plot_window(ui_state)
