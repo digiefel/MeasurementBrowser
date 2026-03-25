@@ -264,8 +264,15 @@ function _is_filterable_parameter_value(value)
         value isa Dates.TimeType
 end
 
+function _measurement_parameters(
+    device_parameters::Dict{Symbol,Any},
+    measurement_parameters::Dict{Symbol,Any},
+)
+    return merge(device_parameters, measurement_parameters)
+end
+
 function _measurement_parameters(measurement::MeasurementInfo)
-    return merge(deepcopy(measurement.device_info.parameters), deepcopy(measurement.parameters))
+    return _measurement_parameters(measurement.device_info.parameters, measurement.parameters)
 end
 
 function _measurement_parameter_conditions(parameters::Dict{Symbol,Any})
@@ -275,10 +282,6 @@ function _measurement_parameter_conditions(parameters::Dict{Symbol,Any})
         push!(conditions, name => value)
     end
     return conditions
-end
-
-function _measurement_parameter_conditions(measurement::MeasurementInfo)
-    return _measurement_parameter_conditions(_measurement_parameters(measurement))
 end
 
 function _measurement_matches_clause(measurement::MeasurementInfo, parameters::Dict{Symbol,Any}, clause::MeasurementFilterClause)
@@ -305,10 +308,19 @@ function _measurement_matches_filter(measurement::MeasurementInfo, parameters::D
 end
 
 function _matching_measurements(measurements::Vector{MeasurementInfo}, group::NamedMeasurementGroup)
+    return _matching_measurements(measurements, _measurement_parameter_maps(measurements), group)
+end
+
+function _matching_measurements(
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    group::NamedMeasurementGroup,
+)
+    length(measurements) == length(parameter_maps) || error("Measurement and parameter map lengths must match")
     matched = MeasurementInfo[]
-    for measurement in measurements
-        params = _measurement_parameters(measurement)
-        _measurement_matches_filter(measurement, params, group.filter) && push!(matched, measurement)
+    for index in eachindex(measurements, parameter_maps)
+        measurement = measurements[index]
+        _measurement_matches_filter(measurement, parameter_maps[index], group.filter) && push!(matched, measurement)
     end
     return matched
 end
@@ -334,9 +346,17 @@ function _load_measurements_from_source_files(
 end
 
 function _group_matches(groups::Vector{NamedMeasurementGroup}, measurements::Vector{MeasurementInfo})
+    return _group_matches(groups, measurements, _measurement_parameter_maps(measurements))
+end
+
+function _group_matches(
+    groups::Vector{NamedMeasurementGroup},
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+)
     matches = Dict{String,Vector{MeasurementInfo}}()
     for group in groups
-        matched = _matching_measurements(measurements, group)
+        matched = _matching_measurements(measurements, parameter_maps, group)
         isempty(matched) && throw(FigureScriptResolutionError(
             "Measurement group '$(group.name)' matches no measurements in the current dataset",
         ))
@@ -469,6 +489,10 @@ struct _FigureScriptFactIndex
     fact_matches::Dict{Any,BitVector}
 end
 
+function _matching_measurements(index::_FigureScriptFactIndex, group::NamedMeasurementGroup)
+    return _matching_measurements(index.measurements, index.parameter_maps, group)
+end
+
 function _profile_section!(f::Function, ::Nothing, key::Symbol)
     return f()
 end
@@ -527,7 +551,7 @@ function _score_le(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
     return _score_lt(lhs, rhs)
 end
 
-function _filter_fact_list(measurement::MeasurementInfo)
+function _filter_fact_list(measurement::MeasurementInfo, parameters::Dict{Symbol,Any})
     facts = Any[
         (:source_file, measurement.filepath),
         (:measurement_kind, measurement.measurement_kind),
@@ -539,7 +563,7 @@ function _filter_fact_list(measurement::MeasurementInfo)
     end
     !isempty(path) && push!(facts, (:device_exact, Tuple(path)))
 
-    for condition in _measurement_parameter_conditions(measurement)
+    for condition in _measurement_parameter_conditions(parameters)
         push!(facts, (:parameter, condition.first, condition.second))
     end
     return facts
@@ -556,7 +580,7 @@ function _build_figure_script_fact_index(
     fact_matches = Dict{Any,BitVector}()
     _profile_section!(profiler, :build_fact_index) do
         for (index, measurement) in enumerate(measurements)
-            facts = _filter_fact_list(measurement)
+            facts = _filter_fact_list(measurement, parameter_maps[index])
             facts_by_measurement[index] = facts
             for fact in facts
                 matches = get!(fact_matches, fact) do
@@ -644,12 +668,12 @@ function _clause_from_facts(facts::Vector{Any})
     )
 end
 
-function _exact_selector_clause(measurement::MeasurementInfo)
+function _exact_selector_clause(measurement::MeasurementInfo, parameters::Dict{Symbol,Any})
     return MeasurementFilterClause(
         source_file=measurement.filepath,
         measurement_kind=measurement.measurement_kind,
         device_path=measurement.device_info.location,
-        parameter_conditions=_measurement_parameter_conditions(measurement),
+        parameter_conditions=_measurement_parameter_conditions(parameters),
     )
 end
 
@@ -715,7 +739,7 @@ function _collect_exact_candidates_by_fact_search(
                 index.parameter_maps,
                 selected_mask,
                 selected_indices,
-                _exact_selector_clause(index.measurements[selected_index]),
+                _exact_selector_clause(index.measurements[selected_index], index.parameter_maps[selected_index]),
                 profiler,
             )
             candidate === nothing && throw(FigureScriptResolutionError(
@@ -883,13 +907,14 @@ function _finalize_group_inference(
     name::AbstractString,
     selected_ids::Set{String},
     measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
     filter::MeasurementGroupFilter,
     profiler::Union{Nothing,_FigureScriptProfileAccumulator},
 )
     _profile_counter!(profiler, :final_clause_count, length(filter.clauses))
     group = NamedMeasurementGroup(name, filter)
     matched_ids = _profile_section!(profiler, :verify) do
-        Set(measurement.id for measurement in _matching_measurements(measurements, group))
+        Set(measurement.id for measurement in _matching_measurements(measurements, parameter_maps, group))
     end
     matched_ids == selected_ids || throw(FigureScriptResolutionError(
         "Inferred figure-script group '$(group.name)' does not reproduce the selected logical measurements exactly",
@@ -924,7 +949,7 @@ function _infer_measurement_group_fact_cover(
     filter = _profile_section!(profiler, :choose_filter) do
         _choose_group_candidates_exact_cover(candidates, length(selected_indices))
     end
-    return _finalize_group_inference(name, selected_ids, all_measurements, filter, profiler)
+    return _finalize_group_inference(name, selected_ids, all_measurements, index.parameter_maps, filter, profiler)
 end
 
 function infer_measurement_group(

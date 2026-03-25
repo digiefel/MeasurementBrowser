@@ -247,6 +247,8 @@ function _init_figure_script_state!(ui_state)
     ui_state[:figure_script_groups] = NamedMeasurementGroup[]
     ui_state[:figure_script_group_matches] = Dict{String,Vector{MeasurementInfo}}()
     ui_state[:figure_script_group_matches_valid] = false
+    ui_state[:figure_script_fact_index] = nothing
+    ui_state[:figure_script_fact_index_valid] = false
     ui_state[:figure_script_selected_group] = 0
     ui_state[:figure_script_error] = ""
     ui_state[:figure_script_status] = ""
@@ -371,7 +373,7 @@ function _figure_script_job_request(
         :operation => operation,
         :groups => copy(groups),
         :selected_measurements => copy(selected_measurements),
-        :all_measurements => copy(all_measurements),
+        :all_measurements => all_measurements,
         :group_name => String(group_name),
         :group_index => group_index,
         :scan_id => get(ui_state, :active_scan_id, 0),
@@ -604,12 +606,31 @@ function _invalidate_figure_script_group_matches!(ui_state)
     return nothing
 end
 
+function _invalidate_figure_script_scan_cache!(ui_state)
+    _invalidate_figure_script_group_matches!(ui_state)
+    ui_state[:figure_script_fact_index] = nothing
+    ui_state[:figure_script_fact_index_valid] = false
+    return nothing
+end
+
+function _ensure_figure_script_fact_index!(ui_state)
+    if get(ui_state, :figure_script_fact_index_valid, false)
+        index = get(ui_state, :figure_script_fact_index, nothing)
+        index isa _FigureScriptFactIndex && return index
+    end
+
+    index = _build_figure_script_fact_index(_current_scan_measurements(ui_state))
+    ui_state[:figure_script_fact_index] = index
+    ui_state[:figure_script_fact_index_valid] = true
+    return index
+end
+
 function _refresh_figure_script_group_matches!(ui_state)
     groups = _figure_script_groups(ui_state)
-    measurements = _current_scan_measurements(ui_state)
+    index = _ensure_figure_script_fact_index!(ui_state)
     matches = Dict{String,Vector{MeasurementInfo}}()
     for group in groups
-        matches[group.name] = _matching_measurements(measurements, group)
+        matches[group.name] = _matching_measurements(index, group)
     end
     ui_state[:figure_script_group_matches] = matches
     ui_state[:figure_script_group_matches_valid] = true
@@ -833,7 +854,7 @@ function _measurement_plot_window_entry(measurement::MeasurementInfo)
         :filepath => measurement.filepath,
         :title => measurement.clean_title,
         :measurement_kind => measurement.measurement_kind,
-        :params => merge(deepcopy(measurement.device_info.parameters), deepcopy(measurement.parameters)),
+        :params => _measurement_parameters(measurement),
     )
 end
 
@@ -1308,7 +1329,7 @@ function _restore_scan_restore_state!(ui_state)
         end
     end
     ui_state[:scan_restore_state] = nothing
-    _invalidate_figure_script_group_matches!(ui_state)
+    _invalidate_figure_script_scan_cache!(ui_state)
 end
 
 function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
@@ -1332,7 +1353,7 @@ function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject,
     ui_state[:skipped_count] = 0
     ui_state[:device_metadata_keys] = Symbol[]
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
-    _invalidate_figure_script_group_matches!(ui_state)
+    _invalidate_figure_script_scan_cache!(ui_state)
 end
 
 function _apply_scan_items!(ui_state, items::Vector{MeasurementItem})
@@ -1352,7 +1373,7 @@ function _apply_scan_items!(ui_state, items::Vector{MeasurementItem})
         end
     end
     ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
-    _invalidate_figure_script_group_matches!(ui_state)
+    _invalidate_figure_script_scan_cache!(ui_state)
 end
 
 function _launch_scan_job!(ui_state, path::String; persist_on_success=false)

@@ -176,6 +176,7 @@ end
     @test [measurement.id for measurement in MeasurementBrowser._selected_measurements_in_panel_order(ui6)] == ["m1", "m3"]
     @test MeasurementBrowser._figure_script_output_path(ui6) === nothing
     @test ui6[:figure_script_group_matches_valid] == false
+    @test ui6[:figure_script_fact_index_valid] == false
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_output_dir_buffer], "/tmp/figure_scripts")
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_name_buffer], "figure_1")
@@ -197,6 +198,7 @@ end
         MeasurementBrowser._figure_script_groups(ui6)[1],
     )] == ["m1", "m3"]
     @test ui6[:figure_script_group_matches_valid] == true
+    @test ui6[:figure_script_fact_index_valid] == true
 
     ui6[:selected_measurement_ids] = ["m2", "m1"]
     MeasurementBrowser._add_selection_to_figure_script_group!(ui6)
@@ -209,6 +211,7 @@ end
         MeasurementBrowser._figure_script_groups(ui6)[1],
     )] == ["m1", "m2", "m3"]
     @test ui6[:figure_script_group_matches_valid] == true
+    @test ui6[:figure_script_fact_index_valid] == true
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_group_name_buffer], "renamed")
     MeasurementBrowser._rename_selected_figure_script_group!(ui6)
@@ -247,11 +250,15 @@ end
     MeasurementBrowser._create_figure_script_group_from_selection!(ui8)
     @test MeasurementBrowser._figure_script_job_running(ui8)
     @test !isempty(ui8[:figure_script_status])
+    MeasurementBrowser._ensure_figure_script_fact_index!(ui8)
+    @test ui8[:figure_script_fact_index_valid] == true
     MeasurementBrowser._cancel_figure_script_job!(ui8)
     @test !MeasurementBrowser._figure_script_job_running(ui8)
     @test isempty(ui8[:figure_script_status])
     @test isempty(ui8[:figure_script_error])
     ui8[:active_scan_id] = 11
+    MeasurementBrowser._invalidate_figure_script_scan_cache!(ui8)
+    @test ui8[:figure_script_fact_index_valid] == false
     _drain_figure_script_job!(ui8)
     @test isempty(MeasurementBrowser._figure_script_groups(ui8))
 
