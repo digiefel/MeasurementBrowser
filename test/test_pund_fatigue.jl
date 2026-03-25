@@ -21,6 +21,21 @@ using MeasurementBrowser
         @test cycle_df.current == [1.5e-9, 2.5e-6, -2.5e-6]
     end
 
+    @testset "FE PUND loader errors explicitly on malformed files" begin
+        mktempdir() do dir
+            bad_path = joinpath(dir, "bad_pund.csv")
+            write(bad_path, "not,a,real,pund,file\n1,2,3,4\n")
+            err = try
+                read_fe_pund(basename(bad_path), dir)
+                nothing
+            catch caught
+                caught
+            end
+            @test err isa ErrorException
+            @test occursin("Could not find FE PUND data header", sprint(showerror, err))
+        end
+    end
+
     @testset "RuO2 expansion and staged plot loading" begin
         meas = MeasurementInfo(fixture, RUO2_PROJECT)
         @test meas.measurement_kind == :pund_fatigue

@@ -16,7 +16,7 @@ function read_fe_pund(filename, workdir=".")
     end
 
     if data_start == 1
-        return DataFrame()
+        error("Could not find FE PUND data header in $filepath")
     end
 
     data_lines = lines[data_start:end]
@@ -42,6 +42,8 @@ function read_fe_pund(filename, workdir=".")
             end
         end
     end
+
+    isempty(time) && error("No numeric FE PUND rows could be parsed from $filepath")
 
     return DataFrame(time=time, current=current, voltage=voltage,
         current_time=current_time, voltage_time=voltage_time)
