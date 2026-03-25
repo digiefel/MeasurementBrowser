@@ -87,6 +87,81 @@ end
     @test MeasurementBrowser._matching_measurements([split_a1, split_a2, unrelated], group) == [split_a1]
 end
 
+@testset "figure script inference algorithms" begin
+    cycle_1000_a = _test_measurement(
+        "cycle_1000_a",
+        "/tmp/f1.csv",
+        :pund,
+        ["RuO2test", "A9", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
+    )
+    cycle_2000_a = _test_measurement(
+        "cycle_2000_a",
+        "/tmp/f1.csv",
+        :pund,
+        ["RuO2test", "A9", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 2000),
+    )
+    cycle_1000_b = _test_measurement(
+        "cycle_1000_b",
+        "/tmp/f2.csv",
+        :pund,
+        ["RuO2test", "A10", "VI", "D2"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
+    )
+    wakeup_1000 = _test_measurement(
+        "wakeup_1000",
+        "/tmp/f3.csv",
+        :wakeup,
+        ["RuO2test", "A11", "VI", "D3"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
+    )
+    all_measurements = [cycle_1000_a, cycle_2000_a, cycle_1000_b, wakeup_1000]
+
+    results = MeasurementBrowser._benchmark_group_inference_algorithms(
+        "cycle_1000",
+        [cycle_1000_a, cycle_1000_b],
+        all_measurements,
+    )
+
+    for algorithm in (:fact_cover, :exact_cover, :relax_greedy)
+        group, profile = results[algorithm]
+        matched = MeasurementBrowser._matching_measurements(all_measurements, group)
+        @test [measurement.id for measurement in matched] == ["cycle_1000_a", "cycle_1000_b"]
+        @test profile.total_ms >= 0.0
+    end
+
+    fact_cover_group = first(results[:fact_cover])
+    @test length(fact_cover_group.filter.clauses) == 1
+    clause = only(fact_cover_group.filter.clauses)
+    @test clause.source_file === nothing
+    @test clause.measurement_kind == :pund
+    @test clause.device_path_mode == :none
+    @test isempty(clause.device_path)
+    @test clause.parameter_conditions == Pair{Symbol,Any}[:fatigue_cycle => 1000]
+end
+
+@testset "figure script fact cover prefers shared path clauses" begin
+    selected_a = _test_measurement("selected_a", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"])
+    selected_b = _test_measurement("selected_b", "/tmp/b.csv", :iv, ["chip", "A", "FE", "D2"])
+    outside = _test_measurement("outside", "/tmp/c.csv", :iv, ["chip", "B", "VI", "D3"])
+
+    group, _ = MeasurementBrowser._infer_measurement_group_profiled(
+        :fact_cover,
+        "site_a",
+        [selected_a, selected_b],
+        [selected_a, selected_b, outside],
+    )
+
+    @test length(group.filter.clauses) == 1
+    clause = only(group.filter.clauses)
+    @test clause.source_file === nothing
+    @test clause.measurement_kind === nothing
+    @test clause.device_path_mode == :prefix
+    @test clause.device_path == ["chip", "A"]
+    @test isempty(clause.parameter_conditions)
+end
+
 @testset "figure script inference profiling" begin
     cycle_1000_a = _test_measurement(
         "cycle_1000_a",
