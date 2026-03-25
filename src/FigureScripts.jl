@@ -95,6 +95,30 @@ struct FigureScriptData
     group_matches::Dict{String,Vector{Int}}
 end
 
+struct FigureScriptProfileSection
+    key::Symbol
+    calls::Int
+    duration_ms::Float64
+    alloc_bytes::Int
+end
+
+struct FigureScriptInferenceProfile
+    group_name::String
+    selected_count::Int
+    measurement_count::Int
+    total_ms::Float64
+    sections::Vector{FigureScriptProfileSection}
+    counters::Dict{Symbol,Int}
+end
+
+struct FigureScriptProfiledError <: Exception
+    cause::Exception
+    bt
+    profile::FigureScriptInferenceProfile
+end
+
+Base.showerror(io::IO, err::FigureScriptProfiledError) = showerror(io, err.cause)
+
 struct FigureScriptValidationError <: Exception
     message::String
 end
@@ -249,9 +273,17 @@ function _measurement_parameters(measurement::MeasurementInfo)
     return merge(deepcopy(measurement.device_info.parameters), deepcopy(measurement.parameters))
 end
 
+function _measurement_parameter_conditions(parameters::Dict{Symbol,Any})
+    conditions = Pair{Symbol,Any}[]
+    for (name, value) in sort!(collect(parameters); by=entry -> String(first(entry)))
+        _is_filterable_parameter_value(value) || continue
+        push!(conditions, name => value)
+    end
+    return conditions
+end
+
 function _measurement_parameter_conditions(measurement::MeasurementInfo)
-    return [name => value for (name, value) in sort!(collect(_measurement_parameters(measurement)); by=entry -> String(first(entry)))
-            if _is_filterable_parameter_value(value)]
+    return _measurement_parameter_conditions(_measurement_parameters(measurement))
 end
 
 function _measurement_matches_clause(measurement::MeasurementInfo, parameters::Dict{Symbol,Any}, clause::MeasurementFilterClause)
@@ -409,91 +441,70 @@ function _is_exact_source_selector_clause(clause::MeasurementFilterClause)
     return 1
 end
 
-function _solution_score(chosen::Vector{_CandidateClause})
-    return (
-        sum((candidate.condition_count for candidate in chosen); init=0),
-        length(chosen),
-        sum((candidate.exact_source_selector for candidate in chosen); init=0),
+function _measurement_parameter_maps(measurements::Vector{MeasurementInfo})
+    return [_measurement_parameters(measurement) for measurement in measurements]
+end
+
+mutable struct _FigureScriptProfileAccumulator
+    group_name::String
+    selected_count::Int
+    measurement_count::Int
+    started_ns::UInt64
+    sections::Dict{Symbol,FigureScriptProfileSection}
+    counters::Dict{Symbol,Int}
+end
+
+function _new_figure_script_profile_accumulator(
+    group_name::AbstractString,
+    selected_count::Int,
+    measurement_count::Int,
+)
+    return _FigureScriptProfileAccumulator(
+        String(group_name),
+        selected_count,
+        measurement_count,
+        time_ns(),
+        Dict{Symbol,FigureScriptProfileSection}(),
+        Dict{Symbol,Int}(),
     )
 end
 
-function _score_lt(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
-    lhs[1] != rhs[1] && return lhs[1] < rhs[1]
-    lhs[2] != rhs[2] && return lhs[2] < rhs[2]
-    return lhs[3] < rhs[3]
+function _profile_section!(f::Function, ::Nothing, key::Symbol)
+    return f()
 end
 
-function _score_le(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
-    lhs == rhs && return true
-    return _score_lt(lhs, rhs)
+function _profile_section!(f::Function, acc::_FigureScriptProfileAccumulator, key::Symbol)
+    value = nothing
+    t0 = time_ns()
+    alloc_bytes = @allocated value = f()
+    duration_ms = (time_ns() - t0) / 1e6
+    current = get(acc.sections, key, FigureScriptProfileSection(key, 0, 0.0, 0))
+    acc.sections[key] = FigureScriptProfileSection(
+        key,
+        current.calls + 1,
+        current.duration_ms + duration_ms,
+        current.alloc_bytes + alloc_bytes,
+    )
+    return value
 end
 
-function _filter_fact_list(measurement::MeasurementInfo)
-    facts = Any[
-        (:source_file, measurement.filepath),
-        (:measurement_kind, measurement.measurement_kind),
-    ]
+_profile_counter!(::Nothing, key::Symbol, delta::Int=1) = nothing
 
-    path = measurement.device_info.location
-    for prefix_length in 1:max(length(path) - 1, 0)
-        push!(facts, (:device_prefix, Tuple(path[1:prefix_length])))
-    end
-    !isempty(path) && push!(facts, (:device_exact, Tuple(path)))
-
-    for condition in _measurement_parameter_conditions(measurement)
-        push!(facts, (:parameter, condition.first, condition.second))
-    end
-    return facts
+function _profile_counter!(acc::_FigureScriptProfileAccumulator, key::Symbol, delta::Int=1)
+    acc.counters[key] = get(acc.counters, key, 0) + delta
+    return nothing
 end
 
-function _build_fact_matches(measurements::Vector{MeasurementInfo})
-    facts_by_measurement = Vector{Vector{Any}}(undef, length(measurements))
-    fact_matches = Dict{Any,BitVector}()
-    for (index, measurement) in enumerate(measurements)
-        facts = _filter_fact_list(measurement)
-        facts_by_measurement[index] = facts
-        for fact in facts
-            matches = get!(fact_matches, fact) do
-                falses(length(measurements))
-            end
-            matches[index] = true
-        end
-    end
-    return facts_by_measurement, fact_matches
-end
-
-function _clause_from_facts(facts::Vector{Any})
-    source_file = nothing
-    measurement_kind = nothing
-    device_path = String[]
-    device_path_mode = :none
-    parameter_conditions = Pair{Symbol,Any}[]
-
-    for fact in facts
-        tag = fact[1]
-        if tag == :source_file
-            source_file = String(fact[2])
-        elseif tag == :measurement_kind
-            measurement_kind = fact[2]
-        elseif tag == :device_prefix
-            device_path = collect(String, fact[2])
-            device_path_mode = :prefix
-        elseif tag == :device_exact
-            device_path = collect(String, fact[2])
-            device_path_mode = :exact
-        elseif tag == :parameter
-            push!(parameter_conditions, Symbol(fact[2]) => fact[3])
-        else
-            error("Unknown figure-script fact '$tag'")
-        end
-    end
-
-    return MeasurementFilterClause(
-        source_file=source_file,
-        measurement_kind=measurement_kind,
-        device_path=device_path,
-        device_path_mode=device_path_mode,
-        parameter_conditions=parameter_conditions,
+function _finalize_figure_script_profile(acc::_FigureScriptProfileAccumulator)
+    total_ms = (time_ns() - acc.started_ns) / 1e6
+    sections = sort!(collect(values(acc.sections)); by=section -> String(section.key))
+    return FigureScriptInferenceProfile(
+        acc.group_name,
+        acc.selected_count,
+        acc.measurement_count,
+        total_ms,
+        sections,
+        copy(acc.counters),
     )
 end
 
@@ -511,143 +522,302 @@ function _local_cover(mask::BitVector, selected_indices::Vector{Int})
     return BitVector(mask[index] for index in selected_indices)
 end
 
+function _selected_measurement_ids(selected_measurements::Vector{MeasurementInfo})
+    selected_ids = Set(measurement.id for measurement in selected_measurements)
+    length(selected_ids) == length(selected_measurements) || throw(FigureScriptValidationError(
+        "Figure-script group selection contains duplicate logical measurements",
+    ))
+    return selected_ids
+end
+
+function _selected_measurement_indices(selected_ids::Set{String}, all_measurements::Vector{MeasurementInfo})
+    selected_indices = findall(measurement -> measurement.id in selected_ids, all_measurements)
+    length(selected_indices) == length(selected_ids) || throw(FigureScriptResolutionError(
+        "Figure-script group selection references measurements that are not present in the current scan",
+    ))
+    return selected_indices
+end
+
+function _selected_measurement_mask(selected_indices::Vector{Int}, measurement_count::Int)
+    selected_mask = falses(measurement_count)
+    selected_mask[selected_indices] .= true
+    return selected_mask
+end
+
+function _count_common_true(left::BitVector, right::BitVector)
+    length(left) == length(right) || error("BitVector lengths must match")
+    total = 0
+    @inbounds for index in eachindex(left, right)
+        left[index] && right[index] && (total += 1)
+    end
+    return total
+end
+
+function _clause_relaxations(clause::MeasurementFilterClause)
+    relaxations = MeasurementFilterClause[]
+    seen = Set{Tuple}()
+
+    function push_relaxation(relaxed::MeasurementFilterClause)
+        key = _clause_key(relaxed)
+        key in seen && return
+        push!(seen, key)
+        push!(relaxations, relaxed)
+    end
+
+    if clause.source_file !== nothing
+        push_relaxation(MeasurementFilterClause(
+            measurement_kind=clause.measurement_kind,
+            device_path=clause.device_path,
+            device_path_mode=clause.device_path_mode,
+            parameter_conditions=clause.parameter_conditions,
+        ))
+    end
+
+    if clause.measurement_kind !== nothing
+        push_relaxation(MeasurementFilterClause(
+            source_file=clause.source_file,
+            device_path=clause.device_path,
+            device_path_mode=clause.device_path_mode,
+            parameter_conditions=clause.parameter_conditions,
+        ))
+    end
+
+    if clause.device_path_mode == :exact
+        if length(clause.device_path) > 1
+            push_relaxation(MeasurementFilterClause(
+                source_file=clause.source_file,
+                measurement_kind=clause.measurement_kind,
+                device_path=clause.device_path[1:end-1],
+                device_path_mode=:prefix,
+                parameter_conditions=clause.parameter_conditions,
+            ))
+        elseif length(clause.device_path) == 1
+            push_relaxation(MeasurementFilterClause(
+                source_file=clause.source_file,
+                measurement_kind=clause.measurement_kind,
+                parameter_conditions=clause.parameter_conditions,
+            ))
+        end
+    elseif clause.device_path_mode == :prefix
+        if length(clause.device_path) > 1
+            push_relaxation(MeasurementFilterClause(
+                source_file=clause.source_file,
+                measurement_kind=clause.measurement_kind,
+                device_path=clause.device_path[1:end-1],
+                device_path_mode=:prefix,
+                parameter_conditions=clause.parameter_conditions,
+            ))
+        elseif length(clause.device_path) == 1
+            push_relaxation(MeasurementFilterClause(
+                source_file=clause.source_file,
+                measurement_kind=clause.measurement_kind,
+                parameter_conditions=clause.parameter_conditions,
+            ))
+        end
+    end
+
+    for index in eachindex(clause.parameter_conditions)
+        conditions = copy(clause.parameter_conditions)
+        deleteat!(conditions, index)
+        push_relaxation(MeasurementFilterClause(
+            source_file=clause.source_file,
+            measurement_kind=clause.measurement_kind,
+            device_path=clause.device_path,
+            device_path_mode=clause.device_path_mode,
+            parameter_conditions=conditions,
+        ))
+    end
+
+    return relaxations
+end
+
+"""
+    _collect_exact_candidates(measurements, selected_indices)
+
+Build a small set of exact clauses by starting from exact selectors and greedily
+relaxing them in a fixed order while exactness is preserved.
+"""
 function _collect_exact_candidates(
     measurements::Vector{MeasurementInfo},
     selected_indices::Vector{Int},
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
 )
-    facts_by_measurement, fact_matches = _build_fact_matches(measurements)
-    selected_mask = falses(length(measurements))
-    selected_mask[selected_indices] .= true
+    parameter_maps = _profile_section!(profiler, :collect_parameter_maps) do
+        _measurement_parameter_maps(measurements)
+    end
+    selected_mask = _selected_measurement_mask(selected_indices, length(measurements))
+    remaining_cover_mask = trues(length(selected_indices))
     candidates = Dict{Any,_CandidateClause}()
 
-    for anchor_index in selected_indices
-        anchor_facts = facts_by_measurement[anchor_index]
-        function search(start_index::Int, current_facts::Vector{Any}, current_mask::Union{Nothing,BitVector})
-            for fact_index in start_index:length(anchor_facts)
-                fact = anchor_facts[fact_index]
-                fact_mask = fact_matches[fact]
-                next_mask = current_mask === nothing ? copy(fact_mask) : (copy(current_mask) .& fact_mask)
-                any(next_mask) || continue
+    while any(remaining_cover_mask)
+        _profile_counter!(profiler, :anchor_count)
+        anchor_position = findfirst(remaining_cover_mask)
+        anchor_position === nothing && break
+        anchor_index = selected_indices[anchor_position]
+        candidate = _candidate_from_clause(
+            measurements,
+            parameter_maps,
+            selected_mask,
+            selected_indices,
+            _exact_selector_clause(measurements[anchor_index]),
+            profiler,
+        )
+        candidate === nothing && throw(FigureScriptResolutionError(
+            "Could not build an exact selector for the current figure-script selection",
+        ))
 
-                push!(current_facts, fact)
-                if !any(next_mask .& .!selected_mask)
-                    clause = _clause_from_facts(current_facts)
-                    key = _clause_key(clause)
-                    if !haskey(candidates, key)
-                        candidates[key] = _CandidateClause(
-                            clause,
-                            _local_cover(next_mask, selected_indices),
-                            _clause_condition_count(clause),
-                            _is_exact_source_selector_clause(clause),
-                        )
-                    end
-                else
-                    search(fact_index + 1, current_facts, next_mask)
-                end
-                pop!(current_facts)
+        while true
+            relaxed = false
+            relaxed_clauses = _profile_section!(profiler, :candidate_relaxations) do
+                _clause_relaxations(candidate.clause)
             end
+            _profile_counter!(profiler, :relaxation_clause_count, length(relaxed_clauses))
+            for relaxed_clause in relaxed_clauses
+                _profile_counter!(profiler, :relaxation_attempt_count)
+                relaxed_candidate = _candidate_from_clause(
+                    measurements,
+                    parameter_maps,
+                    selected_mask,
+                    selected_indices,
+                    relaxed_clause,
+                    profiler,
+                )
+                relaxed_candidate === nothing && continue
+                candidate = relaxed_candidate
+                _profile_counter!(profiler, :relaxation_accept_count)
+                relaxed = true
+                break
+            end
+            relaxed || break
         end
-        search(1, Any[], nothing)
+
+        key = _clause_key(candidate.clause)
+        haskey(candidates, key) || (candidates[key] = candidate)
+        remaining_cover_mask .&= .!candidate.cover
     end
 
     isempty(candidates) && throw(FigureScriptResolutionError(
         "Could not infer any exact figure-script filter clauses from the current selection",
     ))
+    _profile_counter!(profiler, :candidate_count, length(candidates))
     return collect(values(candidates))
 end
 
-function _cover_superset(lhs::BitVector, rhs::BitVector)
-    length(lhs) == length(rhs) || error("Coverage vectors must have equal length")
-    for index in eachindex(lhs)
-        rhs[index] && !lhs[index] && return false
+function _clause_match_mask(
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    clause::MeasurementFilterClause,
+)
+    length(measurements) == length(parameter_maps) || error("Measurement and parameter map lengths must match")
+    mask = falses(length(measurements))
+    for index in eachindex(measurements)
+        _measurement_matches_clause(measurements[index], parameter_maps[index], clause) && (mask[index] = true)
     end
-    return true
+    return mask
 end
 
-function _remove_dominated_candidates(candidates::Vector{_CandidateClause})
-    keep = trues(length(candidates))
-    for i in eachindex(candidates)
-        keep[i] || continue
-        for j in eachindex(candidates)
-            i == j && continue
-            keep[j] || continue
-            _cover_superset(candidates[j].cover, candidates[i].cover) || continue
-            score_i = (
-                candidates[i].condition_count,
-                candidates[i].exact_source_selector,
-            )
-            score_j = (
-                candidates[j].condition_count,
-                candidates[j].exact_source_selector,
-            )
-            if score_j < score_i || (score_j == score_i && candidates[j].cover != candidates[i].cover)
-                keep[i] = false
+function _candidate_from_clause(
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    selected_mask::BitVector,
+    selected_indices::Vector{Int},
+    clause::MeasurementFilterClause,
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
+)
+    _profile_counter!(profiler, :candidate_evaluation_count)
+    mask = _profile_section!(profiler, :candidate_match_mask) do
+        _clause_match_mask(measurements, parameter_maps, clause)
+    end
+    any(mask) || return nothing
+    any(mask .& .!selected_mask) && return nothing
+    cover = _local_cover(mask, selected_indices)
+    any(cover) || return nothing
+    return _CandidateClause(
+        clause,
+        cover,
+        _clause_condition_count(clause),
+        _is_exact_source_selector_clause(clause),
+    )
+end
+
+function _prune_redundant_choice(chosen::Vector{_CandidateClause}, selected_count::Int)
+    keep = copy(chosen)
+    changed = true
+    while changed
+        changed = false
+        for index in eachindex(keep)
+            covered = falses(selected_count)
+            for other_index in eachindex(keep)
+                other_index == index && continue
+                covered .|= keep[other_index].cover
+            end
+            if all(covered)
+                deleteat!(keep, index)
+                changed = true
                 break
             end
         end
     end
-    return [candidates[index] for index in eachindex(candidates) if keep[index]]
+    return keep
 end
 
-function _choose_group_candidates(candidates::Vector{_CandidateClause}, selected_count::Int)
-    coverers = [Int[] for _ in 1:selected_count]
-    for (candidate_index, candidate) in enumerate(candidates)
-        for measurement_index in eachindex(candidate.cover)
-            candidate.cover[measurement_index] && push!(coverers[measurement_index], candidate_index)
-        end
-    end
-
-    any(isempty, coverers) && throw(FigureScriptResolutionError(
-        "Could not infer an exact figure-script filter for the current selection",
-    ))
-
-    order = sortperm(candidates; by=candidate -> (
-        -count(candidate.cover),
-        candidate.condition_count,
-        candidate.exact_source_selector,
-    ))
-    best_score = nothing
-    best_choice = _CandidateClause[]
+function _choose_group_candidates_greedy(candidates::Vector{_CandidateClause}, selected_count::Int)
     uncovered = trues(selected_count)
+    chosen = _CandidateClause[]
 
-    function search(chosen::Vector{_CandidateClause}, uncovered_mask::BitVector)
-        if !any(uncovered_mask)
-            score = _solution_score(chosen)
-            if best_score === nothing || _score_lt(score, best_score)
+    while any(uncovered)
+        best_candidate = nothing
+        best_score = nothing
+        for candidate in candidates
+            newly_covered = _count_common_true(candidate.cover, uncovered)
+            newly_covered == 0 && continue
+            score = (-newly_covered, candidate.condition_count, candidate.exact_source_selector)
+            if best_score === nothing || score < best_score
+                best_candidate = candidate
                 best_score = score
-                best_choice = copy(chosen)
             end
-            return
         end
 
-        partial_score = _solution_score(chosen)
-        best_score !== nothing && _score_le(best_score, partial_score) && return
-
-        uncovered_indices = findall(uncovered_mask)
-        anchor = uncovered_indices[argmin(length(coverers[index]) for index in uncovered_indices)]
-        candidates_for_anchor = sort!(copy(coverers[anchor]); by=candidate_index -> findfirst(==(candidate_index), order))
-
-        for candidate_index in candidates_for_anchor
-            candidate = candidates[candidate_index]
-            next_uncovered = copy(uncovered_mask)
-            next_uncovered .&= .!candidate.cover
-            push!(chosen, candidate)
-            search(chosen, next_uncovered)
-            pop!(chosen)
-        end
+        best_candidate === nothing && throw(FigureScriptResolutionError(
+            "Could not greedily choose an exact figure-script filter for the current selection",
+        ))
+        push!(chosen, best_candidate)
+        uncovered .&= .!best_candidate.cover
     end
 
-    search(_CandidateClause[], uncovered)
-    isempty(best_choice) && throw(FigureScriptResolutionError(
-        "Could not choose an exact figure-script filter for the current selection",
-    ))
-    return MeasurementGroupFilter([candidate.clause for candidate in best_choice])
+    chosen = _prune_redundant_choice(chosen, selected_count)
+    return MeasurementGroupFilter([candidate.clause for candidate in chosen])
+end
+
+function _exact_selector_clause(measurement::MeasurementInfo)
+    return MeasurementFilterClause(
+        source_file=measurement.filepath,
+        measurement_kind=measurement.measurement_kind,
+        device_path=measurement.device_info.location,
+        device_path_mode=:exact,
+        parameter_conditions=_measurement_parameter_conditions(measurement),
+    )
 end
 
 function infer_measurement_group(
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
     all_measurements::Vector{MeasurementInfo},
+)
+    try
+        group, _ = _infer_measurement_group_profiled(name, selected_measurements, all_measurements)
+        return group
+    catch err
+        err isa FigureScriptProfiledError || rethrow()
+        rethrow(err.cause)
+    end
+end
+
+function _infer_measurement_group_impl(
+    name::AbstractString,
+    selected_measurements::Vector{MeasurementInfo},
+    all_measurements::Vector{MeasurementInfo},
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
 )
     isempty(selected_measurements) && throw(FigureScriptValidationError(
         "Select one or more measurements before creating a figure-script group",
@@ -656,26 +826,44 @@ function infer_measurement_group(
         "No scanned measurements are available for figure-script inference",
     ))
 
-    selected_ids = Set(measurement.id for measurement in selected_measurements)
-    length(selected_ids) == length(selected_measurements) || throw(FigureScriptValidationError(
-        "Figure-script group selection contains duplicate logical measurements",
-    ))
-
-    selected_indices = findall(measurement -> measurement.id in selected_ids, all_measurements)
-    length(selected_indices) == length(selected_ids) || throw(FigureScriptResolutionError(
-        "Figure-script group selection references measurements that are not present in the current scan",
-    ))
-
-    candidates = _collect_exact_candidates(all_measurements, selected_indices)
-    candidates = _remove_dominated_candidates(candidates)
-    filter = _choose_group_candidates(candidates, length(selected_indices))
+    selected_ids = _profile_section!(profiler, :selected_ids) do
+        _selected_measurement_ids(selected_measurements)
+    end
+    selected_indices = _profile_section!(profiler, :selected_indices) do
+        _selected_measurement_indices(selected_ids, all_measurements)
+    end
+    _profile_counter!(profiler, :selected_count, length(selected_indices))
+    _profile_counter!(profiler, :measurement_count, length(all_measurements))
+    candidates = _profile_section!(profiler, :collect_candidates) do
+        _collect_exact_candidates(all_measurements, selected_indices, profiler)
+    end
+    filter = _profile_section!(profiler, :choose_filter) do
+        _choose_group_candidates_greedy(candidates, length(selected_indices))
+    end
+    _profile_counter!(profiler, :final_clause_count, length(filter.clauses))
     group = NamedMeasurementGroup(name, filter)
 
-    matched_ids = Set(measurement.id for measurement in _matching_measurements(all_measurements, group))
+    matched_ids = _profile_section!(profiler, :verify) do
+        Set(measurement.id for measurement in _matching_measurements(all_measurements, group))
+    end
     matched_ids == selected_ids || throw(FigureScriptResolutionError(
         "Inferred figure-script group '$(group.name)' does not reproduce the selected logical measurements exactly",
     ))
     return group
+end
+
+function _infer_measurement_group_profiled(
+    name::AbstractString,
+    selected_measurements::Vector{MeasurementInfo},
+    all_measurements::Vector{MeasurementInfo},
+)
+    profiler = _new_figure_script_profile_accumulator(name, length(selected_measurements), length(all_measurements))
+    try
+        group = _infer_measurement_group_impl(name, selected_measurements, all_measurements, profiler)
+        return group, _finalize_figure_script_profile(profiler)
+    catch err
+        throw(FigureScriptProfiledError(err, catch_backtrace(), _finalize_figure_script_profile(profiler)))
+    end
 end
 
 function _group_source_files(groups::Vector{NamedMeasurementGroup}, measurements::Vector{MeasurementInfo})

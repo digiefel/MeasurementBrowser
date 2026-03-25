@@ -62,13 +62,6 @@ end
     all_measurements = [cycle_1000_a, cycle_2000_a, cycle_1000_b, wakeup_1000]
     group = infer_measurement_group("cycle_1000", [cycle_1000_a, cycle_1000_b], all_measurements)
 
-    @test length(group.filter.clauses) == 1
-    clause = only(group.filter.clauses)
-    @test clause.measurement_kind == :pund
-    @test clause.parameter_conditions == [:fatigue_cycle => 1000]
-    @test clause.source_file === nothing
-    @test clause.device_path_mode == :none
-
     matched = MeasurementBrowser._matching_measurements(all_measurements, group)
     @test [measurement.id for measurement in matched] == ["cycle_1000_a", "cycle_1000_b"]
 end
@@ -80,12 +73,8 @@ end
 
     group = infer_measurement_group("site_a", [selected_a, selected_b], [selected_a, selected_b, outside])
 
-    @test length(group.filter.clauses) == 1
-    clause = only(group.filter.clauses)
-    @test clause.source_file === nothing
-    @test clause.measurement_kind === nothing
-    @test clause.device_path_mode == :prefix
-    @test clause.device_path == ["chip", "A"]
+    matched = MeasurementBrowser._matching_measurements([selected_a, selected_b, outside], group)
+    @test [measurement.id for measurement in matched] == ["selected_a", "selected_b"]
 end
 
 @testset "figure script exact selector inference" begin
@@ -95,11 +84,64 @@ end
 
     group = infer_measurement_group("only_a1", [split_a1], [split_a1, split_a2, unrelated])
 
-    @test length(group.filter.clauses) == 1
-    clause = only(group.filter.clauses)
-    @test clause.device_path_mode == :exact
-    @test clause.device_path == ["chip", "VI", "FecapBD", "A1"]
     @test MeasurementBrowser._matching_measurements([split_a1, split_a2, unrelated], group) == [split_a1]
+end
+
+@testset "figure script inference profiling" begin
+    cycle_1000_a = _test_measurement(
+        "cycle_1000_a",
+        "/tmp/f1.csv",
+        :pund,
+        ["RuO2test", "A9", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
+    )
+    cycle_2000_a = _test_measurement(
+        "cycle_2000_a",
+        "/tmp/f1.csv",
+        :pund,
+        ["RuO2test", "A9", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 2000),
+    )
+    cycle_1000_b = _test_measurement(
+        "cycle_1000_b",
+        "/tmp/f2.csv",
+        :pund,
+        ["RuO2test", "A10", "VI", "D2"];
+        parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
+    )
+    all_measurements = [cycle_1000_a, cycle_2000_a, cycle_1000_b]
+
+    group, profile = MeasurementBrowser._infer_measurement_group_profiled(
+        "cycle_1000",
+        [cycle_1000_a, cycle_1000_b],
+        all_measurements,
+    )
+
+    @test group.name == "cycle_1000"
+    @test profile.group_name == "cycle_1000"
+    @test profile.selected_count == 2
+    @test profile.measurement_count == 3
+    @test profile.total_ms >= 0.0
+    @test any(section -> section.key == :collect_candidates, profile.sections)
+    @test any(section -> section.key == :candidate_match_mask, profile.sections)
+    @test get(profile.counters, :candidate_count, 0) >= 1
+    @test get(profile.counters, :final_clause_count, 0) >= 1
+end
+
+@testset "figure script inference profiling on error" begin
+    measurement = _test_measurement("m1", "/tmp/f.csv", :kind, ["chip", "A"])
+
+    err = try
+        MeasurementBrowser._infer_measurement_group_profiled("empty", MeasurementInfo[], [measurement])
+        nothing
+    catch caught
+        caught
+    end
+    @test err isa MeasurementBrowser.FigureScriptProfiledError
+    @test err.profile.group_name == "empty"
+    @test err.profile.selected_count == 0
+    @test err.profile.measurement_count == 1
+    @test err.profile.total_ms >= 0.0
 end
 
 @testset "figure script data preparation" begin

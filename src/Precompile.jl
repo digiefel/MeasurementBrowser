@@ -5,6 +5,10 @@
     tlm_path = joinpath(fixture_dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
 
     @compile_workload begin
+        pund_meas = nothing
+        wakeup_meas = nothing
+        tlm_meas = nothing
+
         if isfile(pund_path)
             pund_meas = MeasurementInfo(pund_path, RUO2_PROJECT)
             pund_params = merge(pund_meas.device_info.parameters, pund_meas.parameters)
@@ -14,6 +18,7 @@
         end
 
         if isfile(wakeup_path)
+            wakeup_meas = MeasurementInfo(wakeup_path, RUO2_PROJECT)
             loaded = load_plot_for_file(RUO2_PROJECT, wakeup_path, :wakeup)
             analyzed = analyze_plot_for_file(RUO2_PROJECT, :wakeup, loaded)
             draw_plot_for_file(RUO2_PROJECT, :wakeup, analyzed)
@@ -25,6 +30,14 @@
             loaded = load_plot_for_file(RUO2_PROJECT, tlm_path, :tlm4p; device_params=tlm_params)
             analyzed = analyze_plot_for_file(RUO2_PROJECT, :tlm4p, loaded; device_params=tlm_params)
             draw_plot_for_file(RUO2_PROJECT, :tlm4p, analyzed; device_params=tlm_params)
+        end
+
+        if pund_meas !== nothing && wakeup_meas !== nothing && tlm_meas !== nothing
+            infer_measurement_group(
+                "precompile_group",
+                MeasurementInfo[pund_meas, wakeup_meas],
+                MeasurementInfo[pund_meas, wakeup_meas, tlm_meas],
+            )
         end
     end
 end
