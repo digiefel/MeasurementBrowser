@@ -57,7 +57,7 @@ end
 
 function _sanitize_figure_script_output_dir(value)
     value isa AbstractString || return ""
-    return strip(String(value))
+    return String(strip(String(value)))
 end
 
 function _parse_recent_projects(prefs::Dict{String,Any})
@@ -86,15 +86,15 @@ end
 
 function _update_recent_projects(
     recents::Vector{Dict{String,String}},
-    path::String,
-    pref::String,
-    figure_script_output_dir::String,
+    path::AbstractString,
+    pref::AbstractString,
+    figure_script_output_dir::AbstractString,
 )
     norm_path = _normalize_project_path(path)
     filter!(entry -> get(entry, "path", "") != norm_path, recents)
     pushfirst!(recents, Dict{String,String}(
         "path" => norm_path,
-        "project_preference" => pref,
+        "project_preference" => String(pref),
         "figure_script_output_dir" => _sanitize_figure_script_output_dir(figure_script_output_dir),
     ))
     length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
@@ -245,10 +245,17 @@ function _init_figure_script_state!(ui_state)
     ui_state[:figure_script_name_buffer] = _text_buffer(_FIGURE_SCRIPT_NAME_BUFFER_SIZE)
     ui_state[:figure_script_group_name_buffer] = _text_buffer(_FIGURE_GROUP_NAME_BUFFER_SIZE)
     ui_state[:figure_script_groups] = NamedMeasurementGroup[]
+    ui_state[:figure_script_group_matches] = Dict{String,Vector{MeasurementInfo}}()
+    ui_state[:figure_script_group_matches_valid] = false
     ui_state[:figure_script_selected_group] = 0
     ui_state[:figure_script_error] = ""
     ui_state[:figure_script_status] = ""
     ui_state[:figure_script_overwrite_confirm] = ""
+    ui_state[:figure_script_job_state] = :idle
+    ui_state[:figure_script_job_seq] = 0
+    ui_state[:active_figure_script_job_id] = 0
+    ui_state[:figure_script_job_events] = nothing
+    ui_state[:figure_script_job_profiles] = Any[]
 end
 
 function _copy_bad_registry(registry::BadRegistry)
@@ -298,6 +305,174 @@ end
 function _set_figure_script_status!(ui_state, message::AbstractString)
     ui_state[:figure_script_status] = String(message)
     ui_state[:figure_script_error] = ""
+end
+
+function _append_perf_sample!(ui_state, key::Symbol, duration_ms::Float64, alloc_bytes::Int)
+    timings = get!(() -> Dict{Symbol,Vector{Float64}}(), ui_state, :_timings)
+    allocs = get!(() -> Dict{Symbol,Vector{Int}}(), ui_state, :_allocs)
+    vec = get!(() -> Float64[], timings, key)
+    push!(vec, duration_ms)
+    length(vec) > 400 && popfirst!(vec)
+    avec = get!(() -> Int[], allocs, key)
+    push!(avec, alloc_bytes)
+    length(avec) > 400 && popfirst!(avec)
+    return nothing
+end
+
+function _record_figure_script_job_profile!(ui_state, operation::Symbol, profile::FigureScriptInferenceProfile)
+    history = get!(ui_state, :figure_script_job_profiles) do
+        Any[]
+    end
+    entry = (
+        operation=operation,
+        profile=profile,
+    )
+    push!(history, entry)
+    length(history) > 24 && popfirst!(history)
+
+    total_alloc = sum(section.alloc_bytes for section in profile.sections)
+    _append_perf_sample!(ui_state, :figure_script_job_total, profile.total_ms, total_alloc)
+    for section in profile.sections
+        key = Symbol("figure_script_" * String(section.key))
+        _append_perf_sample!(ui_state, key, section.duration_ms, section.alloc_bytes)
+    end
+    return nothing
+end
+
+function _figure_script_job_running(ui_state)
+    return get(ui_state, :figure_script_job_state, :idle) == :running
+end
+
+function _finalize_figure_script_job!(ui_state)
+    ui_state[:figure_script_job_state] = :idle
+    ui_state[:figure_script_job_events] = nothing
+end
+
+function _cancel_figure_script_job!(ui_state)
+    _figure_script_job_running(ui_state) || return
+    ui_state[:active_figure_script_job_id] = get(ui_state, :active_figure_script_job_id, 0) + 1
+    _clear_figure_script_messages!(ui_state)
+    _finalize_figure_script_job!(ui_state)
+end
+
+function _figure_script_job_request(
+    ui_state,
+    operation::Symbol,
+    groups::Vector{NamedMeasurementGroup},
+    selected_measurements::Vector{MeasurementInfo},
+    all_measurements::Vector{MeasurementInfo},
+    group_name::AbstractString;
+    group_index::Int=0,
+    status_message::AbstractString,
+    completion_message::AbstractString,
+)
+    operation in (:create, :replace) || error("Unsupported figure-script job operation '$operation'")
+    return Dict{Symbol,Any}(
+        :operation => operation,
+        :groups => copy(groups),
+        :selected_measurements => copy(selected_measurements),
+        :all_measurements => copy(all_measurements),
+        :group_name => String(group_name),
+        :group_index => group_index,
+        :scan_id => get(ui_state, :active_scan_id, 0),
+        :root_path => get(ui_state, :root_path, ""),
+        :status_message => String(status_message),
+        :completion_message => String(completion_message),
+    )
+end
+
+function _resolve_figure_script_job(request::Dict{Symbol,Any})
+    inferred_group, profile = _infer_measurement_group_profiled(
+        request[:group_name],
+        request[:selected_measurements],
+        request[:all_measurements],
+    )
+    groups = copy(request[:groups])
+    if request[:operation] == :create
+        push!(groups, inferred_group)
+        selected_index = length(groups)
+    else
+        selected_index = request[:group_index]
+        1 <= selected_index <= length(groups) || error("Figure-script group index $selected_index is out of bounds")
+        groups[selected_index] = inferred_group
+    end
+    _validate_named_measurement_groups(groups)
+    return groups, selected_index, profile
+end
+
+function _launch_figure_script_job!(ui_state, request::Dict{Symbol,Any})
+    _figure_script_job_running(ui_state) && throw(FigureScriptValidationError(
+        "Wait for the current figure-script update to finish",
+    ))
+
+    job_id = get(ui_state, :figure_script_job_seq, 0) + 1
+    ui_state[:figure_script_job_seq] = job_id
+    ui_state[:active_figure_script_job_id] = job_id
+    ui_state[:figure_script_job_state] = :running
+    _set_figure_script_status!(ui_state, request[:status_message])
+
+    events = Channel{NamedTuple}(1)
+    ui_state[:figure_script_job_events] = events
+
+    Base.Threads.@spawn begin
+        try
+            groups, selected_index, profile = _resolve_figure_script_job(request)
+            put!(events, (
+                kind=:done,
+                job_id=job_id,
+                operation=request[:operation],
+                group_name=request[:group_name],
+                profile=profile,
+                groups=groups,
+                selected_index=selected_index,
+                scan_id=request[:scan_id],
+                root_path=request[:root_path],
+                completion_message=request[:completion_message],
+            ))
+        catch err
+            profile = nothing
+            cause = err
+            bt = catch_backtrace()
+            if err isa FigureScriptProfiledError
+                profile = err.profile
+                cause = err.cause
+                bt = err.bt
+            end
+            put!(events, (kind=:error, job_id=job_id, operation=request[:operation], profile=profile, error=cause, bt=bt))
+        finally
+            close(events)
+        end
+    end
+end
+
+function _poll_figure_script_job_events!(ui_state)
+    events = get(ui_state, :figure_script_job_events, nothing)
+    events === nothing && return
+
+    while isready(events)
+        msg = take!(events)
+        msg.job_id == get(ui_state, :active_figure_script_job_id, 0) || continue
+
+        if msg.kind == :done
+            _record_figure_script_job_profile!(ui_state, msg.operation, msg.profile)
+            if msg.scan_id == get(ui_state, :active_scan_id, 0) &&
+               msg.root_path == get(ui_state, :root_path, "")
+                ui_state[:figure_script_groups] = msg.groups
+                _invalidate_figure_script_group_matches!(ui_state)
+                _set_selected_figure_script_group!(ui_state, msg.selected_index)
+                _set_figure_script_status!(
+                    ui_state,
+                    "$(msg.completion_message) ($(round(msg.profile.total_ms / 1000; digits=2)) s)",
+                )
+            end
+            _finalize_figure_script_job!(ui_state)
+        elseif msg.kind == :error
+            msg.profile === nothing || _record_figure_script_job_profile!(ui_state, msg.operation, msg.profile)
+            @error "Figure-script job failed" exception = (msg.error, msg.bt)
+            _set_figure_script_error!(ui_state, msg.error)
+            _finalize_figure_script_job!(ui_state)
+        end
+    end
 end
 
 function _reset_figure_script_state!(ui_state, root_path::AbstractString="")
@@ -423,6 +598,33 @@ function _current_scan_measurements(ui_state)
     return get(ui_state, :all_measurements, MeasurementInfo[])
 end
 
+function _invalidate_figure_script_group_matches!(ui_state)
+    ui_state[:figure_script_group_matches] = Dict{String,Vector{MeasurementInfo}}()
+    ui_state[:figure_script_group_matches_valid] = false
+    return nothing
+end
+
+function _refresh_figure_script_group_matches!(ui_state)
+    groups = _figure_script_groups(ui_state)
+    measurements = _current_scan_measurements(ui_state)
+    matches = Dict{String,Vector{MeasurementInfo}}()
+    for group in groups
+        matches[group.name] = _matching_measurements(measurements, group)
+    end
+    ui_state[:figure_script_group_matches] = matches
+    ui_state[:figure_script_group_matches_valid] = true
+    return matches
+end
+
+function _ensure_figure_script_group_matches!(ui_state)
+    if !get(ui_state, :figure_script_group_matches_valid, false)
+        return _refresh_figure_script_group_matches!(ui_state)
+    end
+    return get!(ui_state, :figure_script_group_matches) do
+        Dict{String,Vector{MeasurementInfo}}()
+    end
+end
+
 function _selected_measurements_in_panel_order(ui_state)
     proj = get(ui_state, :project, RUO2_PROJECT)
     filter_meas = get(ui_state, :_imgui_text_filter_meas, nothing)
@@ -434,7 +636,8 @@ function _selected_measurements_in_panel_order(ui_state)
 end
 
 function _group_measurements_in_current_scan(ui_state, group::NamedMeasurementGroup)
-    return _matching_measurements(_current_scan_measurements(ui_state), group)
+    matches = _ensure_figure_script_group_matches!(ui_state)
+    return get(matches, group.name, MeasurementInfo[])
 end
 
 function _create_figure_script_group_from_selection!(ui_state)
@@ -443,12 +646,17 @@ function _create_figure_script_group_from_selection!(ui_state)
     name = strip(_buffer_string(ui_state[:figure_script_group_name_buffer]))
     isempty(name) && throw(FigureScriptValidationError("Enter a group name before creating a group"))
 
-    all_measurements = _current_scan_measurements(ui_state)
-    groups = copy(_figure_script_groups(ui_state))
-    push!(groups, infer_measurement_group(name, selected_measurements, all_measurements))
-    _validate_named_measurement_groups(groups)
-    ui_state[:figure_script_groups] = groups
-    _set_selected_figure_script_group!(ui_state, length(groups))
+    request = _figure_script_job_request(
+        ui_state,
+        :create,
+        _figure_script_groups(ui_state),
+        selected_measurements,
+        _current_scan_measurements(ui_state),
+        name;
+        status_message="Creating group '$name'...",
+        completion_message="Created group '$name'",
+    )
+    _launch_figure_script_job!(ui_state, request)
     return nothing
 end
 
@@ -462,10 +670,18 @@ function _add_selection_to_figure_script_group!(ui_state)
     merged_ids = Set(measurement.id for measurement in _group_measurements_in_current_scan(ui_state, group))
     foreach(measurement -> push!(merged_ids, measurement.id), selected_measurements)
     merged_measurements = [measurement for measurement in all_measurements if measurement.id in merged_ids]
-    groups = copy(_figure_script_groups(ui_state))
-    groups[get(ui_state, :figure_script_selected_group, 0)] = infer_measurement_group(group.name, merged_measurements, all_measurements)
-    _validate_named_measurement_groups(groups)
-    ui_state[:figure_script_groups] = groups
+    request = _figure_script_job_request(
+        ui_state,
+        :replace,
+        _figure_script_groups(ui_state),
+        merged_measurements,
+        all_measurements,
+        group.name;
+        group_index=get(ui_state, :figure_script_selected_group, 0),
+        status_message="Updating group '$(group.name)'...",
+        completion_message="Updated group '$(group.name)'",
+    )
+    _launch_figure_script_job!(ui_state, request)
     return nothing
 end
 
@@ -480,10 +696,18 @@ function _remove_selection_from_figure_script_group!(ui_state)
     isempty(remaining_ids) && throw(FigureScriptValidationError("Measurement groups cannot be empty"))
     all_measurements = _current_scan_measurements(ui_state)
     remaining_measurements = [measurement for measurement in all_measurements if measurement.id in remaining_ids]
-    groups = copy(_figure_script_groups(ui_state))
-    groups[get(ui_state, :figure_script_selected_group, 0)] = infer_measurement_group(group.name, remaining_measurements, all_measurements)
-    _validate_named_measurement_groups(groups)
-    ui_state[:figure_script_groups] = groups
+    request = _figure_script_job_request(
+        ui_state,
+        :replace,
+        _figure_script_groups(ui_state),
+        remaining_measurements,
+        all_measurements,
+        group.name;
+        group_index=get(ui_state, :figure_script_selected_group, 0),
+        status_message="Updating group '$(group.name)'...",
+        completion_message="Updated group '$(group.name)'",
+    )
+    _launch_figure_script_job!(ui_state, request)
     return nothing
 end
 
@@ -498,6 +722,7 @@ function _rename_selected_figure_script_group!(ui_state)
     groups[selected_index] = NamedMeasurementGroup(name, group.filter)
     _validate_named_measurement_groups(groups)
     ui_state[:figure_script_groups] = groups
+    _invalidate_figure_script_group_matches!(ui_state)
     _set_selected_figure_script_group!(ui_state, selected_index)
     return nothing
 end
@@ -508,6 +733,7 @@ function _delete_selected_figure_script_group!(ui_state)
     groups = copy(_figure_script_groups(ui_state))
     deleteat!(groups, get(ui_state, :figure_script_selected_group, 0))
     ui_state[:figure_script_groups] = groups
+    _invalidate_figure_script_group_matches!(ui_state)
     _set_selected_figure_script_group!(ui_state, min(get(ui_state, :figure_script_selected_group, 0), length(groups)))
     return nothing
 end
@@ -1082,6 +1308,7 @@ function _restore_scan_restore_state!(ui_state)
         end
     end
     ui_state[:scan_restore_state] = nothing
+    _invalidate_figure_script_group_matches!(ui_state)
 end
 
 function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
@@ -1105,6 +1332,7 @@ function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject,
     ui_state[:skipped_count] = 0
     ui_state[:device_metadata_keys] = Symbol[]
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
+    _invalidate_figure_script_group_matches!(ui_state)
 end
 
 function _apply_scan_items!(ui_state, items::Vector{MeasurementItem})
@@ -1124,9 +1352,11 @@ function _apply_scan_items!(ui_state, items::Vector{MeasurementItem})
         end
     end
     ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
+    _invalidate_figure_script_group_matches!(ui_state)
 end
 
 function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
+    _cancel_figure_script_job!(ui_state)
     _capture_scan_restore_state!(ui_state)
     scan_id = get(ui_state, :scan_seq, 0) + 1
     ui_state[:scan_seq] = scan_id
@@ -1470,9 +1700,55 @@ function render_perf_window(ui_state)
             ig.BulletText(msg)
         end
 
+        profiles = get(ui_state, :figure_script_job_profiles, Any[])
+        if ig.CollapsingHeader("Figure-Script Jobs", ig.ImGuiTreeNodeFlags_DefaultOpen)
+            if isempty(profiles)
+                ig.TextDisabled("No figure-script jobs profiled yet")
+            else
+                latest = profiles[end]
+                latest_profile = latest.profile
+                ig.Text(
+                    "Last: $(latest.operation) $(repr(latest_profile.group_name))  " *
+                    "$(round(latest_profile.total_ms; digits=1)) ms  " *
+                    "selected=$(latest_profile.selected_count) / total=$(latest_profile.measurement_count)",
+                )
+                if !isempty(latest_profile.sections)
+                    ig.Text("Sections")
+                    for section in latest_profile.sections
+                        ig.BulletText(
+                            "$(section.key): calls=$(section.calls)  " *
+                            "time=$(round(section.duration_ms; digits=2)) ms  " *
+                            "alloc=$(round(section.alloc_bytes / 1024; digits=1)) KB",
+                        )
+                    end
+                end
+                if !isempty(latest_profile.counters)
+                    ig.Text("Counters")
+                    for (key, value) in sort!(collect(latest_profile.counters); by=entry -> String(first(entry)))
+                        ig.BulletText("$(key): $(value)")
+                    end
+                end
+
+                if length(profiles) > 1
+                    ig.Text("History")
+                    for entry in Iterators.reverse(profiles[max(1, end - 5):end-1])
+                        profile = entry.profile
+                        ig.BulletText(
+                            "$(entry.operation) $(repr(profile.group_name)): " *
+                            "$(round(profile.total_ms; digits=1)) ms  " *
+                            "selected=$(profile.selected_count)",
+                        )
+                    end
+                end
+            end
+        end
+
         if ig.Button("Clear timings")
             empty!(get!(() -> Dict{Symbol,Vector{Float64}}(), ui_state, :_timings))
             empty!(get!(() -> Dict{Symbol,Vector{Int}}(), ui_state, :_allocs))
+            empty!(get!(ui_state, :figure_script_job_profiles) do
+                Any[]
+            end)
         end
     end
     ig.End()
@@ -2488,9 +2764,8 @@ function _write_figure_script_from_ui!(ui_state; overwrite::Bool=false)
     return path
 end
 
-function _render_figure_script_group_tooltip(ui_state, proj, group::NamedMeasurementGroup)
+function _render_figure_script_group_tooltip(proj, preview_measurements::Vector{MeasurementInfo})
     ig.BeginItemTooltip() || return
-    preview_measurements = _group_measurements_in_current_scan(ui_state, group)
     for measurement in preview_measurements[1:min(6, end)]
         ig.BulletText("$(display_label(proj, measurement))")
     end
@@ -2504,7 +2779,9 @@ function render_figure_script_window(ui_state)
     proj = get(ui_state, :project, RUO2_PROJECT)
     selected_measurements = _selected_measurements_in_panel_order(ui_state)
     selected_count = length(selected_measurements)
+    job_running = _figure_script_job_running(ui_state)
     groups = _figure_script_groups(ui_state)
+    group_matches = isempty(groups) ? Dict{String,Vector{MeasurementInfo}}() : _ensure_figure_script_group_matches!(ui_state)
     output_path = _figure_script_output_path(ui_state)
     overwrite_path = get(ui_state, :figure_script_overwrite_confirm, "")
     if output_path === nothing || output_path != overwrite_path
@@ -2554,12 +2831,13 @@ function render_figure_script_window(ui_state)
                 ig.TextDisabled("No groups yet")
             else
                 for (index, group) in enumerate(groups)
-                    match_count = length(_group_measurements_in_current_scan(ui_state, group))
+                    preview_measurements = get(group_matches, group.name, MeasurementInfo[])
+                    match_count = length(preview_measurements)
                     label = "$(group.name) ($(match_count))###figure_group_$index"
                     if ig.Selectable(label, get(ui_state, :figure_script_selected_group, 0) == index)
                         _set_selected_figure_script_group!(ui_state, index)
                     end
-                    ig.IsItemHovered() && _render_figure_script_group_tooltip(ui_state, proj, group)
+                    ig.IsItemHovered() && _render_figure_script_group_tooltip(proj, preview_measurements)
                 end
             end
         end
@@ -2568,7 +2846,7 @@ function render_figure_script_window(ui_state)
         group_selected = _selected_figure_script_group(ui_state) !== nothing
         can_apply_selection = selected_count > 0
 
-        !can_apply_selection && ig.BeginDisabled()
+        (!can_apply_selection || job_running) && ig.BeginDisabled()
         if ig.Button("New Group From Selection")
             _clear_figure_script_messages!(ui_state)
             try
@@ -2581,9 +2859,9 @@ function render_figure_script_window(ui_state)
                 end
             end
         end
-        !can_apply_selection && ig.EndDisabled()
+        (!can_apply_selection || job_running) && ig.EndDisabled()
 
-        !group_selected && ig.BeginDisabled()
+        (!group_selected || job_running) && ig.BeginDisabled()
         ig.SameLine()
         if ig.Button("Rename Group")
             _clear_figure_script_messages!(ui_state)
@@ -2610,9 +2888,9 @@ function render_figure_script_window(ui_state)
                 end
             end
         end
-        !group_selected && ig.EndDisabled()
+        (!group_selected || job_running) && ig.EndDisabled()
 
-        (!group_selected || !can_apply_selection) && ig.BeginDisabled()
+        (!group_selected || !can_apply_selection || job_running) && ig.BeginDisabled()
         if group_selected || can_apply_selection
             ig.SameLine()
         end
@@ -2641,9 +2919,10 @@ function render_figure_script_window(ui_state)
                 end
             end
         end
-        (!group_selected || !can_apply_selection) && ig.EndDisabled()
+        (!group_selected || !can_apply_selection || job_running) && ig.EndDisabled()
 
         ig.Separator()
+        job_running && ig.BeginDisabled()
         if ig.Button("Generate Script")
             _clear_figure_script_messages!(ui_state)
             try
@@ -2659,8 +2938,10 @@ function render_figure_script_window(ui_state)
                 end
             end
         end
+        job_running && ig.EndDisabled()
 
         if !isempty(overwrite_path)
+            job_running && ig.BeginDisabled()
             ig.SameLine()
             if ig.Button("Overwrite Existing")
                 _clear_figure_script_messages!(ui_state)
@@ -2678,12 +2959,14 @@ function render_figure_script_window(ui_state)
             if ig.Button("Cancel Overwrite")
                 ui_state[:figure_script_overwrite_confirm] = ""
             end
+            job_running && ig.EndDisabled()
         end
 
         error_message = get(ui_state, :figure_script_error, "")
         !isempty(error_message) && ig.TextColored((1.0, 0.45, 0.45, 1.0), error_message)
         status_message = get(ui_state, :figure_script_status, "")
         !isempty(status_message) && ig.TextColored((0.45, 0.85, 0.55, 1.0), status_message)
+        job_running && ig.TextDisabled("Figure-script worker is running...")
     end
     open_ref[] || (ui_state[:show_figure_script_window] = false)
     ig.End()
@@ -2881,6 +3164,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         ui_state[:_frame] += 1
         _poll_scan_events!(ui_state)
         _poll_plot_events!(ui_state)
+        _poll_figure_script_job_events!(ui_state)
         if first_frame[] && !haskey(ui_state, :_gl_info)
             ui_state[:_gl_info] = _collect_gl_info!()
             first_frame[] = false

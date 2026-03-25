@@ -1,10 +1,21 @@
 using MeasurementBrowser
 using Test
 
+function _drain_figure_script_job!(ui_state)
+    for _ in 1:200
+        MeasurementBrowser._poll_figure_script_job_events!(ui_state)
+        MeasurementBrowser._figure_script_job_running(ui_state) || return
+        sleep(0.01)
+    end
+    error("Timed out waiting for figure-script job to finish")
+end
+
 @testset "gui helper utilities" begin
     @test MeasurementBrowser._sanitize_project_preference("auto") == "auto"
     @test MeasurementBrowser._sanitize_project_preference("invalid") == "auto"
     @test MeasurementBrowser._sanitize_project_preference("RuO2") == "RuO2"
+    @test MeasurementBrowser._sanitize_figure_script_output_dir("  /tmp/out  ") == "/tmp/out"
+    @test MeasurementBrowser._sanitize_figure_script_output_dir(SubString("  /tmp/sub  ", 3, 10)) == "/tmp/sub"
 
     path_a = pwd()
     path_b = joinpath(pwd(), "missing_folder")
@@ -28,6 +39,11 @@ using Test
     @test recents[2]["path"] == MeasurementBrowser._normalize_project_path(path_b)
     @test recents[2]["project_preference"] == "auto"
     @test recents[2]["figure_script_output_dir"] == ""
+
+    recents2 = copy(recents)
+    MeasurementBrowser._update_recent_projects(recents2, path_a, SubString(" RuO2 ", 2, 5), SubString(" /tmp/out2 ", 2, 10))
+    @test recents2[1]["project_preference"] == "RuO2"
+    @test recents2[1]["figure_script_output_dir"] == "/tmp/out2"
 
     items = [1, 2, 3, 4]
     selected = Int[]
@@ -152,11 +168,14 @@ using Test
         :selected_devices => HierarchyNode[device_leaf],
         :selected_measurement_ids => ["m3", "m1"],
         :all_measurements => [m1, m2, m3],
+        :active_scan_id => 1,
+        :root_path => "/tmp/project",
     )
     MeasurementBrowser._init_figure_script_state!(ui6)
 
     @test [measurement.id for measurement in MeasurementBrowser._selected_measurements_in_panel_order(ui6)] == ["m1", "m3"]
     @test MeasurementBrowser._figure_script_output_path(ui6) === nothing
+    @test ui6[:figure_script_group_matches_valid] == false
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_output_dir_buffer], "/tmp/figure_scripts")
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_name_buffer], "figure_1")
@@ -165,26 +184,47 @@ using Test
 
     MeasurementBrowser._set_buffer_string!(ui6[:figure_script_group_name_buffer], "primary")
     MeasurementBrowser._create_figure_script_group_from_selection!(ui6)
+    @test MeasurementBrowser._figure_script_job_running(ui6)
+    _drain_figure_script_job!(ui6)
+    @test length(ui6[:figure_script_job_profiles]) == 1
+    @test ui6[:figure_script_job_profiles][1].profile.group_name == "primary"
+    @test any(section -> section.key == :collect_candidates, ui6[:figure_script_job_profiles][1].profile.sections)
     @test length(MeasurementBrowser._figure_script_groups(ui6)) == 1
     @test MeasurementBrowser._figure_script_groups(ui6)[1].name == "primary"
+    @test ui6[:figure_script_group_matches_valid] == false
     @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
         ui6,
         MeasurementBrowser._figure_script_groups(ui6)[1],
     )] == ["m1", "m3"]
+    @test ui6[:figure_script_group_matches_valid] == true
 
     ui6[:selected_measurement_ids] = ["m2", "m1"]
     MeasurementBrowser._add_selection_to_figure_script_group!(ui6)
+    @test MeasurementBrowser._figure_script_job_running(ui6)
+    _drain_figure_script_job!(ui6)
+    @test length(ui6[:figure_script_job_profiles]) == 2
+    @test ui6[:figure_script_group_matches_valid] == false
+    @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
+        ui6,
+        MeasurementBrowser._figure_script_groups(ui6)[1],
+    )] == ["m1", "m2", "m3"]
+    @test ui6[:figure_script_group_matches_valid] == true
+
+    MeasurementBrowser._set_buffer_string!(ui6[:figure_script_group_name_buffer], "renamed")
+    MeasurementBrowser._rename_selected_figure_script_group!(ui6)
+    @test MeasurementBrowser._figure_script_groups(ui6)[1].name == "renamed"
+    @test ui6[:figure_script_group_matches_valid] == false
     @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
         ui6,
         MeasurementBrowser._figure_script_groups(ui6)[1],
     )] == ["m1", "m2", "m3"]
 
-    MeasurementBrowser._set_buffer_string!(ui6[:figure_script_group_name_buffer], "renamed")
-    MeasurementBrowser._rename_selected_figure_script_group!(ui6)
-    @test MeasurementBrowser._figure_script_groups(ui6)[1].name == "renamed"
-
     ui6[:selected_measurement_ids] = ["m3"]
     MeasurementBrowser._remove_selection_from_figure_script_group!(ui6)
+    @test MeasurementBrowser._figure_script_job_running(ui6)
+    _drain_figure_script_job!(ui6)
+    @test length(ui6[:figure_script_job_profiles]) == 3
+    @test ui6[:figure_script_group_matches_valid] == false
     @test [measurement.id for measurement in MeasurementBrowser._group_measurements_in_current_scan(
         ui6,
         MeasurementBrowser._figure_script_groups(ui6)[1],
@@ -192,7 +232,28 @@ using Test
 
     MeasurementBrowser._delete_selected_figure_script_group!(ui6)
     @test isempty(MeasurementBrowser._figure_script_groups(ui6))
+    @test ui6[:figure_script_group_matches_valid] == false
     @test ui6[:figure_script_selected_group] == 0
+
+    ui8 = Dict{Symbol,Any}(
+        :selected_devices => HierarchyNode[device_leaf],
+        :selected_measurement_ids => ["m1"],
+        :all_measurements => [m1, m2, m3],
+        :active_scan_id => 10,
+        :root_path => "/tmp/project",
+    )
+    MeasurementBrowser._init_figure_script_state!(ui8)
+    MeasurementBrowser._set_buffer_string!(ui8[:figure_script_group_name_buffer], "stale")
+    MeasurementBrowser._create_figure_script_group_from_selection!(ui8)
+    @test MeasurementBrowser._figure_script_job_running(ui8)
+    @test !isempty(ui8[:figure_script_status])
+    MeasurementBrowser._cancel_figure_script_job!(ui8)
+    @test !MeasurementBrowser._figure_script_job_running(ui8)
+    @test isempty(ui8[:figure_script_status])
+    @test isempty(ui8[:figure_script_error])
+    ui8[:active_scan_id] = 11
+    _drain_figure_script_job!(ui8)
+    @test isempty(MeasurementBrowser._figure_script_groups(ui8))
 
     ui7 = Dict{Symbol,Any}(
         :recent_projects => Dict{String,String}[
