@@ -87,7 +87,7 @@ end
     @test MeasurementBrowser._matching_measurements([split_a1, split_a2, unrelated], group) == [split_a1]
 end
 
-@testset "figure script inference algorithms" begin
+@testset "figure script fact cover inference" begin
     cycle_1000_a = _test_measurement(
         "cycle_1000_a",
         "/tmp/f1.csv",
@@ -118,22 +118,16 @@ end
     )
     all_measurements = [cycle_1000_a, cycle_2000_a, cycle_1000_b, wakeup_1000]
 
-    results = MeasurementBrowser._benchmark_group_inference_algorithms(
+    group = infer_measurement_group(
         "cycle_1000",
         [cycle_1000_a, cycle_1000_b],
         all_measurements,
     )
 
-    for algorithm in (:fact_cover, :exact_cover, :relax_greedy)
-        group, profile = results[algorithm]
-        matched = MeasurementBrowser._matching_measurements(all_measurements, group)
-        @test [measurement.id for measurement in matched] == ["cycle_1000_a", "cycle_1000_b"]
-        @test profile.total_ms >= 0.0
-    end
-
-    fact_cover_group = first(results[:fact_cover])
-    @test length(fact_cover_group.filter.clauses) == 1
-    clause = only(fact_cover_group.filter.clauses)
+    matched = MeasurementBrowser._matching_measurements(all_measurements, group)
+    @test [measurement.id for measurement in matched] == ["cycle_1000_a", "cycle_1000_b"]
+    @test length(group.filter.clauses) == 1
+    clause = only(group.filter.clauses)
     @test clause.source_file === nothing
     @test clause.measurement_kind == :pund
     @test clause.device_path_mode == :none
@@ -147,7 +141,6 @@ end
     outside = _test_measurement("outside", "/tmp/c.csv", :iv, ["chip", "B", "VI", "D3"])
 
     group, _ = MeasurementBrowser._infer_measurement_group_profiled(
-        :fact_cover,
         "site_a",
         [selected_a, selected_b],
         [selected_a, selected_b, outside],

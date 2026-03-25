@@ -476,9 +476,6 @@ struct _FigureScriptFactIndex
     fact_matches::Dict{Any,BitVector}
 end
 
-const _DEFAULT_FIGURE_SCRIPT_INFERENCE = :fact_cover
-const _BENCHMARK_FIGURE_SCRIPT_INFERENCES = (:fact_cover, :exact_cover, :relax_greedy)
-
 function _profile_section!(f::Function, ::Nothing, key::Symbol)
     return f()
 end
@@ -669,84 +666,6 @@ function _exact_selector_clause(measurement::MeasurementInfo)
     )
 end
 
-function _clause_relaxations(clause::MeasurementFilterClause)
-    relaxations = MeasurementFilterClause[]
-    seen = Set{Tuple}()
-
-    function push_relaxation(relaxed::MeasurementFilterClause)
-        key = _clause_key(relaxed)
-        key in seen && return
-        push!(seen, key)
-        push!(relaxations, relaxed)
-    end
-
-    if clause.source_file !== nothing
-        push_relaxation(MeasurementFilterClause(
-            measurement_kind=clause.measurement_kind,
-            device_path=clause.device_path,
-            device_path_mode=clause.device_path_mode,
-            parameter_conditions=clause.parameter_conditions,
-        ))
-    end
-
-    if clause.measurement_kind !== nothing
-        push_relaxation(MeasurementFilterClause(
-            source_file=clause.source_file,
-            device_path=clause.device_path,
-            device_path_mode=clause.device_path_mode,
-            parameter_conditions=clause.parameter_conditions,
-        ))
-    end
-
-    if clause.device_path_mode == :exact
-        if length(clause.device_path) > 1
-            push_relaxation(MeasurementFilterClause(
-                source_file=clause.source_file,
-                measurement_kind=clause.measurement_kind,
-                device_path=clause.device_path[1:end-1],
-                device_path_mode=:prefix,
-                parameter_conditions=clause.parameter_conditions,
-            ))
-        elseif length(clause.device_path) == 1
-            push_relaxation(MeasurementFilterClause(
-                source_file=clause.source_file,
-                measurement_kind=clause.measurement_kind,
-                parameter_conditions=clause.parameter_conditions,
-            ))
-        end
-    elseif clause.device_path_mode == :prefix
-        if length(clause.device_path) > 1
-            push_relaxation(MeasurementFilterClause(
-                source_file=clause.source_file,
-                measurement_kind=clause.measurement_kind,
-                device_path=clause.device_path[1:end-1],
-                device_path_mode=:prefix,
-                parameter_conditions=clause.parameter_conditions,
-            ))
-        elseif length(clause.device_path) == 1
-            push_relaxation(MeasurementFilterClause(
-                source_file=clause.source_file,
-                measurement_kind=clause.measurement_kind,
-                parameter_conditions=clause.parameter_conditions,
-            ))
-        end
-    end
-
-    for index in eachindex(clause.parameter_conditions)
-        conditions = copy(clause.parameter_conditions)
-        deleteat!(conditions, index)
-        push_relaxation(MeasurementFilterClause(
-            source_file=clause.source_file,
-            measurement_kind=clause.measurement_kind,
-            device_path=clause.device_path,
-            device_path_mode=clause.device_path_mode,
-            parameter_conditions=conditions,
-        ))
-    end
-
-    return relaxations
-end
-
 function _clause_match_mask(
     measurements::Vector{MeasurementInfo},
     parameter_maps::Vector{Dict{Symbol,Any}},
@@ -790,68 +709,6 @@ function _candidate_from_clause(
     any(mask) || return nothing
     any(mask .& .!selected_mask) && return nothing
     return _candidate_from_mask(selected_indices, clause, mask)
-end
-
-function _collect_exact_candidates_relax_greedy(
-    index::_FigureScriptFactIndex,
-    selected_indices::Vector{Int},
-    selected_mask::BitVector,
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
-)
-    remaining_cover_mask = trues(length(selected_indices))
-    candidates = Dict{Any,_CandidateClause}()
-
-    while any(remaining_cover_mask)
-        _profile_counter!(profiler, :anchor_count)
-        anchor_position = findfirst(remaining_cover_mask)
-        anchor_position === nothing && break
-        anchor_index = selected_indices[anchor_position]
-        candidate = _candidate_from_clause(
-            index.measurements,
-            index.parameter_maps,
-            selected_mask,
-            selected_indices,
-            _exact_selector_clause(index.measurements[anchor_index]),
-            profiler,
-        )
-        candidate === nothing && throw(FigureScriptResolutionError(
-            "Could not build an exact selector for the current figure-script selection",
-        ))
-
-        while true
-            relaxed = false
-            relaxed_clauses = _profile_section!(profiler, :candidate_relaxations) do
-                _clause_relaxations(candidate.clause)
-            end
-            _profile_counter!(profiler, :relaxation_clause_count, length(relaxed_clauses))
-            for relaxed_clause in relaxed_clauses
-                _profile_counter!(profiler, :relaxation_attempt_count)
-                relaxed_candidate = _candidate_from_clause(
-                    index.measurements,
-                    index.parameter_maps,
-                    selected_mask,
-                    selected_indices,
-                    relaxed_clause,
-                    profiler,
-                )
-                relaxed_candidate === nothing && continue
-                candidate = relaxed_candidate
-                _profile_counter!(profiler, :relaxation_accept_count)
-                relaxed = true
-                break
-            end
-            relaxed || break
-        end
-
-        candidates[_clause_key(candidate.clause)] = candidate
-        remaining_cover_mask .&= .!candidate.cover
-    end
-
-    isempty(candidates) && throw(FigureScriptResolutionError(
-        "Could not infer any exact figure-script filter clauses from the current selection",
-    ))
-    _profile_counter!(profiler, :candidate_count, length(candidates))
-    return collect(values(candidates))
 end
 
 function _collect_exact_candidates_by_fact_search(
@@ -949,55 +806,6 @@ function _remove_dominated_candidates(candidates::Vector{_CandidateClause})
         end
     end
     return [candidates[index] for index in eachindex(candidates) if keep[index]]
-end
-
-function _prune_redundant_choice(chosen::Vector{_CandidateClause}, selected_count::Int)
-    keep = copy(chosen)
-    changed = true
-    while changed
-        changed = false
-        for index in eachindex(keep)
-            covered = falses(selected_count)
-            for other_index in eachindex(keep)
-                other_index == index && continue
-                covered .|= keep[other_index].cover
-            end
-            if all(covered)
-                deleteat!(keep, index)
-                changed = true
-                break
-            end
-        end
-    end
-    return keep
-end
-
-function _choose_group_candidates_greedy(candidates::Vector{_CandidateClause}, selected_count::Int)
-    uncovered = trues(selected_count)
-    chosen = _CandidateClause[]
-
-    while any(uncovered)
-        best_candidate = nothing
-        best_score = nothing
-        for candidate in candidates
-            newly_covered = _count_common_true(candidate.cover, uncovered)
-            newly_covered == 0 && continue
-            score = (-newly_covered, candidate.condition_count, candidate.exact_source_selector)
-            if best_score === nothing || score < best_score
-                best_candidate = candidate
-                best_score = score
-            end
-        end
-
-        best_candidate === nothing && throw(FigureScriptResolutionError(
-            "Could not greedily choose an exact figure-script filter for the current selection",
-        ))
-        push!(chosen, best_candidate)
-        uncovered .&= .!best_candidate.cover
-    end
-
-    chosen = _prune_redundant_choice(chosen, selected_count)
-    return MeasurementGroupFilter([candidate.clause for candidate in chosen])
 end
 
 function _choose_group_candidates_exact_cover(candidates::Vector{_CandidateClause}, selected_count::Int)
@@ -1102,49 +910,6 @@ function _finalize_group_inference(
     return group
 end
 
-function _infer_measurement_group_relax_greedy(
-    name::AbstractString,
-    selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
-)
-    selected_ids, selected_indices, selected_mask, index = _prepare_group_inference(
-        selected_measurements,
-        all_measurements,
-        profiler,
-    )
-    candidates = _profile_section!(profiler, :collect_candidates) do
-        _collect_exact_candidates_relax_greedy(index, selected_indices, selected_mask, profiler)
-    end
-    filter = _profile_section!(profiler, :choose_filter) do
-        _choose_group_candidates_greedy(candidates, length(selected_indices))
-    end
-    return _finalize_group_inference(name, selected_ids, all_measurements, filter, profiler)
-end
-
-function _infer_measurement_group_exact_cover(
-    name::AbstractString,
-    selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
-)
-    selected_ids, selected_indices, selected_mask, index = _prepare_group_inference(
-        selected_measurements,
-        all_measurements,
-        profiler,
-    )
-    candidates = _profile_section!(profiler, :collect_candidates) do
-        _collect_exact_candidates_by_fact_search(index, selected_indices, selected_mask, profiler)
-    end
-    candidates = _profile_section!(profiler, :prune_candidates) do
-        _remove_dominated_candidates(candidates)
-    end
-    filter = _profile_section!(profiler, :choose_filter) do
-        _choose_group_candidates_exact_cover(candidates, length(selected_indices))
-    end
-    return _finalize_group_inference(name, selected_ids, all_measurements, filter, profiler)
-end
-
 function _infer_measurement_group_fact_cover(
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
@@ -1175,35 +940,13 @@ function _infer_measurement_group_fact_cover(
     return _finalize_group_inference(name, selected_ids, all_measurements, filter, profiler)
 end
 
-function _infer_measurement_group_with_algorithm(
-    algorithm::Symbol,
-    name::AbstractString,
-    selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
-)
-    if algorithm == :relax_greedy
-        return _infer_measurement_group_relax_greedy(name, selected_measurements, all_measurements, profiler)
-    elseif algorithm == :exact_cover
-        return _infer_measurement_group_exact_cover(name, selected_measurements, all_measurements, profiler)
-    elseif algorithm == :fact_cover
-        return _infer_measurement_group_fact_cover(name, selected_measurements, all_measurements, profiler)
-    end
-    error("Unknown figure-script inference algorithm '$algorithm'")
-end
-
 function infer_measurement_group(
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
     all_measurements::Vector{MeasurementInfo},
 )
     try
-        group, _ = _infer_measurement_group_profiled(
-            _DEFAULT_FIGURE_SCRIPT_INFERENCE,
-            name,
-            selected_measurements,
-            all_measurements,
-        )
+        group, _ = _infer_measurement_group_profiled(name, selected_measurements, all_measurements)
         return group
     catch err
         err isa FigureScriptProfiledError || rethrow()
@@ -1212,16 +955,13 @@ function infer_measurement_group(
 end
 
 function _infer_measurement_group_profiled(
-    algorithm::Symbol,
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
     all_measurements::Vector{MeasurementInfo},
 )
     profiler = _new_figure_script_profile_accumulator(name, length(selected_measurements), length(all_measurements))
-    _profile_counter!(profiler, :algorithm, 1)
     try
-        group = _infer_measurement_group_with_algorithm(
-            algorithm,
+        group = _infer_measurement_group_fact_cover(
             name,
             selected_measurements,
             all_measurements,
@@ -1231,36 +971,6 @@ function _infer_measurement_group_profiled(
     catch err
         throw(FigureScriptProfiledError(err, catch_backtrace(), _finalize_figure_script_profile(profiler)))
     end
-end
-
-function _infer_measurement_group_profiled(
-    name::AbstractString,
-    selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
-)
-    return _infer_measurement_group_profiled(
-        _DEFAULT_FIGURE_SCRIPT_INFERENCE,
-        name,
-        selected_measurements,
-        all_measurements,
-    )
-end
-
-function _benchmark_group_inference_algorithms(
-    name::AbstractString,
-    selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
-)
-    results = Dict{Symbol,Tuple{NamedMeasurementGroup,FigureScriptInferenceProfile}}()
-    for algorithm in _BENCHMARK_FIGURE_SCRIPT_INFERENCES
-        results[algorithm] = _infer_measurement_group_profiled(
-            algorithm,
-            name,
-            selected_measurements,
-            all_measurements,
-        )
-    end
-    return results
 end
 
 function _group_source_files(groups::Vector{NamedMeasurementGroup}, measurements::Vector{MeasurementInfo})
