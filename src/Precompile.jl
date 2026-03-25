@@ -3,6 +3,10 @@
     pund_path = joinpath(fixture_dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
     wakeup_path = joinpath(fixture_dir, "Wakeup 3V [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_10_48].csv")
     tlm_path = joinpath(fixture_dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
+    scan_fixture_dir = mktempdir()
+    cp(pund_path, joinpath(scan_fixture_dir, basename(pund_path)); force=true)
+    cp(wakeup_path, joinpath(scan_fixture_dir, basename(wakeup_path)); force=true)
+    cp(tlm_path, joinpath(scan_fixture_dir, basename(tlm_path)); force=true)
 
     @compile_workload begin
         pund_meas = nothing
@@ -39,5 +43,8 @@
                 MeasurementInfo[pund_meas, wakeup_meas, tlm_meas],
             )
         end
+
+        scan_directory(scan_fixture_dir; project=RUO2_PROJECT)
+        scan_directory(scan_fixture_dir; project=RUO2_PROJECT, count_first=true)
     end
 end
