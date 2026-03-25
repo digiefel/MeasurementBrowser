@@ -48,3 +48,12 @@ function walk_indexed_csv_files(
     end
     return nothing
 end
+
+function collect_indexed_csv_files(
+    root_path::AbstractString;
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    indexed_files = IndexedCsvFile[]
+    walk_indexed_csv_files(root_path; should_cancel=should_cancel, on_file=file -> push!(indexed_files, file))
+    return indexed_files
+end

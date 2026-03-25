@@ -570,6 +570,63 @@ function _is_scan_cancel_error(err)
     return any(_is_scan_cancel_error, err.exceptions)
 end
 
+function _interpret_indexed_files(
+    project::AbstractProject,
+    indexed_files::Vector{IndexedCsvFile},
+    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
+    should_cancel::Union{Nothing,Function}=nothing,
+    on_result::Function,
+    on_progress::Union{Nothing,Function}=nothing,
+)
+    processed_csv = Base.Threads.Atomic{Int}(0)
+    loaded_measurements = Base.Threads.Atomic{Int}(0)
+    skipped_csv = Base.Threads.Atomic{Int}(0)
+    progress_lock = ReentrantLock()
+    worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
+
+    @sync for (index, indexed) in pairs(indexed_files)
+        Base.acquire(worker_limit)
+        Base.Threads.@spawn begin
+            try
+                items = try
+                    interpret_measurements(project, indexed, meta; should_cancel=should_cancel)
+                catch err
+                    _is_scan_cancel_error(err) && rethrow()
+                    @warn "Could not interpret measurement file $(indexed.filepath)" error = err
+                    MeasurementItem[]
+                end
+
+                on_result(index, indexed, items)
+                isempty(items) && Base.Threads.atomic_add!(skipped_csv, 1)
+                isempty(items) || Base.Threads.atomic_add!(loaded_measurements, length(items))
+                processed_now = Base.Threads.atomic_add!(processed_csv, 1) + 1
+
+                if on_progress !== nothing
+                    progress = (
+                        total_csv=length(indexed_files),
+                        processed_csv=processed_now,
+                        loaded_measurements=loaded_measurements[],
+                        skipped_csv=skipped_csv[],
+                        current_path=indexed.filepath,
+                    )
+                    lock(progress_lock) do
+                        on_progress(progress)
+                    end
+                end
+            finally
+                Base.release(worker_limit)
+            end
+        end
+    end
+
+    return (
+        processed_csv=processed_csv[],
+        loaded_measurements=loaded_measurements[],
+        skipped_csv=skipped_csv[],
+        total_csv=length(indexed_files),
+    )
+end
+
 function scan_directory(
     root_path::String;
     project::Union{AbstractProject,Nothing}=nothing,
@@ -578,47 +635,44 @@ function scan_directory(
     count_first::Bool=false,
 )::MeasurementHierarchy
     proj = _resolve_scan_project(project)
-    measurements = MeasurementInfo[]
     meta = _load_scan_metadata(root_path)
-    processed_csv = 0
-    skipped_csv = 0
-    total_csv = count_first ? _count_csv(root_path; should_cancel, on_progress) : 0
+    count_first && _count_csv(root_path; should_cancel, on_progress)
+    indexed_files = collect_indexed_csv_files(root_path; should_cancel=should_cancel)
+    measurements_by_file = Vector{Vector{MeasurementItem}}(undef, length(indexed_files))
     _emit_progress(on_progress;
         phase=:scanning,
-        total_csv=total_csv,
-        processed_csv=processed_csv,
-        loaded_measurements=length(measurements),
-        skipped_csv=skipped_csv,
+        total_csv=length(indexed_files),
+        processed_csv=0,
+        loaded_measurements=0,
+        skipped_csv=0,
     )
 
-    walk_indexed_csv_files(
-        root_path;
+    summary = _interpret_indexed_files(
+        proj,
+        indexed_files,
+        meta;
         should_cancel=should_cancel,
-        on_file=(indexed) -> begin
-            processed_csv += 1
-            try
-                interpreted = interpret_measurements(proj, indexed, meta; should_cancel=should_cancel)
-                isempty(interpreted) && (skipped_csv += 1)
-                for item in interpreted
-                    push!(measurements, _measurement_info_from_item(item))
-                end
-            catch e
-                _is_scan_cancel_error(e) && rethrow()
-                skipped_csv += 1
-                @warn "Could not interpret measurement file $(indexed.filepath)" error = e
-            end
-            _emit_progress(on_progress;
-                phase=:scanning,
-                total_csv=total_csv,
-                processed_csv=processed_csv,
-                loaded_measurements=length(measurements),
-                skipped_csv=skipped_csv,
-                current_path=indexed.filepath,
-            )
-            yield()
-        end,
+        on_result=(index, _, items) -> (measurements_by_file[index] = items),
+        on_progress=(progress) -> _emit_progress(
+            on_progress;
+            phase=:scanning,
+            total_csv=progress.total_csv,
+            processed_csv=progress.processed_csv,
+            loaded_measurements=progress.loaded_measurements,
+            skipped_csv=progress.skipped_csv,
+            current_path=progress.current_path,
+        ),
     )
-    return MeasurementHierarchy(measurements, root_path, meta !== nothing, proj, skipped_csv)
+
+    measurements = MeasurementInfo[]
+    sizehint!(measurements, summary.loaded_measurements)
+    for items in measurements_by_file
+        for item in items
+            push!(measurements, _measurement_info_from_item(item))
+        end
+    end
+
+    return MeasurementHierarchy(measurements, root_path, meta !== nothing, proj, summary.skipped_csv)
 end
 
 """

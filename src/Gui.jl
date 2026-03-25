@@ -1408,87 +1408,34 @@ function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
                 has_device_metadata=meta !== nothing,
             ))
 
-            total_csv = _count_csv(
+            _count_csv(
                 path;
                 should_cancel=() -> cancel_token[],
                 on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
             )
-            processed_csv = Base.Threads.Atomic{Int}(0)
-            loaded_measurements = Base.Threads.Atomic{Int}(0)
-            skipped_csv = Base.Threads.Atomic{Int}(0)
-            worker_limit = Base.Semaphore(max(1, min(Base.Threads.nthreads(), 4)))
-
-            @sync begin
-                walk_indexed_csv_files(
-                    path;
-                    should_cancel=() -> cancel_token[],
-                    on_file=(indexed) -> begin
-                        Base.Threads.atomic_add!(processed_csv, 1)
-                        kind = detect_kind(proj, indexed.filename)
-
-                        function emit_items(items)
-                            if isempty(items)
-                                Base.Threads.atomic_add!(skipped_csv, 1)
-                            else
-                                Base.Threads.atomic_add!(loaded_measurements, length(items))
-                                put!(events, (kind=:items, scan_id=scan_id, items=items))
-                            end
-                            put!(events, (
-                                kind=:progress,
-                                scan_id=scan_id,
-                                progress=(
-                                    phase=:scanning,
-                                    total_csv=total_csv,
-                                    processed_csv=processed_csv[],
-                                    loaded_measurements=loaded_measurements[],
-                                    skipped_csv=skipped_csv[],
-                                    current_path=indexed.filepath,
-                                ),
-                            ))
-                        end
-
-                        if kind === :pund_fatigue
-                            Base.acquire(worker_limit)
-                            Base.Threads.@spawn begin
-                                try
-                                    items = try
-                                        interpret_measurements(proj, indexed, meta; should_cancel=() -> cancel_token[])
-                                    catch e
-                                        _is_scan_cancel_error(e) && rethrow()
-                                        @warn "Could not interpret measurement file $(indexed.filepath)" error = e
-                                        MeasurementItem[]
-                                    end
-                                    emit_items(items)
-                                finally
-                                    Base.release(worker_limit)
-                                end
-                            end
-                        else
-                            items = try
-                                interpret_measurements(proj, indexed, meta; should_cancel=() -> cancel_token[])
-                            catch e
-                                _is_scan_cancel_error(e) && rethrow()
-                                @warn "Could not interpret measurement file $(indexed.filepath)" error = e
-                                MeasurementItem[]
-                            end
-                            emit_items(items)
-                        end
-
-                        put!(events, (
-                            kind=:progress,
-                            scan_id=scan_id,
-                            progress=(
-                                phase=:scanning,
-                                total_csv=total_csv,
-                                processed_csv=processed_csv[],
-                                loaded_measurements=loaded_measurements[],
-                                skipped_csv=skipped_csv[],
-                                current_path=indexed.filepath,
-                            ),
-                        ))
-                    end,
-                )
-            end
+            indexed_files = collect_indexed_csv_files(path; should_cancel=() -> cancel_token[])
+            _interpret_indexed_files(
+                proj,
+                indexed_files,
+                meta;
+                should_cancel=() -> cancel_token[],
+                on_result=(_, _, items) -> begin
+                    isempty(items) && return
+                    put!(events, (kind=:items, scan_id=scan_id, items=items))
+                end,
+                on_progress=(progress) -> put!(events, (
+                    kind=:progress,
+                    scan_id=scan_id,
+                    progress=(
+                        phase=:scanning,
+                        total_csv=progress.total_csv,
+                        processed_csv=progress.processed_csv,
+                        loaded_measurements=progress.loaded_measurements,
+                        skipped_csv=progress.skipped_csv,
+                        current_path=progress.current_path,
+                    ),
+                )),
+            )
 
             put!(events, (kind=:result, scan_id=scan_id, path=path))
         catch err
