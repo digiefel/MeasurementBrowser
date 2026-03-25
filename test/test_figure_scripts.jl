@@ -130,7 +130,6 @@ end
     clause = only(group.filter.clauses)
     @test clause.source_file === nothing
     @test clause.measurement_kind == :pund
-    @test clause.device_path_mode == :none
     @test isempty(clause.device_path)
     @test clause.parameter_conditions == Pair{Symbol,Any}[:fatigue_cycle => 1000]
 end
@@ -150,7 +149,6 @@ end
     clause = only(group.filter.clauses)
     @test clause.source_file === nothing
     @test clause.measurement_kind === nothing
-    @test clause.device_path_mode == :prefix
     @test clause.device_path == ["chip", "A"]
     @test isempty(clause.parameter_conditions)
 end
@@ -226,7 +224,6 @@ end
                     source_file=measurement.filepath,
                     measurement_kind=measurement.measurement_kind,
                     device_path=measurement.device_info.location,
-                    device_path_mode=:exact,
                 ),
             ]),
         )
@@ -256,14 +253,14 @@ end
     valid_group = NamedMeasurementGroup(
         "group",
         MeasurementGroupFilter([
-            MeasurementFilterClause(device_path=["chip"], device_path_mode=:prefix),
+            MeasurementFilterClause(device_path=["chip"]),
         ]),
     )
     duplicate_groups = [valid_group, NamedMeasurementGroup("group", valid_group.filter)]
     missing_group = NamedMeasurementGroup(
         "missing",
         MeasurementGroupFilter([
-            MeasurementFilterClause(device_path=["other"], device_path_mode=:prefix),
+            MeasurementFilterClause(device_path=["other"]),
         ]),
     )
 
@@ -295,7 +292,6 @@ end
                     source_file=measurement.filepath,
                     measurement_kind=measurement.measurement_kind,
                     device_path=measurement.device_info.location,
-                    device_path_mode=:exact,
                 ),
             ]),
         )

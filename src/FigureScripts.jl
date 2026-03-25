@@ -4,7 +4,7 @@ FigureScripts.jl - Reusable helpers for publication script generation
 
 """
     MeasurementFilterClause(; source_file=nothing, measurement_kind=nothing,
-                             device_path=String[], device_path_mode=:exact,
+                             device_path=String[],
                              parameter_conditions=Pair{Symbol,Any}[])
 
 One exact filter clause over logical measurements. All populated conditions must match.
@@ -12,7 +12,6 @@ One exact filter clause over logical measurements. All populated conditions must
 struct MeasurementFilterClause
     source_file::Union{Nothing,String}
     measurement_kind::Union{Nothing,Symbol}
-    device_path_mode::Symbol
     device_path::Vector{String}
     parameter_conditions::Vector{Pair{Symbol,Any}}
 end
@@ -21,17 +20,13 @@ function MeasurementFilterClause(;
     source_file::Union{Nothing,AbstractString}=nothing,
     measurement_kind::Union{Nothing,Symbol}=nothing,
     device_path::AbstractVector{<:AbstractString}=String[],
-    device_path_mode::Symbol=:exact,
     parameter_conditions::AbstractVector{<:Pair}=Pair{Symbol,Any}[],
 )
     source = source_file === nothing ? nothing : String(source_file)
     path = String.(device_path)
-    mode = isempty(path) ? :none : device_path_mode
-    mode in (:none, :exact, :prefix) || error("Invalid device_path_mode '$mode'")
-    mode == :none && !isempty(path) && error("device_path_mode=:none is only valid for an empty device_path")
     normalized_conditions = _normalize_parameter_conditions(parameter_conditions)
     isempty(path) || any(isempty, path) && error("device_path cannot contain empty segments")
-    return MeasurementFilterClause(source, measurement_kind, mode, path, normalized_conditions)
+    return MeasurementFilterClause(source, measurement_kind, path, normalized_conditions)
 end
 
 """
@@ -290,9 +285,7 @@ function _measurement_matches_clause(measurement::MeasurementInfo, parameters::D
     clause.source_file !== nothing && measurement.filepath != clause.source_file && return false
     clause.measurement_kind !== nothing && measurement.measurement_kind != clause.measurement_kind && return false
 
-    if clause.device_path_mode == :exact
-        measurement.device_info.location == clause.device_path || return false
-    elseif clause.device_path_mode == :prefix
+    if !isempty(clause.device_path)
         length(measurement.device_info.location) >= length(clause.device_path) || return false
         measurement.device_info.location[1:length(clause.device_path)] == clause.device_path || return false
     end
@@ -429,14 +422,14 @@ end
 function _clause_condition_count(clause::MeasurementFilterClause)
     return (clause.source_file === nothing ? 0 : 1) +
         (clause.measurement_kind === nothing ? 0 : 1) +
-        (clause.device_path_mode == :none ? 0 : 1) +
+        (isempty(clause.device_path) ? 0 : 1) +
         length(clause.parameter_conditions)
 end
 
 function _is_exact_source_selector_clause(clause::MeasurementFilterClause)
     clause.source_file === nothing && return 0
     clause.measurement_kind === nothing &&
-        clause.device_path_mode == :none &&
+        isempty(clause.device_path) &&
         isempty(clause.parameter_conditions) && return 0
     return 1
 end
@@ -580,7 +573,6 @@ function _clause_key(clause::MeasurementFilterClause)
     return (
         clause.source_file,
         clause.measurement_kind,
-        clause.device_path_mode,
         Tuple(clause.device_path),
         Tuple((condition.first, condition.second) for condition in clause.parameter_conditions),
     )
@@ -625,7 +617,6 @@ function _clause_from_facts(facts::Vector{Any})
     source_file = nothing
     measurement_kind = nothing
     device_path = String[]
-    device_path_mode = :none
     parameter_conditions = Pair{Symbol,Any}[]
 
     for fact in facts
@@ -636,10 +627,8 @@ function _clause_from_facts(facts::Vector{Any})
             measurement_kind = fact[2]
         elseif tag == :device_prefix
             device_path = collect(String, fact[2])
-            device_path_mode = :prefix
         elseif tag == :device_exact
             device_path = collect(String, fact[2])
-            device_path_mode = :exact
         elseif tag == :parameter
             push!(parameter_conditions, Symbol(fact[2]) => fact[3])
         else
@@ -651,7 +640,6 @@ function _clause_from_facts(facts::Vector{Any})
         source_file=source_file,
         measurement_kind=measurement_kind,
         device_path=device_path,
-        device_path_mode=device_path_mode,
         parameter_conditions=parameter_conditions,
     )
 end
@@ -661,7 +649,6 @@ function _exact_selector_clause(measurement::MeasurementInfo)
         source_file=measurement.filepath,
         measurement_kind=measurement.measurement_kind,
         device_path=measurement.device_info.location,
-        device_path_mode=:exact,
         parameter_conditions=_measurement_parameter_conditions(measurement),
     )
 end
@@ -994,9 +981,8 @@ function _render_clause(io::IO, clause::MeasurementFilterClause)
     println(io, "            MeasurementBrowser.MeasurementFilterClause(")
     clause.source_file !== nothing && println(io, "                source_file = ", repr(clause.source_file), ",")
     clause.measurement_kind !== nothing && println(io, "                measurement_kind = ", repr(clause.measurement_kind), ",")
-    if clause.device_path_mode != :none
+    if !isempty(clause.device_path)
         println(io, "                device_path = ", repr(clause.device_path), ",")
-        println(io, "                device_path_mode = ", repr(clause.device_path_mode), ",")
     end
     if !isempty(clause.parameter_conditions)
         println(io, "                parameter_conditions = [")
