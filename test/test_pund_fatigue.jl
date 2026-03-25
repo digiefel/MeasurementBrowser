@@ -21,6 +21,27 @@ using MeasurementBrowser
         @test cycle_df.current == [1.5e-9, 2.5e-6, -2.5e-6]
     end
 
+    @testset "RuO2 fatigue scan requires monotonic cycle blocks" begin
+        mktempdir() do dir
+            bad_path = joinpath(dir, "bad_fatigue.csv")
+            write(bad_path, join([
+                "Cycle,Time_s,Voltage_V,Current_A",
+                "1,0.0,1.0,0.0",
+                "2,1.0,2.0,0.0",
+                "1,2.0,3.0,0.0",
+                "",
+            ], "\n"))
+            err = try
+                MeasurementBrowser._ruo2_scan_fatigue_file(bad_path)
+                nothing
+            catch caught
+                caught
+            end
+            @test err isa ErrorException
+            @test occursin("non-monotonic cycle blocks", sprint(showerror, err))
+        end
+    end
+
     @testset "FE PUND loader errors explicitly on malformed files" begin
         mktempdir() do dir
             bad_path = joinpath(dir, "bad_pund.csv")
