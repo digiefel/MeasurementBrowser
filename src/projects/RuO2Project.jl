@@ -57,71 +57,53 @@ end
 Scan a PUND fatigue CSV to extract unique cycle numbers and peak voltage amplitude.
 Returns (sorted_cycles::Vector{Int}, voltage_V::Union{Float64,Nothing}).
 """
-function _rstrip_cr_end(bytes, stop_index::Int)
-    stop_index > 0 && bytes[stop_index] == UInt8('\r') && return stop_index - 1
-    return stop_index
-end
-
-function _parse_fatigue_cycle(data::String, start_index::Int, stop_index::Int)
-    start_index <= stop_index || error("Encountered empty fatigue cycle field")
-    return parse(Int, SubString(data, start_index, stop_index))
-end
-
-function _parse_fatigue_voltage(data::String, start_index::Int, stop_index::Int)
-    start_index <= stop_index || error("Encountered empty fatigue voltage field")
-    return parse(Float64, SubString(data, start_index, stop_index))
-end
-
 function _ruo2_scan_fatigue_file(filepath::AbstractString; should_cancel::Union{Nothing,Function}=nothing)
-    data = read(filepath, String)
-    bytes = codeunits(data)
-    header_range = findfirst("Cycle,Time_s,Voltage_V,Current_A", data)
-    header_range === nothing && error("Fatigue file '$filepath' is missing the fatigue CSV data header")
-    header_end = findnext(==(UInt8('\n')), bytes, first(header_range))
-    header_end === nothing && error("Fatigue file '$filepath' is missing data rows after the fatigue CSV header")
-
     cycles = Int[]
     peak_V = 0.0
-
     last_cycle = nothing
-    position = header_end + 1
-    last_byte = length(bytes)
+    saw_header = false
 
-    while position <= last_byte
-        _check_cancel(should_cancel)
+    open(filepath, "r") do io
+        for raw_line in eachline(io)
+            _check_cancel(should_cancel)
 
-        while position <= last_byte && (bytes[position] == UInt8('\n') || bytes[position] == UInt8('\r'))
-            position += 1
+            line = strip(raw_line)
+            isempty(line) && continue
+
+            if !saw_header
+                line == "Cycle,Time_s,Voltage_V,Current_A" || continue
+                saw_header = true
+                continue
+            end
+
+            cycle_end = findfirst(==(','), line)
+            cycle_end === nothing && error("Malformed fatigue row in '$filepath': missing cycle delimiter")
+
+            time_end = findnext(==(','), line, nextind(line, cycle_end))
+            time_end === nothing && error("Malformed fatigue row in '$filepath': missing time delimiter")
+
+            voltage_end = findnext(==(','), line, nextind(line, time_end))
+            voltage_end === nothing && error("Malformed fatigue row in '$filepath': missing voltage delimiter")
+
+            cycle = parse(Int, SubString(line, firstindex(line), prevind(line, cycle_end)))
+            voltage = abs(parse(Float64, SubString(line, nextind(line, time_end), prevind(line, voltage_end))))
+
+            if last_cycle === nothing
+                push!(cycles, cycle)
+                last_cycle = cycle
+            elseif cycle != last_cycle
+                cycle > last_cycle || error(
+                    "Fatigue file '$filepath' contains non-monotonic cycle blocks: saw cycle $cycle after $last_cycle",
+                )
+                push!(cycles, cycle)
+                last_cycle = cycle
+            end
+
+            voltage > peak_V && (peak_V = voltage)
         end
-        position > last_byte && break
-
-        cycle_end = findnext(==(UInt8(',')), bytes, position)
-        cycle_end === nothing && error("Malformed fatigue row in '$filepath': missing cycle delimiter")
-
-        time_end = findnext(==(UInt8(',')), bytes, cycle_end + 1)
-        time_end === nothing && error("Malformed fatigue row in '$filepath': missing time delimiter")
-
-        voltage_end = findnext(==(UInt8(',')), bytes, time_end + 1)
-        voltage_end === nothing && error("Malformed fatigue row in '$filepath': missing voltage delimiter")
-
-        line_end = findnext(==(UInt8('\n')), bytes, voltage_end + 1)
-        cycle = _parse_fatigue_cycle(data, position, _rstrip_cr_end(bytes, cycle_end - 1))
-        voltage = abs(_parse_fatigue_voltage(data, time_end + 1, _rstrip_cr_end(bytes, voltage_end - 1)))
-
-        if last_cycle === nothing
-            push!(cycles, cycle)
-            last_cycle = cycle
-        elseif cycle != last_cycle
-            cycle > last_cycle || error(
-                "Fatigue file '$filepath' contains non-monotonic cycle blocks: saw cycle $cycle after $last_cycle",
-            )
-            push!(cycles, cycle)
-            last_cycle = cycle
-        end
-
-        voltage > peak_V && (peak_V = voltage)
-        position = line_end === nothing ? last_byte + 1 : line_end + 1
     end
+
+    saw_header || error("Fatigue file '$filepath' is missing the fatigue CSV data header")
 
     voltage = peak_V > 0 ? round(peak_V; digits=1) : nothing
     return cycles, voltage

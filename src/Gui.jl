@@ -200,6 +200,10 @@ function _init_bad_state!(ui_state)
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
     ui_state[:selected_path] = String[]
+    ui_state[:_selected_measurements_all] = MeasurementInfo[]
+    ui_state[:_measurement_device_key_cache] = Dict{String,String}()
+    ui_state[:_measurement_display_label_cache] = Dict{Tuple{String,String},String}()
+    ui_state[:_measurement_filter_text_cache] = Dict{Tuple{String,String},String}()
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
 end
 
@@ -270,6 +274,7 @@ function _clear_selection!(ui_state)
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
     ui_state[:selected_path] = String[]
+    ui_state[:_selected_measurements_all] = MeasurementInfo[]
 end
 
 function _figure_script_groups(ui_state)
@@ -538,9 +543,18 @@ function _measurement_is_explicitly_bad(ui_state, measurement_id::String)
     return measurement_id in _bad_registry_or_error(ui_state).measurements
 end
 
+function _measurement_device_key(ui_state, measurement::MeasurementInfo)
+    cache = get!(ui_state, :_measurement_device_key_cache) do
+        Dict{String,String}()
+    end
+    return get!(cache, measurement.id) do
+        device_path_key(measurement.device_info)
+    end
+end
+
 function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
     return _measurement_is_explicitly_bad(ui_state, measurement.id) ||
-           _device_is_explicitly_bad(ui_state, device_path_key(measurement.device_info))
+           _device_is_explicitly_bad(ui_state, _measurement_device_key(ui_state, measurement))
 end
 
 function _assert_bad_registry_visibility_available(ui_state)
@@ -591,9 +605,17 @@ end
 
 function _apply_visible_selection!(ui_state)
     selected_devices, selected_measurements, selected_path = _project_visible_selection(ui_state)
+
+    all_selected_measurements = MeasurementInfo[]
+    sizehint!(all_selected_measurements, sum(length(device.measurements) for device in selected_devices; init=0))
+    for device in selected_devices
+        append!(all_selected_measurements, device.measurements)
+    end
+
     ui_state[:selected_devices] = selected_devices
     ui_state[:selected_measurements] = selected_measurements
     ui_state[:selected_path] = selected_path
+    ui_state[:_selected_measurements_all] = all_selected_measurements
 end
 
 function _current_scan_measurements(ui_state)
@@ -1335,6 +1357,15 @@ end
 function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
     _clear_plot_jobs!(ui_state)
     _clear_selection!(ui_state)
+    empty!(get!(ui_state, :_measurement_device_key_cache) do
+        Dict{String,String}()
+    end)
+    empty!(get!(ui_state, :_measurement_display_label_cache) do
+        Dict{Tuple{String,String},String}()
+    end)
+    empty!(get!(ui_state, :_measurement_filter_text_cache) do
+        Dict{Tuple{String,String},String}()
+    end)
     delete!(ui_state, :plot_figure)
     delete!(ui_state, :_last_plot_key)
     if get(ui_state, :figure_script_root_path, "") != path
@@ -1571,6 +1602,47 @@ function _time!(f::Function, ui_state, key::Symbol)
     nothing
 end
 
+function _read_proc_int(path::String, prefix::String)
+    isfile(path) || return nothing
+    for line in eachline(path)
+        startswith(line, prefix) || continue
+        fields = split(strip(line))
+        length(fields) >= 2 || return nothing
+        try
+            return parse(Int, fields[2])
+        catch
+            return nothing
+        end
+    end
+    return nothing
+end
+
+function _memory_snapshot()
+    return (
+        vmrss_kb=_read_proc_int("/proc/self/status", "VmRSS:"),
+        rssanon_kb=_read_proc_int("/proc/self/status", "RssAnon:"),
+        vmsize_kb=_read_proc_int("/proc/self/status", "VmSize:"),
+        vmpeak_kb=_read_proc_int("/proc/self/status", "VmPeak:"),
+        read_bytes=_read_proc_int("/proc/self/io", "read_bytes:"),
+        gc_live_bytes=Int(Base.gc_live_bytes()),
+        maxrss_bytes=Int(Sys.maxrss()),
+    )
+end
+
+function _fmt_kb(kb::Union{Nothing,Integer})
+    kb === nothing && return "n/a"
+    gib = kb / (1024^2)
+    gib >= 1 && return @sprintf("%.2f GiB", gib)
+    return @sprintf("%.0f MiB", kb / 1024)
+end
+
+function _fmt_bytes(bytes::Union{Nothing,Integer})
+    bytes === nothing && return "n/a"
+    gib = bytes / (1024^3)
+    gib >= 1 && return @sprintf("%.2f GiB", gib)
+    return @sprintf("%.0f MiB", bytes / (1024^2))
+end
+
 function _collect_gl_info!()
     try
         Dict(
@@ -1649,6 +1721,25 @@ function render_perf_window(ui_state)
 
         if haskey(ui_state, :_node_count)
             ig.Text("Tree nodes rendered: $(ui_state[:_node_count])")
+        end
+
+        mem = _memory_snapshot()
+        if mem.vmrss_kb !== nothing
+            start_rss = get!(ui_state, :_mem_start_rss_kb, mem.vmrss_kb)
+            peak_rss = max(get(ui_state, :_mem_peak_rss_kb, mem.vmrss_kb), mem.vmrss_kb)
+            ui_state[:_mem_peak_rss_kb] = peak_rss
+
+            read_bytes = mem.read_bytes === nothing ? 0 : mem.read_bytes
+            start_read = get!(ui_state, :_mem_start_read_bytes, read_bytes)
+
+            ig.Separator()
+            ig.Text("Process memory")
+            ig.BulletText(
+                "RSS=$( _fmt_kb(mem.vmrss_kb) )  Δstart=$( _fmt_kb(mem.vmrss_kb - start_rss) )  peak=$( _fmt_kb(peak_rss) )",
+            )
+            ig.BulletText("Anon=$( _fmt_kb(mem.rssanon_kb) )  VSize=$( _fmt_kb(mem.vmsize_kb) )  VPeak=$( _fmt_kb(mem.vmpeak_kb) )")
+            ig.BulletText("GC live=$( _fmt_bytes(mem.gc_live_bytes) )  maxrss=$( _fmt_bytes(mem.maxrss_bytes) )")
+            ig.BulletText("read_bytes Δstart=$( _fmt_bytes(read_bytes - start_read) )")
         end
 
         timings = get(ui_state, :_timings,
@@ -1834,12 +1925,18 @@ function _subtree_has_visible_leaf(ui_state, node::HierarchyNode)
     if isempty(children(node))
         return _device_is_visible(ui_state, _device_path_key(node))
     end
-    return any(child -> _subtree_has_visible_leaf(ui_state, child), children(node))
+    for child in children(node)
+        _subtree_has_visible_leaf(ui_state, child) && return true
+    end
+    return false
 end
 
 function _subtree_matches_filter(filter_tree, node::HierarchyNode)
-    return _tree_node_matches_filter(filter_tree, node) ||
-           any(child -> _subtree_matches_filter(filter_tree, child), children(node))
+    _tree_node_matches_filter(filter_tree, node) && return true
+    for child in children(node)
+        _subtree_matches_filter(filter_tree, child) && return true
+    end
+    return false
 end
 
 function _collect_visible_device_nodes!(devices::Vector{HierarchyNode}, ui_state, filter_tree, node::HierarchyNode, force_show::Bool=false)
@@ -1866,26 +1963,48 @@ function _visible_devices(ui_state, filter_tree)
     return devices
 end
 
-function _measurement_filter_text(proj, measurement::MeasurementInfo)
-    return string(
-        display_label(proj, measurement), "\n",
-        measurement.clean_title, "\n",
-        kind_label(proj, measurement.measurement_kind),
-    )
+function _measurement_display_label(ui_state, proj, measurement::MeasurementInfo)
+    cache = get!(ui_state, :_measurement_display_label_cache) do
+        Dict{Tuple{String,String},String}()
+    end
+    key = (project_name(proj), measurement.id)
+    return get!(cache, key) do
+        display_label(proj, measurement)
+    end
 end
 
-function _measurement_matches_filter(proj, measurement::MeasurementInfo, filter_obj)
+function _measurement_filter_text(ui_state, proj, measurement::MeasurementInfo)
+    cache = get!(ui_state, :_measurement_filter_text_cache) do
+        Dict{Tuple{String,String},String}()
+    end
+    key = (project_name(proj), measurement.id)
+    return get!(cache, key) do
+        string(
+            _measurement_display_label(ui_state, proj, measurement), "\n",
+            measurement.clean_title, "\n",
+            kind_label(proj, measurement.measurement_kind),
+        )
+    end
+end
+
+function _measurement_matches_filter(ui_state, proj, measurement::MeasurementInfo, filter_obj)
     if !ig.ImGuiTextFilter_IsActive(filter_obj)
         return true
     end
-    return ig.ImGuiTextFilter_PassFilter(filter_obj, _measurement_filter_text(proj, measurement), C_NULL)
+    return ig.ImGuiTextFilter_PassFilter(filter_obj, _measurement_filter_text(ui_state, proj, measurement), C_NULL)
 end
 
 function _visible_measurements(ui_state, proj, filter_meas)
+    selected = _selected_measurements(ui_state)
+    if get(ui_state, :show_bad, true) && !ig.ImGuiTextFilter_IsActive(filter_meas)
+        return selected
+    end
+
     measurements = MeasurementInfo[]
-    for measurement in _selected_measurements(ui_state)
+    sizehint!(measurements, length(selected))
+    for measurement in selected
         _measurement_is_visible(ui_state, measurement) || continue
-        _measurement_matches_filter(proj, measurement, filter_meas) || continue
+        _measurement_matches_filter(ui_state, proj, measurement, filter_meas) || continue
         push!(measurements, measurement)
     end
     return measurements
@@ -1898,7 +2017,16 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
     _render_bad_registry_error!(ui_state)
 
     visible_devices = _visible_devices(ui_state, filter_tree)
-    visible_device_keys = [_device_path_key(node) for node in visible_devices]
+    visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
+    visible_device_keys = function ()
+        keys = visible_device_keys_ref[]
+        if keys === nothing
+            keys = [_device_path_key(node) for node in visible_devices]
+            visible_device_keys_ref[] = keys
+        end
+        return keys
+    end
+    selected_device_path_set = Set(get(ui_state, :selected_device_paths, String[]))
 
     _render_selection_toolbar!(
         length(get(ui_state, :selected_devices, HierarchyNode[])),
@@ -1906,7 +2034,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
         length(_all_devices(ui_state)),
         filter_tree,
         () -> begin
-            ui_state[:selected_device_paths] = copy(visible_device_keys)
+            ui_state[:selected_device_paths] = copy(visible_device_keys())
             _apply_visible_selection!(ui_state)
         end;
         item_label="devices", filter_id="##tree_filter"
@@ -1928,9 +2056,8 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
 
         # appearance flags
         is_leaf = isempty(children(node))
-        selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-        selected = is_leaf && node in selected_devices
         device_key = is_leaf ? _device_path_key(node) : nothing
+        selected = is_leaf && (device_key in selected_device_path_set)
         flags = (
             ig.ImGuiTreeNodeFlags_OpenOnArrow |
             ig.ImGuiTreeNodeFlags_OpenOnDoubleClick |
@@ -1966,7 +2093,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 shift_held = unsafe_load(io.KeyShift)
                 ctrl_held = unsafe_load(io.KeyCtrl)
                 selected_device_paths = copy(get(ui_state, :selected_device_paths, String[]))
-                _update_multi_selection!(selected_device_paths, device_key, visible_device_keys, shift_held, ctrl_held)
+                _update_multi_selection!(selected_device_paths, device_key, visible_device_keys(), shift_held, ctrl_held)
                 ui_state[:selected_device_paths] = selected_device_paths
                 _apply_visible_selection!(ui_state)
             elseif !isempty(get(ui_state, :selected_device_paths, String[]))
@@ -2165,12 +2292,7 @@ function _all_devices(ui_state)
 end
 
 function _selected_measurements(ui_state)
-    selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-    measurements = MeasurementInfo[]
-    for device in selected_devices
-        append!(measurements, device.measurements)
-    end
-    return measurements
+    return get(ui_state, :_selected_measurements_all, MeasurementInfo[])
 end
 
 # Right panel (measurements list) rendering
@@ -2182,7 +2304,7 @@ function _render_measurements_panel(ui_state, filter_meas)
     selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
     all_measurements = _selected_measurements(ui_state)
     visible_measurements = _visible_measurements(ui_state, proj, filter_meas)
-    visible_measurement_ids = [measurement.id for measurement in visible_measurements]
+    selected_measurement_id_set = Set(get(ui_state, :selected_measurement_ids, String[]))
     registry_ready = _bad_registry_ready(ui_state)
 
     _render_selection_toolbar!(
@@ -2191,7 +2313,7 @@ function _render_measurements_panel(ui_state, filter_meas)
         length(all_measurements),
         filter_meas,
         () -> begin
-            ui_state[:selected_measurement_ids] = copy(visible_measurement_ids)
+            ui_state[:selected_measurement_ids] = [measurement.id for measurement in visible_measurements]
             _apply_visible_selection!(ui_state)
         end;
         item_label="measurements", filter_id="##measurements_filter"
@@ -2203,8 +2325,9 @@ function _render_measurements_panel(ui_state, filter_meas)
             ig.Text("Measurements for $sel_name")
             ig.Separator()
         else
-            device_names = [d.name for d in selected_devices]
-            ig.Text("Measurements from $(length(selected_devices)) devices: $(join(device_names[1:min(3, end)], ", "))$(length(device_names) > 3 ? "..." : "")")
+            shown = min(3, length(selected_devices))
+            first_names = join((selected_devices[i].name for i in 1:shown), ", ")
+            ig.Text("Measurements from $(length(selected_devices)) devices: $first_names$(length(selected_devices) > 3 ? "..." : "")")
             ig.Separator()
         end
     end
@@ -2225,15 +2348,15 @@ function _render_measurements_panel(ui_state, filter_meas)
                 ig.TableNextRow()
                 ig.TableSetColumnIndex(0)
 
-                selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-                is_selected = measurement in selected_measurements
+                is_selected = measurement.id in selected_measurement_id_set
                 bad_text_pushed = registry_ready &&
                                   _push_bad_text_style!(_measurement_is_bad(ui_state, measurement))
-                if ig.Selectable(display_label(proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
+                if ig.Selectable(_measurement_display_label(ui_state, proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
                     io = ig.GetIO()
                     shift_held = unsafe_load(io.KeyShift)
                     ctrl_held = unsafe_load(io.KeyCtrl)
                     selected_measurement_ids = copy(get(ui_state, :selected_measurement_ids, String[]))
+                    visible_measurement_ids = [visible.id for visible in visible_measurements]
                     _update_multi_selection!(
                         selected_measurement_ids,
                         measurement.id,

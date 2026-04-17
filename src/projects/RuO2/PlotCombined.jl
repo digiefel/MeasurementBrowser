@@ -289,8 +289,8 @@ function draw_plot_for_files(::RuO2Project, combined_kind::Symbol, analyzed; kwa
             nrow(summary_row) == 1 || continue
             rt_val = summary_row.rt_val[1]
             tcr_ppm = summary_row.tcr_ppm[1]
-            scatter!(ax_rt, rt_x[i], Observable([rt_val]); color=colors[i], marker=:circle, markersize=9)
-            scatter!(ax_tcr, tcr_x[i], Observable([tcr_ppm]); color=colors[i], marker=:diamond, markersize=9)
+            scatter!(ax_rt, rt_x[i], [rt_val]; color=colors[i], marker=:circle, markersize=9)
+            scatter!(ax_tcr, tcr_x[i], [tcr_ppm]; color=colors[i], marker=:diamond, markersize=9)
             if isfinite(tcr_ppm)
                 a, b, ok = _ols_ab(sub.temperature_K, plot_vals)
                 if ok

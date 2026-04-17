@@ -492,8 +492,8 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
         rt_val = rt_val_map[site]
         tcr_ppm = tcr_ppm_map[site]
         color = colors[i]
-        rt_scatter[i] = scatter!(ax_rt, rt_x[i], Observable([rt_val]); color=color, marker=:circle, markersize=9)
-        tcr_scatter[i] = scatter!(ax_tcr, tcr_x[i], Observable([tcr_ppm]); color=color, marker=:diamond, markersize=9)
+        rt_scatter[i] = scatter!(ax_rt, rt_x[i], [rt_val]; color=color, marker=:circle, markersize=9)
+        tcr_scatter[i] = scatter!(ax_tcr, tcr_x[i], [tcr_ppm]; color=color, marker=:diamond, markersize=9)
     end
 
     update_o2_metric!()

@@ -36,7 +36,10 @@ const makie_context = Dict{ig.ImGuiID,ImMakieFigure}()
 
 function destroy_context()
     for imfigure in values(makie_context)
-        empty!(imfigure.figure)
+        if !isnothing(imfigure.figure)
+            empty!(imfigure.figure)
+        end
+        GLMakie.destroy!(imfigure.screen)
     end
 
     empty!(makie_context)
@@ -143,11 +146,18 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
     if haskey(makie_context, id)
         imf = makie_context[id]
         if imf.figure !== f
-            # Simple/safe replacement: reuse existing screen & context
-            imf.figure = f
+            # Reuse the existing screen, but only clear the previous figure
+            # after GLMakie has detached it from the screen. Clearing it before
+            # display(screen, f) prevents GLMakie from walking the old scene and
+            # releasing its render objects.
+            old_figure = imf.figure
             scene = Makie.get_scene(f)
             scene.events.window_open[] = true
             display(imf.screen, f)
+            if !isnothing(old_figure)
+                empty!(old_figure)
+            end
+            imf.figure = f
             imf.times_idx = 1
             @debug "replaced figure for " id
         end
