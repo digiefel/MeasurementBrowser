@@ -79,7 +79,7 @@ end
     @test entry[:params][:fatigue_cycle] == 2
     @test entry[:params][:voltage_V] == 3.0
 
-    cache_id = "33333333-3333-3333-3333-333333333333"
+    cache_id = "20260430_120007"
     ui = Dict{Symbol,Any}(
         :cache_identity => MeasurementBrowser.project_cache_identity(
             cache_id,

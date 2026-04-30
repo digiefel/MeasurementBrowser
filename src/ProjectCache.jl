@@ -1,6 +1,5 @@
 using HDF5
 using SHA
-using UUIDs
 using DataFrames
 
 const CACHE_SCHEMA_VERSION = 1
@@ -132,7 +131,7 @@ function project_cache_dir()
 end
 
 function new_project_cache_id()
-    return string(UUIDs.uuid4())
+    return Dates.format(now(), dateformat"yyyymmdd_HHMMSS")
 end
 
 function _cache_slug(value::AbstractString)
@@ -147,8 +146,12 @@ end
 
 function project_cache_path(cache_id::AbstractString, project::AbstractProject)
     schema = project_cache_schema_version(project)
-    filename = string(_cache_slug(project_name(project)), "_schema", schema, "_", cache_id, ".h5")
-    return joinpath(project_cache_dir(), filename)
+    return joinpath(
+        project_cache_dir(),
+        _cache_slug(project_name(project)),
+        "schema$(schema)",
+        "$(String(cache_id)).h5",
+    )
 end
 
 function project_cache_identity(

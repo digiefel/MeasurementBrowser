@@ -25,7 +25,7 @@ end
                 "path" => path_a,
                 "project_preference" => "RuO2",
                 "figure_script_output_dir" => "/tmp/figures_a",
-                "cache_id" => "11111111-1111-1111-1111-111111111111",
+                "cache_id" => "20260430_120001",
             ),
             Dict("path" => path_b, "project_preference" => 99),
             Dict("path" => 42, "project_preference" => "TASE"),
@@ -37,7 +37,7 @@ end
     @test recents[1]["path"] == MeasurementBrowser._normalize_project_path(path_a)
     @test recents[1]["project_preference"] == "RuO2"
     @test recents[1]["figure_script_output_dir"] == "/tmp/figures_a"
-    @test recents[1]["cache_id"] == "11111111-1111-1111-1111-111111111111"
+    @test recents[1]["cache_id"] == "20260430_120001"
     @test recents[2]["path"] == MeasurementBrowser._normalize_project_path(path_b)
     @test recents[2]["project_preference"] == "auto"
     @test recents[2]["figure_script_output_dir"] == ""
@@ -49,17 +49,20 @@ end
         path_a,
         SubString(" RuO2 ", 2, 5),
         SubString(" /tmp/out2 ", 2, 10),
-        "22222222-2222-2222-2222-222222222222",
+        "20260430_120002",
     )
     @test recents2[1]["project_preference"] == "RuO2"
     @test recents2[1]["figure_script_output_dir"] == "/tmp/out2"
-    @test recents2[1]["cache_id"] == "22222222-2222-2222-2222-222222222222"
+    @test recents2[1]["cache_id"] == "20260430_120002"
+
+    @test MeasurementBrowser._sanitize_cache_id("  20260430_120003  ") == "20260430_120003"
+    @test_throws ErrorException MeasurementBrowser._sanitize_cache_id("bad-cache-id")
 
     no_cache_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}())
     @test no_cache_model.label == "Cache: No Project"
 
     cache_identity = MeasurementBrowser.project_cache_identity(
-        "77777777-7777-7777-7777-777777777777",
+        "20260430_120004",
         MeasurementBrowser.RUO2_PROJECT,
         pwd(),
     )

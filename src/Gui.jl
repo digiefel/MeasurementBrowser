@@ -60,7 +60,8 @@ function _sanitize_cache_id(value)
     value isa AbstractString || return ""
     stripped = strip(String(value))
     isempty(stripped) && return ""
-    UUIDs.UUID(stripped)
+    occursin(r"^\d{8}_\d{6}$", stripped) ||
+        error("Invalid cache id '$stripped'; expected YYYYMMDD_hhmmss")
     return stripped
 end
 
@@ -1392,7 +1393,7 @@ function _render_cache_toolbar_button!(ui_state)
 end
 
 function _render_cache_toolbar_popup!(ui_state)
-    ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Appearing)
+    ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Always)
     if ig.BeginPopup("cache_toolbar_popup")
         _render_cache_controls!(ui_state; compact=false)
         ig.EndPopup()

@@ -28,8 +28,15 @@ function _write_bad_pund_fixture!(dir::AbstractString)
 end
 
 @testset "project HDF5 cache" begin
+    cache_id = MeasurementBrowser.new_project_cache_id()
+    @test occursin(r"^\d{8}_\d{6}$", cache_id)
+    @test basename(MeasurementBrowser.project_cache_path(
+        "20260430_120001",
+        MeasurementBrowser.RUO2_PROJECT,
+    )) == "20260430_120001.h5"
+
     mktempdir() do dir
-        cache_id = "55555555-5555-5555-5555-555555555555"
+        cache_id = "20260430_120005"
         _remove_cache_file(cache_id)
         try
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)
@@ -89,7 +96,7 @@ end
     end
 
     mktempdir() do dir
-        cache_id = "88888888-8888-8888-8888-888888888888"
+        cache_id = "20260430_120006"
         _remove_cache_file(cache_id)
         try
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)
