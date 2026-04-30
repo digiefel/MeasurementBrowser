@@ -61,7 +61,7 @@ function _ruo2_scan_fatigue_file(filepath::AbstractString; should_cancel::Union{
     cycles = Int[]
     peak_V = 0.0
     last_cycle = nothing
-    saw_header = false
+    columns = nothing
 
     open(filepath, "r") do io
         for raw_line in eachline(io)
@@ -70,23 +70,14 @@ function _ruo2_scan_fatigue_file(filepath::AbstractString; should_cancel::Union{
             line = strip(raw_line)
             isempty(line) && continue
 
-            if !saw_header
-                line == "Cycle,Time_s,Voltage_V,Current_A" || continue
-                saw_header = true
+            if columns === nothing
+                if startswith(line, "Cycle,")
+                    columns = _ruo2_fatigue_columns(filepath, line)
+                end
                 continue
             end
 
-            cycle_end = findfirst(==(','), line)
-            cycle_end === nothing && error("Malformed fatigue row in '$filepath': missing cycle delimiter")
-
-            time_end = findnext(==(','), line, nextind(line, cycle_end))
-            time_end === nothing && error("Malformed fatigue row in '$filepath': missing time delimiter")
-
-            voltage_end = findnext(==(','), line, nextind(line, time_end))
-            voltage_end === nothing && error("Malformed fatigue row in '$filepath': missing voltage delimiter")
-
-            cycle = parse(Int, SubString(line, firstindex(line), prevind(line, cycle_end)))
-            voltage = abs(parse(Float64, SubString(line, nextind(line, time_end), prevind(line, voltage_end))))
+            cycle, voltage = _ruo2_parse_fatigue_scan_row(filepath, line, columns)
 
             if last_cycle === nothing
                 push!(cycles, cycle)
@@ -103,20 +94,68 @@ function _ruo2_scan_fatigue_file(filepath::AbstractString; should_cancel::Union{
         end
     end
 
-    saw_header || error("Fatigue file '$filepath' is missing the fatigue CSV data header")
+    columns !== nothing || error(
+        "Fatigue file '$filepath' is missing a data header with columns Cycle, Time_s, Voltage_V, Current_A",
+    )
 
     voltage = peak_V > 0 ? round(peak_V; digits=1) : nothing
     return cycles, voltage
 end
 
+function _ruo2_parse_fatigue_scan_row(
+    filepath::AbstractString,
+    line::AbstractString,
+    columns::NamedTuple,
+)
+    field = 1
+    field_start = firstindex(line)
+    index = field_start
+    cycle = nothing
+    voltage = nothing
+
+    while index <= lastindex(line)
+        comma = findnext(',', line, index)
+        field_stop = comma === nothing ? lastindex(line) : prevind(line, comma)
+        if field == columns.cycle
+            cycle = parse(Int, SubString(line, field_start, field_stop))
+        elseif field == columns.voltage
+            voltage = abs(parse(Float64, SubString(line, field_start, field_stop)))
+        end
+
+        comma === nothing && break
+        field += 1
+        index = nextind(line, comma)
+        field_start = index
+    end
+
+    field == columns.count || error(
+        "Malformed fatigue row in '$filepath': expected $(columns.count) columns, got $field",
+    )
+    cycle !== nothing || error("Fatigue row in '$filepath' is missing Cycle")
+    voltage !== nothing || error("Fatigue row in '$filepath' is missing Voltage_V")
+    return cycle, voltage
+end
+
+function _ruo2_fatigue_columns(filepath::AbstractString, header::AbstractString)
+    columns = strip.(split(header, ','))
+    indices = Dict(column => index for (index, column) in pairs(columns))
+    required = ("Cycle", "Time_s", "Voltage_V", "Current_A")
+    missing = [column for column in required if !haskey(indices, column)]
+    isempty(missing) || error(
+        "Fatigue file '$filepath' data header is missing required columns: $(join(missing, ", "))",
+    )
+    return (
+        cycle=indices["Cycle"],
+        time=indices["Time_s"],
+        voltage=indices["Voltage_V"],
+        current=indices["Current_A"],
+        count=length(columns),
+    )
+end
+
 function _ruo2_expand_pund_fatigue(meas::MeasurementInfo)::Vector{MeasurementInfo}
     meas.measurement_kind == :pund_fatigue || return [meas]
-    cycles, voltage_V = try
-        _ruo2_scan_fatigue_file(meas.filepath)
-    catch e
-        @warn "Could not read fatigue cycles from $(meas.filepath)" error = e
-        return MeasurementInfo[]
-    end
+    cycles, voltage_V = _ruo2_scan_fatigue_file(meas.filepath)
     isempty(cycles) && return MeasurementInfo[]
     expanded = MeasurementInfo[]
     sizehint!(expanded, length(cycles))

@@ -199,11 +199,9 @@ function _init_bad_state!(ui_state)
     ui_state[:selected_measurement_ids] = String[]
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
+    ui_state[:selected_all_measurements] = MeasurementInfo[]
+    ui_state[:selected_measurement_id_set] = Set{String}()
     ui_state[:selected_path] = String[]
-    ui_state[:_selected_measurements_all] = MeasurementInfo[]
-    ui_state[:_measurement_device_key_cache] = Dict{String,String}()
-    ui_state[:_measurement_display_label_cache] = Dict{Tuple{String,String},String}()
-    ui_state[:_measurement_filter_text_cache] = Dict{Tuple{String,String},String}()
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
 end
 
@@ -273,8 +271,9 @@ function _clear_selection!(ui_state)
     ui_state[:selected_measurement_ids] = String[]
     ui_state[:selected_devices] = HierarchyNode[]
     ui_state[:selected_measurements] = MeasurementInfo[]
+    ui_state[:selected_all_measurements] = MeasurementInfo[]
+    ui_state[:selected_measurement_id_set] = Set{String}()
     ui_state[:selected_path] = String[]
-    ui_state[:_selected_measurements_all] = MeasurementInfo[]
 end
 
 function _figure_script_groups(ui_state)
@@ -543,18 +542,9 @@ function _measurement_is_explicitly_bad(ui_state, measurement_id::String)
     return measurement_id in _bad_registry_or_error(ui_state).measurements
 end
 
-function _measurement_device_key(ui_state, measurement::MeasurementInfo)
-    cache = get!(ui_state, :_measurement_device_key_cache) do
-        Dict{String,String}()
-    end
-    return get!(cache, measurement.id) do
-        device_path_key(measurement.device_info)
-    end
-end
-
 function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
     return _measurement_is_explicitly_bad(ui_state, measurement.id) ||
-           _device_is_explicitly_bad(ui_state, _measurement_device_key(ui_state, measurement))
+           _device_is_explicitly_bad(ui_state, device_path_key(measurement.device_info))
 end
 
 function _assert_bad_registry_visibility_available(ui_state)
@@ -606,16 +596,19 @@ end
 function _apply_visible_selection!(ui_state)
     selected_devices, selected_measurements, selected_path = _project_visible_selection(ui_state)
 
-    all_selected_measurements = MeasurementInfo[]
-    sizehint!(all_selected_measurements, sum(length(device.measurements) for device in selected_devices; init=0))
+    all_measurements = MeasurementInfo[]
+    sizehint!(all_measurements, sum(length(device.measurements) for device in selected_devices; init=0))
     for device in selected_devices
-        append!(all_selected_measurements, device.measurements)
+        for measurement in device.measurements
+            push!(all_measurements, measurement)
+        end
     end
 
     ui_state[:selected_devices] = selected_devices
     ui_state[:selected_measurements] = selected_measurements
+    ui_state[:selected_all_measurements] = all_measurements
+    ui_state[:selected_measurement_id_set] = Set(get(ui_state, :selected_measurement_ids, String[]))
     ui_state[:selected_path] = selected_path
-    ui_state[:_selected_measurements_all] = all_selected_measurements
 end
 
 function _current_scan_measurements(ui_state)
@@ -671,9 +664,10 @@ end
 function _selected_measurements_in_panel_order(ui_state)
     proj = get(ui_state, :project, RUO2_PROJECT)
     filter_meas = get(ui_state, :_imgui_text_filter_meas, nothing)
+    all_measurements = _selected_measurements(ui_state)
     visible_measurements = filter_meas === nothing ?
-        _selected_measurements(ui_state) :
-        _visible_measurements(ui_state, proj, filter_meas)
+        all_measurements :
+        _visible_measurements(ui_state, proj, all_measurements, filter_meas)
     selected_ids = Set(get(ui_state, :selected_measurement_ids, String[]))
     return [measurement for measurement in visible_measurements if measurement.id in selected_ids]
 end
@@ -847,7 +841,7 @@ end
 
 function _selection_targets(selected_items::Vector{T}, clicked_item::T) where {T}
     if clicked_item in selected_items
-        return copy(selected_items)
+        return selected_items
     end
     return T[clicked_item]
 end
@@ -1307,6 +1301,8 @@ function _capture_scan_restore_state!(ui_state)
     keys_to_capture = (
         :selected_devices,
         :selected_measurements,
+        :selected_all_measurements,
+        :selected_measurement_id_set,
         :selected_device_paths,
         :selected_measurement_ids,
         :selected_path,
@@ -1329,7 +1325,7 @@ function _capture_scan_restore_state!(ui_state)
     for key in keys_to_capture
         if haskey(ui_state, key)
             value = ui_state[key]
-            if value isa Vector
+            if value isa Vector || value isa Set
                 value = copy(value)
             end
             snapshot[key] = (true, value)
@@ -1354,18 +1350,9 @@ function _restore_scan_restore_state!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
 end
 
-function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
+function _begin_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
     _clear_plot_jobs!(ui_state)
     _clear_selection!(ui_state)
-    empty!(get!(ui_state, :_measurement_device_key_cache) do
-        Dict{String,String}()
-    end)
-    empty!(get!(ui_state, :_measurement_display_label_cache) do
-        Dict{Tuple{String,String},String}()
-    end)
-    empty!(get!(ui_state, :_measurement_filter_text_cache) do
-        Dict{Tuple{String,String},String}()
-    end)
     delete!(ui_state, :plot_figure)
     delete!(ui_state, :_last_plot_key)
     if get(ui_state, :figure_script_root_path, "") != path
@@ -1387,25 +1374,64 @@ function _begin_incremental_scan!(ui_state, path::String, proj::AbstractProject,
     _invalidate_figure_script_scan_cache!(ui_state)
 end
 
-function _apply_scan_items!(ui_state, items::Vector{MeasurementItem})
-    hierarchy = get(ui_state, :scan_hierarchy, nothing)
-    hierarchy === nothing && return
-
-    metadata_keys = Set(get(ui_state, :device_metadata_keys, Symbol[]))
-    measurement_index = get!(ui_state, :measurement_index) do
-        Dict{String,MeasurementInfo}()
-    end
-    for item in items
-        measurement = _measurement_info_from_item(item)
-        insert_measurement!(hierarchy, measurement)
+function _build_measurement_index(measurements::Vector{MeasurementInfo})
+    measurement_index = Dict{String,MeasurementInfo}()
+    sizehint!(measurement_index, length(measurements))
+    for measurement in measurements
+        haskey(measurement_index, measurement.id) && error(
+            "Duplicate measurement id generated during scan: $(measurement.id)",
+        )
         measurement_index[measurement.id] = measurement
-        for key in keys(item.device_parameters)
+    end
+    return measurement_index
+end
+
+function _device_metadata_keys(measurements::Vector{MeasurementInfo})
+    metadata_keys = Set{Symbol}()
+    for measurement in measurements
+        for key in keys(measurement.device_info.parameters)
             push!(metadata_keys, key)
         end
     end
-    ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
+    return sort!(collect(metadata_keys); by=String)
+end
+
+function _scan_snapshot(
+    root_path::String,
+    has_device_metadata::Bool,
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo},
+    skipped_count::Int,
+)
+    hierarchy = MeasurementHierarchy(
+        measurements,
+        root_path,
+        has_device_metadata,
+        project,
+        skipped_count,
+    )
+    return (
+        hierarchy=hierarchy,
+        measurement_index=_build_measurement_index(hierarchy.all_measurements),
+        device_metadata_keys=_device_metadata_keys(hierarchy.all_measurements),
+        skipped_count=skipped_count,
+    )
+end
+
+function _apply_scan_snapshot!(ui_state, snapshot)
+    hierarchy = snapshot.hierarchy
+    ui_state[:scan_hierarchy] = hierarchy
+    ui_state[:hierarchy_root] = hierarchy.root
+    ui_state[:all_measurements] = hierarchy.all_measurements
+    ui_state[:measurement_index] = snapshot.measurement_index
+    ui_state[:device_metadata_keys] = snapshot.device_metadata_keys
+    ui_state[:skipped_count] = snapshot.skipped_count
+    _apply_visible_selection!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
 end
+
+const _SCAN_SNAPSHOT_INTERVAL_NS = UInt64(1_000_000_000)
+const _SCAN_SNAPSHOT_MIN_NEW_MEASUREMENTS = 2_000
 
 function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
     _cancel_figure_script_job!(ui_state)
@@ -1445,30 +1471,86 @@ function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
                 on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
             )
             indexed_files = collect_indexed_csv_files(path; should_cancel=() -> cancel_token[])
-            _interpret_indexed_files(
-                proj,
-                indexed_files,
-                meta;
-                should_cancel=() -> cancel_token[],
-                on_result=(_, _, items) -> begin
-                    isempty(items) && return
-                    put!(events, (kind=:items, scan_id=scan_id, items=items))
-                end,
-                on_progress=(progress) -> put!(events, (
-                    kind=:progress,
-                    scan_id=scan_id,
-                    progress=(
-                        phase=:scanning,
-                        total_csv=progress.total_csv,
-                        processed_csv=progress.processed_csv,
-                        loaded_measurements=progress.loaded_measurements,
-                        skipped_csv=progress.skipped_csv,
-                        current_path=progress.current_path,
-                    ),
-                )),
-            )
+            measurements_by_file = [MeasurementInfo[] for _ in eachindex(indexed_files)]
+            item_results = Channel{Tuple{Int,Vector{MeasurementItem}}}(max(512, 4 * Base.Threads.nthreads()))
+            snapshot_task = Base.Threads.@spawn begin
+                measurements = MeasurementInfo[]
+                sizehint!(measurements, length(indexed_files))
+                last_snapshot_ns = time_ns()
+                unsent_measurements = 0
 
-            put!(events, (kind=:result, scan_id=scan_id, path=path))
+                for (index, items) in item_results
+                    infos = [_measurement_info_from_item(item) for item in items]
+                    measurements_by_file[index] = infos
+                    append!(measurements, infos)
+                    unsent_measurements += length(infos)
+
+                    now = time_ns()
+                    if unsent_measurements >= _SCAN_SNAPSHOT_MIN_NEW_MEASUREMENTS &&
+                       now - last_snapshot_ns >= _SCAN_SNAPSHOT_INTERVAL_NS
+                        put!(events, (
+                            kind=:snapshot,
+                            scan_id=scan_id,
+                            snapshot=_scan_snapshot(
+                                path,
+                                meta !== nothing,
+                                proj,
+                                copy(measurements),
+                                0,
+                            ),
+                        ))
+                        last_snapshot_ns = now
+                        unsent_measurements = 0
+                    end
+                end
+            end
+
+            summary = try
+                _interpret_indexed_files(
+                    proj,
+                    indexed_files,
+                    meta;
+                    should_cancel=() -> cancel_token[],
+                    on_result=(index, _, items) -> begin
+                        isempty(items) && return
+                        put!(item_results, (index, items))
+                    end,
+                    on_progress=(progress) -> put!(events, (
+                        kind=:progress,
+                        scan_id=scan_id,
+                        progress=(
+                            phase=:scanning,
+                            total_csv=progress.total_csv,
+                            processed_csv=progress.processed_csv,
+                            loaded_measurements=progress.loaded_measurements,
+                            skipped_csv=progress.skipped_csv,
+                            current_path=progress.current_path,
+                        ),
+                    )),
+                )
+            finally
+                close(item_results)
+            end
+            fetch(snapshot_task)
+
+            measurements = MeasurementInfo[]
+            sizehint!(measurements, summary.loaded_measurements)
+            for infos in measurements_by_file
+                append!(measurements, infos)
+            end
+
+            put!(events, (
+                kind=:result,
+                scan_id=scan_id,
+                path=path,
+                snapshot=_scan_snapshot(
+                    path,
+                    meta !== nothing,
+                    proj,
+                    measurements,
+                    summary.skipped_csv,
+                ),
+            ))
         catch err
             if _is_scan_cancel_error(err)
                 put!(events, (kind=:canceled, scan_id=scan_id))
@@ -1526,7 +1608,7 @@ function _poll_scan_events!(ui_state)
         msg = take!(events)
         msg.scan_id == get(ui_state, :active_scan_id, 0) || continue
 
-    if msg.kind == :progress
+        if msg.kind == :progress
             p = msg.progress
             ui_state[:scan_progress] = Dict{Symbol,Any}(
                 :phase => p.phase,
@@ -1539,14 +1621,13 @@ function _poll_scan_events!(ui_state)
             ui_state[:skipped_count] = p.skipped_csv
             ui_state[:scan_state] = p.phase
         elseif msg.kind == :scan_start
-            _begin_incremental_scan!(ui_state, msg.path, msg.project, msg.has_device_metadata)
+            _begin_scan!(ui_state, msg.path, msg.project, msg.has_device_metadata)
             _load_bad_registry_for_root!(ui_state, msg.path)
             _apply_visible_selection!(ui_state)
-        elseif msg.kind == :items
-            _apply_scan_items!(ui_state, msg.items)
+        elseif msg.kind == :snapshot
+            _apply_scan_snapshot!(ui_state, msg.snapshot)
         elseif msg.kind == :result
-            hierarchy = get(ui_state, :scan_hierarchy, nothing)
-            hierarchy !== nothing && sort!(hierarchy)
+            _apply_scan_snapshot!(ui_state, msg.snapshot)
             if get(ui_state, :scan_persist_on_success, false)
                 _persist_preferences!(ui_state; path=msg.path)
             end
@@ -1722,6 +1803,9 @@ function render_perf_window(ui_state)
         if haskey(ui_state, :_node_count)
             ig.Text("Tree nodes rendered: $(ui_state[:_node_count])")
         end
+        rows_visible = get(ui_state, :_measurement_rows_visible, 0)
+        rows_rendered = get(ui_state, :_measurement_rows_rendered, 0)
+        ig.Text("Measurements visible/rendered: $rows_visible / $rows_rendered")
 
         mem = _memory_snapshot()
         if mem.vmrss_kb !== nothing
@@ -1921,93 +2005,34 @@ function _tree_node_matches_filter(filter_tree, node::HierarchyNode)
     return ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL)
 end
 
-function _subtree_has_visible_leaf(ui_state, node::HierarchyNode)
-    if isempty(children(node))
-        return _device_is_visible(ui_state, _device_path_key(node))
-    end
-    for child in children(node)
-        _subtree_has_visible_leaf(ui_state, child) && return true
-    end
-    return false
+function _measurement_filter_text(proj, measurement::MeasurementInfo)
+    return string(
+        display_label(proj, measurement), "\n",
+        measurement.clean_title, "\n",
+        kind_label(proj, measurement.measurement_kind),
+    )
 end
 
-function _subtree_matches_filter(filter_tree, node::HierarchyNode)
-    _tree_node_matches_filter(filter_tree, node) && return true
-    for child in children(node)
-        _subtree_matches_filter(filter_tree, child) && return true
-    end
-    return false
-end
-
-function _collect_visible_device_nodes!(devices::Vector{HierarchyNode}, ui_state, filter_tree, node::HierarchyNode, force_show::Bool=false)
-    _subtree_has_visible_leaf(ui_state, node) || return
-    force_show || _subtree_matches_filter(filter_tree, node) || return
-
-    direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
-    if isempty(children(node))
-        push!(devices, node)
-        return
-    end
-
-    for child in children(node)
-        _collect_visible_device_nodes!(devices, ui_state, filter_tree, child, direct_match)
-    end
-end
-
-function _visible_devices(ui_state, filter_tree)
-    haskey(ui_state, :hierarchy_root) || return HierarchyNode[]
-    devices = HierarchyNode[]
-    for child in children(ui_state[:hierarchy_root])
-        _collect_visible_device_nodes!(devices, ui_state, filter_tree, child, false)
-    end
-    return devices
-end
-
-function _measurement_display_label(ui_state, proj, measurement::MeasurementInfo)
-    cache = get!(ui_state, :_measurement_display_label_cache) do
-        Dict{Tuple{String,String},String}()
-    end
-    key = (project_name(proj), measurement.id)
-    return get!(cache, key) do
-        display_label(proj, measurement)
-    end
-end
-
-function _measurement_filter_text(ui_state, proj, measurement::MeasurementInfo)
-    cache = get!(ui_state, :_measurement_filter_text_cache) do
-        Dict{Tuple{String,String},String}()
-    end
-    key = (project_name(proj), measurement.id)
-    return get!(cache, key) do
-        string(
-            _measurement_display_label(ui_state, proj, measurement), "\n",
-            measurement.clean_title, "\n",
-            kind_label(proj, measurement.measurement_kind),
-        )
-    end
-end
-
-function _measurement_matches_filter(ui_state, proj, measurement::MeasurementInfo, filter_obj)
+function _measurement_matches_filter(proj, measurement::MeasurementInfo, filter_obj)
     if !ig.ImGuiTextFilter_IsActive(filter_obj)
         return true
     end
-    return ig.ImGuiTextFilter_PassFilter(filter_obj, _measurement_filter_text(ui_state, proj, measurement), C_NULL)
+    return ig.ImGuiTextFilter_PassFilter(filter_obj, _measurement_filter_text(proj, measurement), C_NULL)
 end
 
-function _visible_measurements(ui_state, proj, filter_meas)
-    selected = _selected_measurements(ui_state)
+function _visible_measurements(ui_state, proj, measurements, filter_meas)
     if get(ui_state, :show_bad, true) && !ig.ImGuiTextFilter_IsActive(filter_meas)
-        return selected
+        return measurements
     end
 
-    measurements = MeasurementInfo[]
-    sizehint!(measurements, length(selected))
-    for measurement in selected
+    visible = MeasurementInfo[]
+    sizehint!(visible, length(measurements))
+    for measurement in measurements
         _measurement_is_visible(ui_state, measurement) || continue
-        _measurement_matches_filter(ui_state, proj, measurement, filter_meas) || continue
-        push!(measurements, measurement)
+        _measurement_matches_filter(proj, measurement, filter_meas) || continue
+        push!(visible, measurement)
     end
-    return measurements
+    return visible
 end
 
 function _render_hierarchy_tree_panel(ui_state, filter_tree)
@@ -2016,142 +2041,203 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
     _render_scan_indicator!(ui_state)
     _render_bad_registry_error!(ui_state)
 
-    visible_devices = _visible_devices(ui_state, filter_tree)
-    visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
-    visible_device_keys = function ()
-        keys = visible_device_keys_ref[]
-        if keys === nothing
-            keys = [_device_path_key(node) for node in visible_devices]
-            visible_device_keys_ref[] = keys
-        end
-        return keys
-    end
-    selected_device_path_set = Set(get(ui_state, :selected_device_paths, String[]))
-
-    _render_selection_toolbar!(
-        length(get(ui_state, :selected_devices, HierarchyNode[])),
-        length(visible_devices),
-        length(_all_devices(ui_state)),
-        filter_tree,
-        () -> begin
-            ui_state[:selected_device_paths] = copy(visible_device_keys())
-            _apply_visible_selection!(ui_state)
-        end;
-        item_label="devices", filter_id="##tree_filter"
-    )
-
+    root = get(ui_state, :hierarchy_root, nothing)
     meta_keys = get(ui_state, :device_metadata_keys, Symbol[])
 
-    function render_node(node::HierarchyNode, path::Vector{String}=String[], force_show::Bool=false)
-        _subtree_has_visible_leaf(ui_state, node) || return
-        force_show || _subtree_matches_filter(filter_tree, node) || return
+    visible_devices = HierarchyNode[]
+    visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
+    selected_device_path_set = Set(get(ui_state, :selected_device_paths, String[]))
+    all_device_count = 0
 
-        ui_state[:_node_count] += 1
-        ig.TableNextRow()
+    if root !== nothing
+        has_visible_leaf_cache = IdDict{HierarchyNode,Bool}()
+        subtree_matches_cache = IdDict{HierarchyNode,Bool}()
+        device_key_cache = IdDict{HierarchyNode,String}()
 
-        full_path = vcat(path, node.name)
-        direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
-        unique_id = join(full_path, "/")
-        ig.PushID(unique_id)
+        device_key(node::HierarchyNode) = get!(device_key_cache, node) do
+            _device_path_key(node)
+        end
 
-        # appearance flags
-        is_leaf = isempty(children(node))
-        device_key = is_leaf ? _device_path_key(node) : nothing
-        selected = is_leaf && (device_key in selected_device_path_set)
-        flags = (
-            ig.ImGuiTreeNodeFlags_OpenOnArrow |
-            ig.ImGuiTreeNodeFlags_OpenOnDoubleClick |
-            ig.ImGuiTreeNodeFlags_NavLeftJumpsToParent |
-            ig.ImGuiTreeNodeFlags_SpanFullWidth |
-            ig.ImGuiTreeNodeFlags_DrawLinesToNodes |
-            ig.ImGuiTreeNodeFlags_SpanAllColumns
+        function has_visible_leaf(node::HierarchyNode)
+            return get!(has_visible_leaf_cache, node) do
+                if isempty(children(node))
+                    return _device_is_visible(ui_state, device_key(node))
+                end
+                for child in children(node)
+                    has_visible_leaf(child) && return true
+                end
+                return false
+            end
+        end
+
+        function subtree_matches(node::HierarchyNode)
+            return get!(subtree_matches_cache, node) do
+                _tree_node_matches_filter(filter_tree, node) && return true
+                for child in children(node)
+                    subtree_matches(child) && return true
+                end
+                return false
+            end
+        end
+
+        function collect_visible_devices!(node::HierarchyNode, force_show::Bool=false)
+            has_visible_leaf(node) || return
+            force_show || subtree_matches(node) || return
+
+            direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
+            if isempty(children(node))
+                push!(visible_devices, node)
+                return
+            end
+            for child in children(node)
+                collect_visible_devices!(child, direct_match)
+            end
+        end
+
+        function count_leaf_nodes(node::HierarchyNode)
+            if isempty(children(node))
+                return 1
+            end
+            total = 0
+            for child in children(node)
+                total += count_leaf_nodes(child)
+            end
+            return total
+        end
+
+        all_device_count = count_leaf_nodes(root)
+        for child in children(root)
+            collect_visible_devices!(child, false)
+        end
+
+        visible_device_keys = function ()
+            keys = visible_device_keys_ref[]
+            if keys === nothing
+                keys = [device_key(node) for node in visible_devices]
+                visible_device_keys_ref[] = keys
+            end
+            return keys
+        end
+
+        _render_selection_toolbar!(
+            length(get(ui_state, :selected_devices, HierarchyNode[])),
+            length(visible_devices),
+            all_device_count,
+            filter_tree,
+            () -> begin
+                ui_state[:selected_device_paths] = copy(visible_device_keys())
+                _apply_visible_selection!(ui_state)
+            end;
+            item_label="devices", filter_id="##tree_filter"
         )
-        if is_leaf
-            flags |= (
-                ig.ImGuiTreeNodeFlags_Leaf |
-                ig.ImGuiTreeNodeFlags_Bullet |
-                ig.ImGuiTreeNodeFlags_NoTreePushOnOpen
+
+        node_seed = UInt64(0x9e3779b97f4a7c15)
+        next_node_id(parent_id::UInt64, node::HierarchyNode) = hash(node.name, parent_id)
+        to_imgui_id(node_id::UInt64) = Int32(node_id % UInt64(typemax(Int32)))
+
+        function render_node(node::HierarchyNode, node_id::UInt64, force_show::Bool=false)
+            has_visible_leaf(node) || return
+            force_show || subtree_matches(node) || return
+
+            ui_state[:_node_count] += 1
+            ig.TableNextRow()
+
+            direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
+            ig.PushID(to_imgui_id(node_id))
+
+            is_leaf = isempty(children(node))
+            leaf_device_key = is_leaf ? device_key(node) : nothing
+            selected = is_leaf && (leaf_device_key in selected_device_path_set)
+
+            flags = (
+                ig.ImGuiTreeNodeFlags_OpenOnArrow |
+                ig.ImGuiTreeNodeFlags_OpenOnDoubleClick |
+                ig.ImGuiTreeNodeFlags_NavLeftJumpsToParent |
+                ig.ImGuiTreeNodeFlags_SpanFullWidth |
+                ig.ImGuiTreeNodeFlags_DrawLinesToNodes |
+                ig.ImGuiTreeNodeFlags_SpanAllColumns
             )
-        end
-        if selected
-            flags |= ig.ImGuiTreeNodeFlags_Selected
-        end
-        if ig.ImGuiTextFilter_IsActive(filter_tree) && direct_match && !is_leaf
-            flags |= ig.ImGuiTreeNodeFlags_DefaultOpen
-        end
-
-        ig.TableSetColumnIndex(0)
-        bad_text_pushed = is_leaf && device_key !== nothing &&
-                          _bad_registry_ready(ui_state) &&
-                          _push_bad_text_style!(_device_is_explicitly_bad(ui_state, device_key))
-        opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
-        bad_text_pushed && ig.PopStyleColor()
-
-        if ig.IsItemClicked()
             if is_leaf
-                io = ig.GetIO()
-                shift_held = unsafe_load(io.KeyShift)
-                ctrl_held = unsafe_load(io.KeyCtrl)
-                selected_device_paths = copy(get(ui_state, :selected_device_paths, String[]))
-                _update_multi_selection!(selected_device_paths, device_key, visible_device_keys(), shift_held, ctrl_held)
-                ui_state[:selected_device_paths] = selected_device_paths
-                _apply_visible_selection!(ui_state)
-            elseif !isempty(get(ui_state, :selected_device_paths, String[]))
-                ui_state[:selected_device_paths] = String[]
-                _apply_visible_selection!(ui_state)
+                flags |= (
+                    ig.ImGuiTreeNodeFlags_Leaf |
+                    ig.ImGuiTreeNodeFlags_Bullet |
+                    ig.ImGuiTreeNodeFlags_NoTreePushOnOpen
+                )
             end
+            if selected
+                flags |= ig.ImGuiTreeNodeFlags_Selected
+            end
+            if ig.ImGuiTextFilter_IsActive(filter_tree) && direct_match && !is_leaf
+                flags |= ig.ImGuiTreeNodeFlags_DefaultOpen
+            end
+
+            ig.TableSetColumnIndex(0)
+            bad_text_pushed = is_leaf && leaf_device_key !== nothing &&
+                              _bad_registry_ready(ui_state) &&
+                              _push_bad_text_style!(_device_is_explicitly_bad(ui_state, leaf_device_key))
+            opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
+            bad_text_pushed && ig.PopStyleColor()
+
+            if ig.IsItemClicked()
+                if is_leaf
+                    io = ig.GetIO()
+                    shift_held = unsafe_load(io.KeyShift)
+                    ctrl_held = unsafe_load(io.KeyCtrl)
+                    selected_device_paths = copy(get(ui_state, :selected_device_paths, String[]))
+                    _update_multi_selection!(selected_device_paths, leaf_device_key, visible_device_keys(), shift_held, ctrl_held)
+                    ui_state[:selected_device_paths] = selected_device_paths
+                    _apply_visible_selection!(ui_state)
+                elseif !isempty(get(ui_state, :selected_device_paths, String[]))
+                    ui_state[:selected_device_paths] = String[]
+                    _apply_visible_selection!(ui_state)
+                end
+            end
+
+            if is_leaf && ig.BeginPopupContextItem()
+                target_nodes = _selection_targets(get(ui_state, :selected_devices, HierarchyNode[]), node)
+                target_keys = [device_key(target) for target in target_nodes]
+                selected_count = length(target_keys)
+                selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
+
+                editable = _bad_registry_ready(ui_state)
+                if !editable
+                    ig.TextDisabled("Fix bad_measurements and rescan to edit")
+                    ig.Separator()
+                end
+
+                !editable && ig.BeginDisabled()
+                if ig.MenuItem("Mark Bad")
+                    _set_devices_bad!(ui_state, target_keys, true)
+                end
+                if ig.MenuItem("Unmark Bad")
+                    _set_devices_bad!(ui_state, target_keys, false)
+                end
+                !editable && ig.EndDisabled()
+                ig.EndPopup()
+            end
+
+            dev_meta = nothing
+            if is_leaf && !isempty(node.measurements)
+                dev_meta = first(node.measurements).device_info.parameters
+            end
+            for (i, k) in enumerate(meta_keys)
+                ig.TableSetColumnIndex(i)
+                if dev_meta !== nothing && haskey(dev_meta, k)
+                    ig.Text(string(dev_meta[k]))
+                elseif is_leaf
+                    ig.TextDisabled("--")
+                end
+            end
+
+            if opened && !is_leaf
+                for child in children(node)
+                    render_node(child, next_node_id(node_id, child), direct_match)
+                end
+                ig.TreePop()
+            end
+            ig.PopID()
         end
 
-        if is_leaf && ig.BeginPopupContextItem()
-            target_nodes = _selection_targets(get(ui_state, :selected_devices, HierarchyNode[]), node)
-            target_keys = [_device_path_key(target) for target in target_nodes]
-            selected_count = length(target_keys)
-            selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
-
-            editable = _bad_registry_ready(ui_state)
-            if !editable
-                ig.TextDisabled("Fix bad_measurements and rescan to edit")
-                ig.Separator()
-            end
-
-            !editable && ig.BeginDisabled()
-            if ig.MenuItem("Mark Bad")
-                _set_devices_bad!(ui_state, target_keys, true)
-            end
-            if ig.MenuItem("Unmark Bad")
-                _set_devices_bad!(ui_state, target_keys, false)
-            end
-            !editable && ig.EndDisabled()
-            ig.EndPopup()
-        end
-
-        # Fill metadata columns
-        dev_meta = nothing
-        if is_leaf && !isempty(node.measurements)
-            dev_meta = first(node.measurements).device_info.parameters
-        end
-        for (i, k) in enumerate(meta_keys)
-            ig.TableSetColumnIndex(i)
-            if dev_meta !== nothing && haskey(dev_meta, k)
-                ig.Text(string(dev_meta[k]))
-            elseif is_leaf
-                ig.TextDisabled("--")
-            else
-                # non-leaf left blank
-            end
-        end
-
-        # render children
-        if opened && !is_leaf
-            for c in children(node)
-                render_node(c, full_path, direct_match)
-            end
-            ig.TreePop()
-        end
-        ig.PopID()
-    end
-
-    if haskey(ui_state, :hierarchy_root)
         local table_flags = ig.ImGuiTableFlags_BordersV | ig.ImGuiTableFlags_BordersOuterH |
                             ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_RowBg |
                             ig.ImGuiTableFlags_Reorderable | ig.ImGuiTableFlags_Hideable
@@ -2166,15 +2252,24 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             ig.TableSetupColumn("")
             ig.TableAngledHeadersRow()
             ig.TableHeadersRow()
-            for child in children(ui_state[:hierarchy_root])
-                render_node(child, String[], false)
+            for child in children(root)
+                render_node(child, next_node_id(node_seed, child), false)
             end
             ig.EndTable()
         end
-        isempty(visible_devices) && !isempty(_all_devices(ui_state)) && ig.TextDisabled("No devices match filter")
     else
+        _render_selection_toolbar!(
+            0,
+            0,
+            0,
+            filter_tree,
+            () -> nothing;
+            item_label="devices", filter_id="##tree_filter"
+        )
         ig.Text("No data loaded")
     end
+
+    isempty(visible_devices) && all_device_count > 0 && ig.TextDisabled("No devices match filter")
     ig.EndChild()
 end
 
@@ -2267,32 +2362,29 @@ function _render_selection_toolbar!(
     end
 end
 
-# Helper function to collect all leaf nodes (devices) from hierarchy
 function _collect_leaf_nodes!(devices::Vector{HierarchyNode}, node::HierarchyNode)
     if isempty(children(node))
-        # This is a leaf node (device)
         push!(devices, node)
-    else
-        # Recursively collect from children
-        for child in children(node)
-            _collect_leaf_nodes!(devices, child)
-        end
+        return
+    end
+    for child in children(node)
+        _collect_leaf_nodes!(devices, child)
     end
 end
 
-# Helper function to get all devices for range selection
 function _all_devices(ui_state)
-    if !haskey(ui_state, :hierarchy_root)
-        return HierarchyNode[]
-    end
+    root = get(ui_state, :hierarchy_root, nothing)
+    root === nothing && return HierarchyNode[]
 
-    all_devices = HierarchyNode[]
-    _collect_leaf_nodes!(all_devices, ui_state[:hierarchy_root])
-    return all_devices
+    devices = HierarchyNode[]
+    _collect_leaf_nodes!(devices, root)
+    return devices
 end
 
 function _selected_measurements(ui_state)
-    return get(ui_state, :_selected_measurements_all, MeasurementInfo[])
+    haskey(ui_state, :selected_all_measurements) ||
+        error("UI selection state is missing selected_all_measurements")
+    return ui_state[:selected_all_measurements]
 end
 
 # Right panel (measurements list) rendering
@@ -2303,8 +2395,10 @@ function _render_measurements_panel(ui_state, filter_meas)
 
     selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
     all_measurements = _selected_measurements(ui_state)
-    visible_measurements = _visible_measurements(ui_state, proj, filter_meas)
-    selected_measurement_id_set = Set(get(ui_state, :selected_measurement_ids, String[]))
+    visible_measurements = _visible_measurements(ui_state, proj, all_measurements, filter_meas)
+    haskey(ui_state, :selected_measurement_id_set) ||
+        error("UI selection state is missing selected_measurement_id_set")
+    selected_measurement_id_set = ui_state[:selected_measurement_id_set]
     registry_ready = _bad_registry_ready(ui_state)
 
     _render_selection_toolbar!(
@@ -2338,68 +2432,88 @@ function _render_measurements_panel(ui_state, filter_meas)
         return
     end
 
+    ui_state[:_measurement_rows_visible] = length(visible_measurements)
+    ui_state[:_measurement_rows_rendered] = 0
+
     if !isempty(visible_measurements)
         table_flags = ig.ImGuiTableFlags_BordersOuterH | ig.ImGuiTableFlags_BordersOuterV |
                       ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_SizingStretchProp
         if ig.BeginTable("measurements_table", 1, table_flags)
             ig.TableSetupColumn("Measurement", ig.ImGuiTableColumnFlags_WidthStretch)
-            for measurement in visible_measurements
-                ig.PushID(measurement.id)
-                ig.TableNextRow()
-                ig.TableSetColumnIndex(0)
 
-                is_selected = measurement.id in selected_measurement_id_set
-                bad_text_pushed = registry_ready &&
-                                  _push_bad_text_style!(_measurement_is_bad(ui_state, measurement))
-                if ig.Selectable(_measurement_display_label(ui_state, proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
-                    io = ig.GetIO()
-                    shift_held = unsafe_load(io.KeyShift)
-                    ctrl_held = unsafe_load(io.KeyCtrl)
-                    selected_measurement_ids = copy(get(ui_state, :selected_measurement_ids, String[]))
-                    visible_measurement_ids = [visible.id for visible in visible_measurements]
-                    _update_multi_selection!(
-                        selected_measurement_ids,
-                        measurement.id,
-                        visible_measurement_ids,
-                        shift_held,
-                        ctrl_held,
-                    )
-                    ui_state[:selected_measurement_ids] = selected_measurement_ids
-                    _apply_visible_selection!(ui_state)
-                end
-                bad_text_pushed && ig.PopStyleColor()
+            rows_rendered = 0
+            clipper = ig.lib.ImGuiListClipper()
+            try
+                ig.Begin(clipper, length(visible_measurements), ig.GetTextLineHeightWithSpacing())
+                while ig.Step(clipper)
+                    start_idx = Int(unsafe_load(clipper.DisplayStart)) + 1
+                    end_idx = Int(unsafe_load(clipper.DisplayEnd))
+                    for idx in start_idx:end_idx
+                        measurement = visible_measurements[idx]
+                        ig.PushID(measurement.id)
+                        ig.TableNextRow()
+                        ig.TableSetColumnIndex(0)
+                        rows_rendered += 1
 
-                if ig.BeginPopupContextItem()
-                    target_measurements = _selection_targets(get(ui_state, :selected_measurements, MeasurementInfo[]), measurement)
-                    target_ids = [target.id for target in target_measurements]
-                    selected_count = length(target_ids)
-                    selected_count > 1 && ig.TextDisabled("Apply to $selected_count measurements")
-
-                    if ig.MenuItem("Open Plot in New Window")
-                        open_plots = get!(ui_state, :open_plot_windows) do
-                            Vector{Dict{Symbol,Any}}()
+                        is_selected = measurement.id in selected_measurement_id_set
+                        bad_text_pushed = registry_ready &&
+                                          _push_bad_text_style!(_measurement_is_bad(ui_state, measurement))
+                        if ig.Selectable(display_label(proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
+                            io = ig.GetIO()
+                            shift_held = unsafe_load(io.KeyShift)
+                            ctrl_held = unsafe_load(io.KeyCtrl)
+                            selected_measurement_ids = copy(get(ui_state, :selected_measurement_ids, String[]))
+                            visible_measurement_ids = [visible.id for visible in visible_measurements]
+                            _update_multi_selection!(
+                                selected_measurement_ids,
+                                measurement.id,
+                                visible_measurement_ids,
+                                shift_held,
+                                ctrl_held,
+                            )
+                            ui_state[:selected_measurement_ids] = selected_measurement_ids
+                            _apply_visible_selection!(ui_state)
                         end
-                        push!(open_plots, _measurement_plot_window_entry(measurement))
-                    end
+                        bad_text_pushed && ig.PopStyleColor()
 
-                    editable = _bad_registry_ready(ui_state)
-                    if !editable
-                        ig.TextDisabled("Fix bad_measurements and rescan to edit")
-                        ig.Separator()
-                    end
+                        if ig.BeginPopupContextItem()
+                            target_measurements = _selection_targets(get(ui_state, :selected_measurements, MeasurementInfo[]), measurement)
+                            target_ids = [target.id for target in target_measurements]
+                            selected_count = length(target_ids)
+                            selected_count > 1 && ig.TextDisabled("Apply to $selected_count measurements")
 
-                    !editable && ig.BeginDisabled()
-                    if ig.MenuItem("Mark Bad")
-                        _set_measurements_bad!(ui_state, target_ids, true)
+                            if ig.MenuItem("Open Plot in New Window")
+                                open_plots = get!(ui_state, :open_plot_windows) do
+                                    Vector{Dict{Symbol,Any}}()
+                                end
+                                push!(open_plots, _measurement_plot_window_entry(measurement))
+                            end
+
+                            editable = _bad_registry_ready(ui_state)
+                            if !editable
+                                ig.TextDisabled("Fix bad_measurements and rescan to edit")
+                                ig.Separator()
+                            end
+
+                            !editable && ig.BeginDisabled()
+                            if ig.MenuItem("Mark Bad")
+                                _set_measurements_bad!(ui_state, target_ids, true)
+                            end
+                            if ig.MenuItem("Unmark Bad")
+                                _set_measurements_bad!(ui_state, target_ids, false)
+                            end
+                            !editable && ig.EndDisabled()
+                            ig.EndPopup()
+                        end
+                        ig.PopID()
                     end
-                    if ig.MenuItem("Unmark Bad")
-                        _set_measurements_bad!(ui_state, target_ids, false)
-                    end
-                    !editable && ig.EndDisabled()
-                    ig.EndPopup()
                 end
-                ig.PopID()
+            finally
+                ig.Destroy(clipper)
             end
+
+            ui_state[:_measurement_rows_rendered] = rows_rendered
+            ui_state[:_measurement_rows_visible] = length(visible_measurements)
             ig.EndTable()
         end
     else
@@ -2420,9 +2534,13 @@ function render_selection_window(ui_state)
     if ig.Begin("Hierarchy", C_NULL, ig.ImGuiWindowFlags_MenuBar)
         render_menu_bar(ui_state)
         ig.Columns(2, "main_layout")
-        _render_hierarchy_tree_panel(ui_state, filter_tree)
+        _time!(ui_state, :device_tree) do
+            _render_hierarchy_tree_panel(ui_state, filter_tree)
+        end
         ig.NextColumn()
-        _render_measurements_panel(ui_state, filter_meas)
+        _time!(ui_state, :measurement_panel) do
+            _render_measurements_panel(ui_state, filter_meas)
+        end
     end
     ig.End()
 end
@@ -3265,12 +3383,12 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
             setup_layout[] = false
             _setup_docking_layout!(dockspace_id)
         end
-        _time!(ui_state, :plot_warmup) do
-            _ensure_plot_runtime_warmed!(ui_state)
+        if !_scan_running(ui_state)
+            _time!(ui_state, :plot_warmup) do
+                _ensure_plot_runtime_warmed!(ui_state)
+            end
         end
-        _time!(ui_state, :device_tree) do
-            render_selection_window(ui_state)
-        end
+        render_selection_window(ui_state)
         render_project_window(ui_state)
         _time!(ui_state, :info) do
             render_info_window(ui_state)

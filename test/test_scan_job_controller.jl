@@ -92,7 +92,7 @@ using Test
     @test ui4[:scan_state] == :canceling
     @test token4[] == true
 
-    # Incremental scan events should populate live state before completion.
+    # Scan progress updates status, and scan snapshots populate live state before completion.
     ui5 = Dict{Symbol,Any}()
     MeasurementBrowser._init_scan_state!(ui5)
     MeasurementBrowser._init_plot_state!(ui5)
@@ -126,7 +126,6 @@ using Test
         project=MeasurementBrowser.RUO2_PROJECT,
         has_device_metadata=true,
     ))
-    put!(ui5[:scan_events], (kind=:items, scan_id=7, items=MeasurementItem[item]))
     put!(ui5[:scan_events], (
         kind=:progress,
         scan_id=7,
@@ -139,14 +138,39 @@ using Test
             current_path="/tmp/file.csv",
         ),
     ))
-    put!(ui5[:scan_events], (kind=:result, scan_id=7, path="/tmp"))
+    MeasurementBrowser._poll_scan_events!(ui5)
+    @test ui5[:scan_state] == :scanning
+    @test isempty(ui5[:all_measurements])
+    @test isempty(ui5[:measurement_index])
+
+    measurement = MeasurementBrowser._measurement_info_from_item(item)
+    snapshot = MeasurementBrowser._scan_snapshot(
+        "/tmp",
+        true,
+        MeasurementBrowser.RUO2_PROJECT,
+        MeasurementInfo[measurement],
+        0,
+    )
+    put!(ui5[:scan_events], (kind=:snapshot, scan_id=7, snapshot=snapshot))
+    MeasurementBrowser._poll_scan_events!(ui5)
+    @test ui5[:scan_state] == :scanning
+    @test length(ui5[:all_measurements]) == 1
+    @test ui5[:all_measurements][1].filepath == "/tmp/file.csv"
+    @test ui5[:device_metadata_keys] == [:area_um2]
+
+    put!(ui5[:scan_events], (
+        kind=:result,
+        scan_id=7,
+        path="/tmp",
+        snapshot=snapshot,
+    ))
     MeasurementBrowser._poll_scan_events!(ui5)
     @test ui5[:scan_state] == :done
     @test length(ui5[:all_measurements]) == 1
     @test ui5[:all_measurements][1].filepath == "/tmp/file.csv"
     @test ui5[:device_metadata_keys] == [:area_um2]
 
-    # Canceling an incremental rescan should restore the previous visible state.
+    # Canceling a rescan should restore the previous visible state.
     ui6 = Dict{Symbol,Any}()
     MeasurementBrowser._init_scan_state!(ui6)
     MeasurementBrowser._init_plot_state!(ui6)
@@ -165,9 +189,14 @@ using Test
     ui6[:scan_hierarchy] = old_hierarchy
     ui6[:hierarchy_root] = old_hierarchy.root
     ui6[:all_measurements] = old_hierarchy.all_measurements
+    ui6[:measurement_index] = Dict(old_measurement.id => old_measurement)
     ui6[:root_path] = "/old"
     ui6[:project] = MeasurementBrowser.RUO2_PROJECT
     ui6[:device_metadata_keys] = Symbol[]
+    ui6[:show_bad] = true
+    ui6[:selected_device_paths] = ["Chip/Block/D1"]
+    ui6[:selected_measurement_ids] = [old_measurement.id]
+    MeasurementBrowser._apply_visible_selection!(ui6)
     ui6[:active_scan_id] = 9
     ui6[:scan_events] = Channel{NamedTuple}(8)
     ui6[:scan_persist_on_success] = false
@@ -180,10 +209,13 @@ using Test
         project=MeasurementBrowser.RUO2_PROJECT,
         has_device_metadata=false,
     ))
-    put!(ui6[:scan_events], (kind=:items, scan_id=9, items=MeasurementItem[item]))
     put!(ui6[:scan_events], (kind=:canceled, scan_id=9))
     MeasurementBrowser._poll_scan_events!(ui6)
     @test ui6[:root_path] == "/old"
     @test length(ui6[:all_measurements]) == 1
     @test ui6[:all_measurements][1].filepath == "/old/old.csv"
+    @test [node.name for node in ui6[:selected_devices]] == ["D1"]
+    @test [m.id for m in ui6[:selected_measurements]] == [old_measurement.id]
+    @test [m.id for m in ui6[:selected_all_measurements]] == [old_measurement.id]
+    @test ui6[:selected_measurement_id_set] == Set([old_measurement.id])
 end

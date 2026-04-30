@@ -74,6 +74,7 @@ end
     ui = Dict{Symbol,Any}(
         :hierarchy_root => root,
         :selected_devices => HierarchyNode[leaf_a, leaf_b],
+        :selected_all_measurements => MeasurementInfo[m1, m2],
     )
     devices = MeasurementBrowser._all_devices(ui)
     @test length(devices) == 2
@@ -167,6 +168,8 @@ end
     ui6 = Dict{Symbol,Any}(
         :selected_devices => HierarchyNode[device_leaf],
         :selected_measurement_ids => ["m3", "m1"],
+        :selected_all_measurements => MeasurementInfo[m1, m2, m3],
+        :selected_measurement_id_set => Set(["m3", "m1"]),
         :all_measurements => [m1, m2, m3],
         :active_scan_id => 1,
         :root_path => "/tmp/project",
@@ -201,6 +204,7 @@ end
     @test ui6[:figure_script_fact_index_valid] == true
 
     ui6[:selected_measurement_ids] = ["m2", "m1"]
+    ui6[:selected_measurement_id_set] = Set(["m2", "m1"])
     MeasurementBrowser._add_selection_to_figure_script_group!(ui6)
     @test MeasurementBrowser._figure_script_job_running(ui6)
     _drain_figure_script_job!(ui6)
@@ -223,6 +227,7 @@ end
     )] == ["m1", "m2", "m3"]
 
     ui6[:selected_measurement_ids] = ["m3"]
+    ui6[:selected_measurement_id_set] = Set(["m3"])
     MeasurementBrowser._remove_selection_from_figure_script_group!(ui6)
     @test MeasurementBrowser._figure_script_job_running(ui6)
     _drain_figure_script_job!(ui6)
@@ -241,6 +246,8 @@ end
     ui8 = Dict{Symbol,Any}(
         :selected_devices => HierarchyNode[device_leaf],
         :selected_measurement_ids => ["m1"],
+        :selected_all_measurements => MeasurementInfo[m1, m2, m3],
+        :selected_measurement_id_set => Set(["m1"]),
         :all_measurements => [m1, m2, m3],
         :active_scan_id => 10,
         :root_path => "/tmp/project",
