@@ -25,11 +25,7 @@ end
 function _load_prefs()
     path = _prefs_path()
     isfile(path) || return Dict{String,Any}()
-    try
-        return TOML.parsefile(path)
-    catch
-        return Dict{String,Any}()
-    end
+    return TOML.parsefile(path)
 end
 
 function _save_prefs(data::Dict)
@@ -60,6 +56,14 @@ function _sanitize_figure_script_output_dir(value)
     return String(strip(String(value)))
 end
 
+function _sanitize_cache_id(value)
+    value isa AbstractString || return ""
+    stripped = strip(String(value))
+    isempty(stripped) && return ""
+    UUIDs.UUID(stripped)
+    return stripped
+end
+
 function _parse_recent_projects(prefs::Dict{String,Any})
     recents = Dict{String,String}[]
     raw = get(prefs, "recent_projects", Any[])
@@ -74,10 +78,12 @@ function _parse_recent_projects(prefs::Dict{String,Any})
         pref = get(entry, "project_preference", "auto")
         pref = pref isa AbstractString ? pref : "auto"
         figure_script_output_dir = _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
+        cache_id = _sanitize_cache_id(get(entry, "cache_id", ""))
         push!(recents, Dict{String,String}(
             "path" => _normalize_project_path(path),
             "project_preference" => _sanitize_project_preference(pref),
             "figure_script_output_dir" => figure_script_output_dir,
+            "cache_id" => cache_id,
         ))
     end
 
@@ -89,6 +95,7 @@ function _update_recent_projects(
     path::AbstractString,
     pref::AbstractString,
     figure_script_output_dir::AbstractString,
+    cache_id::AbstractString,
 )
     norm_path = _normalize_project_path(path)
     filter!(entry -> get(entry, "path", "") != norm_path, recents)
@@ -96,6 +103,7 @@ function _update_recent_projects(
         "path" => norm_path,
         "project_preference" => String(pref),
         "figure_script_output_dir" => _sanitize_figure_script_output_dir(figure_script_output_dir),
+        "cache_id" => _sanitize_cache_id(cache_id),
     ))
     length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
     return recents
@@ -114,7 +122,8 @@ function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
 
     recents = _parse_recent_projects(prefs)
     if path !== nothing && !isempty(path)
-        _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state))
+        cache_id = string(get(ui_state, :cache_id, ""))
+        _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state), cache_id)
         prefs["recent_projects"] = recents
     end
 
@@ -146,16 +155,78 @@ function _figure_script_output_dir_for_path(ui_state, path::String)
     return _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
 end
 
+function _cache_id_for_path!(ui_state, path::String)
+    entry = _recent_project_entry_for_path(ui_state, path)
+    cache_id = entry === nothing ? "" : get(entry, "cache_id", "")
+    if isempty(cache_id)
+        cache_id = new_project_cache_id()
+        pref = _project_preference_for_path(ui_state, path)
+        recents = get!(ui_state, :recent_projects) do
+            Dict{String,String}[]
+        end
+        _update_recent_projects(
+            recents,
+            path,
+            pref,
+            _figure_script_output_dir_for_path(ui_state, path),
+            cache_id,
+        )
+        prefs = _load_prefs()
+        prefs["recent_projects"] = recents
+        prefs["project"] = pref
+        _save_prefs(prefs)
+    end
+    return cache_id
+end
+
 function _persist_current_project_preferences!(ui_state)
     current_root = get(ui_state, :root_path, "")
     isempty(current_root) && return
     _persist_preferences!(ui_state; path=current_root)
 end
 
+function _project_for_preference(pref::AbstractString)
+    pref == "auto" && return something(_default_project[], RUO2_PROJECT)
+    for project in KNOWN_PROJECTS
+        project_name(project) == pref && return project
+    end
+    error("Unknown project preference '$pref'")
+end
+
 function _open_project_path!(ui_state, path::String; persist=true)
     norm_path = _normalize_project_path(path)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
-    _scan!(ui_state, norm_path; persist_on_success=persist)
+    proj = _project_for_preference(ui_state[:project_preference])
+    cache_id = _cache_id_for_path!(ui_state, norm_path)
+    ui_state[:cache_id] = cache_id
+    ui_state[:cache_identity] = nothing
+    ui_state[:scan_path] = norm_path
+
+    try
+        ui_state[:cache_identity] = project_cache_identity(cache_id, proj, norm_path)
+        snapshot = load_project_cache(norm_path, proj, cache_id)
+        _apply_cache_snapshot!(ui_state, snapshot)
+        _load_bad_registry_for_root!(ui_state, norm_path)
+        persist && _persist_preferences!(ui_state; path=norm_path)
+    catch err
+        if err isa ProjectCacheMissingError
+            _begin_scan!(ui_state, norm_path, proj, isfile(joinpath(norm_path, "device_info.txt")))
+            _load_bad_registry_for_root!(ui_state, norm_path)
+            ui_state[:cache_state] = :missing
+            ui_state[:cache_error] = sprint(showerror, err)
+            ui_state[:scan_state] = :cache_missing
+            persist && _persist_preferences!(ui_state; path=norm_path)
+            return
+        elseif err isa ProjectCacheUnsupportedError || err isa ProjectCacheInvalidError
+            _begin_scan!(ui_state, norm_path, proj, isfile(joinpath(norm_path, "device_info.txt")))
+            ui_state[:cache_state] = :error
+            ui_state[:cache_error] = sprint(showerror, err)
+            ui_state[:scan_state] = :error
+            ui_state[:scan_error] = sprint(showerror, err)
+            return
+        end
+        rethrow()
+    end
 end
 
 function _project_status_text(ui_state)
@@ -185,10 +256,15 @@ function _init_scan_state!(ui_state)
     ui_state[:scan_events] = nothing
     ui_state[:scan_cancel_token] = nothing
     ui_state[:scan_path] = ""
-    ui_state[:scan_persist_on_success] = false
-    ui_state[:scan_restore_state] = nothing
-    ui_state[:pending_scan_path] = nothing
-    ui_state[:pending_scan_persist_on_success] = false
+end
+
+function _init_cache_state!(ui_state)
+    ui_state[:cache_state] = :idle
+    ui_state[:cache_error] = ""
+    ui_state[:cache_id] = ""
+    ui_state[:cache_identity] = nothing
+    ui_state[:cache_status] = nothing
+    ui_state[:cache_semantic_fields] = Dict{Symbol,Vector{Symbol}}()
 end
 
 function _init_bad_state!(ui_state)
@@ -868,18 +944,41 @@ function _measurement_plot_window_entry(measurement::MeasurementInfo)
     return Dict{Symbol,Any}(
         :target_id => measurement.id,
         :filepath => measurement.filepath,
+        :measurement => measurement,
         :title => measurement.clean_title,
         :measurement_kind => measurement.measurement_kind,
         :params => _measurement_parameters(measurement),
     )
 end
 
-function _extra_plot_window_request(ui_state, proj, entry::Dict{Symbol,Any}, mtime)
+function _cache_plot_version(ui_state)
+    identity = get(ui_state, :cache_identity, nothing)
+    identity isa ProjectCacheIdentity ||
+        error("Plot request requires an active HDF5 cache identity")
+    status = get(ui_state, :cache_status, nothing)
+    status isa ProjectCacheStatus ||
+        error("Plot request requires a loaded HDF5 cache status")
+    return (
+        identity.cache_id,
+        identity.cache_path,
+        status.fresh_files,
+        status.stale_files,
+        status.new_files,
+        status.deleted_files,
+        status.error_files,
+    )
+end
+
+function _extra_plot_window_request(ui_state, proj, entry::Dict{Symbol,Any})
     filepath = get(entry, :filepath, "")
     isempty(filepath) && error("Extra plot window entry is missing filepath")
 
     target_id = string(get(entry, :target_id, ""))
     isempty(target_id) && error("Extra plot window entry is missing target_id")
+
+    measurement = get(entry, :measurement, nothing)
+    measurement isa MeasurementInfo ||
+        error("Extra plot window entry for '$filepath' is missing cached measurement identity")
 
     measurement_kind = get(entry, :measurement_kind, nothing)
     measurement_kind isa Symbol || error("Extra plot window entry for '$filepath' is missing measurement_kind")
@@ -891,11 +990,11 @@ function _extra_plot_window_request(ui_state, proj, entry::Dict{Symbol,Any}, mti
         ui_state,
         proj,
         filepath,
-        mtime,
         measurement_kind,
         device_params,
         :extra;
         target_id=target_id,
+        measurement=measurement,
     )
 end
 
@@ -929,20 +1028,26 @@ function _single_plot_job_request(
     ui_state,
     proj,
     filepath::String,
-    mtime,
     measurement_kind::Symbol,
     device_params::Dict{Symbol,Any},
     target::Symbol;
     target_id::String,
     plot_key=nothing,
+    measurement::Union{Nothing,MeasurementInfo}=nothing,
 )
+    measurement isa MeasurementInfo ||
+        error("Single plot request for '$filepath' is missing cached measurement identity")
     debug_plot_mode = get(ui_state, :debug_plot_mode, false)
+    cache_identity = get(ui_state, :cache_identity, nothing)
+    cache_identity isa ProjectCacheIdentity ||
+        error("Single plot request for '$filepath' is missing cache identity")
+    cache_version = _cache_plot_version(ui_state)
     job_key = (
         project_name(proj),
         target,
         target_id,
-        filepath,
-        mtime,
+        measurement.id,
+        cache_version,
         measurement_kind,
         _plot_params_key(device_params),
         debug_plot_mode,
@@ -953,7 +1058,9 @@ function _single_plot_job_request(
         :plot_key => plot_key,
         :project => proj,
         :filepath => filepath,
-        :mtime => mtime,
+        :measurement => measurement,
+        :cache_identity => cache_identity,
+        :cache_version => cache_version,
         :measurement_kind => measurement_kind,
         :device_params => device_params,
         :debug_plot_mode => debug_plot_mode,
@@ -1012,45 +1119,17 @@ function _launch_plot_job!(ui_state, request::Dict{Symbol,Any})
 
     Base.Threads.@spawn begin
         try
-            loaded = if request[:kind] == :single_file
-                load_plot_for_file(
-                    request[:project],
-                    request[:filepath],
-                    request[:measurement_kind];
-                    device_params=request[:device_params],
-                    should_cancel=() -> cancel_token[],
+            if request[:kind] == :single_file
+                analyzed = _measurement_group_for_cached_plot(
+                    request[:cache_identity],
+                    request[:measurement],
                 )
+                cancel_token[] && throw(PlotCancelled())
+                put!(events, (kind=:loaded, plot_id=plot_id))
+                put!(events, (kind=:analyzed, plot_id=plot_id, analyzed=analyzed))
             else
-                load_plot_for_files(
-                    request[:project],
-                    request[:paths],
-                    request[:combined_kind];
-                    device_params_list=request[:device_params_list],
-                    should_cancel=() -> cancel_token[],
-                )
+                error("Combined HDF5 plot requests are not implemented yet")
             end
-            cancel_token[] && throw(PlotCancelled())
-            put!(events, (kind=:loaded, plot_id=plot_id))
-            analyzed = if request[:kind] == :single_file
-                analyze_plot_for_file(
-                    request[:project],
-                    request[:measurement_kind],
-                    loaded;
-                    DEBUG=request[:debug_plot_mode],
-                    device_params=request[:device_params],
-                    should_cancel=() -> cancel_token[],
-                )
-            else
-                analyze_plot_for_files(
-                    request[:project],
-                    request[:combined_kind],
-                    loaded;
-                    DEBUG=request[:debug_plot_mode],
-                    should_cancel=() -> cancel_token[],
-                )
-            end
-            cancel_token[] && throw(PlotCancelled())
-            put!(events, (kind=:analyzed, plot_id=plot_id, analyzed=analyzed))
         catch err
             if err isa PlotCancelled
                 put!(events, (kind=:canceled, plot_id=plot_id))
@@ -1112,7 +1191,7 @@ function _apply_plot_result!(ui_state, request::Dict{Symbol,Any}, fig)
         else
             entry[:figure] = fig
         end
-        entry[:mtime] = get(request, :mtime, nothing)
+        entry[:cache_version] = get(request, :cache_version, nothing)
         return
     end
 end
@@ -1190,6 +1269,14 @@ function _scan_status_summary(ui_state)
             return @sprintf("Scanning... %d/%d (%.1f%%), loaded %d, skipped %d", processed, total, pct, loaded, skipped)
         end
         return @sprintf("Scanning... %d processed, loaded %d, skipped %d", processed, loaded, skipped)
+    elseif state == :cache_update
+        if total > 0
+            pct = 100 * processed / total
+            return @sprintf("Updating cache... %d/%d (%.1f%%), loaded %d", processed, total, pct, loaded)
+        end
+        return "Updating cache..."
+    elseif state == :cache_missing
+        return "Cache missing; build required"
     elseif state == :canceling
         return "Canceling scan..."
     elseif state == :canceled
@@ -1287,7 +1374,7 @@ function _ensure_plot_runtime_warmed!(ui_state)
 end
 
 function _scan_running(ui_state)
-    return get(ui_state, :scan_state, :idle) in (:counting, :scanning, :canceling)
+    return get(ui_state, :scan_state, :idle) in (:counting, :scanning, :cache_update, :canceling)
 end
 
 function _request_scan_cancel!(ui_state)
@@ -1295,59 +1382,6 @@ function _request_scan_cancel!(ui_state)
     token === nothing && return
     Base.Threads.atomic_xchg!(token, true)
     ui_state[:scan_state] = :canceling
-end
-
-function _capture_scan_restore_state!(ui_state)
-    keys_to_capture = (
-        :selected_devices,
-        :selected_measurements,
-        :selected_all_measurements,
-        :selected_measurement_id_set,
-        :selected_device_paths,
-        :selected_measurement_ids,
-        :selected_path,
-        :plot_figure,
-        :_last_plot_key,
-        :hierarchy_root,
-        :all_measurements,
-        :root_path,
-        :has_device_metadata,
-        :project,
-        :skipped_count,
-        :device_metadata_keys,
-        :scan_hierarchy,
-        :measurement_index,
-        :bad_registry,
-        :bad_registry_error,
-    )
-
-    snapshot = Dict{Symbol,Tuple{Bool,Any}}()
-    for key in keys_to_capture
-        if haskey(ui_state, key)
-            value = ui_state[key]
-            if value isa Vector || value isa Set
-                value = copy(value)
-            end
-            snapshot[key] = (true, value)
-        else
-            snapshot[key] = (false, nothing)
-        end
-    end
-    ui_state[:scan_restore_state] = snapshot
-end
-
-function _restore_scan_restore_state!(ui_state)
-    snapshot = get(ui_state, :scan_restore_state, nothing)
-    snapshot === nothing && return
-    for (key, (present, value)) in snapshot
-        if present
-            ui_state[key] = value
-        elseif haskey(ui_state, key)
-            delete!(ui_state, key)
-        end
-    end
-    ui_state[:scan_restore_state] = nothing
-    _invalidate_figure_script_scan_cache!(ui_state)
 end
 
 function _begin_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
@@ -1396,28 +1430,6 @@ function _device_metadata_keys(measurements::Vector{MeasurementInfo})
     return sort!(collect(metadata_keys); by=String)
 end
 
-function _scan_snapshot(
-    root_path::String,
-    has_device_metadata::Bool,
-    project::AbstractProject,
-    measurements::Vector{MeasurementInfo},
-    skipped_count::Int,
-)
-    hierarchy = MeasurementHierarchy(
-        measurements,
-        root_path,
-        has_device_metadata,
-        project,
-        skipped_count,
-    )
-    return (
-        hierarchy=hierarchy,
-        measurement_index=_build_measurement_index(hierarchy.all_measurements),
-        device_metadata_keys=_device_metadata_keys(hierarchy.all_measurements),
-        skipped_count=skipped_count,
-    )
-end
-
 function _apply_scan_snapshot!(ui_state, snapshot)
     hierarchy = snapshot.hierarchy
     ui_state[:scan_hierarchy] = hierarchy
@@ -1430,129 +1442,64 @@ function _apply_scan_snapshot!(ui_state, snapshot)
     _invalidate_figure_script_scan_cache!(ui_state)
 end
 
-const _SCAN_SNAPSHOT_INTERVAL_NS = UInt64(1_000_000_000)
-const _SCAN_SNAPSHOT_MIN_NEW_MEASUREMENTS = 2_000
+function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
+    _apply_scan_snapshot!(ui_state, (
+        hierarchy=snapshot.hierarchy,
+        measurement_index=_build_measurement_index(snapshot.hierarchy.all_measurements),
+        device_metadata_keys=_device_metadata_keys(snapshot.hierarchy.all_measurements),
+        skipped_count=snapshot.hierarchy.skipped_count,
+    ))
+    ui_state[:root_path] = snapshot.identity.root_path
+    ui_state[:project] = _project_by_name(snapshot.identity.project_name)
+    ui_state[:cache_id] = snapshot.identity.cache_id
+    ui_state[:cache_identity] = snapshot.identity
+    ui_state[:cache_status] = snapshot.status
+    ui_state[:cache_semantic_fields] = snapshot.semantic_fields
+    ui_state[:cache_state] = :ready
+    ui_state[:cache_error] = ""
+    ui_state[:scan_state] = :done
+    return nothing
+end
 
-function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
+function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
+    identity = get(ui_state, :cache_identity, nothing)
+    identity isa ProjectCacheIdentity || error("No project cache is bound to the current project")
+    project = _project_by_name(identity.project_name)
     _cancel_figure_script_job!(ui_state)
-    _capture_scan_restore_state!(ui_state)
+    _clear_plot_jobs!(ui_state)
+
     scan_id = get(ui_state, :scan_seq, 0) + 1
     ui_state[:scan_seq] = scan_id
     ui_state[:active_scan_id] = scan_id
-    ui_state[:scan_path] = path
-    ui_state[:scan_persist_on_success] = persist_on_success
-    ui_state[:scan_state] = :counting
+    ui_state[:scan_path] = identity.root_path
+    ui_state[:scan_state] = :cache_update
     ui_state[:scan_progress] = _new_scan_progress()
     ui_state[:scan_error] = ""
-    ui_state[:pending_scan_path] = nothing
-    ui_state[:pending_scan_persist_on_success] = false
+    ui_state[:cache_state] = :updating
+    ui_state[:cache_error] = ""
 
     events = Channel{NamedTuple}(512)
     cancel_token = Base.Threads.Atomic{Bool}(false)
     ui_state[:scan_events] = events
     ui_state[:scan_cancel_token] = cancel_token
-    preferred_project = _preferred_project(ui_state)
 
     Base.Threads.@spawn begin
         try
-            proj = preferred_project === nothing ? _default_project[] : preferred_project
-            meta = _load_scan_metadata(path)
-            put!(events, (
-                kind=:scan_start,
-                scan_id=scan_id,
-                path=path,
-                project=proj,
-                has_device_metadata=meta !== nothing,
-            ))
-
-            _count_csv(
-                path;
+            snapshot = build_project_cache!(
+                identity.root_path,
+                project,
+                identity.cache_id;
+                full_rebuild,
                 should_cancel=() -> cancel_token[],
-                on_progress=(p) -> put!(events, (kind=:progress, scan_id=scan_id, progress=p)),
+                on_progress=(progress) -> put!(events, (
+                    kind=:progress,
+                    scan_id=scan_id,
+                    progress=progress,
+                )),
             )
-            indexed_files = collect_indexed_csv_files(path; should_cancel=() -> cancel_token[])
-            measurements_by_file = [MeasurementInfo[] for _ in eachindex(indexed_files)]
-            item_results = Channel{Tuple{Int,Vector{MeasurementItem}}}(max(512, 4 * Base.Threads.nthreads()))
-            snapshot_task = Base.Threads.@spawn begin
-                measurements = MeasurementInfo[]
-                sizehint!(measurements, length(indexed_files))
-                last_snapshot_ns = time_ns()
-                unsent_measurements = 0
-
-                for (index, items) in item_results
-                    infos = [_measurement_info_from_item(item) for item in items]
-                    measurements_by_file[index] = infos
-                    append!(measurements, infos)
-                    unsent_measurements += length(infos)
-
-                    now = time_ns()
-                    if unsent_measurements >= _SCAN_SNAPSHOT_MIN_NEW_MEASUREMENTS &&
-                       now - last_snapshot_ns >= _SCAN_SNAPSHOT_INTERVAL_NS
-                        put!(events, (
-                            kind=:snapshot,
-                            scan_id=scan_id,
-                            snapshot=_scan_snapshot(
-                                path,
-                                meta !== nothing,
-                                proj,
-                                copy(measurements),
-                                0,
-                            ),
-                        ))
-                        last_snapshot_ns = now
-                        unsent_measurements = 0
-                    end
-                end
-            end
-
-            summary = try
-                _interpret_indexed_files(
-                    proj,
-                    indexed_files,
-                    meta;
-                    should_cancel=() -> cancel_token[],
-                    on_result=(index, _, items) -> begin
-                        isempty(items) && return
-                        put!(item_results, (index, items))
-                    end,
-                    on_progress=(progress) -> put!(events, (
-                        kind=:progress,
-                        scan_id=scan_id,
-                        progress=(
-                            phase=:scanning,
-                            total_csv=progress.total_csv,
-                            processed_csv=progress.processed_csv,
-                            loaded_measurements=progress.loaded_measurements,
-                            skipped_csv=progress.skipped_csv,
-                            current_path=progress.current_path,
-                        ),
-                    )),
-                )
-            finally
-                close(item_results)
-            end
-            fetch(snapshot_task)
-
-            measurements = MeasurementInfo[]
-            sizehint!(measurements, summary.loaded_measurements)
-            for infos in measurements_by_file
-                append!(measurements, infos)
-            end
-
-            put!(events, (
-                kind=:result,
-                scan_id=scan_id,
-                path=path,
-                snapshot=_scan_snapshot(
-                    path,
-                    meta !== nothing,
-                    proj,
-                    measurements,
-                    summary.skipped_csv,
-                ),
-            ))
+            put!(events, (kind=:cache_result, scan_id=scan_id, snapshot=snapshot))
         catch err
-            if _is_scan_cancel_error(err)
+            if _is_scan_cancel_error(err) || err isa PlotCancelled
                 put!(events, (kind=:canceled, scan_id=scan_id))
             else
                 put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
@@ -1563,41 +1510,17 @@ function _launch_scan_job!(ui_state, path::String; persist_on_success=false)
     end
 end
 
-function _queue_scan!(ui_state, path::String; persist_on_success=false, force_restart=false)
-    norm_path = _normalize_project_path(path)
+function _queue_cache_update!(ui_state; full_rebuild::Bool=false)
     if _scan_running(ui_state)
-        active_path = get(ui_state, :scan_path, "")
-        pending_path = get(ui_state, :pending_scan_path, nothing)
-
-        if !force_restart && !isempty(active_path) && norm_path == active_path
-            ui_state[:scan_persist_on_success] = get(ui_state, :scan_persist_on_success, false) || persist_on_success
-            ui_state[:pending_scan_path] = nothing
-            ui_state[:pending_scan_persist_on_success] = false
-            return
-        end
-        if !force_restart && pending_path !== nothing && norm_path == pending_path
-            ui_state[:pending_scan_persist_on_success] = get(ui_state, :pending_scan_persist_on_success, false) || persist_on_success
-            return
-        end
-
-        ui_state[:pending_scan_path] = norm_path
-        ui_state[:pending_scan_persist_on_success] = persist_on_success
         _request_scan_cancel!(ui_state)
         return
     end
-    _launch_scan_job!(ui_state, norm_path; persist_on_success)
+    _launch_cache_update_job!(ui_state; full_rebuild)
 end
 
 function _finalize_scan!(ui_state)
     ui_state[:scan_events] = nothing
     ui_state[:scan_cancel_token] = nothing
-    pending_path = get(ui_state, :pending_scan_path, nothing)
-    pending_persist = get(ui_state, :pending_scan_persist_on_success, false)
-    ui_state[:pending_scan_path] = nothing
-    ui_state[:pending_scan_persist_on_success] = false
-    if pending_path !== nothing && !isempty(pending_path)
-        _launch_scan_job!(ui_state, pending_path; persist_on_success=pending_persist)
-    end
 end
 
 function _poll_scan_events!(ui_state)
@@ -1620,50 +1543,23 @@ function _poll_scan_events!(ui_state)
             )
             ui_state[:skipped_count] = p.skipped_csv
             ui_state[:scan_state] = p.phase
-        elseif msg.kind == :scan_start
-            _begin_scan!(ui_state, msg.path, msg.project, msg.has_device_metadata)
-            _load_bad_registry_for_root!(ui_state, msg.path)
-            _apply_visible_selection!(ui_state)
-        elseif msg.kind == :snapshot
-            _apply_scan_snapshot!(ui_state, msg.snapshot)
-        elseif msg.kind == :result
-            _apply_scan_snapshot!(ui_state, msg.snapshot)
-            if get(ui_state, :scan_persist_on_success, false)
-                _persist_preferences!(ui_state; path=msg.path)
-            end
-            ui_state[:scan_restore_state] = nothing
-            ui_state[:scan_state] = :done
+        elseif msg.kind == :cache_result
+            _apply_cache_snapshot!(ui_state, msg.snapshot)
+            _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
             _finalize_scan!(ui_state)
         elseif msg.kind == :canceled
-            _restore_scan_restore_state!(ui_state)
             ui_state[:scan_state] = :canceled
+            ui_state[:cache_state] = :canceled
             _finalize_scan!(ui_state)
         elseif msg.kind == :error
-            _restore_scan_restore_state!(ui_state)
             ui_state[:scan_state] = :error
             ui_state[:scan_error] = sprint(showerror, msg.error, msg.bt)
+            ui_state[:cache_state] = :error
+            ui_state[:cache_error] = ui_state[:scan_error]
             @error "Scan job failed" exception = (msg.error, msg.bt)
             _finalize_scan!(ui_state)
         end
     end
-end
-
-# Return the preferred AbstractProject (nothing = use default project)
-function _preferred_project(ui_state)
-    pref = get(ui_state, :project_preference, "auto")
-    pref == "auto" && return nothing
-    for p in KNOWN_PROJECTS
-        project_name(p) == pref && return p
-    end
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Centralised scan helper (used by menu bar, project window, initial load)
-# ---------------------------------------------------------------------------
-
-function _scan!(ui_state, path::String; persist_on_success=false, force_restart=false)
-    _queue_scan!(ui_state, path; persist_on_success, force_restart)
 end
 
 # Timing & allocation utilities
@@ -1936,7 +1832,7 @@ function render_menu_bar(ui_state)
             if ig.MenuItem("Reload")
                 if haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
                     @info "Reloading path: $(ui_state[:root_path])"
-                    _scan!(ui_state, ui_state[:root_path])
+                    _open_project_path!(ui_state, ui_state[:root_path])
                 end
             end
 
@@ -2557,9 +2453,8 @@ end
 
 function _queue_main_plot_request!(ui_state, proj, measurement::MeasurementInfo)
     filepath = measurement.filepath
-    isfile(filepath) || return
-    mtime = Dates.unix2datetime(stat(filepath).mtime)
-    plot_key = (filepath, mtime, measurement.parameters)
+    cache_version = _cache_plot_version(ui_state)
+    plot_key = (measurement.id, cache_version, measurement.parameters)
     last_plot_key = get(ui_state, :_last_plot_key, nothing)
     plot_key == last_plot_key && return
 
@@ -2568,12 +2463,12 @@ function _queue_main_plot_request!(ui_state, proj, measurement::MeasurementInfo)
         ui_state,
         proj,
         filepath,
-        mtime,
         measurement.measurement_kind,
         device_params,
         :main;
         target_id="main",
         plot_key=plot_key,
+        measurement=measurement,
     )
     _queue_plot_job!(ui_state, request)
 end
@@ -2823,8 +2718,8 @@ function render_project_window(ui_state)
             current_root = get(ui_state, :root_path, "")
             _persist_preferences!(ui_state; path=isempty(current_root) ? nothing : current_root)
             if !isempty(current_root)
-                @info "Project preference changed to '$(ui_state[:project_preference])' — rescanning"
-                _scan!(ui_state, current_root; force_restart=true)
+                @info "Project preference changed to '$(ui_state[:project_preference])' - reloading cache"
+                _open_project_path!(ui_state, current_root)
             end
         end
 
@@ -2841,12 +2736,42 @@ function render_project_window(ui_state)
             !isempty(err) && ig.TextWrapped(err)
             ig.Spacing()
         end
-        if ig.Button("Rescan current folder", (-1, 0))
-            if haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
-                _scan!(ui_state, ui_state[:root_path])
+        cache_status_value = get(ui_state, :cache_status, nothing)
+        cache_state = get(ui_state, :cache_state, :idle)
+        ig.Separator()
+        ig.Text("Cache")
+        if cache_status_value isa ProjectCacheStatus
+            ig.Text("Files: $(cache_status_value.fresh_files) fresh, $(cache_status_value.stale_files) stale, $(cache_status_value.new_files) new, $(cache_status_value.deleted_files) deleted")
+            ig.Text("Cache file: $(get(ui_state, :cache_identity, nothing).cache_path)")
+        elseif cache_state == :missing
+            ig.TextColored((1.0, 0.6, 0.2, 1.0), "No HDF5 cache has been built for this project")
+        elseif cache_state == :error
+            ig.TextColored((1.0, 0.4, 0.4, 1.0), "Cache error")
+            message = get(ui_state, :cache_error, "")
+            isempty(message) || ig.TextWrapped(message)
+        else
+            ig.TextDisabled("No cache loaded")
+        end
+
+        if _scan_running(ui_state)
+            ig.BeginDisabled()
+        end
+        if ig.Button("Update Cache", (-1, 0))
+            if get(ui_state, :cache_identity, nothing) isa ProjectCacheIdentity
+                _queue_cache_update!(ui_state)
             else
                 ig.OpenPopup("no_folder_popup")
             end
+        end
+        if ig.Button("Full Rebuild Cache", (-1, 0))
+            if get(ui_state, :cache_identity, nothing) isa ProjectCacheIdentity
+                _queue_cache_update!(ui_state; full_rebuild=true)
+            else
+                ig.OpenPopup("no_folder_popup")
+            end
+        end
+        if _scan_running(ui_state)
+            ig.EndDisabled()
         end
         if ig.BeginPopup("no_folder_popup")
             ig.Text("No folder loaded. Use Project → Open Folder first.")
@@ -3266,18 +3191,15 @@ function render_additional_plot_windows(ui_state)
             continue
         end
         isempty(filepath) && continue
-        if !isfile(filepath)
-            continue
-        end
         title = get(entry, :title, basename(filepath))
         target_id = string(get(entry, :target_id, filepath))
         entry[:target_id] = target_id
         # Refresh / create figure (per-window; no global shared Figure)
-        mtime = Dates.unix2datetime(stat(filepath).mtime)
-        existing_mtime = get(entry, :mtime, nothing)
-        refresh = !haskey(entry, :figure) || existing_mtime != mtime
+        cache_version = _cache_plot_version(ui_state)
+        existing_cache_version = get(entry, :cache_version, nothing)
+        refresh = !haskey(entry, :figure) || existing_cache_version != cache_version
         if refresh
-            request = _extra_plot_window_request(ui_state, proj, entry, mtime)
+            request = _extra_plot_window_request(ui_state, proj, entry)
             _queue_plot_job!(ui_state, request)
         end
         # Window (allow user to close)
@@ -3338,6 +3260,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
     _init_scan_state!(ui_state)
+    _init_cache_state!(ui_state)
     _init_bad_state!(ui_state)
     _init_figure_script_state!(ui_state)
     _init_plot_state!(ui_state)

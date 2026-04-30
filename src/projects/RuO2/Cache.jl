@@ -1,0 +1,288 @@
+using DataFrames
+
+project_cache_schema_version(::RuO2Project) = 1
+
+function project_cache_file_matches(::RuO2Project, indexed::IndexedCsvFile)
+    detect_kind(RUO2_PROJECT, indexed.filename) === :unknown && return false
+    location = _ruo2_resolve_location(indexed)
+    return location !== nothing
+end
+
+function project_cache_semantic_fields(::RuO2Project)
+    return Dict{Symbol,Vector{Symbol}}(
+        :measurement => [:measurement_id, :measurement_kind, :timestamp, :source_file],
+        :device => [:device_key, :device_path, :area_um2, :x, :y],
+        :signal => [:time, :voltage, :current, :cycle, :frequency],
+        :summary => [:voltage_V, :temperature_K, :fatigue_cycle, :wakeup_pulse_count],
+    )
+end
+
+function project_cache_transform(
+    ::RuO2Project,
+    indexed::IndexedCsvFile,
+    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    return interpret_measurements(RUO2_PROJECT, indexed, meta; should_cancel)
+end
+
+function project_cache_write_file_payload!(
+    file_group,
+    ::RuO2Project,
+    indexed::IndexedCsvFile,
+    measurements::Vector{MeasurementInfo};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    if !isempty(measurements) &&
+       all(measurement -> haskey(measurement.parameters, :fatigue_cycle), measurements)
+        _ruo2_write_cached_pund_fatigue_file!(file_group, indexed, measurements; should_cancel)
+        return nothing
+    end
+    invoke(
+        project_cache_write_file_payload!,
+        Tuple{Any,AbstractProject,IndexedCsvFile,Vector{MeasurementInfo}},
+        file_group,
+        RUO2_PROJECT,
+        indexed,
+        measurements;
+        should_cancel,
+    )
+    return nothing
+end
+
+function project_cache_write_measurement_payload!(
+    measurement_group,
+    ::RuO2Project,
+    measurement::MeasurementInfo;
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    params = _measurement_parameters(measurement)
+    loaded = load_plot_for_file(
+        RUO2_PROJECT,
+        measurement.filepath,
+        measurement.measurement_kind;
+        device_params=params,
+        should_cancel,
+    )
+    analyzed = analyze_plot_for_file(
+        RUO2_PROJECT,
+        measurement.measurement_kind,
+        loaded;
+        device_params=params,
+        should_cancel,
+    )
+    analyzed === nothing && error("RuO2 cache transform produced no plot payload for $(measurement.id)")
+    _ruo2_write_cached_analyzed_plot!(measurement_group, measurement.measurement_kind, analyzed)
+    return nothing
+end
+
+function project_cache_read_plot_payload(
+    ::RuO2Project,
+    measurement::MeasurementInfo,
+    file_group,
+    measurement_group,
+)
+    haskey(measurement_group, "plot") ||
+        throw(ProjectCacheInvalidError("", "cached measurement '$(measurement.id)' is missing plot payload"))
+    plot_group = measurement_group["plot"]
+    source = read(plot_group["source"])
+    if source == "analyzed"
+        return _ruo2_read_cached_analyzed_plot(plot_group, measurement.measurement_kind, "")
+    elseif source == "file_pund_fatigue"
+        return _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement)
+    end
+    error("Unsupported RuO2 cached plot source '$source' for $(measurement.id)")
+end
+
+function _ruo2_write_cached_analyzed_plot!(measurement_group, kind::Symbol, analyzed)
+    plot_group = _replace_group(measurement_group, "plot")
+    _write_dataset!(plot_group, "source", "analyzed"; compress=false)
+    _write_dataset!(plot_group, "measurement_kind", String(kind); compress=false)
+    hasproperty(analyzed, :df) || error("RuO2 analyzed payload for '$kind' is missing df")
+    _write_dataframe!(plot_group, "df", analyzed.df)
+
+    scalars = Dict{Symbol,Any}()
+    arrays = Dict{Symbol,Any}()
+    for name in propertynames(analyzed)
+        name === :df && continue
+        value = getproperty(analyzed, name)
+        if _cache_scalar_supported(value)
+            scalars[name] = value
+        elseif value isa AbstractVector && _cache_vector_supported(value)
+            arrays[name] = collect(value)
+        elseif name === :pulse_groups || name === :debug_boundaries || name === :debug_labels
+            continue
+        else
+            error("Unsupported RuO2 cached plot field '$name' of type $(typeof(value))")
+        end
+    end
+    _write_parameters!(plot_group, "scalars", scalars)
+    arrays_group = _replace_group(plot_group, "arrays")
+    _write_symbol_vector!(arrays_group, "names", collect(keys(arrays)))
+    for (name, values) in arrays
+        _write_dataset!(arrays_group, String(name), values)
+    end
+    return nothing
+end
+
+function _cache_scalar_supported(value)
+    return value === nothing ||
+        value isa Bool ||
+        value isa Integer ||
+        value isa AbstractFloat ||
+        value isa AbstractString ||
+        value isa Symbol ||
+        value isa Date ||
+        value isa DateTime
+end
+
+function _cache_vector_supported(value::AbstractVector)
+    isempty(value) && return true
+    T = eltype(value)
+    return T <: Bool || T <: Integer || T <: AbstractFloat || T <: AbstractString
+end
+
+function _ruo2_read_cached_analyzed_plot(plot_group, kind::Symbol, cache_path::AbstractString)
+    df = _read_dataframe(plot_group, "df", cache_path)
+    scalars = _read_parameters(plot_group, "scalars", cache_path)
+    arrays = Dict{Symbol,Any}()
+    if haskey(plot_group, "arrays")
+        arrays_group = plot_group["arrays"]
+        for name in _read_symbol_vector(arrays_group, "names", cache_path)
+            arrays[name] = read(arrays_group[String(name)])
+        end
+    end
+
+    title = String(get(scalars, :title, ""))
+    if kind === :pund
+        return (
+            df=df,
+            title=title,
+            area_um2=get(scalars, :area_um2, nothing),
+            pulse_groups=_ruo2_cached_pulse_groups(df),
+            remnant_y_label=String(get(scalars, :remnant_y_label, "Switching Charge (pC)")),
+            debug=Bool(get(scalars, :debug, false)),
+        )
+    elseif kind === :iv || kind === :breakdown || kind === :unknown || kind === nothing
+        return (df=df, title=title)
+    elseif kind === :tlm4p
+        return (
+            df=df,
+            title=title,
+            fit_resistance_ohm=Float64(get(scalars, :fit_resistance_ohm, NaN)),
+            fit_resistance_kohm=Float64(get(scalars, :fit_resistance_kohm, NaN)),
+            fit_current_uA=get(arrays, :fit_current_uA, Float64[]),
+            fit_voltage_mV=get(arrays, :fit_voltage_mV, Float64[]),
+            rho_sheet=Float64(get(scalars, :rho_sheet, NaN)),
+        )
+    elseif kind === :wakeup
+        return (
+            df=df,
+            title=title,
+            pulse_count=Int(get(scalars, :pulse_count, 0)),
+            amplitude=Float64(get(scalars, :amplitude, 0.0)),
+            text_content=String(get(scalars, :text_content, "")),
+        )
+    elseif kind === :cvsweep
+        return (
+            df=df,
+            title=title,
+            frequencies_Hz=get(arrays, :frequencies_Hz, Float64[]),
+            secondary_kind=Symbol(get(scalars, :secondary_kind, :unknown)),
+            secondary_label=String(get(scalars, :secondary_label, "")),
+        )
+    end
+    return (df=df, title=title)
+end
+
+function _ruo2_cached_pulse_groups(df::DataFrame)
+    hasproperty(df, :pulse_idx) || return Tuple{Int,BitVector}[]
+    isempty(df.pulse_idx) && return Tuple{Int,BitVector}[]
+    max_pulse = maximum(df.pulse_idx)
+    pulse_groups = Tuple{Int,BitVector}[]
+    for rep in 1:(max_pulse ÷ 5)
+        pulse_range = (rep - 1) * 5 + 1:rep * 5
+        mask = BitVector([pulse in pulse_range for pulse in df.pulse_idx])
+        any(mask) && push!(pulse_groups, (rep, mask))
+    end
+    return pulse_groups
+end
+
+function _ruo2_write_cached_pund_fatigue_file!(
+    file_group,
+    indexed::IndexedCsvFile,
+    measurements::Vector{MeasurementInfo};
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    df = _ruo2_read_pund_fatigue_signal_table(indexed.filepath; should_cancel)
+    signals_group = _ensure_group(file_group, "signals")
+    _write_dataframe!(signals_group, "pund_fatigue", df)
+
+    measurements_group = file_group["measurements"]
+    for measurement in measurements
+        measurement_group = measurements_group[_measurement_group_key(measurement.id)]
+        plot_group = _replace_group(measurement_group, "plot")
+        _write_dataset!(plot_group, "source", "file_pund_fatigue"; compress=false)
+        _write_dataset!(plot_group, "measurement_kind", String(:pund); compress=false)
+    end
+    return nothing
+end
+
+function _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement::MeasurementInfo)
+    haskey(file_group, "signals") && haskey(file_group["signals"], "pund_fatigue") ||
+        throw(ProjectCacheInvalidError("", "cached fatigue file is missing pund_fatigue signals"))
+    full_df = _read_dataframe(file_group["signals"], "pund_fatigue", "")
+    cycle = get(measurement.parameters, :fatigue_cycle, nothing)
+    cycle isa Integer || error("Cached fatigue measurement $(measurement.id) is missing fatigue_cycle")
+    mask = full_df.cycle .== Int(cycle)
+    any(mask) || error("Cached fatigue file has no rows for cycle $cycle in $(measurement.filepath)")
+    df = DataFrame(
+        time=full_df.time[mask],
+        current=full_df.current[mask],
+        voltage=full_df.voltage[mask],
+    )
+    params = _measurement_parameters(measurement)
+    loaded = (
+        df=df,
+        title=measurement.clean_title,
+        area_um2=get(params, :area_um2, nothing),
+        debug=false,
+    )
+    return analyze_plot_for_file(RUO2_PROJECT, :pund, loaded; device_params=params)
+end
+
+function _ruo2_read_pund_fatigue_signal_table(
+    filepath::AbstractString;
+    should_cancel::Union{Nothing,Function}=nothing,
+)
+    cycle = Int[]
+    time = Float64[]
+    voltage = Float64[]
+    current = Float64[]
+    columns = nothing
+    open(filepath, "r") do io
+        for raw_line in eachline(io)
+            _check_cancel(should_cancel)
+            line = strip(raw_line)
+            isempty(line) && continue
+            if columns === nothing
+                if startswith(line, "Cycle,")
+                    columns = _ruo2_fatigue_columns(filepath, line)
+                end
+                continue
+            end
+            parts = split(line, ',')
+            length(parts) == columns.count || error(
+                "Malformed fatigue row in '$filepath': expected $(columns.count) columns, got $(length(parts))",
+            )
+            push!(cycle, parse(Int, parts[columns.cycle]))
+            push!(time, parse(Float64, parts[columns.time]))
+            push!(voltage, parse(Float64, parts[columns.voltage]))
+            push!(current, parse(Float64, parts[columns.current]))
+        end
+    end
+    columns !== nothing || error(
+        "Fatigue file '$filepath' is missing a data header with columns Cycle, Time_s, Voltage_V, Current_A",
+    )
+    return DataFrame(cycle=cycle, time=time, voltage=voltage, current=current)
+end

@@ -50,17 +50,17 @@ using Dates
     @test !haskey(ui3, :_last_plot_key)
 
     # Extra-window target application should update only matching entry.
-    ts = DateTime(2026, 1, 1)
+    cache_version = ("cache-id", "/tmp/cache.h5", 1, 0, 0, 0, 0)
     entry_a = Dict{Symbol,Any}(:target_id => "A", :figure => :figure_a)
     entry_b = Dict{Symbol,Any}(:target_id => "B", :figure => :figure_b)
     ui4 = Dict{Symbol,Any}(:open_plot_windows => [entry_a, entry_b])
     MeasurementBrowser._apply_plot_result!(
         ui4,
-        Dict{Symbol,Any}(:target => :extra, :target_id => "A", :mtime => ts),
+        Dict{Symbol,Any}(:target => :extra, :target_id => "A", :cache_version => cache_version),
         nothing,
     )
     @test !haskey(entry_a, :figure)
-    @test entry_a[:mtime] == ts
+    @test entry_a[:cache_version] == cache_version
     @test entry_b[:figure] == :figure_b
 end
 
@@ -79,17 +79,25 @@ end
     @test entry[:params][:fatigue_cycle] == 2
     @test entry[:params][:voltage_V] == 3.0
 
-    ui = Dict{Symbol,Any}()
-    mtime = Dates.unix2datetime(stat(fixture).mtime)
+    cache_id = "33333333-3333-3333-3333-333333333333"
+    ui = Dict{Symbol,Any}(
+        :cache_identity => MeasurementBrowser.project_cache_identity(
+            cache_id,
+            MeasurementBrowser.RUO2_PROJECT,
+            dirname(fixture),
+        ),
+        :cache_status => MeasurementBrowser.ProjectCacheStatus(1, 1, 1, 0, 0, 0, 0),
+    )
     request = MeasurementBrowser._extra_plot_window_request(
         ui,
         MeasurementBrowser.RUO2_PROJECT,
         entry,
-        mtime,
     )
 
     @test request[:target] == :extra
     @test request[:target_id] == cycle_two.id
+    @test request[:measurement] == cycle_two
+    @test request[:cache_identity].cache_id == cache_id
     @test request[:measurement_kind] == :pund
     @test request[:device_params][:fatigue_cycle] == 2
     @test request[:device_params][:voltage_V] == 3.0

@@ -309,7 +309,8 @@ end
         @test isfile(script_path)
 
         contents = read(script_path, String)
-        @test occursin("/home/dgfl/code/julia/MeasurementBrowser/docs/figure_scripts.md", contents)
+        docs_path = abspath(joinpath(@__DIR__, "..", "docs", "figure_scripts.md"))
+        @test occursin(docs_path, contents)
         @test occursin("MeasurementBrowser.MeasurementFilterClause", contents)
         @test occursin("source_files = [", contents)
         @test occursin("prepare_figure_script_data", contents)

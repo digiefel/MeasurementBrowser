@@ -25,6 +25,7 @@ end
                 "path" => path_a,
                 "project_preference" => "RuO2",
                 "figure_script_output_dir" => "/tmp/figures_a",
+                "cache_id" => "11111111-1111-1111-1111-111111111111",
             ),
             Dict("path" => path_b, "project_preference" => 99),
             Dict("path" => 42, "project_preference" => "TASE"),
@@ -36,14 +37,23 @@ end
     @test recents[1]["path"] == MeasurementBrowser._normalize_project_path(path_a)
     @test recents[1]["project_preference"] == "RuO2"
     @test recents[1]["figure_script_output_dir"] == "/tmp/figures_a"
+    @test recents[1]["cache_id"] == "11111111-1111-1111-1111-111111111111"
     @test recents[2]["path"] == MeasurementBrowser._normalize_project_path(path_b)
     @test recents[2]["project_preference"] == "auto"
     @test recents[2]["figure_script_output_dir"] == ""
+    @test recents[2]["cache_id"] == ""
 
     recents2 = copy(recents)
-    MeasurementBrowser._update_recent_projects(recents2, path_a, SubString(" RuO2 ", 2, 5), SubString(" /tmp/out2 ", 2, 10))
+    MeasurementBrowser._update_recent_projects(
+        recents2,
+        path_a,
+        SubString(" RuO2 ", 2, 5),
+        SubString(" /tmp/out2 ", 2, 10),
+        "22222222-2222-2222-2222-222222222222",
+    )
     @test recents2[1]["project_preference"] == "RuO2"
     @test recents2[1]["figure_script_output_dir"] == "/tmp/out2"
+    @test recents2[1]["cache_id"] == "22222222-2222-2222-2222-222222222222"
 
     items = [1, 2, 3, 4]
     selected = Int[]

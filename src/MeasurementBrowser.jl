@@ -11,6 +11,8 @@ include("BadRegistry.jl")
 include("FigureScripts.jl")
 include("projects/RuO2Project.jl")   # defines methods + registers RUO2_PROJECT
 include("projects/TASEProject.jl")   # defines methods + registers TASE_PROJECT
+include("ProjectCache.jl")
+include("projects/RuO2/Cache.jl")
 include("Precompile.jl")
 include("Gui.jl")
 
@@ -27,5 +29,10 @@ export load_plot_for_files, analyze_plot_for_files, draw_plot_for_files
 export available_analyses, run_analysis, draw_analysis_view
 export combined_plot_types, compatible_kinds
 export project_name, project_description
+export ProjectCacheIdentity, ProjectCacheSnapshot, ProjectCacheStatus
+export ProjectCacheUnsupportedError, ProjectCacheMissingError, ProjectCacheInvalidError
+export ProjectCacheBuildError
+export build_project_cache!, load_project_cache, cache_status
+export project_cache_identity, project_cache_path, new_project_cache_id
 
 end # module MeasurementBrowser
