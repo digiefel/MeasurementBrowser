@@ -1289,6 +1289,107 @@ function _scan_status_summary(ui_state)
     return "Idle"
 end
 
+function _cache_toolbar_model(ui_state)
+    identity = get(ui_state, :cache_identity, nothing)
+    status = get(ui_state, :cache_status, nothing)
+    cache_state = get(ui_state, :cache_state, :idle)
+
+    if identity === nothing
+        return (
+            label="Cache: No Project",
+            color=(0.28, 0.28, 0.28, 1.0),
+            detail="Open a project folder before building a cache.",
+        )
+    elseif cache_state == :updating
+        return (
+            label="Cache: Updating",
+            color=(0.18, 0.42, 0.78, 1.0),
+            detail=_scan_status_summary(ui_state),
+        )
+    elseif cache_state == :missing
+        return (
+            label="Cache: Missing",
+            color=(0.82, 0.48, 0.12, 1.0),
+            detail="No HDF5 cache has been built for this project.",
+        )
+    elseif cache_state == :error
+        return (
+            label="Cache: Error",
+            color=(0.72, 0.18, 0.18, 1.0),
+            detail=get(ui_state, :cache_error, "Cache error"),
+        )
+    elseif cache_state == :canceled
+        return (
+            label="Cache: Canceled",
+            color=(0.45, 0.45, 0.45, 1.0),
+            detail="Cache update was canceled.",
+        )
+    elseif status isa ProjectCacheStatus
+        has_changes = status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0
+        if has_changes
+            return (
+                label="Cache: Stale",
+                color=(0.78, 0.58, 0.12, 1.0),
+                detail="$(status.stale_files) stale, $(status.new_files) new, $(status.deleted_files) deleted",
+            )
+        end
+        return (
+            label="Cache: Fresh",
+            color=(0.20, 0.58, 0.30, 1.0),
+            detail="$(status.fresh_files) files cached",
+        )
+    end
+
+    return (
+        label="Cache: Idle",
+        color=(0.36, 0.36, 0.36, 1.0),
+        detail="No cache loaded.",
+    )
+end
+
+function _cache_button_hover_color(color)
+    return (
+        min(color[1] + 0.10, 1.0),
+        min(color[2] + 0.10, 1.0),
+        min(color[3] + 0.10, 1.0),
+        color[4],
+    )
+end
+
+function _cache_button_active_color(color)
+    return (
+        max(color[1] - 0.08, 0.0),
+        max(color[2] - 0.08, 0.0),
+        max(color[3] - 0.08, 0.0),
+        color[4],
+    )
+end
+
+function _render_cache_toolbar_button!(ui_state)
+    model = _cache_toolbar_model(ui_state)
+    ig.PushStyleColor(ig.ImGuiCol_Button, model.color)
+    ig.PushStyleColor(ig.ImGuiCol_ButtonHovered, _cache_button_hover_color(model.color))
+    ig.PushStyleColor(ig.ImGuiCol_ButtonActive, _cache_button_active_color(model.color))
+    if ig.Button(model.label)
+        ig.OpenPopup("cache_toolbar_popup")
+    end
+    ig.PopStyleColor()
+    ig.PopStyleColor()
+    ig.PopStyleColor()
+    if ig.BeginItemTooltip()
+        ig.TextUnformatted(model.detail)
+        ig.EndTooltip()
+    end
+    _render_cache_toolbar_popup!(ui_state)
+end
+
+function _render_cache_toolbar_popup!(ui_state)
+    if ig.BeginPopup("cache_toolbar_popup")
+        _render_cache_controls!(ui_state; compact=false)
+        ig.EndPopup()
+    end
+end
+
 function _scan_progress_fraction(ui_state)
     progress = get(ui_state, :scan_progress, _new_scan_progress())
     total = get(progress, :total_csv, 0)
@@ -1850,6 +1951,7 @@ function render_menu_bar(ui_state)
             end
             ig.EndMenu()
         end
+        _render_cache_toolbar_button!(ui_state)
         bad_visibility_toggle_enabled = isempty(get(ui_state, :bad_registry_error, "")) || get(ui_state, :show_bad, true)
         !bad_visibility_toggle_enabled && ig.BeginDisabled()
         if ig.MenuItem("Show Bad", C_NULL, get(ui_state, :show_bad, true))
@@ -2660,6 +2762,76 @@ end
 
 
 
+function _render_cache_controls!(ui_state; compact::Bool)
+    identity = get(ui_state, :cache_identity, nothing)
+    status = get(ui_state, :cache_status, nothing)
+    cache_state = get(ui_state, :cache_state, :idle)
+    model = _cache_toolbar_model(ui_state)
+
+    if compact
+        ig.Text("Cache")
+    else
+        ig.TextColored(model.color, model.label)
+    end
+    ig.TextWrapped(model.detail)
+
+    if identity isa ProjectCacheIdentity
+        ig.Separator()
+        ig.Text("Project: $(identity.project_name)")
+        ig.TextWrapped("Root: $(identity.root_path)")
+        ig.TextWrapped("File: $(identity.cache_path)")
+    end
+
+    if status isa ProjectCacheStatus
+        ig.Separator()
+        ig.Text("Files")
+        ig.Text("Total raw CSV: $(status.total_files)")
+        ig.Text("Cached: $(status.cached_files)")
+        ig.Text("Fresh: $(status.fresh_files)")
+        ig.Text("Stale: $(status.stale_files)")
+        ig.Text("New: $(status.new_files)")
+        ig.Text("Deleted: $(status.deleted_files)")
+        status.error_files > 0 && ig.TextColored(
+            (1.0, 0.35, 0.35, 1.0),
+            "Errors: $(status.error_files)",
+        )
+    elseif cache_state == :error
+        message = get(ui_state, :cache_error, "")
+        !isempty(message) && ig.TextWrapped(message)
+    end
+
+    ig.Separator()
+    running = _scan_running(ui_state)
+    has_identity = identity isa ProjectCacheIdentity
+    has_root = haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
+
+    (!has_identity || running) && ig.BeginDisabled()
+    update_label = cache_state == :missing ? "Build Cache" : "Update Cache"
+    if ig.Button(update_label, (-1, 0))
+        _queue_cache_update!(ui_state)
+    end
+    (!has_identity || running) && ig.EndDisabled()
+
+    (!has_identity || running) && ig.BeginDisabled()
+    if ig.Button("Full Rebuild Cache", (-1, 0))
+        _queue_cache_update!(ui_state; full_rebuild=true)
+    end
+    (!has_identity || running) && ig.EndDisabled()
+
+    (!has_root || running) && ig.BeginDisabled()
+    if ig.Button("Reload Cache", (-1, 0))
+        _open_project_path!(ui_state, ui_state[:root_path])
+    end
+    (!has_root || running) && ig.EndDisabled()
+
+    if running
+        if ig.Button("Cancel Cache Job", (-1, 0))
+            _request_scan_cancel!(ui_state)
+        end
+        ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
+    end
+end
+
 function render_project_window(ui_state)
     get(ui_state, :show_project_window, false) || return
 
@@ -2736,47 +2908,8 @@ function render_project_window(ui_state)
             !isempty(err) && ig.TextWrapped(err)
             ig.Spacing()
         end
-        cache_status_value = get(ui_state, :cache_status, nothing)
-        cache_state = get(ui_state, :cache_state, :idle)
         ig.Separator()
-        ig.Text("Cache")
-        if cache_status_value isa ProjectCacheStatus
-            ig.Text("Files: $(cache_status_value.fresh_files) fresh, $(cache_status_value.stale_files) stale, $(cache_status_value.new_files) new, $(cache_status_value.deleted_files) deleted")
-            ig.Text("Cache file: $(get(ui_state, :cache_identity, nothing).cache_path)")
-        elseif cache_state == :missing
-            ig.TextColored((1.0, 0.6, 0.2, 1.0), "No HDF5 cache has been built for this project")
-        elseif cache_state == :error
-            ig.TextColored((1.0, 0.4, 0.4, 1.0), "Cache error")
-            message = get(ui_state, :cache_error, "")
-            isempty(message) || ig.TextWrapped(message)
-        else
-            ig.TextDisabled("No cache loaded")
-        end
-
-        if _scan_running(ui_state)
-            ig.BeginDisabled()
-        end
-        if ig.Button("Update Cache", (-1, 0))
-            if get(ui_state, :cache_identity, nothing) isa ProjectCacheIdentity
-                _queue_cache_update!(ui_state)
-            else
-                ig.OpenPopup("no_folder_popup")
-            end
-        end
-        if ig.Button("Full Rebuild Cache", (-1, 0))
-            if get(ui_state, :cache_identity, nothing) isa ProjectCacheIdentity
-                _queue_cache_update!(ui_state; full_rebuild=true)
-            else
-                ig.OpenPopup("no_folder_popup")
-            end
-        end
-        if _scan_running(ui_state)
-            ig.EndDisabled()
-        end
-        if ig.BeginPopup("no_folder_popup")
-            ig.Text("No folder loaded. Use Project → Open Folder first.")
-            ig.EndPopup()
-        end
+        _render_cache_controls!(ui_state; compact=true)
     end
     open_ref[] || (ui_state[:show_project_window] = false)
     ig.End()

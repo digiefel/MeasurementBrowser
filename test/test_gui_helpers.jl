@@ -55,6 +55,34 @@ end
     @test recents2[1]["figure_script_output_dir"] == "/tmp/out2"
     @test recents2[1]["cache_id"] == "22222222-2222-2222-2222-222222222222"
 
+    no_cache_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}())
+    @test no_cache_model.label == "Cache: No Project"
+
+    cache_identity = MeasurementBrowser.project_cache_identity(
+        "77777777-7777-7777-7777-777777777777",
+        MeasurementBrowser.RUO2_PROJECT,
+        pwd(),
+    )
+    missing_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+        :cache_identity => cache_identity,
+        :cache_state => :missing,
+    ))
+    @test missing_model.label == "Cache: Missing"
+
+    fresh_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+        :cache_identity => cache_identity,
+        :cache_state => :ready,
+        :cache_status => MeasurementBrowser.ProjectCacheStatus(2, 2, 2, 0, 0, 0, 0),
+    ))
+    @test fresh_model.label == "Cache: Fresh"
+
+    stale_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+        :cache_identity => cache_identity,
+        :cache_state => :ready,
+        :cache_status => MeasurementBrowser.ProjectCacheStatus(3, 2, 1, 1, 1, 0, 0),
+    ))
+    @test stale_model.label == "Cache: Stale"
+
     items = [1, 2, 3, 4]
     selected = Int[]
     MeasurementBrowser._update_multi_selection!(selected, 2, items, false, false)
