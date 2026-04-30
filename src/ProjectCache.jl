@@ -64,11 +64,17 @@ struct ProjectCacheStatus
     error_files::Int
 end
 
+struct ProjectCacheFileError
+    path::String
+    message::String
+end
+
 struct ProjectCacheSnapshot
     identity::ProjectCacheIdentity
     hierarchy::MeasurementHierarchy
     status::ProjectCacheStatus
     semantic_fields::Dict{Symbol,Vector{Symbol}}
+    errors::Vector{ProjectCacheFileError}
 end
 
 project_cache_schema_version(project::AbstractProject) =
@@ -510,6 +516,10 @@ function _read_file_measurements(file_group, cache_path::AbstractString)
     return measurements
 end
 
+function _file_status(file_group)
+    return haskey(file_group, "status") ? read(file_group["status"]) : "ok"
+end
+
 function _cached_file_fingerprints(h5, cache_path::AbstractString)
     haskey(h5, "files") || return Dict{String,FileFingerprint}()
     fingerprints = Dict{String,FileFingerprint}()
@@ -521,16 +531,56 @@ function _cached_file_fingerprints(h5, cache_path::AbstractString)
     return fingerprints
 end
 
+function _cached_file_statuses(h5)
+    haskey(h5, "files") || return Dict{String,String}()
+    statuses = Dict{String,String}()
+    for file_key in keys(h5["files"])
+        group = h5["files"][file_key]
+        path = haskey(group, "path") ? read(group["path"]) : file_key
+        statuses[path] = _file_status(group)
+    end
+    return statuses
+end
+
+function _read_cache_file_errors(h5, cache_path::AbstractString)
+    haskey(h5, "files") || return ProjectCacheFileError[]
+    errors = ProjectCacheFileError[]
+    for file_key in sort!(collect(keys(h5["files"])))
+        group = h5["files"][file_key]
+        _file_status(group) == "error" || continue
+        fp = _read_fingerprint(group, cache_path)
+        message = haskey(group, "error_message") ? read(group["error_message"]) :
+            "Cache transform failed without an error message"
+        push!(errors, ProjectCacheFileError(fp.path, message))
+    end
+    return errors
+end
+
+function _cache_file_errors(identity::ProjectCacheIdentity)
+    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
+    return h5open(identity.cache_path, "r") do h5
+        _validate_meta!(h5, identity)
+        _read_cache_file_errors(h5, identity.cache_path)
+    end
+end
+
 function cache_status(identity::ProjectCacheIdentity)
     isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
     raw = collect_csv_fingerprints(identity.root_path)
     return h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
         cached = _cached_file_fingerprints(h5, identity.cache_path)
+        statuses = _cached_file_statuses(h5)
         stale = count(path -> haskey(raw, path) && !_same_fingerprint(raw[path], cached[path]), keys(cached))
         deleted = count(path -> !haskey(raw, path), keys(cached))
         new_count = count(path -> !haskey(cached, path), keys(raw))
-        fresh = count(path -> haskey(cached, path) && _same_fingerprint(raw[path], cached[path]), keys(raw))
+        fresh = count(
+            path -> haskey(cached, path) &&
+                _same_fingerprint(raw[path], cached[path]) &&
+                get(statuses, path, "ok") != "error",
+            keys(raw),
+        )
+        error_count = count(==("error"), values(statuses))
         ProjectCacheStatus(
             length(raw),
             length(cached),
@@ -538,7 +588,7 @@ function cache_status(identity::ProjectCacheIdentity)
             stale,
             new_count,
             deleted,
-            0,
+            error_count,
         )
     end
 end
@@ -549,8 +599,8 @@ function _rebuild_indexes!(h5, identity::ProjectCacheIdentity, project::Abstract
     skipped_count = 0
     for file_key in sort!(collect(keys(files_group)))
         file_group = files_group[file_key]
-        status = haskey(file_group, "status") ? read(file_group["status"]) : "ok"
-        status == "skipped" && (skipped_count += 1)
+        status = _file_status(file_group)
+        status in ("skipped", "error") && (skipped_count += 1)
         append!(measurements, _read_file_measurements(file_group, identity.cache_path))
     end
     hierarchy = MeasurementHierarchy(
@@ -571,6 +621,22 @@ function _rebuild_indexes!(h5, identity::ProjectCacheIdentity, project::Abstract
     ])
     _write_dataset!(index_group, "skipped_count", Int64[skipped_count])
     return hierarchy
+end
+
+function _write_file_error_group!(
+    files_group,
+    fingerprint::FileFingerprint,
+    indexed::IndexedCsvFile,
+    err,
+)
+    file_group = _replace_group(files_group, _file_group_key(fingerprint.path))
+    _write_fingerprint!(file_group, fingerprint)
+    _write_dataset!(file_group, "source_file_id", indexed.id; compress=false)
+    _write_string_vector!(file_group, "measurement_keys", String[])
+    _write_dataset!(file_group, "status", "error"; compress=false)
+    _write_dataset!(file_group, "error_type", string(typeof(err)); compress=false)
+    _write_dataset!(file_group, "error_message", sprint(showerror, err); compress=false)
+    return nothing
 end
 
 function build_project_cache!(
@@ -599,6 +665,7 @@ function build_project_cache!(
         end
         files_group = _ensure_group(h5, "files")
         cached = _cached_file_fingerprints(h5, identity.cache_path)
+        statuses = _cached_file_statuses(h5)
         raw_paths = Set(keys(fingerprints))
         for cached_path in keys(cached)
             cached_path in raw_paths && continue
@@ -609,7 +676,10 @@ function build_project_cache!(
         for path in sort!(collect(keys(fingerprints)))
             _check_cancel(should_cancel)
             fp = fingerprints[path]
-            if !full_rebuild && haskey(cached, path) && _same_fingerprint(fp, cached[path])
+            if !full_rebuild &&
+               haskey(cached, path) &&
+               _same_fingerprint(fp, cached[path]) &&
+               get(statuses, path, "ok") != "error"
                 processed += 1
                 on_progress !== nothing && on_progress((
                     phase=:cache_update,
@@ -632,7 +702,8 @@ function build_project_cache!(
                     should_cancel,
                 )
             catch err
-                throw(ProjectCacheBuildError(path, err, catch_backtrace()))
+                (err isa ScanCancelled || err isa PlotCancelled) && rethrow()
+                _write_file_error_group!(files_group, fp, indexed, err)
             end
             processed += 1
             on_progress !== nothing && on_progress((
@@ -653,6 +724,7 @@ function build_project_cache!(
         hierarchy,
         cache_status(identity),
         project_cache_semantic_fields(project),
+        _cache_file_errors(identity),
     )
 end
 
@@ -671,8 +743,8 @@ function load_project_cache(
         skipped_count = 0
         for file_key in sort!(collect(keys(files_group)))
             file_group = files_group[file_key]
-            status = haskey(file_group, "status") ? read(file_group["status"]) : "ok"
-            status == "skipped" && (skipped_count += 1)
+            status = _file_status(file_group)
+            status in ("skipped", "error") && (skipped_count += 1)
             append!(measurements, _read_file_measurements(file_group, identity.cache_path))
         end
         hierarchy = MeasurementHierarchy(
@@ -684,7 +756,13 @@ function load_project_cache(
         )
         (hierarchy, _read_semantic_fields(h5, identity.cache_path))
     end
-    return ProjectCacheSnapshot(identity, hierarchy, cache_status(identity), semantic_fields)
+    return ProjectCacheSnapshot(
+        identity,
+        hierarchy,
+        cache_status(identity),
+        semantic_fields,
+        _cache_file_errors(identity),
+    )
 end
 
 function _measurement_group_for_cached_plot(

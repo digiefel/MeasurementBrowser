@@ -29,7 +29,7 @@ export load_plot_for_files, analyze_plot_for_files, draw_plot_for_files
 export available_analyses, run_analysis, draw_analysis_view
 export combined_plot_types, compatible_kinds
 export project_name, project_description
-export ProjectCacheIdentity, ProjectCacheSnapshot, ProjectCacheStatus
+export ProjectCacheIdentity, ProjectCacheSnapshot, ProjectCacheStatus, ProjectCacheFileError
 export ProjectCacheUnsupportedError, ProjectCacheMissingError, ProjectCacheInvalidError
 export ProjectCacheBuildError
 export build_project_cache!, load_project_cache, cache_status

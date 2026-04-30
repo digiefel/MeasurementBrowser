@@ -83,6 +83,13 @@ end
     ))
     @test stale_model.label == "Cache: Stale"
 
+    errors_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+        :cache_identity => cache_identity,
+        :cache_state => :ready,
+        :cache_status => MeasurementBrowser.ProjectCacheStatus(3, 2, 1, 0, 0, 0, 1),
+    ))
+    @test errors_model.label == "Cache: Errors"
+
     items = [1, 2, 3, 4]
     selected = Int[]
     MeasurementBrowser._update_multi_selection!(selected, 2, items, false, false)

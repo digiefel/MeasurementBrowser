@@ -19,6 +19,14 @@ function _remove_cache_file(cache_id::AbstractString)
     rm(path; force=true)
 end
 
+function _write_bad_pund_fixture!(dir::AbstractString)
+    dst = joinpath(dir, _CACHE_FIXTURES.pund)
+    open(dst, "w") do io
+        write(io, "This file has a PUND filename but no FE PUND data header.\n")
+    end
+    return dst
+end
+
 @testset "project HDF5 cache" begin
     mktempdir() do dir
         cache_id = "55555555-5555-5555-5555-555555555555"
@@ -75,6 +83,39 @@ end
             @test status.stale_files == 1
             @test status.new_files == 1
             @test status.deleted_files == 1
+        finally
+            _remove_cache_file(cache_id)
+        end
+    end
+
+    mktempdir() do dir
+        cache_id = "88888888-8888-8888-8888-888888888888"
+        _remove_cache_file(cache_id)
+        try
+            _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)
+            bad_path = _write_bad_pund_fixture!(dir)
+
+            snapshot = build_project_cache!(
+                dir,
+                MeasurementBrowser.RUO2_PROJECT,
+                cache_id;
+                full_rebuild=true,
+            )
+
+            @test length(snapshot.hierarchy.all_measurements) == 1
+            @test snapshot.hierarchy.skipped_count == 1
+            @test snapshot.status.total_files == 2
+            @test snapshot.status.cached_files == 2
+            @test snapshot.status.fresh_files == 1
+            @test snapshot.status.error_files == 1
+            @test length(snapshot.errors) == 1
+            @test snapshot.errors[1].path == bad_path
+            @test occursin("Could not find FE PUND data header", snapshot.errors[1].message)
+
+            loaded = load_project_cache(dir, MeasurementBrowser.RUO2_PROJECT, cache_id)
+            @test length(loaded.hierarchy.all_measurements) == 1
+            @test loaded.status.error_files == 1
+            @test length(loaded.errors) == 1
         finally
             _remove_cache_file(cache_id)
         end

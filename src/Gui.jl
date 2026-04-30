@@ -265,6 +265,7 @@ function _init_cache_state!(ui_state)
     ui_state[:cache_identity] = nothing
     ui_state[:cache_status] = nothing
     ui_state[:cache_semantic_fields] = Dict{Symbol,Vector{Symbol}}()
+    ui_state[:cache_errors] = ProjectCacheFileError[]
 end
 
 function _init_bad_state!(ui_state)
@@ -1325,6 +1326,13 @@ function _cache_toolbar_model(ui_state)
             detail="Cache update was canceled.",
         )
     elseif status isa ProjectCacheStatus
+        if status.error_files > 0
+            return (
+                label="Cache: Errors",
+                color=(0.72, 0.18, 0.18, 1.0),
+                detail="$(status.error_files) cached file(s) failed to transform",
+            )
+        end
         has_changes = status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0
         if has_changes
             return (
@@ -1384,6 +1392,7 @@ function _render_cache_toolbar_button!(ui_state)
 end
 
 function _render_cache_toolbar_popup!(ui_state)
+    ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Appearing)
     if ig.BeginPopup("cache_toolbar_popup")
         _render_cache_controls!(ui_state; compact=false)
         ig.EndPopup()
@@ -1556,6 +1565,7 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
     ui_state[:cache_identity] = snapshot.identity
     ui_state[:cache_status] = snapshot.status
     ui_state[:cache_semantic_fields] = snapshot.semantic_fields
+    ui_state[:cache_errors] = snapshot.errors
     ui_state[:cache_state] = :ready
     ui_state[:cache_error] = ""
     ui_state[:scan_state] = :done
@@ -2798,6 +2808,19 @@ function _render_cache_controls!(ui_state; compact::Bool)
     elseif cache_state == :error
         message = get(ui_state, :cache_error, "")
         !isempty(message) && ig.TextWrapped(message)
+    end
+
+    cache_errors = get(ui_state, :cache_errors, ProjectCacheFileError[])
+    if !isempty(cache_errors)
+        ig.Separator()
+        ig.TextColored((1.0, 0.35, 0.35, 1.0), "File Errors")
+        for (index, file_error) in enumerate(cache_errors)
+            index > 20 && break
+            ig.TextWrapped(file_error.path)
+            ig.TextColored((1.0, 0.55, 0.35, 1.0), file_error.message)
+            index < min(length(cache_errors), 20) && ig.Separator()
+        end
+        length(cache_errors) > 20 && ig.TextDisabled("$(length(cache_errors) - 20) more file errors")
     end
 
     ig.Separator()
