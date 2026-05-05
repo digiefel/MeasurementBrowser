@@ -77,9 +77,10 @@ end
 function draw_figure_tooltip(cursor_pos, image_size)
     help_str = "(?)"
     text_size = ig.CalcTextSize(help_str)
-    text_pos = (cursor_pos.x + image_size[1] - text_size.x, cursor_pos.y)
+    text_pos = ig.ImVec2(cursor_pos.x + image_size[1] - text_size.x, cursor_pos.y)
     ig.AddText(ig.GetWindowDrawList(), text_pos, ig.IM_COL32(128, 128, 128, 255), help_str)
-    hovering = ig.IsMouseHoveringRect(text_pos, (text_pos[1] + text_size.x, text_pos[2] + text_size.y))
+    text_max = ig.ImVec2(text_pos.x + text_size.x, text_pos.y + text_size.y)
+    hovering = ig.IsMouseHoveringRect(text_pos, text_max)
 
     if hovering && ig.BeginTooltip()
         ig.PushTextWrapPos(ig.GetFontSize() * 35.0)
