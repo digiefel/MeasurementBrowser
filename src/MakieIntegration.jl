@@ -107,6 +107,12 @@ function draw_figure_stats(cursor_pos, imfigure)
     ig.AddText(ig.GetWindowDrawList(), cursor_pos, ig.IM_COL32_WHITE, text)
 end
 
+function _texture_display_size(texture_size, px_per_unit)
+    scale = Float64(px_per_unit)
+    scale > 0 || return (Float64(texture_size[1]), Float64(texture_size[2]))
+    return (Float64(texture_size[1]) / scale, Float64(texture_size[2]) / scale)
+end
+
 function draw_axisscale_buttons(scale, ticks, idx)
     if ig.RadioButton("linear##$(idx)", scale[] === identity)
         scale[] = identity
@@ -201,7 +207,8 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
     color_buffer = imfigure.screen.framebuffer.buffers[:color]
     drawlist = ig.GetWindowDrawList()
     cursor_pos = ig.GetCursorScreenPos()
-    image_size = size(color_buffer)
+    texture_size = size(color_buffer)
+    image_size = _texture_display_size(texture_size, imfigure.screen.px_per_unit[])
     ig.AddImage(drawlist,
         ig.ImTextureRef(ig.ImTextureID(color_buffer.id)),
         cursor_pos,
@@ -216,7 +223,7 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
         draw_figure_stats(cursor_pos, imfigure)
     end
 
-    ig.InvisibleButton("figure_image", size(color_buffer))
+    ig.InvisibleButton("figure_image", image_size)
 
     # Update the scene events
     if scene.events.hasfocus[] != ig.IsItemHovered()
@@ -230,9 +237,7 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
     if ig.IsItemHovered()
         # Update the mouse position
         pos = ig.GetMousePos()
-        cursor_pos = ig.GetCursorScreenPos()
-        item_spacing = unsafe_load(ig.GetStyle().ItemSpacing.y)
-        new_pos = (pos.x - cursor_pos.x, abs(pos.y - cursor_pos.y) - item_spacing)
+        new_pos = (pos.x - cursor_pos.x, pos.y - cursor_pos.y)
         if new_pos != scene.events.mouseposition[]
             scene.events.mouseposition[] = new_pos
             @debug "mouse position updated", scene.events.mouseposition
