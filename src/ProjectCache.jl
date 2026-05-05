@@ -2,7 +2,6 @@ using HDF5
 using SHA
 using DataFrames
 
-const CACHE_SCHEMA_VERSION = 1
 const _CACHE_DATASET_DEFLATE = 3
 const _CACHE_CHUNK_TARGET = 4096
 
@@ -11,7 +10,7 @@ struct ProjectCacheUnsupportedError <: Exception
 end
 
 Base.showerror(io::IO, err::ProjectCacheUnsupportedError) =
-    print(io, "Project '$(err.project_name)' does not define an HDF5 cache schema")
+    print(io, "Project '$(err.project_name)' does not define HDF5 cache support")
 
 struct ProjectCacheMissingError <: Exception
     path::String
@@ -48,7 +47,6 @@ end
 struct ProjectCacheIdentity
     cache_id::String
     project_name::String
-    project_schema_version::Int
     root_path::String
     cache_path::String
 end
@@ -75,9 +73,6 @@ struct ProjectCacheSnapshot
     semantic_fields::Dict{Symbol,Vector{Symbol}}
     errors::Vector{ProjectCacheFileError}
 end
-
-project_cache_schema_version(project::AbstractProject) =
-    throw(ProjectCacheUnsupportedError(project_name(project)))
 
 project_cache_semantic_fields(::AbstractProject) = Dict{Symbol,Vector{Symbol}}()
 
@@ -145,11 +140,9 @@ function _cache_normalize_path(path::AbstractString)
 end
 
 function project_cache_path(cache_id::AbstractString, project::AbstractProject)
-    schema = project_cache_schema_version(project)
     return joinpath(
         project_cache_dir(),
         _cache_slug(project_name(project)),
-        "schema$(schema)",
         "$(String(cache_id)).h5",
     )
 end
@@ -160,11 +153,9 @@ function project_cache_identity(
     root_path::AbstractString,
 )
     norm_root = _cache_normalize_path(root_path)
-    schema = project_cache_schema_version(project)
     return ProjectCacheIdentity(
         String(cache_id),
         project_name(project),
-        schema,
         norm_root,
         project_cache_path(cache_id, project),
     )
@@ -457,9 +448,7 @@ end
 
 function _write_meta!(h5, identity::ProjectCacheIdentity)
     meta = _replace_group(h5, "meta")
-    _write_dataset!(meta, "cache_schema_version", Int64[CACHE_SCHEMA_VERSION])
     _write_dataset!(meta, "project_name", identity.project_name; compress=false)
-    _write_dataset!(meta, "project_schema_version", Int64[identity.project_schema_version])
     _write_dataset!(meta, "cache_id", identity.cache_id; compress=false)
     _write_dataset!(meta, "root_path", identity.root_path; compress=false)
     _write_dataset!(meta, "has_device_metadata", Bool[isfile(joinpath(identity.root_path, "device_info.txt"))])
@@ -470,15 +459,9 @@ end
 function _validate_meta!(h5, identity::ProjectCacheIdentity)
     haskey(h5, "meta") || throw(ProjectCacheInvalidError(identity.cache_path, "missing /meta group"))
     meta = h5["meta"]
-    schema_values = _read_required(meta, "cache_schema_version", identity.cache_path)
-    length(schema_values) == 1 && schema_values[1] == CACHE_SCHEMA_VERSION ||
-        throw(ProjectCacheInvalidError(identity.cache_path, "unsupported cache schema version"))
     project_name_value = _read_required(meta, "project_name", identity.cache_path)
     project_name_value == identity.project_name ||
         throw(ProjectCacheInvalidError(identity.cache_path, "project mismatch: expected $(identity.project_name), found $project_name_value"))
-    project_schema_values = _read_required(meta, "project_schema_version", identity.cache_path)
-    length(project_schema_values) == 1 && project_schema_values[1] == identity.project_schema_version ||
-        throw(ProjectCacheInvalidError(identity.cache_path, "project schema version mismatch"))
     cache_id_value = _read_required(meta, "cache_id", identity.cache_path)
     cache_id_value == identity.cache_id ||
         throw(ProjectCacheInvalidError(identity.cache_path, "cache id mismatch"))

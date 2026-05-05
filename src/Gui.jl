@@ -3396,7 +3396,7 @@ function _render_cache_controls!(ui_state; compact::Bool)
     (!has_identity || running) && ig.EndDisabled()
 
     (!has_identity || running) && ig.BeginDisabled()
-    if ig.Button("Full Rebuild Cache", (-1, 0))
+    if ig.Button("Rebuild Cache", (-1, 0))
         _queue_cache_update!(ui_state; full_rebuild=true)
     end
     (!has_identity || running) && ig.EndDisabled()

@@ -1,7 +1,5 @@
 using DataFrames
 
-project_cache_schema_version(::RuO2Project) = 1
-
 function project_cache_file_matches(::RuO2Project, indexed::IndexedCsvFile)
     detect_kind(RUO2_PROJECT, indexed.filename) === :unknown && return false
     location = _ruo2_resolve_location(indexed)
