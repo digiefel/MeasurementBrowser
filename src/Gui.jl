@@ -1376,6 +1376,19 @@ function _progress_fraction(progress)
     return Float32(clamp(processed / total, 0, 1))
 end
 
+function _indeterminate_progress_fraction(ui_state)
+    frame = get(ui_state, :_frame, 0)
+    return Float32(0.12 + 0.76 * (0.5 + 0.5 * sin(frame / 18)))
+end
+
+function _render_progress_indicator!(ui_state, item)
+    fraction = get(item, :indeterminate, false) ?
+        _indeterminate_progress_fraction(ui_state) :
+        item.fraction
+    overlay = get(item, :indeterminate, false) ? "working..." : ""
+    ig.ProgressBar(fraction, (-1, 0), overlay)
+end
+
 function _cache_progress_models(ui_state)
     models = NamedTuple[]
     load_progress = get(ui_state, :cache_load_progress, nothing)
@@ -1390,6 +1403,7 @@ function _cache_progress_models(ui_state)
             title="Cache: Loading",
             progress=text,
             fraction=_progress_fraction(load_progress),
+            indeterminate=total <= 0,
         ))
     end
     state = get(ui_state, :scan_state, :idle)
@@ -1399,6 +1413,7 @@ function _cache_progress_models(ui_state)
             title=activity.title,
             progress=activity.progress,
             fraction=activity.fraction,
+            indeterminate=get(get(ui_state, :scan_progress, _new_scan_progress()), :total_csv, 0) <= 0,
         ))
     end
     return models
@@ -1437,12 +1452,14 @@ function _source_progress_models(ui_state)
             title,
             progress=text,
             fraction=source_state == :done ? 1.0f0 : _progress_fraction(progress),
+            indeterminate=source_state in (:counting, :cache_check) && total <= 0,
         ))
     elseif source_state == :error
         push!(models, (
             title="Rescan: Error",
             progress=get(ui_state, :source_scan_error, "Source scan failed."),
             fraction=0.0f0,
+            indeterminate=false,
         ))
     end
 
@@ -1458,6 +1475,7 @@ function _source_progress_models(ui_state)
             title="Source: Checking",
             progress=text,
             fraction=_progress_fraction(source_check_progress),
+            indeterminate=total <= 0,
         ))
     elseif state == :cache_check
         check_progress = get(ui_state, :scan_progress, _new_scan_progress())
@@ -1470,6 +1488,7 @@ function _source_progress_models(ui_state)
             title="Source: Checking",
             progress=text,
             fraction=_progress_fraction(check_progress),
+            indeterminate=total <= 0,
         ))
     end
     return models
@@ -3309,7 +3328,7 @@ function _render_cache_controls!(ui_state; compact::Bool)
             for item in cache_progress
                 ig.TextDisabled(item.title)
                 ig.TextDisabled(item.progress)
-                ig.ProgressBar(item.fraction, (-1, 0))
+                _render_progress_indicator!(ui_state, item)
             end
         elseif get(ui_state, :scan_state, :idle) != :cache_check
             ig.TextDisabled(activity.progress)
@@ -3444,7 +3463,7 @@ function render_project_window(ui_state)
             for item in source_progress
                 ig.TextDisabled(item.title)
                 ig.TextDisabled(item.progress)
-                ig.ProgressBar(item.fraction, (-1, 0))
+                _render_progress_indicator!(ui_state, item)
             end
             if _source_scan_running(ui_state)
                 if ig.Button("Cancel Rescan", (-1, 0))
