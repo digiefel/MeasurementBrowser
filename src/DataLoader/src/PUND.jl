@@ -6,16 +6,41 @@ Read FE PUND data from CSV file
 function read_fe_pund(filename, workdir=".")
     filepath = joinpath(workdir, filename)
     lines = readlines(filepath)
-    data_start = 1
+    data_start = 0
+    column_map = nothing
 
     for (i, line) in enumerate(lines)
-        if occursin("Time,MeasResult1_value,MeasResult2_value", line)
+        columns = strip.(split(line, ','))
+        if "Time" in columns &&
+           "MeasResult1_value" in columns &&
+           "MeasResult2_value" in columns
+            indices = Dict(column => index for (index, column) in pairs(columns))
+            column_map = (
+                time=indices["Time"],
+                current=indices["MeasResult1_value"],
+                voltage=indices["MeasResult2_value"],
+                current_time=get(indices, "MeasResult1_time", indices["Time"]),
+                voltage_time=get(indices, "MeasResult2_time", indices["Time"]),
+            )
+            data_start = i + 1
+            break
+        elseif "Time_s" in columns &&
+               "Current_A" in columns &&
+               "Voltage_V" in columns
+            indices = Dict(column => index for (index, column) in pairs(columns))
+            column_map = (
+                time=indices["Time_s"],
+                current=indices["Current_A"],
+                voltage=indices["Voltage_V"],
+                current_time=indices["Time_s"],
+                voltage_time=indices["Time_s"],
+            )
             data_start = i + 1
             break
         end
     end
 
-    if data_start == 1
+    if data_start == 0 || column_map === nothing
         error("Could not find FE PUND data header in $filepath")
     end
 
@@ -29,13 +54,13 @@ function read_fe_pund(filename, workdir=".")
     for line in data_lines
         if !isempty(strip(line))
             parts = split(line, ',')
-            if length(parts) >= 5
+            if length(parts) >= maximum(column_map)
                 try
-                    push!(time, parse(Float64, parts[1]))
-                    push!(current, parse(Float64, parts[2]))
-                    push!(voltage, parse(Float64, parts[3]))
-                    push!(current_time, parse(Float64, parts[4]))
-                    push!(voltage_time, parse(Float64, parts[5]))
+                    push!(time, parse(Float64, parts[column_map.time]))
+                    push!(current, parse(Float64, parts[column_map.current]))
+                    push!(voltage, parse(Float64, parts[column_map.voltage]))
+                    push!(current_time, parse(Float64, parts[column_map.current_time]))
+                    push!(voltage_time, parse(Float64, parts[column_map.voltage_time]))
                 catch
                     continue
                 end

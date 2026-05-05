@@ -57,6 +57,27 @@ using MeasurementBrowser
         end
     end
 
+    @testset "FE PUND loader accepts compact source CSVs" begin
+        mktempdir() do dir
+            path = joinpath(dir, "compact_pund.csv")
+            write(path, join([
+                "Time_s,Current_A,Voltage_V",
+                "0.0,1.0e-9,0.0",
+                "1.0e-6,2.0e-6,3.0",
+                "2.0e-6,-2.0e-6,-3.0",
+                "",
+            ], "\n"))
+
+            df = read_fe_pund(basename(path), dir)
+            @test names(df) == ["time", "current", "voltage", "current_time", "voltage_time"]
+            @test df.time == [0.0, 1.0e-6, 2.0e-6]
+            @test df.current == [1.0e-9, 2.0e-6, -2.0e-6]
+            @test df.voltage == [0.0, 3.0, -3.0]
+            @test df.current_time == df.time
+            @test df.voltage_time == df.time
+        end
+    end
+
     @testset "RuO2 expansion and staged plot loading" begin
         meas = MeasurementInfo(fixture, RUO2_PROJECT)
         @test meas.measurement_kind == :pund_fatigue
