@@ -2362,16 +2362,21 @@ function render_menu_bar(ui_state)
                 ig.EndMenu()
             end
 
-            can_rescan = haskey(ui_state, :root_path) &&
-                         !isempty(ui_state[:root_path]) &&
-                         !_scan_running(ui_state)
+            has_root = haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
+            source_rescan_running = get(ui_state, :scan_state, :idle) in (:counting, :scanning)
+            rescan_label = source_rescan_running ? "Cancel Rescan" : "Rescan"
+            can_rescan = has_root
             !can_rescan && ig.BeginDisabled()
-            if ig.MenuItem("Rescan")
-                proj = haskey(ui_state, :project) ?
-                    ui_state[:project] :
-                    _project_for_preference(get(ui_state, :project_preference, "auto"))
-                @info "Rescanning path: $(ui_state[:root_path])"
-                _launch_source_scan_job!(ui_state, ui_state[:root_path], proj)
+            if ig.MenuItem(rescan_label)
+                if source_rescan_running
+                    _request_scan_cancel!(ui_state)
+                else
+                    proj = haskey(ui_state, :project) ?
+                        ui_state[:project] :
+                        _project_for_preference(get(ui_state, :project_preference, "auto"))
+                    @info "Rescanning path: $(ui_state[:root_path])"
+                    _launch_source_scan_job!(ui_state, ui_state[:root_path], proj)
+                end
             end
             !can_rescan && ig.EndDisabled()
 
