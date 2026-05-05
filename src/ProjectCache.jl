@@ -821,18 +821,57 @@ function _load_project_cache_contents(
     on_progress::Union{Nothing,Function}=nothing,
     on_file_loaded::Union{Nothing,Function}=nothing,
 )
+    measurements = MeasurementInfo[]
+    metadata = _stream_project_cache_contents(
+        root_path,
+        project,
+        cache_id;
+        should_cancel,
+        on_progress,
+        on_file_loaded=(file_measurements) -> begin
+            on_file_loaded !== nothing && on_file_loaded(file_measurements)
+            append!(measurements, file_measurements)
+        end,
+    )
+    hierarchy = MeasurementHierarchy(
+        measurements,
+        metadata.identity.root_path,
+        metadata.has_device_metadata,
+        project,
+        metadata.skipped_count,
+    )
+    return ProjectCacheSnapshot(
+        metadata.identity,
+        hierarchy,
+        metadata.status,
+        metadata.semantic_fields,
+        metadata.errors,
+    )
+end
+
+function _stream_project_cache_contents(
+    root_path::AbstractString,
+    project::AbstractProject,
+    cache_id::AbstractString,
+    ;
+    should_cancel::Union{Nothing,Function}=nothing,
+    on_progress::Union{Nothing,Function}=nothing,
+    on_file_loaded::Union{Nothing,Function}=nothing,
+)
     identity = project_cache_identity(cache_id, project, root_path)
     isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
     _check_cancel(should_cancel)
-    hierarchy, semantic_fields = h5open(identity.cache_path, "r") do h5
+    metadata = h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
         files_group = haskey(h5, "files") ? h5["files"] :
             throw(ProjectCacheInvalidError(identity.cache_path, "missing /files group"))
         file_keys = sort!(collect(keys(files_group)))
-        measurements = MeasurementInfo[]
         skipped_count = 0
         loaded_measurements = 0
         processed = 0
+        semantic_fields = _read_semantic_fields(h5, identity.cache_path)
+        has_device_metadata = _read_cache_has_device_metadata(h5, identity.cache_path)
+        cached_status = _cache_status_from_cached_statuses(_cached_file_statuses(h5))
         for file_key in file_keys
             _check_cancel(should_cancel)
             file_group = files_group[file_key]
@@ -842,7 +881,6 @@ function _load_project_cache_contents(
             if on_file_loaded !== nothing && !isempty(file_measurements)
                 on_file_loaded(file_measurements)
             end
-            append!(measurements, file_measurements)
             loaded_measurements += length(file_measurements)
             processed += 1
             current_path = haskey(file_group, "path") ? read(file_group["path"]) : file_key
@@ -855,27 +893,23 @@ function _load_project_cache_contents(
                 current_path,
             )
         end
-        hierarchy = MeasurementHierarchy(
-            measurements,
-            identity.root_path,
-            _read_cache_has_device_metadata(h5, identity.cache_path),
-            project,
-            skipped_count,
+        (
+            identity=identity,
+            status=cached_status,
+            semantic_fields=semantic_fields,
+            skipped_count=skipped_count,
+            has_device_metadata=has_device_metadata,
         )
-        (hierarchy, _read_semantic_fields(h5, identity.cache_path))
     end
     _check_cancel(should_cancel)
     errors = _cache_file_errors(identity)
-    cached_status = h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        _cache_status_from_cached_statuses(_cached_file_statuses(h5))
-    end
-    return ProjectCacheSnapshot(
-        identity,
-        hierarchy,
-        cached_status,
-        semantic_fields,
-        errors,
+    return (
+        identity=metadata.identity,
+        status=metadata.status,
+        semantic_fields=metadata.semantic_fields,
+        errors=errors,
+        skipped_count=metadata.skipped_count,
+        has_device_metadata=metadata.has_device_metadata,
     )
 end
 
