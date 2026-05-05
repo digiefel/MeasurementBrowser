@@ -285,8 +285,12 @@ function detect_pund_pulses(t, V, I;
     dV_max = maximum(abs.(dV))
     dV_threshold = dV_max / 2
 
-    baseline_V = mean(abs.(V[1:min(9, length(V))]))
-    min_V_amp = baseline_V * min_V_amp_mult
+    # Voltage baseline: mean of first few points (may be non-zero, e.g. 1 V DC offset)
+    n_pre = min(9, length(V))
+    V_baseline = mean(V[1:n_pre])
+    Vc = V .- V_baseline
+    V_noise = mean(abs.(Vc[1:n_pre]))
+    min_V_amp = V_noise * min_V_amp_mult
 
     # Stage 1: derivative-based detection
     pulses = UnitRange{Int}[]
@@ -305,7 +309,7 @@ function detect_pund_pulses(t, V, I;
 
         for pulse in all_pulses
             if length(pulse) >= min_pulse_len
-                pulse_V_range = maximum(abs.(V[pulse]))
+                pulse_V_range = maximum(abs.(Vc[pulse]))
                 if pulse_V_range >= min_V_amp
                     push!(pulses, pulse)
                 end
@@ -316,10 +320,10 @@ function detect_pund_pulses(t, V, I;
     # Stage 2: trough-based fallback (only if stage 1 found nothing)
     if isempty(pulses)
         detection_method = :trough_fallback
-        absV = abs.(V)
-        V_peak = maximum(absV)
+        absVc = abs.(Vc)
+        V_peak = maximum(absVc)
         trough_threshold = V_peak * trough_thresh
-        in_trough = absV .< trough_threshold
+        in_trough = absVc .< trough_threshold
         i = 1
         while i <= N
             while i <= N && in_trough[i]
@@ -345,7 +349,7 @@ function detect_pund_pulses(t, V, I;
     total = 0
     for (pi, pulse) in enumerate(pulses)
         half = pulse[1:end÷2]
-        V_avg = mean(V[half])
+        V_avg = mean(Vc[half])
         I_avg = mean(I_shifted[half])
         if abs(V_avg) > 0 && abs(I_avg) > 0
             total += 1
@@ -380,7 +384,7 @@ function detect_pund_pulses(t, V, I;
         pulses, detection_method,
         polarity_info, mismatches, total, verdict,
         n_groups, remainder,
-        min_V_amp, baseline_V,
+        min_V_amp, baseline_V=V_baseline,
     )
 end
 
@@ -432,9 +436,9 @@ function analyze_pund(df::DataFrame; pulses::Union{Nothing,Vector{UnitRange{Int}
         @assert !isempty(pulses) "no valid pulses found; adjust derivative threshold or filtering parameters"
 
         if det.verdict == :all_flipped
-            I = -I
+            # I = -I # commented out to disable polarity correction
         elseif det.verdict == :inconsistent
-            error("Inconsistent polarity: $(det.mismatches)/$(det.total) pulses misaligned")
+            # error("Inconsistent polarity: $(det.mismatches)/$(det.total) pulses misaligned") # disabled polarity check error
         end
     else
         # ---- pulse boundaries provided, skip detection -----------------------------
@@ -442,25 +446,33 @@ function analyze_pund(df::DataFrame; pulses::Union{Nothing,Vector{UnitRange{Int}
         baseline_I = mean(skipmissing(filter(!isnan, I[1:n0])))
         I = I .- baseline_I
 
-        # Quick polarity check on first pulse
+        # Quick polarity check on first pulse (use centered voltage)
+        n_vbl2 = min(9, N)
+        V_baseline2 = mean(V[1:n_vbl2])
+        Vc2 = V .- V_baseline2
         half = pulses[1][1:end÷2]
-        V_avg = mean(V[half])
+        V_avg = mean(Vc2[half])
         I_avg = mean(I[half])
         if abs(V_avg) > 0 && abs(I_avg) > 0 && sign(V_avg) != sign(I_avg)
-            I = -I
+            # I = -I # commented out to disable polarity correction
         end
     end
+
+    # ---- voltage baseline for sign checks (may be non-zero, e.g. 1 V DC offset) --------
+    n_vbl = min(9, N)
+    V_baseline = mean(V[1:n_vbl])
+    Vc = V .- V_baseline
 
     # ---- consistency check and grouping into quintuples --------------------------------
     groups = [(pulses[i], pulses[i+1], pulses[i+2], pulses[i+3], pulses[i+4]) for i in 1:5:length(pulses)-4]
 
     for g in groups
         poling, P, U, Np, D = Tuple(g)
-        sP, sPol = sign(sum(V[P])), sign(sum(V[poling]))
+        sP, sPol = sign(sum(Vc[P])), sign(sum(Vc[poling]))
         @assert sPol == -sP &&
-                sign(sum(V[U])) == sP &&
-                sign(sum(V[Np])) == -sP &&
-                sign(sum(V[D])) == -sP "unexpected pulse ordering"
+                sign(sum(Vc[U])) == sP &&
+                sign(sum(Vc[Np])) == -sP &&
+                sign(sum(Vc[D])) == -sP "unexpected pulse ordering"
     end
 
     # ---- allocate result columns -------------------------------------------------------

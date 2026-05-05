@@ -20,6 +20,10 @@ function display_label(proj::RuO2Project, meas::MeasurementInfo)
         m = match(r"(\d+(?:\.\d+)?)V", meas.filename)
         voltage = m !== nothing ? tryparse(Float64, m.captures[1]) : get(meas.parameters, :voltage_V, nothing)
         voltage !== nothing && push!(parts, "$(voltage)V")
+        freq = get(meas.parameters, :frequency_Hz, nothing)
+        if freq !== nothing
+            push!(parts, freq >= 1000 ? "$(round(freq/1000, digits=1)) kHz" : "$(round(freq, digits=1)) Hz")
+        end
         haskey(meas.parameters, :fatigue_cycle) && push!(parts, "cycle $(meas.parameters[:fatigue_cycle]) (fatigue)")
     end
 

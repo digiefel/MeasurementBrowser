@@ -5,6 +5,7 @@ RuO2Project.jl - Project dispatch methods for RuO2test ferroelectric measurement
 using Dates
 include("RuO2/Display.jl")
 include("RuO2/Interpretation.jl")
+include("RuO2/Stats.jl")
 include("RuO2/PlotHelpers.jl")
 include("RuO2/PlotSingle.jl")
 include("RuO2/PlotCombined.jl")

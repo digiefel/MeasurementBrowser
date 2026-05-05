@@ -200,13 +200,7 @@ end
 
 function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
     item.kind == :pund_fatigue || return [item]
-    cycles, voltage_V = try
-        _ruo2_scan_fatigue_file(item.filepath; should_cancel=should_cancel)
-    catch e
-        e isa ScanCancelled && rethrow()
-        @warn "Could not read fatigue cycles from $(item.filepath)" error = e
-        return MeasurementItem[]
-    end
+    cycles, voltage_V = _ruo2_scan_fatigue_file(item.filepath; should_cancel=should_cancel)
     isempty(cycles) && return MeasurementItem[]
     return [MeasurementItem(
         item_id(item.source_file_id; cycle=c),

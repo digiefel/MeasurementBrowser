@@ -253,6 +253,7 @@ function _init_bad_state!(ui_state)
     ui_state[:selected_measurement_id_set] = Set{String}()
     ui_state[:selected_path] = String[]
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
+    ui_state[:computed_stats_cache] = Dict{Tuple{String,Int},Dict{Symbol,Any}}()
 end
 
 function _init_plot_state!(ui_state)
@@ -3446,6 +3447,32 @@ function render_info_window(ui_state)
                 end
             else
                 ig.TextDisabled("No parameters extracted")
+            end
+
+            # ---- data-derived statistics (PUND measurements only) ---------
+            if m.measurement_kind == :pund
+                ig.Separator()
+                ig.Text("Statistics")
+                cache = get(ui_state, :computed_stats_cache, Dict{Tuple{String,Int},Dict{Symbol,Any}}())
+                cache_key = (m.filepath, get(m.parameters, :fatigue_cycle, 0))
+                stats = get!(cache, cache_key) do
+                    compute_pund_stats(m.filepath, m.parameters, m.device_info.parameters)
+                end
+                if !isempty(stats)
+                    order = [:voltage_max_V, :voltage_baseline_V, :voltage_min_V, :frequency_kHz, :Pr_max_uCcm2]
+                    for key in order
+                        haskey(stats, key) || continue
+                        v = stats[key]
+                        label = replace(string(key), "_" => " ")
+                        if v === nothing
+                            ig.BulletText("$label: —")
+                        else
+                            ig.BulletText("$label = $v")
+                        end
+                    end
+                else
+                    ig.TextDisabled("Could not compute statistics")
+                end
             end
 
         elseif isempty(selected_measurements)
