@@ -1389,6 +1389,53 @@ function _render_progress_indicator!(ui_state, item)
     ig.ProgressBar(fraction, (-1, 0), overlay)
 end
 
+function _source_rescan_progress_model(ui_state)
+    source_state = get(ui_state, :source_scan_state, :idle)
+    if !(source_state in (:counting, :cache_check, :canceling, :done, :canceled, :error))
+        return nothing
+    end
+    if source_state == :error
+        return (
+            title="Rescan: Error",
+            progress=get(ui_state, :source_scan_error, "Source scan failed."),
+            fraction=0.0f0,
+            indeterminate=false,
+        )
+    end
+
+    progress = get(ui_state, :source_scan_progress, _new_scan_progress())
+    total = get(progress, :total_csv, 0)
+    processed = get(progress, :processed_csv, 0)
+    text = if source_state == :canceling
+        "Canceling source rescan..."
+    elseif source_state == :canceled
+        "Source rescan canceled"
+    elseif source_state == :done
+        total > 0 ?
+            "Source rescan complete: checked $processed/$total CSV files" :
+            "Source rescan complete"
+    else
+        total > 0 ?
+            "Checking $processed/$total source CSV files" :
+            "Finding source CSV files: $processed found"
+    end
+    title = if source_state == :done
+        "Rescan: Complete"
+    elseif source_state == :canceled
+        "Rescan: Canceled"
+    elseif source_state == :canceling
+        "Rescan: Canceling"
+    else
+        "Rescan: Checking Source"
+    end
+    return (
+        title,
+        progress=text,
+        fraction=source_state == :done ? 1.0f0 : _progress_fraction(progress),
+        indeterminate=source_state in (:counting, :cache_check) && total <= 0,
+    )
+end
+
 function _cache_progress_models(ui_state)
     models = NamedTuple[]
     load_progress = get(ui_state, :cache_load_progress, nothing)
@@ -1421,46 +1468,9 @@ end
 
 function _source_progress_models(ui_state)
     models = NamedTuple[]
-    source_state = get(ui_state, :source_scan_state, :idle)
-    if source_state in (:counting, :cache_check, :canceling, :done, :canceled)
-        progress = get(ui_state, :source_scan_progress, _new_scan_progress())
-        total = get(progress, :total_csv, 0)
-        processed = get(progress, :processed_csv, 0)
-        text = if source_state == :canceling
-            "Canceling source rescan..."
-        elseif source_state == :canceled
-            "Source rescan canceled"
-        elseif source_state == :done
-            total > 0 ?
-                "Source rescan complete: checked $processed/$total CSV files" :
-                "Source rescan complete"
-        else
-            total > 0 ?
-                "Checking $processed/$total source CSV files" :
-                "Finding source CSV files: $processed found"
-        end
-        title = if source_state == :done
-            "Rescan: Complete"
-        elseif source_state == :canceled
-            "Rescan: Canceled"
-        elseif source_state == :canceling
-            "Rescan: Canceling"
-        else
-            "Rescan: Checking Source"
-        end
-        push!(models, (
-            title,
-            progress=text,
-            fraction=source_state == :done ? 1.0f0 : _progress_fraction(progress),
-            indeterminate=source_state in (:counting, :cache_check) && total <= 0,
-        ))
-    elseif source_state == :error
-        push!(models, (
-            title="Rescan: Error",
-            progress=get(ui_state, :source_scan_error, "Source scan failed."),
-            fraction=0.0f0,
-            indeterminate=false,
-        ))
+    rescan_model = _source_rescan_progress_model(ui_state)
+    if rescan_model !== nothing
+        push!(models, rescan_model)
     end
 
     state = get(ui_state, :scan_state, :idle)
@@ -2491,6 +2501,14 @@ function render_menu_bar(ui_state)
                 end
             end
             !can_rescan && ig.EndDisabled()
+
+            rescan_progress = _source_rescan_progress_model(ui_state)
+            if rescan_progress !== nothing
+                ig.Spacing()
+                ig.TextDisabled(rescan_progress.title)
+                ig.TextDisabled(rescan_progress.progress)
+                _render_progress_indicator!(ui_state, rescan_progress)
+            end
 
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
