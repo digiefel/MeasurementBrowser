@@ -1376,17 +1376,9 @@ function _progress_fraction(progress)
     return Float32(clamp(processed / total, 0, 1))
 end
 
-function _indeterminate_progress_fraction(ui_state)
-    frame = get(ui_state, :_frame, 0)
-    return Float32(0.12 + 0.76 * (0.5 + 0.5 * sin(frame / 18)))
-end
-
 function _render_progress_indicator!(ui_state, item)
-    fraction = get(item, :indeterminate, false) ?
-        _indeterminate_progress_fraction(ui_state) :
-        item.fraction
-    overlay = get(item, :indeterminate, false) ? "working..." : ""
-    ig.ProgressBar(fraction, (-1, 0), overlay)
+    get(item, :show_bar, true) || return
+    ig.ProgressBar(item.fraction, (-1, 0))
 end
 
 function _source_rescan_progress_model(ui_state)
@@ -1399,7 +1391,7 @@ function _source_rescan_progress_model(ui_state)
             title="Rescan: Error",
             progress=get(ui_state, :source_scan_error, "Source scan failed."),
             fraction=0.0f0,
-            indeterminate=false,
+            show_bar=false,
         )
     end
 
@@ -1432,7 +1424,7 @@ function _source_rescan_progress_model(ui_state)
         title,
         progress=text,
         fraction=source_state == :done ? 1.0f0 : _progress_fraction(progress),
-        indeterminate=source_state in (:counting, :cache_check) && total <= 0,
+        show_bar=total > 0 || source_state == :done,
     )
 end
 
@@ -1450,7 +1442,7 @@ function _cache_progress_models(ui_state)
             title="Cache: Loading",
             progress=text,
             fraction=_progress_fraction(load_progress),
-            indeterminate=total <= 0,
+            show_bar=true,
         ))
     end
     state = get(ui_state, :scan_state, :idle)
@@ -1460,7 +1452,7 @@ function _cache_progress_models(ui_state)
             title=activity.title,
             progress=activity.progress,
             fraction=activity.fraction,
-            indeterminate=get(get(ui_state, :scan_progress, _new_scan_progress()), :total_csv, 0) <= 0,
+            show_bar=true,
         ))
     end
     return models
@@ -1485,7 +1477,7 @@ function _source_progress_models(ui_state)
             title="Source: Checking",
             progress=text,
             fraction=_progress_fraction(source_check_progress),
-            indeterminate=total <= 0,
+            show_bar=true,
         ))
     elseif state == :cache_check
         check_progress = get(ui_state, :scan_progress, _new_scan_progress())
@@ -1498,7 +1490,7 @@ function _source_progress_models(ui_state)
             title="Source: Checking",
             progress=text,
             fraction=_progress_fraction(check_progress),
-            indeterminate=total <= 0,
+            show_bar=true,
         ))
     end
     return models
@@ -3427,31 +3419,15 @@ function render_project_window(ui_state)
 
     open_ref = Ref(true)
     if ig.Begin("Project Settings###project_window", open_ref, ig.ImGuiWindowFlags_AlwaysAutoResize)
-        # ── Status ──────────────────────────────────────────────────────────
         if haskey(ui_state, :project)
             proj = ui_state[:project]
-            n_meas = length(get(ui_state, :all_measurements, MeasurementInfo[]))
-            skipped = get(ui_state, :skipped_count, 0)
-            ig.TextColored((0.4, 0.8, 1.0, 1.0), "Active: $(project_name(proj))")
-            ig.SameLine()
-            ig.TextDisabled("— $(project_description(proj))")
-            ig.Text("$n_meas measurements loaded")
-            if skipped > 0
-                ig.TextColored((1.0, 0.6, 0.2, 1.0), "⚠ $skipped CSV file(s) skipped")
-                ig.SameLine()
-                _helpmarker("These CSV files were skipped because they don't match the active project filter.\nTry selecting a different project below.")
-            else
-                ig.TextDisabled("0 files skipped")
-            end
+            ig.Text("Active: $(project_name(proj))")
         else
             ig.TextDisabled("No folder loaded yet")
         end
 
         ig.Separator()
-        ig.Text("Select project:")
-        ig.Spacing()
 
-        # ── Radio buttons ────────────────────────────────────────────────────
         pref = get(ui_state, :project_preference, "auto")
         changed = false
 
@@ -3477,7 +3453,7 @@ function render_project_window(ui_state)
 
         source_progress = _source_progress_models(ui_state)
         if !isempty(source_progress)
-            ig.Spacing()
+            ig.Separator()
             for item in source_progress
                 ig.TextDisabled(item.title)
                 ig.TextDisabled(item.progress)
@@ -3495,7 +3471,6 @@ function render_project_window(ui_state)
             end
         end
 
-        # ── Persist + rescan on change ───────────────────────────────────────
         if changed
             current_root = get(ui_state, :root_path, "")
             _persist_preferences!(ui_state; path=isempty(current_root) ? nothing : current_root)
@@ -3504,9 +3479,6 @@ function render_project_window(ui_state)
                 _open_project_path!(ui_state, current_root)
             end
         end
-
-        ig.Separator()
-        _render_cache_controls!(ui_state; compact=true)
     end
     open_ref[] || (ui_state[:show_project_window] = false)
     ig.End()

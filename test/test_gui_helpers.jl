@@ -160,7 +160,7 @@ end
     @test length(rescan_models) == 1
     @test rescan_models[1].title == "Rescan: Checking Source"
     @test rescan_models[1].progress == "Checking 2/8 source CSV files"
-    @test rescan_models[1].indeterminate == false
+    @test rescan_models[1].show_bar == true
     finding_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
         :source_scan_state => :cache_check,
         :source_scan_progress => Dict{Symbol,Any}(
@@ -173,7 +173,7 @@ end
         ),
     ))
     @test finding_models[1].progress == "Finding source CSV files: 12 found"
-    @test finding_models[1].indeterminate == true
+    @test finding_models[1].show_bar == false
     done_rescan_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
         :source_scan_state => :done,
         :source_scan_progress => Dict{Symbol,Any}(
@@ -187,7 +187,7 @@ end
     ))
     @test done_rescan_models[1].title == "Rescan: Complete"
     @test done_rescan_models[1].fraction == 1.0f0
-    @test done_rescan_models[1].indeterminate == false
+    @test done_rescan_models[1].show_bar == true
     @test isempty(MeasurementBrowser._cache_progress_models(Dict{Symbol,Any}(
         :scan_state => :cache_check,
         :source_check_progress => Dict{Symbol,Any}(),
