@@ -1407,22 +1407,40 @@ end
 function _source_progress_models(ui_state)
     models = NamedTuple[]
     source_state = get(ui_state, :source_scan_state, :idle)
-    if source_state in (:counting, :cache_check, :canceling)
+    if source_state in (:counting, :cache_check, :canceling, :done, :canceled)
         progress = get(ui_state, :source_scan_progress, _new_scan_progress())
         total = get(progress, :total_csv, 0)
         processed = get(progress, :processed_csv, 0)
-        text = source_state == :canceling ? "Canceling source scan..." :
+        text = if source_state == :canceling
+            "Canceling source rescan..."
+        elseif source_state == :canceled
+            "Source rescan canceled"
+        elseif source_state == :done
             total > 0 ?
-                "Checked $processed/$total source CSV files" :
-                "Found $processed source CSV files"
+                "Source rescan complete: checked $processed/$total CSV files" :
+                "Source rescan complete"
+        else
+            total > 0 ?
+                "Checking $processed/$total source CSV files" :
+                "Finding source CSV files: $processed found"
+        end
+        title = if source_state == :done
+            "Rescan: Complete"
+        elseif source_state == :canceled
+            "Rescan: Canceled"
+        elseif source_state == :canceling
+            "Rescan: Canceling"
+        else
+            "Rescan: Checking Source"
+        end
         push!(models, (
-            title="Source: Rescanning",
+            title,
             progress=text,
-            fraction=_progress_fraction(progress),
+            fraction=source_state == :done ? 1.0f0 : _progress_fraction(progress),
         ))
     elseif source_state == :error
         push!(models, (
-            title="Source: Error",
+            title="Rescan: Error",
             progress=get(ui_state, :source_scan_error, "Source scan failed."),
             fraction=0.0f0,
         ))
