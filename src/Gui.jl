@@ -1462,7 +1462,7 @@ function _cache_toolbar_model(ui_state)
         return (
             label="Cache: Loaded",
             color=(0.18, 0.42, 0.78, 1.0),
-            detail="Cached measurements are loaded; source files are being checked separately.",
+            detail="Loaded cached measurements.",
         )
     elseif cache_state == :missing
         return (
@@ -1704,6 +1704,21 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
     return nothing
 end
 
+function _apply_cache_metadata!(ui_state, metadata)
+    identity = metadata.identity
+    ui_state[:root_path] = identity.root_path
+    ui_state[:project] = _project_by_name(identity.project_name)
+    ui_state[:cache_id] = identity.cache_id
+    ui_state[:cache_identity] = identity
+    ui_state[:cache_status] = metadata.status
+    ui_state[:cache_semantic_fields] = metadata.semantic_fields
+    ui_state[:cache_errors] = metadata.errors
+    ui_state[:skipped_count] = metadata.skipped_count
+    ui_state[:has_device_metadata] = metadata.has_device_metadata
+    ui_state[:cache_error] = ""
+    return nothing
+end
+
 function _append_cache_measurements!(ui_state, measurements::Vector{MeasurementInfo})
     isempty(measurements) && return nothing
     hierarchy = get(ui_state, :scan_hierarchy, nothing)
@@ -1729,6 +1744,72 @@ function _append_cache_measurements!(ui_state, measurements::Vector{MeasurementI
     ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
     _apply_visible_selection!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
+    return nothing
+end
+
+function _launch_source_scan_job!(
+    ui_state,
+    path::String,
+    proj::AbstractProject;
+    persist::Bool=true,
+)
+    if _scan_running(ui_state)
+        _request_scan_cancel!(ui_state)
+    end
+
+    norm_path = _normalize_project_path(path)
+    _begin_scan!(ui_state, norm_path, proj, isfile(joinpath(norm_path, "device_info.txt")))
+    scan_id = get(ui_state, :scan_seq, 0) + 1
+    ui_state[:scan_seq] = scan_id
+    ui_state[:active_scan_id] = scan_id
+    ui_state[:scan_path] = norm_path
+    ui_state[:scan_state] = :counting
+    ui_state[:scan_progress] = _new_scan_progress()
+    ui_state[:scan_error] = ""
+    delete!(ui_state, :source_check_progress)
+
+    events = Channel{NamedTuple}(Inf)
+    cancel_token = Base.Threads.Atomic{Bool}(false)
+    ui_state[:scan_events] = events
+    ui_state[:scan_cancel_token] = cancel_token
+
+    Base.Threads.@spawn begin
+        try
+            hierarchy = scan_directory(
+                norm_path;
+                project=proj,
+                should_cancel=() -> cancel_token[],
+                count_first=true,
+                on_progress=(progress) -> put!(events, (
+                    kind=:progress,
+                    scan_id=scan_id,
+                    progress=progress,
+                )),
+            )
+            snapshot = (
+                hierarchy=hierarchy,
+                measurement_index=_build_measurement_index(hierarchy.all_measurements),
+                device_metadata_keys=_device_metadata_keys(hierarchy.all_measurements),
+                skipped_count=hierarchy.skipped_count,
+                root_path=norm_path,
+                project=proj,
+            )
+            put!(events, (
+                kind=:source_scan_result,
+                scan_id=scan_id,
+                snapshot=snapshot,
+                persist=persist,
+            ))
+        catch err
+            if _is_scan_cancel_error(err) || err isa PlotCancelled
+                put!(events, (kind=:canceled, scan_id=scan_id))
+            else
+                put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
+            end
+        finally
+            close(events)
+        end
+    end
     return nothing
 end
 
@@ -1776,13 +1857,13 @@ function _launch_project_reload_job!(
     Base.Threads.@spawn begin
         try
             cached_fingerprints, cached_statuses = _cached_cache_index(identity)
-            load_snapshot_ref = Ref{Union{Nothing,ProjectCacheSnapshot}}(nothing)
+            cache_metadata_ref = Ref{Any}(nothing)
             status_ref = Ref{Union{Nothing,ProjectCacheStatus}}(nothing)
             errors = Channel{Any}(Inf)
 
             @sync begin
                 Base.Threads.@spawn try
-                    snapshot = _load_project_cache_contents(
+                    metadata = _stream_project_cache_contents(
                         identity.root_path,
                         proj,
                         cache_id;
@@ -1798,11 +1879,11 @@ function _launch_project_reload_job!(
                             measurements=measurements,
                         )),
                     )
-                    load_snapshot_ref[] = snapshot
+                    cache_metadata_ref[] = metadata
                     put!(events, (
                         kind=:cache_loaded,
                         scan_id=scan_id,
-                        snapshot=snapshot,
+                        metadata=metadata,
                     ))
                 catch err
                     put!(errors, (err, catch_backtrace()))
@@ -1829,18 +1910,24 @@ function _launch_project_reload_job!(
                 err, bt = take!(errors)
                 throw(err)
             end
-            snapshot = load_snapshot_ref[]
+            metadata = cache_metadata_ref[]
             status = status_ref[]
-            snapshot === nothing && error("Cache reload finished without loading cache contents")
+            metadata === nothing && error("Cache reload finished without loading cache contents")
             status === nothing && error("Cache reload finished without checking source files")
-            checked_snapshot = ProjectCacheSnapshot(
-                snapshot.identity,
-                snapshot.hierarchy,
-                status,
-                snapshot.semantic_fields,
-                snapshot.errors,
+            checked_metadata = (
+                identity=metadata.identity,
+                status=status,
+                semantic_fields=metadata.semantic_fields,
+                errors=metadata.errors,
+                skipped_count=metadata.skipped_count,
+                has_device_metadata=metadata.has_device_metadata,
             )
-            put!(events, (kind=:reload_result, scan_id=scan_id, snapshot=checked_snapshot, persist=persist))
+            put!(events, (
+                kind=:reload_result,
+                scan_id=scan_id,
+                metadata=checked_metadata,
+                persist=persist,
+            ))
         catch err
             if _is_scan_cancel_error(err) || err isa PlotCancelled
                 put!(events, (kind=:canceled, scan_id=scan_id))
@@ -1961,14 +2048,24 @@ function _poll_scan_events!(ui_state)
         elseif msg.kind == :cache_measurements
             _append_cache_measurements!(ui_state, msg.measurements)
         elseif msg.kind == :cache_loaded
-            _apply_cache_snapshot!(ui_state, msg.snapshot)
-            _load_bad_registry_for_root!(ui_state, msg.snapshot.identity.root_path)
+            _apply_cache_metadata!(ui_state, msg.metadata)
+            _load_bad_registry_for_root!(ui_state, msg.metadata.identity.root_path)
             ui_state[:cache_state] = :checking
             ui_state[:scan_state] = :cache_check
         elseif msg.kind == :reload_result
-            _apply_cache_snapshot!(ui_state, msg.snapshot)
-            _load_bad_registry_for_root!(ui_state, msg.snapshot.identity.root_path)
-            msg.persist && _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
+            _apply_cache_metadata!(ui_state, msg.metadata)
+            ui_state[:cache_state] = :ready
+            ui_state[:scan_state] = :done
+            _load_bad_registry_for_root!(ui_state, msg.metadata.identity.root_path)
+            msg.persist && _persist_preferences!(ui_state; path=msg.metadata.identity.root_path)
+            _finalize_scan!(ui_state)
+        elseif msg.kind == :source_scan_result
+            _apply_scan_snapshot!(ui_state, msg.snapshot)
+            ui_state[:root_path] = msg.snapshot.root_path
+            ui_state[:project] = msg.snapshot.project
+            ui_state[:scan_state] = :done
+            _load_bad_registry_for_root!(ui_state, msg.snapshot.root_path)
+            msg.persist && _persist_preferences!(ui_state; path=msg.snapshot.root_path)
             _finalize_scan!(ui_state)
         elseif msg.kind == :cache_missing
             identity = msg.identity
@@ -2264,12 +2361,18 @@ function render_menu_bar(ui_state)
                 ig.EndMenu()
             end
 
-            if ig.MenuItem("Reload")
-                if haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
-                    @info "Reloading path: $(ui_state[:root_path])"
-                    _open_project_path!(ui_state, ui_state[:root_path])
-                end
+            can_rescan = haskey(ui_state, :root_path) &&
+                         !isempty(ui_state[:root_path]) &&
+                         !_scan_running(ui_state)
+            !can_rescan && ig.BeginDisabled()
+            if ig.MenuItem("Rescan")
+                proj = haskey(ui_state, :project) ?
+                    ui_state[:project] :
+                    _project_for_preference(get(ui_state, :project_preference, "auto"))
+                @info "Rescanning path: $(ui_state[:root_path])"
+                _launch_source_scan_job!(ui_state, ui_state[:root_path], proj)
             end
+            !can_rescan && ig.EndDisabled()
 
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
