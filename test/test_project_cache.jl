@@ -53,6 +53,18 @@ function _drain_scan_job!(ui_state)
     error("Timed out waiting for scan job to finish")
 end
 
+function _drain_background_jobs!(ui_state)
+    for _ in 1:500
+        MeasurementBrowser._poll_scan_events!(ui_state)
+        MeasurementBrowser._poll_source_scan_events!(ui_state)
+        get(ui_state, :scan_events, nothing) === nothing &&
+            get(ui_state, :source_scan_events, nothing) === nothing &&
+            return
+        sleep(0.01)
+    end
+    error("Timed out waiting for background jobs to finish")
+end
+
 @testset "project HDF5 cache" begin
     cache_id = MeasurementBrowser.new_project_cache_id()
     @test occursin(r"^\d{8}_\d{6}$", cache_id)
@@ -184,10 +196,17 @@ end
             ui_state = _init_cache_test_ui(cache_id, dir)
             MeasurementBrowser._open_project_path!(ui_state, dir; persist=false)
             @test get(ui_state, :scan_state, :idle) in (:cache_reload, :cache_discovery, :done)
-            _drain_scan_job!(ui_state)
+            MeasurementBrowser._launch_source_scan_job!(
+                ui_state,
+                dir,
+                MeasurementBrowser.RUO2_PROJECT;
+                persist=false,
+            )
+            _drain_background_jobs!(ui_state)
             @test ui_state[:cache_state] == :ready
             @test ui_state[:cache_status].fresh_files == 1
             @test length(ui_state[:all_measurements]) == 1
+            @test get(ui_state, :source_scan_state, :idle) == :done
         finally
             _remove_cache_file(cache_id)
         end
