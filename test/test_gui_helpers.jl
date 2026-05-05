@@ -92,6 +92,72 @@ end
         :cache_status => MeasurementBrowser.ProjectCacheStatus(3, 2, 1, 0, 0, 0, 1),
     ))
     @test errors_model.label == "Cache: Errors"
+    discovery_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
+        :scan_state => :cache_discovery,
+        :scan_progress => Dict{Symbol,Any}(
+            :phase => :cache_discovery,
+            :total_csv => 0,
+            :processed_csv => 12,
+            :loaded_measurements => 0,
+            :skipped_csv => 0,
+            :current_path => "",
+        ),
+    ))
+    @test discovery_model.title == "Cache: Preparing Build"
+    @test discovery_model.progress == "Found 12 source CSV files"
+
+    load_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
+        :scan_state => :cache_load,
+        :scan_progress => Dict{Symbol,Any}(
+            :phase => :cache_load,
+            :total_csv => 5,
+            :processed_csv => 2,
+            :loaded_measurements => 14,
+            :skipped_csv => 0,
+            :current_path => "",
+        ),
+    ))
+    @test load_model.title == "Cache: Loading"
+    @test load_model.progress == "Read 2/5 cached files, loaded 14 measurements"
+
+    check_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
+        :scan_state => :cache_check,
+        :scan_progress => Dict{Symbol,Any}(
+            :phase => :cache_check,
+            :total_csv => 5,
+            :processed_csv => 3,
+            :loaded_measurements => 0,
+            :skipped_csv => 0,
+            :current_path => "",
+        ),
+    ))
+    @test check_model.title == "Source: Checking"
+    @test check_model.progress == "Checked 3/5 source CSV files"
+    source_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
+        :scan_state => :cache_check,
+        :source_check_progress => Dict{Symbol,Any}(
+            :phase => :cache_check,
+            :total_csv => 5,
+            :processed_csv => 3,
+            :loaded_measurements => 0,
+            :skipped_csv => 0,
+            :current_path => "",
+        ),
+    ))
+    @test length(source_models) == 1
+    @test source_models[1].title == "Source: Checking"
+    @test isempty(MeasurementBrowser._cache_progress_models(Dict{Symbol,Any}(
+        :scan_state => :cache_check,
+        :source_check_progress => Dict{Symbol,Any}(),
+    )))
+    checking_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+        :cache_identity => cache_identity,
+        :cache_state => :checking,
+        :scan_state => :cache_check,
+    ))
+    @test checking_model.label == "Cache: Loaded"
+    @test MeasurementBrowser.MakieImguiIntegration._texture_display_size((1600, 1000), 2.0f0) == (800.0, 500.0)
+    @test MeasurementBrowser.MakieImguiIntegration._texture_display_size((800, 500), 1.0f0) == (800.0, 500.0)
 
     items = [1, 2, 3, 4]
     selected = Int[]

@@ -27,6 +27,32 @@ function _write_bad_pund_fixture!(dir::AbstractString)
     return dst
 end
 
+function _init_cache_test_ui(cache_id::AbstractString, dir::AbstractString)
+    ui_state = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui_state)
+    MeasurementBrowser._init_cache_state!(ui_state)
+    MeasurementBrowser._init_bad_state!(ui_state)
+    MeasurementBrowser._init_figure_script_state!(ui_state)
+    MeasurementBrowser._init_plot_state!(ui_state)
+    ui_state[:project_preference] = "RuO2"
+    ui_state[:recent_projects] = [Dict{String,String}(
+        "path" => realpath(dir),
+        "project_preference" => "RuO2",
+        "figure_script_output_dir" => "",
+        "cache_id" => String(cache_id),
+    )]
+    return ui_state
+end
+
+function _drain_scan_job!(ui_state)
+    for _ in 1:500
+        MeasurementBrowser._poll_scan_events!(ui_state)
+        get(ui_state, :scan_events, nothing) === nothing && return
+        sleep(0.01)
+    end
+    error("Timed out waiting for scan job to finish")
+end
+
 @testset "project HDF5 cache" begin
     cache_id = MeasurementBrowser.new_project_cache_id()
     @test occursin(r"^\d{8}_\d{6}$", cache_id)
@@ -42,11 +68,13 @@ end
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
 
+            progress_events = NamedTuple[]
             snapshot = build_project_cache!(
                 dir,
                 MeasurementBrowser.RUO2_PROJECT,
                 cache_id;
                 full_rebuild=true,
+                on_progress=progress -> push!(progress_events, progress),
             )
             @test snapshot.identity.cache_id == cache_id
             @test snapshot.hierarchy.has_device_metadata == false
@@ -55,6 +83,9 @@ end
             @test snapshot.status.total_files == 2
             @test snapshot.status.cached_files == 2
             @test snapshot.status.fresh_files == 2
+            @test any(event -> event.phase == :cache_discovery, progress_events)
+            @test any(event -> event.phase == :cache_update, progress_events)
+            @test last(filter(event -> event.phase == :cache_update, progress_events)).processed_csv == 2
 
             loaded = load_project_cache(dir, MeasurementBrowser.RUO2_PROJECT, cache_id)
             @test [m.id for m in loaded.hierarchy.all_measurements] ==
@@ -116,13 +147,47 @@ end
             @test snapshot.status.fresh_files == 1
             @test snapshot.status.error_files == 1
             @test length(snapshot.errors) == 1
-            @test snapshot.errors[1].path == bad_path
+            @test snapshot.errors[1].path == realpath(bad_path)
             @test occursin("Could not find FE PUND data header", snapshot.errors[1].message)
 
             loaded = load_project_cache(dir, MeasurementBrowser.RUO2_PROJECT, cache_id)
             @test length(loaded.hierarchy.all_measurements) == 1
             @test loaded.status.error_files == 1
             @test length(loaded.errors) == 1
+
+            load_progress = NamedTuple[]
+            cached_only = MeasurementBrowser._load_project_cache_contents(
+                dir,
+                MeasurementBrowser.RUO2_PROJECT,
+                cache_id;
+                on_progress=progress -> push!(load_progress, progress),
+            )
+            @test length(cached_only.hierarchy.all_measurements) == 1
+            @test any(event -> event.phase == :cache_load, load_progress)
+        finally
+            _remove_cache_file(cache_id)
+        end
+    end
+
+    mktempdir() do dir
+        cache_id = "20260430_120008"
+        _remove_cache_file(cache_id)
+        try
+            _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)
+            build_project_cache!(
+                dir,
+                MeasurementBrowser.RUO2_PROJECT,
+                cache_id;
+                full_rebuild=true,
+            )
+
+            ui_state = _init_cache_test_ui(cache_id, dir)
+            MeasurementBrowser._open_project_path!(ui_state, dir; persist=false)
+            @test get(ui_state, :scan_state, :idle) in (:cache_reload, :cache_discovery, :done)
+            _drain_scan_job!(ui_state)
+            @test ui_state[:cache_state] == :ready
+            @test ui_state[:cache_status].fresh_files == 1
+            @test length(ui_state[:all_measurements]) == 1
         finally
             _remove_cache_file(cache_id)
         end

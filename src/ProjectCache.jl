@@ -186,15 +186,58 @@ end
 function collect_csv_fingerprints(
     root_path::AbstractString;
     should_cancel::Union{Nothing,Function}=nothing,
+    on_progress::Union{Nothing,Function}=nothing,
+    phase::Symbol=:cache_discovery,
 )
     root = _cache_normalize_path(root_path)
-    fingerprints = Dict{String,FileFingerprint}()
+    paths = String[]
     for (dir, _, names) in walkdir(root)
         for name in names
             _check_cancel(should_cancel)
             endswith(lowercase(name), ".csv") || continue
-            fp = file_fingerprint(joinpath(dir, name))
-            fingerprints[fp.path] = fp
+            path = joinpath(dir, name)
+            push!(paths, path)
+            _emit_progress(on_progress;
+                phase,
+                total_csv=0,
+                processed_csv=length(paths),
+                loaded_measurements=0,
+                skipped_csv=0,
+                current_path=path,
+            )
+        end
+    end
+
+    fingerprints = Dict{String,FileFingerprint}()
+    fingerprint_lock = ReentrantLock()
+    progress_lock = ReentrantLock()
+    processed = Base.Threads.Atomic{Int}(0)
+    worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
+
+    @sync for path in paths
+        Base.acquire(worker_limit)
+        Base.Threads.@spawn begin
+            try
+                _check_cancel(should_cancel)
+                fp = file_fingerprint(path)
+                lock(fingerprint_lock) do
+                    fingerprints[fp.path] = fp
+                end
+                processed_now = Base.Threads.atomic_add!(processed, 1) + 1
+                lock(progress_lock) do
+                    _emit_progress(on_progress;
+                        phase,
+                        total_csv=length(paths),
+                        processed_csv=processed_now,
+                        loaded_measurements=0,
+                        skipped_csv=0,
+                        current_path=fp.path,
+                    )
+                end
+            finally
+                Base.release(worker_limit)
+            end
+            _check_cancel(should_cancel)
         end
     end
     return fingerprints
@@ -567,33 +610,66 @@ function _cache_file_errors(identity::ProjectCacheIdentity)
     end
 end
 
-function cache_status(identity::ProjectCacheIdentity)
+function _cache_status_from_fingerprints(
+    identity::ProjectCacheIdentity,
+    raw::Dict{String,FileFingerprint},
+)
     isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
-    raw = collect_csv_fingerprints(identity.root_path)
     return h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
         cached = _cached_file_fingerprints(h5, identity.cache_path)
         statuses = _cached_file_statuses(h5)
-        stale = count(path -> haskey(raw, path) && !_same_fingerprint(raw[path], cached[path]), keys(cached))
-        deleted = count(path -> !haskey(raw, path), keys(cached))
-        new_count = count(path -> !haskey(cached, path), keys(raw))
-        fresh = count(
-            path -> haskey(cached, path) &&
-                _same_fingerprint(raw[path], cached[path]) &&
-                get(statuses, path, "ok") != "error",
-            keys(raw),
-        )
-        error_count = count(==("error"), values(statuses))
-        ProjectCacheStatus(
-            length(raw),
-            length(cached),
-            fresh,
-            stale,
-            new_count,
-            deleted,
-            error_count,
-        )
+        return _cache_status_from_fingerprints(raw, cached, statuses)
     end
+end
+
+function _cache_status_from_fingerprints(
+    raw::Dict{String,FileFingerprint},
+    cached::Dict{String,FileFingerprint},
+    statuses::Dict{String,String},
+)
+    stale = count(path -> haskey(raw, path) && !_same_fingerprint(raw[path], cached[path]), keys(cached))
+    deleted = count(path -> !haskey(raw, path), keys(cached))
+    new_count = count(path -> !haskey(cached, path), keys(raw))
+    fresh = count(
+        path -> haskey(cached, path) &&
+            _same_fingerprint(raw[path], cached[path]) &&
+            get(statuses, path, "ok") != "error",
+        keys(raw),
+    )
+    error_count = count(==("error"), values(statuses))
+    return ProjectCacheStatus(
+        length(raw),
+        length(cached),
+        fresh,
+        stale,
+        new_count,
+        deleted,
+        error_count,
+    )
+end
+
+function _cached_cache_index(identity::ProjectCacheIdentity)
+    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
+    return h5open(identity.cache_path, "r") do h5
+        _validate_meta!(h5, identity)
+        (_cached_file_fingerprints(h5, identity.cache_path), _cached_file_statuses(h5))
+    end
+end
+
+function cache_status(
+    identity::ProjectCacheIdentity;
+    should_cancel::Union{Nothing,Function}=nothing,
+    on_progress::Union{Nothing,Function}=nothing,
+)
+    raw = collect_csv_fingerprints(identity.root_path; should_cancel, on_progress, phase=:cache_check)
+    return _cache_status_from_fingerprints(identity, raw)
+end
+
+function _cache_status_from_cached_statuses(statuses::Dict{String,String})
+    error_count = count(==("error"), values(statuses))
+    cached = length(statuses)
+    return ProjectCacheStatus(cached, cached, cached - error_count, 0, 0, 0, error_count)
 end
 
 function _rebuild_indexes!(h5, identity::ProjectCacheIdentity, project::AbstractProject)
@@ -652,7 +728,9 @@ function build_project_cache!(
 )
     identity = project_cache_identity(cache_id, project, root_path)
     mkpath(dirname(identity.cache_path))
-    fingerprints = collect_csv_fingerprints(identity.root_path; should_cancel)
+    @info "Starting project cache build" root = identity.root_path cache = identity.cache_path full_rebuild
+    fingerprints = collect_csv_fingerprints(identity.root_path; should_cancel, on_progress)
+    @info "Discovered CSV files for project cache" count = length(fingerprints) root = identity.root_path
     cache_exists = isfile(identity.cache_path)
     mode = (!cache_exists || full_rebuild) ? "w" : "r+"
     meta = _load_scan_metadata(identity.root_path)
@@ -722,33 +800,60 @@ function build_project_cache!(
         _write_semantic_fields!(h5, project_cache_semantic_fields(project))
         _rebuild_indexes!(h5, identity, project)
     end
+    status = _cache_status_from_fingerprints(identity, fingerprints)
+    errors = _cache_file_errors(identity)
+    @info "Finished project cache build" cache = identity.cache_path cached_files = status.cached_files error_files = status.error_files
     return ProjectCacheSnapshot(
         identity,
         hierarchy,
-        cache_status(identity),
+        status,
         project_cache_semantic_fields(project),
-        _cache_file_errors(identity),
+        errors,
     )
 end
 
-function load_project_cache(
+function _load_project_cache_contents(
     root_path::AbstractString,
     project::AbstractProject,
     cache_id::AbstractString,
+    ;
+    should_cancel::Union{Nothing,Function}=nothing,
+    on_progress::Union{Nothing,Function}=nothing,
+    on_file_loaded::Union{Nothing,Function}=nothing,
 )
     identity = project_cache_identity(cache_id, project, root_path)
     isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
+    _check_cancel(should_cancel)
     hierarchy, semantic_fields = h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
         files_group = haskey(h5, "files") ? h5["files"] :
             throw(ProjectCacheInvalidError(identity.cache_path, "missing /files group"))
+        file_keys = sort!(collect(keys(files_group)))
         measurements = MeasurementInfo[]
         skipped_count = 0
-        for file_key in sort!(collect(keys(files_group)))
+        loaded_measurements = 0
+        processed = 0
+        for file_key in file_keys
+            _check_cancel(should_cancel)
             file_group = files_group[file_key]
             status = _file_status(file_group)
             status in ("skipped", "error") && (skipped_count += 1)
-            append!(measurements, _read_file_measurements(file_group, identity.cache_path))
+            file_measurements = _read_file_measurements(file_group, identity.cache_path)
+            if on_file_loaded !== nothing && !isempty(file_measurements)
+                on_file_loaded(file_measurements)
+            end
+            append!(measurements, file_measurements)
+            loaded_measurements += length(file_measurements)
+            processed += 1
+            current_path = haskey(file_group, "path") ? read(file_group["path"]) : file_key
+            _emit_progress(on_progress;
+                phase=:cache_load,
+                total_csv=length(file_keys),
+                processed_csv=processed,
+                loaded_measurements,
+                skipped_csv=skipped_count,
+                current_path,
+            )
         end
         hierarchy = MeasurementHierarchy(
             measurements,
@@ -759,12 +864,37 @@ function load_project_cache(
         )
         (hierarchy, _read_semantic_fields(h5, identity.cache_path))
     end
+    _check_cancel(should_cancel)
+    errors = _cache_file_errors(identity)
+    cached_status = h5open(identity.cache_path, "r") do h5
+        _validate_meta!(h5, identity)
+        _cache_status_from_cached_statuses(_cached_file_statuses(h5))
+    end
     return ProjectCacheSnapshot(
         identity,
         hierarchy,
-        cache_status(identity),
+        cached_status,
         semantic_fields,
-        _cache_file_errors(identity),
+        errors,
+    )
+end
+
+function load_project_cache(
+    root_path::AbstractString,
+    project::AbstractProject,
+    cache_id::AbstractString,
+    ;
+    should_cancel::Union{Nothing,Function}=nothing,
+    on_progress::Union{Nothing,Function}=nothing,
+)
+    snapshot = _load_project_cache_contents(root_path, project, cache_id; should_cancel, on_progress)
+    status = cache_status(snapshot.identity; should_cancel, on_progress)
+    return ProjectCacheSnapshot(
+        snapshot.identity,
+        snapshot.hierarchy,
+        status,
+        snapshot.semantic_fields,
+        snapshot.errors,
     )
 end
 

@@ -199,35 +199,7 @@ function _open_project_path!(ui_state, path::String; persist=true)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
     proj = _project_for_preference(ui_state[:project_preference])
     cache_id = _cache_id_for_path!(ui_state, norm_path)
-    ui_state[:cache_id] = cache_id
-    ui_state[:cache_identity] = nothing
-    ui_state[:scan_path] = norm_path
-
-    try
-        ui_state[:cache_identity] = project_cache_identity(cache_id, proj, norm_path)
-        snapshot = load_project_cache(norm_path, proj, cache_id)
-        _apply_cache_snapshot!(ui_state, snapshot)
-        _load_bad_registry_for_root!(ui_state, norm_path)
-        persist && _persist_preferences!(ui_state; path=norm_path)
-    catch err
-        if err isa ProjectCacheMissingError
-            _begin_scan!(ui_state, norm_path, proj, isfile(joinpath(norm_path, "device_info.txt")))
-            _load_bad_registry_for_root!(ui_state, norm_path)
-            ui_state[:cache_state] = :missing
-            ui_state[:cache_error] = sprint(showerror, err)
-            ui_state[:scan_state] = :cache_missing
-            persist && _persist_preferences!(ui_state; path=norm_path)
-            return
-        elseif err isa ProjectCacheUnsupportedError || err isa ProjectCacheInvalidError
-            _begin_scan!(ui_state, norm_path, proj, isfile(joinpath(norm_path, "device_info.txt")))
-            ui_state[:cache_state] = :error
-            ui_state[:cache_error] = sprint(showerror, err)
-            ui_state[:scan_state] = :error
-            ui_state[:scan_error] = sprint(showerror, err)
-            return
-        end
-        rethrow()
-    end
+    _launch_project_reload_job!(ui_state, norm_path, proj, cache_id; persist)
 end
 
 function _project_status_text(ui_state)
@@ -1255,46 +1227,218 @@ function _plot_target_loading(ui_state, target::Symbol; target_id::String="")
     return false
 end
 
-function _scan_status_summary(ui_state)
+function _cache_activity_model(ui_state)
     state = get(ui_state, :scan_state, :idle)
     progress = get(ui_state, :scan_progress, _new_scan_progress())
     total = get(progress, :total_csv, 0)
     processed = get(progress, :processed_csv, 0)
     loaded = get(progress, :loaded_measurements, 0)
     skipped = get(progress, :skipped_csv, 0)
+    fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
     if state == :counting
-        return "Counting CSV files... ($processed found)"
+        return (
+            title="Source: Counting",
+            detail="Counting source CSV files before measurement discovery.",
+            progress="Found $processed CSV files",
+            fraction,
+            cancel_label="Cancel Source Scan",
+        )
     elseif state == :scanning
-        if total > 0
-            pct = 100 * processed / total
-            return @sprintf("Scanning... %d/%d (%.1f%%), loaded %d, skipped %d", processed, total, pct, loaded, skipped)
-        end
-        return @sprintf("Scanning... %d processed, loaded %d, skipped %d", processed, loaded, skipped)
+        progress_text = total > 0 ?
+            @sprintf("Scanned %d/%d source files, loaded %d measurements, skipped %d", processed, total, loaded, skipped) :
+            @sprintf("Scanned %d source files, loaded %d measurements, skipped %d", processed, loaded, skipped)
+        return (
+            title="Source: Scanning",
+            detail="Reading source CSV files to build the in-memory measurement list.",
+            progress=progress_text,
+            fraction,
+            cancel_label="Cancel Source Scan",
+        )
+    elseif state == :cache_discovery
+        progress_text = total > 0 ?
+            "Checked $processed/$total source CSV files" :
+            "Found $processed source CSV files"
+        return (
+            title="Cache: Preparing Build",
+            detail="Finding source CSV files before writing cache entries.",
+            progress=progress_text,
+            fraction,
+            cancel_label="Cancel Cache Build",
+        )
+    elseif state == :cache_load
+        progress_text = total > 0 ?
+            @sprintf("Read %d/%d cached files, loaded %d measurements", processed, total, loaded) :
+            @sprintf("Loaded %d measurements", loaded)
+        return (
+            title="Cache: Loading",
+            detail="Reading cached measurements from the HDF5 file.",
+            progress=progress_text,
+            fraction,
+            cancel_label="Cancel Reload",
+        )
+    elseif state == :cache_check
+        progress_text = total > 0 ?
+            "Checked $processed/$total source CSV files" :
+            "Found $processed source CSV files"
+        return (
+            title="Source: Checking",
+            detail="Comparing source CSV fingerprints with the loaded cache.",
+            progress=progress_text,
+            fraction,
+            cancel_label="Cancel Source Check",
+        )
+    elseif state == :cache_reload
+        return (
+            title="Cache: Reloading",
+            detail="Starting cache reload.",
+            progress="Starting...",
+            fraction,
+            cancel_label="Cancel Reload",
+        )
     elseif state == :cache_update
-        if total > 0
-            pct = 100 * processed / total
-            return @sprintf("Updating cache... %d/%d (%.1f%%), loaded %d", processed, total, pct, loaded)
-        end
-        return "Updating cache..."
+        progress_text = total > 0 ?
+            @sprintf("Processed %d/%d source files, cached %d measurements", processed, total, loaded) :
+            @sprintf("Cached %d measurements", loaded)
+        operation = get(ui_state, :cache_operation, :update)
+        title = operation == :create ? "Cache: Creating" :
+            operation == :rebuild ? "Cache: Rebuilding" : "Cache: Updating"
+        return (
+            title,
+            detail="Writing source measurements into the HDF5 cache.",
+            progress=progress_text,
+            fraction,
+            cancel_label="Cancel Cache Build",
+        )
     elseif state == :cache_missing
-        return "Cache missing; build required"
+        return (
+            title="Cache: Missing",
+            detail="No HDF5 cache exists for this project.",
+            progress="Build required",
+            fraction,
+            cancel_label="Cancel",
+        )
     elseif state == :canceling
-        return "Canceling scan..."
+        return (
+            title="Canceling",
+            detail="Waiting for the active background job to stop.",
+            progress="Canceling...",
+            fraction,
+            cancel_label="Cancel",
+        )
     elseif state == :canceled
-        return "Scan canceled"
+        return (
+            title="Canceled",
+            detail="The last background job was canceled.",
+            progress="Canceled",
+            fraction,
+            cancel_label="Cancel",
+        )
     elseif state == :error
-        return "Scan failed"
+        return (
+            title="Error",
+            detail=get(ui_state, :scan_error, "Background job failed."),
+            progress="Failed",
+            fraction,
+            cancel_label="Cancel",
+        )
     elseif state == :done
-        return "Scan complete"
+        return (
+            title="Ready",
+            detail="No background cache or source job is running.",
+            progress="Complete",
+            fraction=1.0f0,
+            cancel_label="Cancel",
+        )
     end
-    return "Idle"
+    return (
+        title="Idle",
+        detail="No background cache or source job is running.",
+        progress="Idle",
+        fraction=0.0f0,
+        cancel_label="Cancel",
+    )
+end
+
+function _progress_fraction(progress)
+    total = get(progress, :total_csv, 0)
+    processed = get(progress, :processed_csv, 0)
+    total <= 0 && return 0.0f0
+    return Float32(clamp(processed / total, 0, 1))
+end
+
+function _cache_progress_models(ui_state)
+    models = NamedTuple[]
+    load_progress = get(ui_state, :cache_load_progress, nothing)
+    if load_progress isa Dict
+        total = get(load_progress, :total_csv, 0)
+        processed = get(load_progress, :processed_csv, 0)
+        loaded = get(load_progress, :loaded_measurements, 0)
+        text = total > 0 ?
+            "Read $processed/$total cached files, loaded $loaded measurements" :
+            "Loaded $loaded measurements"
+        push!(models, (
+            title="Cache: Loading",
+            progress=text,
+            fraction=_progress_fraction(load_progress),
+        ))
+    end
+    state = get(ui_state, :scan_state, :idle)
+    if state in (:cache_discovery, :cache_update, :cache_reload)
+        activity = _cache_activity_model(ui_state)
+        push!(models, (
+            title=activity.title,
+            progress=activity.progress,
+            fraction=activity.fraction,
+        ))
+    end
+    return models
+end
+
+function _source_progress_models(ui_state)
+    models = NamedTuple[]
+    state = get(ui_state, :scan_state, :idle)
+    if state in (:counting, :scanning)
+        activity = _cache_activity_model(ui_state)
+        push!(models, (
+            title=activity.title,
+            progress=activity.progress,
+            fraction=activity.fraction,
+        ))
+    end
+    source_check_progress = get(ui_state, :source_check_progress, nothing)
+    if source_check_progress isa Dict
+        total = get(source_check_progress, :total_csv, 0)
+        processed = get(source_check_progress, :processed_csv, 0)
+        text = total > 0 ?
+            "Checked $processed/$total source CSV files" :
+            "Found $processed source CSV files"
+        push!(models, (
+            title="Source: Checking",
+            progress=text,
+            fraction=_progress_fraction(source_check_progress),
+        ))
+    elseif state == :cache_check
+        check_progress = get(ui_state, :scan_progress, _new_scan_progress())
+        total = get(check_progress, :total_csv, 0)
+        processed = get(check_progress, :processed_csv, 0)
+        text = total > 0 ?
+            "Checked $processed/$total source CSV files" :
+            "Found $processed source CSV files"
+        push!(models, (
+            title="Source: Checking",
+            progress=text,
+            fraction=_progress_fraction(check_progress),
+        ))
+    end
+    return models
 end
 
 function _cache_toolbar_model(ui_state)
     identity = get(ui_state, :cache_identity, nothing)
     status = get(ui_state, :cache_status, nothing)
     cache_state = get(ui_state, :cache_state, :idle)
+    activity = _cache_activity_model(ui_state)
 
     if identity === nothing
         return (
@@ -1304,9 +1448,21 @@ function _cache_toolbar_model(ui_state)
         )
     elseif cache_state == :updating
         return (
-            label="Cache: Updating",
+            label=activity.title,
             color=(0.18, 0.42, 0.78, 1.0),
-            detail=_scan_status_summary(ui_state),
+            detail=activity.detail,
+        )
+    elseif cache_state == :loading
+        return (
+            label="Cache: Loading",
+            color=(0.18, 0.42, 0.78, 1.0),
+            detail="Reading cached measurements from the HDF5 file.",
+        )
+    elseif cache_state == :checking
+        return (
+            label="Cache: Loaded",
+            color=(0.18, 0.42, 0.78, 1.0),
+            detail="Cached measurements are loaded; source files are being checked separately.",
         )
     elseif cache_state == :missing
         return (
@@ -1400,40 +1556,6 @@ function _render_cache_toolbar_popup!(ui_state)
     end
 end
 
-function _scan_progress_fraction(ui_state)
-    progress = get(ui_state, :scan_progress, _new_scan_progress())
-    total = get(progress, :total_csv, 0)
-    processed = get(progress, :processed_csv, 0)
-    total <= 0 && return 0.0f0
-    return Float32(clamp(processed / total, 0, 1))
-end
-
-function _render_scan_indicator!(ui_state)
-    _scan_running(ui_state) || return
-
-    state = get(ui_state, :scan_state, :idle)
-    progress = get(ui_state, :scan_progress, _new_scan_progress())
-    total = get(progress, :total_csv, 0)
-    processed = get(progress, :processed_csv, 0)
-
-    if state == :counting
-        ig.TextDisabled("Scan: counting files...")
-        return
-    elseif state == :canceling
-        ig.TextDisabled("Scan: canceling...")
-        return
-    end
-
-    if total > 0
-        ig.TextDisabled(@sprintf("Scan: %d/%d", processed, total))
-        ig.SameLine()
-        ig.ProgressBar(_scan_progress_fraction(ui_state), (80, 0))
-        return
-    end
-
-    ig.TextDisabled(@sprintf("Scan: %d", processed))
-end
-
 function _render_plot_indicator!(ui_state)
     _plot_running(ui_state) || return
 
@@ -1485,7 +1607,16 @@ function _ensure_plot_runtime_warmed!(ui_state)
 end
 
 function _scan_running(ui_state)
-    return get(ui_state, :scan_state, :idle) in (:counting, :scanning, :cache_update, :canceling)
+    return get(ui_state, :scan_state, :idle) in (
+        :counting,
+        :scanning,
+        :cache_reload,
+        :cache_load,
+        :cache_check,
+        :cache_discovery,
+        :cache_update,
+        :canceling,
+    )
 end
 
 function _request_scan_cancel!(ui_state)
@@ -1573,10 +1704,169 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
     return nothing
 end
 
+function _append_cache_measurements!(ui_state, measurements::Vector{MeasurementInfo})
+    isempty(measurements) && return nothing
+    hierarchy = get(ui_state, :scan_hierarchy, nothing)
+    hierarchy isa MeasurementHierarchy || return nothing
+    measurement_index = get!(ui_state, :measurement_index) do
+        Dict{String,MeasurementInfo}()
+    end
+    metadata_keys = Set(get(ui_state, :device_metadata_keys, Symbol[]))
+    appended = false
+    for measurement in measurements
+        haskey(measurement_index, measurement.id) && continue
+        insert_measurement!(hierarchy, measurement)
+        measurement_index[measurement.id] = measurement
+        foreach(key -> push!(metadata_keys, key), keys(measurement.device_info.parameters))
+        appended = true
+    end
+    appended || return nothing
+    sort!(hierarchy)
+    ui_state[:scan_hierarchy] = hierarchy
+    ui_state[:hierarchy_root] = hierarchy.root
+    ui_state[:all_measurements] = hierarchy.all_measurements
+    ui_state[:measurement_index] = measurement_index
+    ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
+    _apply_visible_selection!(ui_state)
+    _invalidate_figure_script_scan_cache!(ui_state)
+    return nothing
+end
+
+function _launch_project_reload_job!(
+    ui_state,
+    path::String,
+    proj::AbstractProject,
+    cache_id::String;
+    persist::Bool=true,
+)
+    if _scan_running(ui_state)
+        _request_scan_cancel!(ui_state)
+    end
+
+    identity = project_cache_identity(cache_id, proj, path)
+    current_root = get(ui_state, :root_path, "")
+    if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
+        _begin_scan!(ui_state, identity.root_path, proj, isfile(joinpath(identity.root_path, "device_info.txt")))
+    else
+        ui_state[:root_path] = identity.root_path
+        ui_state[:project] = proj
+    end
+
+    scan_id = get(ui_state, :scan_seq, 0) + 1
+    ui_state[:scan_seq] = scan_id
+    ui_state[:active_scan_id] = scan_id
+    ui_state[:scan_path] = identity.root_path
+    ui_state[:scan_state] = :cache_reload
+    ui_state[:scan_progress] = _new_scan_progress()
+    ui_state[:scan_error] = ""
+    ui_state[:cache_id] = cache_id
+    ui_state[:cache_identity] = identity
+    ui_state[:cache_state] = :loading
+    ui_state[:cache_error] = ""
+    ui_state[:cache_status] = nothing
+    ui_state[:cache_errors] = ProjectCacheFileError[]
+    delete!(ui_state, :cache_load_progress)
+    delete!(ui_state, :source_check_progress)
+
+    events = Channel{NamedTuple}(Inf)
+    cancel_token = Base.Threads.Atomic{Bool}(false)
+    ui_state[:scan_events] = events
+    ui_state[:scan_cancel_token] = cancel_token
+
+    Base.Threads.@spawn begin
+        try
+            cached_fingerprints, cached_statuses = _cached_cache_index(identity)
+            load_snapshot_ref = Ref{Union{Nothing,ProjectCacheSnapshot}}(nothing)
+            status_ref = Ref{Union{Nothing,ProjectCacheStatus}}(nothing)
+            errors = Channel{Any}(Inf)
+
+            @sync begin
+                Base.Threads.@spawn try
+                    snapshot = _load_project_cache_contents(
+                        identity.root_path,
+                        proj,
+                        cache_id;
+                        should_cancel=() -> cancel_token[],
+                        on_progress=(progress) -> put!(events, (
+                            kind=:progress,
+                            scan_id=scan_id,
+                            progress=progress,
+                        )),
+                        on_file_loaded=(measurements) -> put!(events, (
+                            kind=:cache_measurements,
+                            scan_id=scan_id,
+                            measurements=measurements,
+                        )),
+                    )
+                    load_snapshot_ref[] = snapshot
+                    put!(events, (
+                        kind=:cache_loaded,
+                        scan_id=scan_id,
+                        snapshot=snapshot,
+                    ))
+                catch err
+                    put!(errors, (err, catch_backtrace()))
+                end
+
+                Base.Threads.@spawn try
+                    raw = collect_csv_fingerprints(
+                        identity.root_path;
+                        should_cancel=() -> cancel_token[],
+                        on_progress=(progress) -> put!(events, (
+                            kind=:progress,
+                            scan_id=scan_id,
+                            progress=progress,
+                        )),
+                        phase=:cache_check,
+                    )
+                    status_ref[] = _cache_status_from_fingerprints(raw, cached_fingerprints, cached_statuses)
+                catch err
+                    put!(errors, (err, catch_backtrace()))
+                end
+            end
+
+            if isready(errors)
+                err, bt = take!(errors)
+                throw(err)
+            end
+            snapshot = load_snapshot_ref[]
+            status = status_ref[]
+            snapshot === nothing && error("Cache reload finished without loading cache contents")
+            status === nothing && error("Cache reload finished without checking source files")
+            checked_snapshot = ProjectCacheSnapshot(
+                snapshot.identity,
+                snapshot.hierarchy,
+                status,
+                snapshot.semantic_fields,
+                snapshot.errors,
+            )
+            put!(events, (kind=:reload_result, scan_id=scan_id, snapshot=checked_snapshot, persist=persist))
+        catch err
+            if _is_scan_cancel_error(err) || err isa PlotCancelled
+                put!(events, (kind=:canceled, scan_id=scan_id))
+            elseif err isa ProjectCacheMissingError
+                put!(events, (
+                    kind=:cache_missing,
+                    scan_id=scan_id,
+                    identity=identity,
+                    error=sprint(showerror, err),
+                    persist=persist,
+                ))
+            else
+                put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
+            end
+        finally
+            close(events)
+        end
+    end
+    return nothing
+end
+
 function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
     identity = get(ui_state, :cache_identity, nothing)
     identity isa ProjectCacheIdentity || error("No project cache is bound to the current project")
     project = _project_by_name(identity.project_name)
+    previous_cache_state = get(ui_state, :cache_state, :idle)
     _cancel_figure_script_job!(ui_state)
     _clear_plot_jobs!(ui_state)
 
@@ -1588,9 +1878,13 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
     ui_state[:scan_progress] = _new_scan_progress()
     ui_state[:scan_error] = ""
     ui_state[:cache_state] = :updating
+    ui_state[:cache_operation] = full_rebuild ? :rebuild :
+        previous_cache_state == :missing ? :create : :update
     ui_state[:cache_error] = ""
+    delete!(ui_state, :cache_load_progress)
+    delete!(ui_state, :source_check_progress)
 
-    events = Channel{NamedTuple}(512)
+    events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
     ui_state[:scan_events] = events
     ui_state[:scan_cancel_token] = cancel_token
@@ -1645,7 +1939,7 @@ function _poll_scan_events!(ui_state)
 
         if msg.kind == :progress
             p = msg.progress
-            ui_state[:scan_progress] = Dict{Symbol,Any}(
+            progress_dict = Dict{Symbol,Any}(
                 :phase => p.phase,
                 :total_csv => p.total_csv,
                 :processed_csv => p.processed_csv,
@@ -1653,11 +1947,40 @@ function _poll_scan_events!(ui_state)
                 :skipped_csv => p.skipped_csv,
                 :current_path => p.current_path,
             )
-            ui_state[:skipped_count] = p.skipped_csv
-            ui_state[:scan_state] = p.phase
+            ui_state[:scan_progress] = progress_dict
+            p.phase == :cache_load && (ui_state[:cache_load_progress] = progress_dict)
+            p.phase == :cache_check && (ui_state[:source_check_progress] = progress_dict)
+            p.phase in (:scanning, :cache_update) && (ui_state[:skipped_count] = p.skipped_csv)
+            if !(get(ui_state, :cache_state, :idle) == :loading && p.phase == :cache_check)
+                ui_state[:scan_state] = p.phase
+            end
         elseif msg.kind == :cache_result
             _apply_cache_snapshot!(ui_state, msg.snapshot)
             _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
+            _finalize_scan!(ui_state)
+        elseif msg.kind == :cache_measurements
+            _append_cache_measurements!(ui_state, msg.measurements)
+        elseif msg.kind == :cache_loaded
+            _apply_cache_snapshot!(ui_state, msg.snapshot)
+            _load_bad_registry_for_root!(ui_state, msg.snapshot.identity.root_path)
+            ui_state[:cache_state] = :checking
+            ui_state[:scan_state] = :cache_check
+        elseif msg.kind == :reload_result
+            _apply_cache_snapshot!(ui_state, msg.snapshot)
+            _load_bad_registry_for_root!(ui_state, msg.snapshot.identity.root_path)
+            msg.persist && _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
+            _finalize_scan!(ui_state)
+        elseif msg.kind == :cache_missing
+            identity = msg.identity
+            proj = _project_by_name(identity.project_name)
+            _begin_scan!(ui_state, identity.root_path, proj, isfile(joinpath(identity.root_path, "device_info.txt")))
+            ui_state[:cache_id] = identity.cache_id
+            ui_state[:cache_identity] = identity
+            ui_state[:cache_state] = :missing
+            ui_state[:cache_error] = msg.error
+            ui_state[:scan_state] = :cache_missing
+            _load_bad_registry_for_root!(ui_state, identity.root_path)
+            msg.persist && _persist_preferences!(ui_state; path=identity.root_path)
             _finalize_scan!(ui_state)
         elseif msg.kind == :canceled
             ui_state[:scan_state] = :canceled
@@ -1949,14 +2272,6 @@ function render_menu_bar(ui_state)
             end
 
             ig.Separator()
-            ig.TextDisabled(_scan_status_summary(ui_state))
-            if _scan_running(ui_state)
-                ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
-                if ig.MenuItem("Cancel Scan")
-                    _request_scan_cancel!(ui_state)
-                end
-            end
-            ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
                 ui_state[:show_project_window] = !get(ui_state, :show_project_window, false)
             end
@@ -2047,7 +2362,6 @@ end
 function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
-    _render_scan_indicator!(ui_state)
     _render_bad_registry_error!(ui_state)
 
     root = get(ui_state, :hierarchy_root, nothing)
@@ -2778,6 +3092,8 @@ function _render_cache_controls!(ui_state; compact::Bool)
     status = get(ui_state, :cache_status, nothing)
     cache_state = get(ui_state, :cache_state, :idle)
     model = _cache_toolbar_model(ui_state)
+    running = _scan_running(ui_state)
+    activity = _cache_activity_model(ui_state)
 
     if compact
         ig.Text("Cache")
@@ -2785,6 +3101,19 @@ function _render_cache_controls!(ui_state; compact::Bool)
         ig.TextColored(model.color, model.label)
     end
     ig.TextWrapped(model.detail)
+    if running
+        cache_progress = _cache_progress_models(ui_state)
+        if !isempty(cache_progress)
+            for item in cache_progress
+                ig.TextDisabled(item.title)
+                ig.TextDisabled(item.progress)
+                ig.ProgressBar(item.fraction, (-1, 0))
+            end
+        elseif get(ui_state, :scan_state, :idle) != :cache_check
+            ig.TextDisabled(activity.progress)
+            ig.ProgressBar(activity.fraction, (-1, 0))
+        end
+    end
 
     if identity isa ProjectCacheIdentity
         ig.Separator()
@@ -2825,7 +3154,6 @@ function _render_cache_controls!(ui_state; compact::Bool)
     end
 
     ig.Separator()
-    running = _scan_running(ui_state)
     has_identity = identity isa ProjectCacheIdentity
     has_root = haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
 
@@ -2848,11 +3176,10 @@ function _render_cache_controls!(ui_state; compact::Bool)
     end
     (!has_root || running) && ig.EndDisabled()
 
-    if running
-        if ig.Button("Cancel Cache Job", (-1, 0))
+    if running && get(ui_state, :scan_state, :idle) != :cache_check
+        if ig.Button(activity.cancel_label, (-1, 0))
             _request_scan_cancel!(ui_state)
         end
-        ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
     end
 end
 
@@ -2909,6 +3236,22 @@ function render_project_window(ui_state)
             _helpmarker(project_description(p))
         end
 
+        source_progress = _source_progress_models(ui_state)
+        if !isempty(source_progress)
+            ig.Spacing()
+            for item in source_progress
+                ig.TextDisabled(item.title)
+                ig.TextDisabled(item.progress)
+                ig.ProgressBar(item.fraction, (-1, 0))
+            end
+            if _scan_running(ui_state)
+                source_activity = _cache_activity_model(ui_state)
+                if ig.Button(source_activity.cancel_label, (-1, 0))
+                    _request_scan_cancel!(ui_state)
+                end
+            end
+        end
+
         # ── Persist + rescan on change ───────────────────────────────────────
         if changed
             current_root = get(ui_state, :root_path, "")
@@ -2919,19 +3262,6 @@ function render_project_window(ui_state)
             end
         end
 
-        ig.Separator()
-        ig.TextDisabled(_scan_status_summary(ui_state))
-        if _scan_running(ui_state)
-            ig.ProgressBar(_scan_progress_fraction(ui_state), (-1, 0))
-            if ig.Button("Cancel Scan", (-1, 0))
-                _request_scan_cancel!(ui_state)
-            end
-            ig.Spacing()
-        elseif get(ui_state, :scan_state, :idle) == :error
-            err = get(ui_state, :scan_error, "")
-            !isempty(err) && ig.TextWrapped(err)
-            ig.Spacing()
-        end
         ig.Separator()
         _render_cache_controls!(ui_state; compact=true)
     end
