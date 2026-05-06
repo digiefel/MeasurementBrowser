@@ -72,6 +72,14 @@ end
         "20260430_120001",
         MeasurementBrowser.RUO2_PROJECT,
     )) == "20260430_120001.h5"
+    mktempdir() do dir_a
+        mktempdir() do dir_b
+            id_a = MeasurementBrowser.project_cache_id(dir_a)
+            id_b = MeasurementBrowser.project_cache_id(dir_b)
+            @test id_a != id_b
+            @test occursin(r"^[a-z0-9_.-]+-[0-9a-f]{12}$", id_a)
+        end
+    end
 
     mktempdir() do dir
         cache_id = "20260430_120005"
@@ -133,6 +141,23 @@ end
             @test status.stale_files == 1
             @test status.new_files == 1
             @test status.deleted_files == 1
+
+            update_progress = NamedTuple[]
+            updated = build_project_cache!(
+                dir,
+                MeasurementBrowser.RUO2_PROJECT,
+                cache_id;
+                on_progress=progress -> push!(update_progress, progress),
+            )
+            @test updated.status.total_files == 2
+            @test updated.status.cached_files == 2
+            @test updated.status.fresh_files == 1
+            @test updated.status.stale_files == 1
+            @test updated.status.new_files == 0
+            @test updated.status.deleted_files == 0
+            cache_update_events = filter(event -> event.phase == :cache_update, update_progress)
+            @test last(cache_update_events).processed_csv == 2
+            @test last(cache_update_events).total_csv == 2
         finally
             _remove_cache_file(cache_id)
         end
@@ -182,7 +207,7 @@ end
     end
 
     mktempdir() do dir
-        cache_id = "20260430_120008"
+        cache_id = MeasurementBrowser.project_cache_id(dir)
         _remove_cache_file(cache_id)
         try
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)

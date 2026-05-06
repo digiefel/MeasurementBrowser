@@ -60,8 +60,8 @@ function _sanitize_cache_id(value)
     value isa AbstractString || return ""
     stripped = strip(String(value))
     isempty(stripped) && return ""
-    occursin(r"^\d{8}_\d{6}$", stripped) ||
-        error("Invalid cache id '$stripped'; expected YYYYMMDD_hhmmss")
+    occursin(r"^[A-Za-z0-9_.-]+$", stripped) ||
+        error("Invalid cache id '$stripped'; expected letters, numbers, '.', '_' or '-'")
     return stripped
 end
 
@@ -157,26 +157,22 @@ function _figure_script_output_dir_for_path(ui_state, path::String)
 end
 
 function _cache_id_for_path!(ui_state, path::String)
-    entry = _recent_project_entry_for_path(ui_state, path)
-    cache_id = entry === nothing ? "" : get(entry, "cache_id", "")
-    if isempty(cache_id)
-        cache_id = new_project_cache_id()
-        pref = _project_preference_for_path(ui_state, path)
-        recents = get!(ui_state, :recent_projects) do
-            Dict{String,String}[]
-        end
-        _update_recent_projects(
-            recents,
-            path,
-            pref,
-            _figure_script_output_dir_for_path(ui_state, path),
-            cache_id,
-        )
-        prefs = _load_prefs()
-        prefs["recent_projects"] = recents
-        prefs["project"] = pref
-        _save_prefs(prefs)
+    cache_id = project_cache_id(path)
+    pref = _project_preference_for_path(ui_state, path)
+    recents = get!(ui_state, :recent_projects) do
+        Dict{String,String}[]
     end
+    _update_recent_projects(
+        recents,
+        path,
+        pref,
+        _figure_script_output_dir_for_path(ui_state, path),
+        cache_id,
+    )
+    prefs = _load_prefs()
+    prefs["recent_projects"] = recents
+    prefs["project"] = pref
+    _save_prefs(prefs)
     return cache_id
 end
 
@@ -3386,26 +3382,28 @@ function _render_cache_controls!(ui_state; compact::Bool)
 
     ig.Separator()
     has_identity = identity isa ProjectCacheIdentity
-    has_root = haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
+    can_update = has_identity &&
+        status isa ProjectCacheStatus &&
+        cache_state != :missing &&
+        cache_state != :error &&
+        (status.new_files > 0 || status.deleted_files > 0)
 
-    (!has_identity || running) && ig.BeginDisabled()
-    update_label = cache_state == :missing ? "Build Cache" : "Update Cache"
-    if ig.Button(update_label, (-1, 0))
-        _queue_cache_update!(ui_state)
+    if can_update
+        running && ig.BeginDisabled()
+        if ig.Button("Update Cache", (-1, 0))
+            _queue_cache_update!(ui_state)
+        end
+        running && ig.EndDisabled()
     end
-    (!has_identity || running) && ig.EndDisabled()
 
-    (!has_identity || running) && ig.BeginDisabled()
-    if ig.Button("Rebuild Cache", (-1, 0))
-        _queue_cache_update!(ui_state; full_rebuild=true)
+    if has_identity
+        running && ig.BeginDisabled()
+        build_label = cache_state == :missing ? "Build Cache" : "Rebuild Cache"
+        if ig.Button(build_label, (-1, 0))
+            _queue_cache_update!(ui_state; full_rebuild=true)
+        end
+        running && ig.EndDisabled()
     end
-    (!has_identity || running) && ig.EndDisabled()
-
-    (!has_root || running) && ig.BeginDisabled()
-    if ig.Button("Reload Cache", (-1, 0))
-        _open_project_path!(ui_state, ui_state[:root_path])
-    end
-    (!has_root || running) && ig.EndDisabled()
 
     if running && get(ui_state, :scan_state, :idle) != :cache_check
         if ig.Button(activity.cancel_label, (-1, 0))

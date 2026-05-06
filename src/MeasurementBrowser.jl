@@ -33,6 +33,6 @@ export ProjectCacheIdentity, ProjectCacheSnapshot, ProjectCacheStatus, ProjectCa
 export ProjectCacheUnsupportedError, ProjectCacheMissingError, ProjectCacheInvalidError
 export ProjectCacheBuildError
 export build_project_cache!, load_project_cache, cache_status
-export project_cache_identity, project_cache_path, new_project_cache_id
+export project_cache_identity, project_cache_path, project_cache_id, new_project_cache_id
 
 end # module MeasurementBrowser

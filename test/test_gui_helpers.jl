@@ -55,8 +55,8 @@ end
     @test recents2[1]["figure_script_output_dir"] == "/tmp/out2"
     @test recents2[1]["cache_id"] == "20260430_120002"
 
-    @test MeasurementBrowser._sanitize_cache_id("  20260430_120003  ") == "20260430_120003"
-    @test_throws ErrorException MeasurementBrowser._sanitize_cache_id("bad-cache-id")
+    @test MeasurementBrowser._sanitize_cache_id("  folder-abc123  ") == "folder-abc123"
+    @test_throws ErrorException MeasurementBrowser._sanitize_cache_id("bad/cache-id")
 
     no_cache_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}())
     @test no_cache_model.label == "Cache: No Project"

@@ -139,6 +139,14 @@ function _cache_normalize_path(path::AbstractString)
     return ispath(norm_path) ? realpath(norm_path) : norm_path
 end
 
+function project_cache_id(root_path::AbstractString)
+    norm_root = _cache_normalize_path(root_path)
+    name = basename(norm_root)
+    slug = isempty(name) ? "project" : _cache_slug(name)
+    digest = bytes2hex(sha1(norm_root))[1:12]
+    return "$slug-$digest"
+end
+
 function project_cache_path(cache_id::AbstractString, project::AbstractProject)
     return joinpath(
         project_cache_dir(),
@@ -729,32 +737,34 @@ function build_project_cache!(
         end
         files_group = _ensure_group(h5, "files")
         cached = _cached_file_fingerprints(h5, identity.cache_path)
-        statuses = _cached_file_statuses(h5)
         raw_paths = Set(keys(fingerprints))
-        for cached_path in keys(cached)
+        deleted_paths = sort!([path for path in keys(cached) if !(path in raw_paths)])
+        write_paths = if !cache_exists || full_rebuild
+            sort!(collect(keys(fingerprints)))
+        else
+            sort!([path for path in keys(fingerprints) if !haskey(cached, path)])
+        end
+        total_changes = length(deleted_paths) + length(write_paths)
+
+        for cached_path in deleted_paths
+            _check_cancel(should_cancel)
             cached_path in raw_paths && continue
             key = _file_group_key(cached_path)
             haskey(files_group, key) && HDF5.delete_object(files_group, key)
+            processed += 1
+            on_progress !== nothing && on_progress((
+                phase=:cache_update,
+                total_csv=total_changes,
+                processed_csv=processed,
+                loaded_measurements=loaded_measurements,
+                skipped_csv=0,
+                current_path=cached_path,
+            ))
         end
 
-        for path in sort!(collect(keys(fingerprints)))
+        for path in write_paths
             _check_cancel(should_cancel)
             fp = fingerprints[path]
-            if !full_rebuild &&
-               haskey(cached, path) &&
-               _same_fingerprint(fp, cached[path]) &&
-               get(statuses, path, "ok") != "error"
-                processed += 1
-                on_progress !== nothing && on_progress((
-                    phase=:cache_update,
-                    total_csv=length(fingerprints),
-                    processed_csv=processed,
-                    loaded_measurements=loaded_measurements,
-                    skipped_csv=0,
-                    current_path=path,
-                ))
-                continue
-            end
             indexed = index_csv_file(path)
             try
                 loaded_measurements += _write_file_group!(
@@ -772,7 +782,7 @@ function build_project_cache!(
             processed += 1
             on_progress !== nothing && on_progress((
                 phase=:cache_update,
-                total_csv=length(fingerprints),
+                total_csv=total_changes,
                 processed_csv=processed,
                 loaded_measurements=loaded_measurements,
                 skipped_csv=0,
