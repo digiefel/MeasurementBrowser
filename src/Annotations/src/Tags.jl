@@ -26,8 +26,11 @@ Entries from `bad_measurements` are merged as `bad` assignments into the single
 This makes repeated `load → save` cycles idempotent as long as `bad_measurements`
 has not grown.
 
-`Tags.save` writes only `tags.txt`. After `load → save`, subsequent `load → save`
-cycles produce byte-identical output as long as `bad_measurements` has not grown.
+`Tags.save` writes `tags.txt` and simultaneously mirrors the `bad`-tagged subset
+to `bad_measurements`. Device-path keys (no leading `/`) are written as
+`device <key>`; measurement-ID keys (leading `/`) are written as
+`measurement <key>`. If the state has no `bad`-tagged keys, `bad_measurements`
+is removed.
 """
 module Tags
 
@@ -198,10 +201,30 @@ function _format_color(color::NTuple{3,UInt8})
     )
 end
 
+function _write_legacy_bad!(root::AbstractString, state::TagState)
+    path = _legacy_bad_path(root)
+    bad_keys = String[]
+    for (key, tags) in state.assignments
+        LEGACY_BAD_TAG in tags && push!(bad_keys, key)
+    end
+    if isempty(bad_keys)
+        rm(path; force=true)
+        return
+    end
+    sort!(bad_keys)
+    open(path, "w") do io
+        for key in bad_keys
+            kind = startswith(key, '/') ? "measurement" : "device"
+            println(io, kind, ' ', key)
+        end
+    end
+end
+
 function save(root::AbstractString, state::TagState)
     path = tags_path(root)
     if isempty(state.catalog) && isempty(state.assignments)
         rm(path; force=true)
+        _write_legacy_bad!(root, state)
         return
     end
 
@@ -222,6 +245,7 @@ function save(root::AbstractString, state::TagState)
             end
         end
     end
+    _write_legacy_bad!(root, state)
 end
 
 """

@@ -158,6 +158,50 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
             end
         end
 
+        @testset "Tags.save writes bad_measurements mirror" begin
+            mktempdir() do dir
+                state = Annotations.Tags.TagState(
+                    [Annotations.Tags.TagDef("bad", (0xff, 0x30, 0x30), 100),
+                     Annotations.Tags.TagDef("todo", (0x30, 0xc0, 0xff), 50)],
+                    Dict{String,Set{String}}(
+                        "RuO2test/A9/VI/D1" => Set(["bad"]),
+                        "/abs/path/to/meas.csv#cycle=1" => Set(["bad"]),
+                        "RuO2test/A10/VI" => Set(["todo"]),
+                    ),
+                )
+                Annotations.Tags.save(dir, state)
+                @test isfile(Annotations.Tags.tags_path(dir))
+                bad_path = joinpath(dir, "bad_measurements")
+                @test isfile(bad_path)
+                bad_content = read(bad_path, String)
+                @test occursin("measurement /abs/path/to/meas.csv#cycle=1", bad_content)
+                @test occursin("device RuO2test/A9/VI/D1", bad_content)
+                @test !occursin("todo", bad_content)
+            end
+        end
+
+        @testset "Tags.save removes bad_measurements when no bad tags" begin
+            mktempdir() do dir
+                write(joinpath(dir, "bad_measurements"), "device RuO2test/A9/VI/D1\n")
+                state = Annotations.Tags.TagState(
+                    [Annotations.Tags.TagDef("todo", (0x30, 0xc0, 0xff), 50)],
+                    Dict{String,Set{String}}(
+                        "RuO2test/A10/VI" => Set(["todo"]),
+                    ),
+                )
+                Annotations.Tags.save(dir, state)
+                @test !isfile(joinpath(dir, "bad_measurements"))
+            end
+        end
+
+        @testset "Tags.save removes bad_measurements when state is empty" begin
+            mktempdir() do dir
+                write(joinpath(dir, "bad_measurements"), "device RuO2test/A9/VI/D1\n")
+                Annotations.Tags.save(dir, Annotations.Tags.TagState())
+                @test !isfile(joinpath(dir, "bad_measurements"))
+            end
+        end
+
         @testset "idempotency: load → save → load → save" begin
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"),
