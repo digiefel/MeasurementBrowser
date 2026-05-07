@@ -35,11 +35,10 @@ The subpackage is consumed via `using Annotations` and namespaced access (`Annot
 ### `Tags`
 
 - `TagDef(name, color::NTuple{3,UInt8}, priority::Int)` — single catalog entry.
-- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}}, measurement_assignments::Dict{String, Set{String}})` — full state. `assignments` is device-path-keyed; `measurement_assignments` is measurement-ID-keyed. `TagState()` is the empty state.
-- `load(root) -> TagState`. Reads `tags.txt` if present, then reads `bad_measurements` if present and merges its entries as `bad` assignments into both maps. See [storage.md](storage.md#bad_measurements) and [storage.md](storage.md#tags.txt). `load` never writes to disk.
+- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string: device-path keys (slash-joined segments, e.g. `"RuO2test/A9/VI/D1"`) and measurement-ID keys (absolute paths with optional `#cycle=N` / `#split=X` suffixes) share the same map and never collide. `TagState()` is the empty state.
+- `load(root) -> TagState`. Reads `tags.txt` if present, then reads `bad_measurements` if present and merges its entries as `bad` assignments. See [storage.md](storage.md#bad_measurements) and [storage.md](storage.md#tags.txt). `load` never writes to disk.
 - `save(root, state)` — writes only `tags.txt`. Empty state removes the file.
-- `effective(state, path, ancestor_paths) -> Set{String}` — union of `path`'s device-path assignments with assignments on every entry of `ancestor_paths`. Does not include measurement-ID tags.
-- `assigned_to_measurement(state, measurement_id) -> Set{String}` — explicit tags on `measurement_id`; empty set if none. Measurement-ID tags are not ancestor-walked; callers compose `effective` and `assigned_to_measurement` to get the full applicable set for a measurement.
+- `effective(state, key, ancestor_keys) -> Set{String}` — union of `key`'s own assignments with assignments on every entry of `ancestor_keys`. To get the full applicable tag set for a measurement, call `effective(state, measurement_id, [device_path; device_ancestors...])`: the measurement ID and the device-path ancestors are looked up uniformly in the same map.
 - `dominant_color(state, effective_tags) -> Union{Nothing, NTuple{3,UInt8}}` — highest-priority hit's color among catalog entries whose name is in `effective_tags`. Returns `nothing` for an empty input or no catalog matches.
 
 ### `Notes`
@@ -56,7 +55,7 @@ See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, 
 
 Annotations attach to specific paths. Two modules expose ancestor inheritance at lookup time; the caller supplies the ancestor list (closest-first or any order — the modules don't care).
 
-- **`Tags.effective`** — set union of own tags and every ancestor's tags. No precedence among ancestors; tags are membership, not values. Use `dominant_color` to pick a single color out of the resulting set via the catalog's `priority` field.
+- **`Tags.effective`** — set union of own tags and every ancestor's tags. Keys are arbitrary strings; device-path keys and measurement-ID keys are looked up in the same `assignments` map. No precedence among keys; tags are membership, not values. Use `dominant_color` to pick a single color out of the resulting set via the catalog's `priority` field.
 - **`Notes.merged_view`** — each ancestor section is included read-only in the order supplied; the focal node's section is appended last and marked editable. Ancestors that have no section are skipped silently.
 
 Neither module rewrites stored state when it inherits — assignments and note bodies stay anchored to the path they were authored against.

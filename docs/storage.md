@@ -30,7 +30,7 @@ measurement <measurement_id>
 
 Loaded by `BadRegistry` ([src/BadRegistry.jl](../src/BadRegistry.jl)). Loaded at project init in [src/Gui/BadAndStyling.jl](../src/Gui/BadAndStyling.jl) via `_load_bad_registry_for_root!`; persisted via `save_bad_registry`.
 
-`Annotations.Tags.load` reads `bad_measurements` whenever it is present, regardless of whether `tags.txt` also exists. Entries are merged as `bad` assignments: `device <path>` lines go into `assignments` (device-path-keyed map); `measurement <id>` lines go into `measurement_assignments` (measurement-ID-keyed map). If the catalog has no `bad` entry, one is added with color `(0xff, 0x30, 0x30)` and priority `100`. `load` does not write to disk. After `load → save`, the merged state is encoded in `tags.txt`, so subsequent `load → save` cycles produce byte-identical output as long as `bad_measurements` has not grown.
+`Annotations.Tags.load` reads `bad_measurements` whenever it is present, regardless of whether `tags.txt` also exists. Entries are merged as `bad` assignments into the single `assignments` map: both `device <path>` and `measurement <id>` lines are stored under the key after stripping the prefix. If the catalog has no `bad` entry, one is added with color `(0xff, 0x30, 0x30)` and priority `100`. `load` does not write to disk. After `load → save`, the merged state is encoded in `tags.txt`, so subsequent `load → save` cycles produce byte-identical output as long as `bad_measurements` has not grown.
 
 ## layout.txt
 
@@ -52,12 +52,12 @@ bad	ff3030	100
 todo	30c0ff	50
 
 [assignments]
-device	RuO2test/A9/VI/D1	bad
-measurement	abc123hash	bad
-device	RuO2test/A10/VI	todo
+RuO2test/A9/VI/D1                                          bad
+/Users/davide/data/RuO2test/A9/VI/D1/3V FE PUND.csv        bad
+RuO2test/A10/VI                                            todo
 ```
 
-Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<kind>\t<key>\t<tag_name>`, where `<kind>` is either `device` (device-path key) or `measurement` (measurement-ID key). Unknown kind tokens raise `TagsParseError`. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) (`Annotations.Tags.load` / `Annotations.Tags.save`). Saving empty state removes the file. Malformed rows raise `TagsParseError`.
+Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are either device-path strings (slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or measurement-ID strings (absolute filesystem paths, optionally with `#cycle=N` / `#split=X` suffixes). The two namespaces never overlap, so no kind prefix is written. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) (`Annotations.Tags.load` / `Annotations.Tags.save`). Saving empty state removes the file. Malformed rows raise `TagsParseError`.
 
 ## notes.txt
 
