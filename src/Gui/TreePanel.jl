@@ -36,7 +36,7 @@ end
 function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
-    _render_bad_registry_error!(ui_state)
+    _render_tag_state_error!(ui_state)
 
     root = get(ui_state, :hierarchy_root, nothing)
     meta_keys = get(ui_state, :device_metadata_keys, Symbol[])
@@ -169,9 +169,12 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             end
 
             ig.TableSetColumnIndex(0)
-            bad_text_pushed = is_leaf && leaf_device_key !== nothing &&
-                              _bad_registry_ready(ui_state) &&
-                              _push_bad_text_style!(_device_is_explicitly_bad(ui_state, leaf_device_key))
+            bad_text_pushed = false
+            if is_leaf && leaf_device_key !== nothing && _tag_state_ready(ui_state)
+                tag_state = _tag_state_or_error(ui_state)
+                ancestor_keys = _ancestor_keys_for_path(leaf_device_key)
+                bad_text_pushed = _push_tag_text_style!(tag_state, leaf_device_key, ancestor_keys)
+            end
             opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
             bad_text_pushed && ig.PopStyleColor()
 
@@ -196,9 +199,9 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 selected_count = length(target_keys)
                 selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
 
-                editable = _bad_registry_ready(ui_state)
+                editable = _tag_state_ready(ui_state)
                 if !editable
-                    ig.TextDisabled("Fix bad_measurements and rescan to edit")
+                    ig.TextDisabled("Fix tags.txt and rescan to edit")
                     ig.Separator()
                 end
 
@@ -396,7 +399,7 @@ function _render_measurements_panel(ui_state, filter_meas)
     haskey(ui_state, :selected_measurement_id_set) ||
         error("UI selection state is missing selected_measurement_id_set")
     selected_measurement_id_set = ui_state[:selected_measurement_id_set]
-    registry_ready = _bad_registry_ready(ui_state)
+    registry_ready = _tag_state_ready(ui_state)
 
     _render_selection_toolbar!(
         length(get(ui_state, :selected_measurements, MeasurementInfo[])),
@@ -453,8 +456,14 @@ function _render_measurements_panel(ui_state, filter_meas)
                         rows_rendered += 1
 
                         is_selected = measurement.id in selected_measurement_id_set
-                        bad_text_pushed = registry_ready &&
-                                          _push_bad_text_style!(_measurement_is_bad(ui_state, measurement))
+                        bad_text_pushed = false
+                        if registry_ready
+                            tag_state = _tag_state_or_error(ui_state)
+                            dev_key = device_path_key(measurement.device_info)
+                            ancestor_keys = _ancestor_keys_for_path(dev_key)
+                            bad_text_pushed = _push_tag_text_style!(
+                                tag_state, measurement.id, [dev_key; ancestor_keys])
+                        end
                         if ig.Selectable(display_label(proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
                             io = ig.GetIO()
                             shift_held = unsafe_load(io.KeyShift)
@@ -486,9 +495,9 @@ function _render_measurements_panel(ui_state, filter_meas)
                                 push!(open_plots, _measurement_plot_window_entry(measurement))
                             end
 
-                            editable = _bad_registry_ready(ui_state)
+                            editable = _tag_state_ready(ui_state)
                             if !editable
-                                ig.TextDisabled("Fix bad_measurements and rescan to edit")
+                                ig.TextDisabled("Fix tags.txt and rescan to edit")
                                 ig.Separator()
                             end
 

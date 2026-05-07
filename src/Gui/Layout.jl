@@ -569,7 +569,7 @@ function render_menu_bar(ui_state)
             ig.EndMenu()
         end
         _render_cache_toolbar_button!(ui_state)
-        bad_visibility_toggle_enabled = isempty(get(ui_state, :bad_registry_error, "")) || get(ui_state, :show_bad, true)
+        bad_visibility_toggle_enabled = isempty(get(ui_state, :tag_state_error, "")) || get(ui_state, :show_bad, true)
         !bad_visibility_toggle_enabled && ig.BeginDisabled()
         if ig.MenuItem("Show Bad", C_NULL, get(ui_state, :show_bad, true))
             ui_state[:show_bad] = !get(ui_state, :show_bad, true)
@@ -578,7 +578,7 @@ function render_menu_bar(ui_state)
         if !bad_visibility_toggle_enabled
             ig.EndDisabled()
             if ig.BeginItemTooltip()
-                ig.TextUnformatted("Fix bad_measurements and rescan before hiding bad items")
+                ig.TextUnformatted("Fix tags.txt and rescan before hiding bad items")
                 ig.EndTooltip()
             end
         end
@@ -819,7 +819,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     ui_state = Dict{Symbol,Any}()
     _init_scan_state!(ui_state)
     _init_cache_state!(ui_state)
-    _init_bad_state!(ui_state)
+    _init_tag_state!(ui_state)
     _init_figure_script_state!(ui_state)
     _init_plot_state!(ui_state)
     ui_state[:_frame] = 0

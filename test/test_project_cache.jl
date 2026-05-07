@@ -31,7 +31,7 @@ function _init_cache_test_ui(cache_id::AbstractString, dir::AbstractString)
     ui_state = Dict{Symbol,Any}()
     MeasurementBrowser._init_scan_state!(ui_state)
     MeasurementBrowser._init_cache_state!(ui_state)
-    MeasurementBrowser._init_bad_state!(ui_state)
+    MeasurementBrowser._init_tag_state!(ui_state)
     MeasurementBrowser._init_figure_script_state!(ui_state)
     MeasurementBrowser._init_plot_state!(ui_state)
     ui_state[:project_preference] = "RuO2"
@@ -241,7 +241,7 @@ end
             ui_state = _init_cache_test_ui(cache_id, dir)
             write(joinpath(dir, "bad_measurements"), "device A\n")
             MeasurementBrowser._open_project_path!(ui_state, dir; persist=false)
-            @test ui_state[:bad_registry].devices == Set(["A"])
+            @test "bad" in ui_state[:tag_state].assignments["A"]
             @test get(ui_state, :scan_state, :idle) in (:cache_reload, :cache_discovery, :done)
             MeasurementBrowser._launch_source_scan_job!(
                 ui_state,

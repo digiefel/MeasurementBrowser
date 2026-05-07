@@ -1,13 +1,13 @@
 module MeasurementBrowser
 
 using PrecompileTools
+using Annotations
 
 # Core modules
 include("scan/Types.jl")
 include("scan/Indexer.jl")
 include("AnalysisResult.jl")
 include("DeviceParser.jl")
-include("BadRegistry.jl")
 include("FigureScripts.jl")
 include("projects/RuO2Project.jl")   # defines methods + registers RUO2_PROJECT
 include("projects/TASEProject.jl")   # defines methods + registers TASE_PROJECT

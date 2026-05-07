@@ -1,22 +1,18 @@
-function _copy_bad_registry(registry::BadRegistry)
-    return BadRegistry(copy(registry.devices), copy(registry.measurements))
-end
-
-function _load_bad_registry_for_root!(ui_state, root_path::String)
+function _load_tag_state_for_root!(ui_state, root_path::String)
     if isempty(root_path)
-        ui_state[:bad_registry] = nothing
-        ui_state[:bad_registry_error] = ""
+        ui_state[:tag_state] = nothing
+        ui_state[:tag_state_error] = ""
         return
     end
 
     try
-        ui_state[:bad_registry] = load_bad_registry(root_path)
-        ui_state[:bad_registry_error] = ""
+        ui_state[:tag_state] = Annotations.Tags.load(root_path)
+        ui_state[:tag_state_error] = ""
         _apply_visible_selection!(ui_state)
     catch err
-        if err isa BadRegistryParseError || err isa BadRegistryIOError
-            ui_state[:bad_registry] = nothing
-            ui_state[:bad_registry_error] = sprint(showerror, err)
+        if err isa Annotations.Tags.TagsParseError
+            ui_state[:tag_state] = nothing
+            ui_state[:tag_state_error] = sprint(showerror, err)
             ui_state[:show_bad] = true
             _apply_visible_selection!(ui_state)
             return
@@ -25,14 +21,16 @@ function _load_bad_registry_for_root!(ui_state, root_path::String)
     end
 end
 
-function _bad_registry_ready(ui_state)
-    return get(ui_state, :bad_registry, nothing) isa BadRegistry && isempty(get(ui_state, :bad_registry_error, ""))
+function _tag_state_ready(ui_state)
+    return get(ui_state, :tag_state, nothing) isa Annotations.Tags.TagState &&
+           isempty(get(ui_state, :tag_state_error, ""))
 end
 
-function _bad_registry_or_error(ui_state)
-    registry = get(ui_state, :bad_registry, nothing)
-    registry isa BadRegistry || error("Bad registry unavailable: $(get(ui_state, :bad_registry_error, ""))")
-    return registry
+function _tag_state_or_error(ui_state)
+    state = get(ui_state, :tag_state, nothing)
+    state isa Annotations.Tags.TagState ||
+        error("Tag state unavailable: $(get(ui_state, :tag_state_error, ""))")
+    return state
 end
 
 function _device_path_key(node::HierarchyNode)
@@ -45,33 +43,52 @@ function _device_location(node::HierarchyNode)
     return copy(first(node.measurements).device_info.location)
 end
 
+function _ancestor_keys_for_path(path::AbstractString)
+    parts = split(path, '/')
+    length(parts) <= 1 && return String[]
+    out = String[]
+    for i in 1:(length(parts) - 1)
+        push!(out, join(parts[1:i], '/'))
+    end
+    return out
+end
+
+function _has_bad_tag(tag_state::Annotations.Tags.TagState, key::AbstractString,
+                      ancestor_keys)
+    return "bad" in Annotations.Tags.effective(tag_state, key, ancestor_keys)
+end
+
 function _device_is_explicitly_bad(ui_state, device_key::String)
-    return device_key in _bad_registry_or_error(ui_state).devices
+    tag_state = _tag_state_or_error(ui_state)
+    return _has_bad_tag(tag_state, device_key, _ancestor_keys_for_path(device_key))
 end
 
 function _measurement_is_explicitly_bad(ui_state, measurement_id::String)
-    return measurement_id in _bad_registry_or_error(ui_state).measurements
+    tag_state = _tag_state_or_error(ui_state)
+    return _has_bad_tag(tag_state, measurement_id, String[])
 end
 
 function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
-    return _measurement_is_explicitly_bad(ui_state, measurement.id) ||
-           _device_is_explicitly_bad(ui_state, device_path_key(measurement.device_info))
+    tag_state = _tag_state_or_error(ui_state)
+    dev_key = device_path_key(measurement.device_info)
+    ancestor_keys = _ancestor_keys_for_path(dev_key)
+    return _has_bad_tag(tag_state, measurement.id, [dev_key; ancestor_keys])
 end
 
-function _assert_bad_registry_visibility_available(ui_state)
-    _bad_registry_ready(ui_state) && return
-    error("Cannot hide bad items while bad registry is unavailable: $(get(ui_state, :bad_registry_error, ""))")
+function _assert_tag_state_visibility_available(ui_state)
+    _tag_state_ready(ui_state) && return
+    error("Cannot hide bad items while tag state is unavailable: $(get(ui_state, :tag_state_error, ""))")
 end
 
 function _device_is_visible(ui_state, device_key::String)
     get(ui_state, :show_bad, true) && return true
-    _assert_bad_registry_visibility_available(ui_state)
+    _assert_tag_state_visibility_available(ui_state)
     return !_device_is_explicitly_bad(ui_state, device_key)
 end
 
 function _measurement_is_visible(ui_state, measurement::MeasurementInfo)
     get(ui_state, :show_bad, true) && return true
-    _assert_bad_registry_visibility_available(ui_state)
+    _assert_tag_state_visibility_available(ui_state)
     return !_measurement_is_bad(ui_state, measurement)
 end
 
@@ -122,34 +139,39 @@ function _apply_visible_selection!(ui_state)
     ui_state[:selected_path] = selected_path
 end
 
+function _ensure_bad_catalog_entry!(tag_state::Annotations.Tags.TagState)
+    any(t -> t.name == Annotations.Tags.LEGACY_BAD_TAG, tag_state.catalog) && return
+    pushfirst!(tag_state.catalog,
+        Annotations.Tags.TagDef(Annotations.Tags.LEGACY_BAD_TAG,
+                                Annotations.Tags.LEGACY_BAD_COLOR,
+                                Annotations.Tags.LEGACY_BAD_PRIORITY))
+end
+
 function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
     unique_keys = unique(copy(device_keys))
     isempty(unique_keys) && return false
-    _bad_registry_ready(ui_state) || return false
+    _tag_state_ready(ui_state) || return false
 
     root_path = get(ui_state, :root_path, "")
-    isempty(root_path) && error("Cannot update bad registry without an active project root")
+    isempty(root_path) && error("Cannot update tag state without an active project root")
 
-    registry = get(ui_state, :bad_registry, nothing)
-    registry isa BadRegistry || error("Bad registry is unavailable for editing")
+    tag_state = _tag_state_or_error(ui_state)
+    _ensure_bad_catalog_entry!(tag_state)
 
-    updated = _copy_bad_registry(registry)
     for device_key in unique_keys
-        bad ? push!(updated.devices, device_key) : delete!(updated.devices, device_key)
-    end
-
-    try
-        save_bad_registry(root_path, updated)
-    catch err
-        if err isa BadRegistryIOError
-            ui_state[:bad_registry_error] = sprint(showerror, err)
-            return false
+        if bad
+            set = get!(() -> Set{String}(), tag_state.assignments, device_key)
+            push!(set, Annotations.Tags.LEGACY_BAD_TAG)
+        else
+            tags = get(tag_state.assignments, device_key, nothing)
+            if tags !== nothing
+                delete!(tags, Annotations.Tags.LEGACY_BAD_TAG)
+                isempty(tags) && delete!(tag_state.assignments, device_key)
+            end
         end
-        rethrow()
     end
 
-    ui_state[:bad_registry] = updated
-    ui_state[:bad_registry_error] = ""
+    Annotations.Tags.save(root_path, tag_state)
     _apply_visible_selection!(ui_state)
     return true
 end
@@ -157,31 +179,28 @@ end
 function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::Bool)
     unique_ids = unique(copy(measurement_ids))
     isempty(unique_ids) && return false
-    _bad_registry_ready(ui_state) || return false
+    _tag_state_ready(ui_state) || return false
 
     root_path = get(ui_state, :root_path, "")
-    isempty(root_path) && error("Cannot update bad registry without an active project root")
+    isempty(root_path) && error("Cannot update tag state without an active project root")
 
-    registry = get(ui_state, :bad_registry, nothing)
-    registry isa BadRegistry || error("Bad registry is unavailable for editing")
+    tag_state = _tag_state_or_error(ui_state)
+    _ensure_bad_catalog_entry!(tag_state)
 
-    updated = _copy_bad_registry(registry)
     for measurement_id in unique_ids
-        bad ? push!(updated.measurements, measurement_id) : delete!(updated.measurements, measurement_id)
-    end
-
-    try
-        save_bad_registry(root_path, updated)
-    catch err
-        if err isa BadRegistryIOError
-            ui_state[:bad_registry_error] = sprint(showerror, err)
-            return false
+        if bad
+            set = get!(() -> Set{String}(), tag_state.assignments, measurement_id)
+            push!(set, Annotations.Tags.LEGACY_BAD_TAG)
+        else
+            tags = get(tag_state.assignments, measurement_id, nothing)
+            if tags !== nothing
+                delete!(tags, Annotations.Tags.LEGACY_BAD_TAG)
+                isempty(tags) && delete!(tag_state.assignments, measurement_id)
+            end
         end
-        rethrow()
     end
 
-    ui_state[:bad_registry] = updated
-    ui_state[:bad_registry_error] = ""
+    Annotations.Tags.save(root_path, tag_state)
     _apply_visible_selection!(ui_state)
     return true
 end
@@ -193,10 +212,10 @@ function _selection_targets(selected_items::Vector{T}, clicked_item::T) where {T
     return T[clicked_item]
 end
 
-function _render_bad_registry_error!(ui_state)
-    message = get(ui_state, :bad_registry_error, "")
+function _render_tag_state_error!(ui_state)
+    message = get(ui_state, :tag_state_error, "")
     isempty(message) && return
-    ig.TextColored((1.0, 0.5, 0.5, 1.0), "bad_measurements error")
+    ig.TextColored((1.0, 0.5, 0.5, 1.0), "tags error")
     if ig.BeginItemTooltip()
         ig.PushTextWrapPos(ig.GetFontSize() * 35.0)
         ig.TextUnformatted(message)
@@ -205,8 +224,14 @@ function _render_bad_registry_error!(ui_state)
     end
 end
 
-function _push_bad_text_style!(bad::Bool)
-    bad || return false
-    ig.PushStyleColor(ig.ImGuiCol_Text, (0.82, 0.35, 0.35, 1.0))
+function _push_tag_text_style!(tag_state::Annotations.Tags.TagState, key::AbstractString,
+                                ancestor_keys)
+    eff = Annotations.Tags.effective(tag_state, key, ancestor_keys)
+    color = Annotations.Tags.dominant_color(tag_state, eff)
+    color === nothing && return false
+    r = Float32(color[1]) / 255f0
+    g = Float32(color[2]) / 255f0
+    b = Float32(color[3]) / 255f0
+    ig.PushStyleColor(ig.ImGuiCol_Text, (r, g, b, 1.0f0))
     return true
 end

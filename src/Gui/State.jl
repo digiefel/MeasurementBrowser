@@ -179,7 +179,7 @@ function _open_project_path!(ui_state, path::String; persist=true)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
     proj = _project_for_preference(ui_state[:project_preference])
     cache_id = _cache_id_for_path!(ui_state, norm_path)
-    _load_bad_registry_for_root!(ui_state, norm_path)
+    _load_tag_state_for_root!(ui_state, norm_path)
     _launch_project_reload_job!(ui_state, norm_path, proj, cache_id; persist)
 end
 
@@ -230,10 +230,10 @@ function _init_cache_state!(ui_state)
     ui_state[:cache_errors] = ProjectCacheFileError[]
 end
 
-function _init_bad_state!(ui_state)
+function _init_tag_state!(ui_state)
     ui_state[:show_bad] = true
-    ui_state[:bad_registry] = nothing
-    ui_state[:bad_registry_error] = ""
+    ui_state[:tag_state] = nothing
+    ui_state[:tag_state_error] = ""
     ui_state[:selected_device_paths] = String[]
     ui_state[:selected_measurement_ids] = String[]
     ui_state[:selected_devices] = HierarchyNode[]
@@ -874,7 +874,7 @@ function _launch_source_scan_job!(
     identity = project_cache_identity(cache_id, proj, norm_path)
     ui_state[:cache_id] = cache_id
     ui_state[:cache_identity] = identity
-    _load_bad_registry_for_root!(ui_state, norm_path)
+    _load_tag_state_for_root!(ui_state, norm_path)
     ui_state[:source_scan_seq] = get(ui_state, :source_scan_seq, 0) + 1
     scan_id = ui_state[:source_scan_seq]
     ui_state[:active_source_scan_id] = scan_id

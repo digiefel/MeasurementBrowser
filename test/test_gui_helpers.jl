@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using Annotations
 using Test
 
 function _drain_figure_script_job!(ui_state)
@@ -276,13 +277,17 @@ end
     @test selected_meas[2].filename == "m2.csv"
 
     hierarchy = MeasurementHierarchy([m1, m2], "/tmp", false, MeasurementBrowser.RUO2_PROJECT, 0)
+    bad_tag_state = Annotations.Tags.TagState(
+        [Annotations.Tags.TagDef("bad", (0xff, 0x30, 0x30), 100)],
+        Dict{String,Set{String}}("B" => Set(["bad"])),
+    )
     ui2 = Dict{Symbol,Any}(
         :scan_hierarchy => hierarchy,
         :measurement_index => Dict("m1" => m1, "m2" => m2),
         :selected_device_paths => ["A", "B"],
         :selected_measurement_ids => ["m1", "m2"],
-        :bad_registry => MeasurementBrowser.BadRegistry(Set(["B"]), Set{String}()),
-        :bad_registry_error => "",
+        :tag_state => bad_tag_state,
+        :tag_state_error => "",
         :show_bad => true,
     )
     MeasurementBrowser._apply_visible_selection!(ui2)
@@ -309,16 +314,16 @@ end
             :measurement_index => Dict("m1" => m1, "m2" => m2),
             :selected_device_paths => ["A", "B"],
             :selected_measurement_ids => ["m1", "m2"],
-            :bad_registry => MeasurementBrowser.BadRegistry(),
-            :bad_registry_error => "",
+            :tag_state => Annotations.Tags.TagState(),
+            :tag_state_error => "",
             :show_bad => false,
         )
         MeasurementBrowser._apply_visible_selection!(ui_reload)
         @test [node.name for node in ui_reload[:selected_devices]] == ["A", "B"]
 
         write(joinpath(dir, "bad_measurements"), "device B\n")
-        MeasurementBrowser._load_bad_registry_for_root!(ui_reload, dir)
-        @test ui_reload[:bad_registry].devices == Set(["B"])
+        MeasurementBrowser._load_tag_state_for_root!(ui_reload, dir)
+        @test "bad" in ui_reload[:tag_state].assignments["B"]
         @test [node.name for node in ui_reload[:selected_devices]] == ["A"]
         @test [m.id for m in ui_reload[:selected_measurements]] == ["m1"]
     end
@@ -329,8 +334,8 @@ end
     mktempdir() do dir
         ui3 = Dict{Symbol,Any}(
             :root_path => dir,
-            :bad_registry => MeasurementBrowser.BadRegistry(),
-            :bad_registry_error => "",
+            :tag_state => Annotations.Tags.TagState(),
+            :tag_state_error => "",
             :show_bad => true,
             :scan_hierarchy => hierarchy,
             :measurement_index => Dict("m1" => m1, "m2" => m2),
@@ -340,32 +345,33 @@ end
         MeasurementBrowser._apply_visible_selection!(ui3)
 
         @test MeasurementBrowser._set_devices_bad!(ui3, ["B"], true)
-        @test ui3[:bad_registry].devices == Set(["B"])
+        @test "bad" in ui3[:tag_state].assignments["B"]
         @test isfile(joinpath(dir, "bad_measurements"))
 
         @test MeasurementBrowser._set_measurements_bad!(ui3, ["m1"], true)
-        @test ui3[:bad_registry].measurements == Set(["m1"])
+        @test "bad" in ui3[:tag_state].assignments["m1"]
 
         @test MeasurementBrowser._set_devices_bad!(ui3, ["B"], false)
-        @test isempty(ui3[:bad_registry].devices)
+        @test !haskey(ui3[:tag_state].assignments, "B")
     end
 
     ui4 = Dict{Symbol,Any}(
-        :bad_registry => nothing,
-        :bad_registry_error => "bad registry unavailable",
+        :tag_state => nothing,
+        :tag_state_error => "tag state unavailable",
         :show_bad => false,
     )
-    @test !MeasurementBrowser._bad_registry_ready(ui4)
+    @test !MeasurementBrowser._tag_state_ready(ui4)
     @test_throws ErrorException MeasurementBrowser._device_is_visible(ui4, "A")
     @test_throws ErrorException MeasurementBrowser._measurement_is_visible(ui4, m1)
 
     mktempdir() do dir
-        write(joinpath(dir, "bad_measurements"), "bogus\n")
+        write(joinpath(dir, "tags.txt"),
+            "[catalog]\nbad\tff3030\t100\n\n[assignments]\nonlyone\n")
         ui5 = Dict{Symbol,Any}(:show_bad => false)
-        MeasurementBrowser._load_bad_registry_for_root!(ui5, dir)
+        MeasurementBrowser._load_tag_state_for_root!(ui5, dir)
         @test ui5[:show_bad] == true
-        @test ui5[:bad_registry] === nothing
-        @test !isempty(ui5[:bad_registry_error])
+        @test ui5[:tag_state] === nothing
+        @test !isempty(ui5[:tag_state_error])
     end
 
     m3 = MeasurementInfo(
