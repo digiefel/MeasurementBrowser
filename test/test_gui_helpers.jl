@@ -200,6 +200,19 @@ end
     @test checking_model.label == "Cache: Loaded"
     @test MeasurementBrowser.MakieImguiIntegration._texture_display_size((1600, 1000), 2.0f0) == (800.0, 500.0)
     @test MeasurementBrowser.MakieImguiIntegration._texture_display_size((800, 500), 1.0f0) == (800.0, 500.0)
+    @test MeasurementBrowser.MakieImguiIntegration._imgui_mouse_to_makie(
+        (x=150.0, y=125.0),
+        (x=100.0, y=100.0),
+        (800.0, 500.0),
+    ) == (50.0, 475.0)
+    makie_mouse = MeasurementBrowser.MakieImguiIntegration.Makie.Mouse
+    @test MeasurementBrowser.MakieImguiIntegration._makie_button_for_imgui_right(false) == makie_mouse.right
+    @test MeasurementBrowser.MakieImguiIntegration._makie_button_for_imgui_right(true) == makie_mouse.left
+    @test MeasurementBrowser.MakieImguiIntegration._makie_button_for_imgui_right(false, true) == makie_mouse.left
+    @test MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(false, false, false)
+    @test !MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(true, false, false)
+    @test !MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(false, true, false)
+    @test !MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(false, false, true)
 
     items = [1, 2, 3, 4]
     selected = Int[]

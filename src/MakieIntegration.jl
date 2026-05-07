@@ -26,9 +26,10 @@ mutable struct ImMakieFigure
     render_times::Vector{Float32}
     times_idx::Int
     was_dragging::Bool
+    was_ctrl_left_click::Bool
 
     function ImMakieFigure(figure, screen)
-        self = new(figure, screen, zeros(Float32, 20), 1, false)
+        self = new(figure, screen, zeros(Float32, 20), 1, false, false)
     end
 end
 
@@ -113,6 +114,18 @@ function _texture_display_size(texture_size, px_per_unit)
     scale > 0 || return (Float64(texture_size[1]), Float64(texture_size[2]))
     return (Float64(texture_size[1]) / scale, Float64(texture_size[2]) / scale)
 end
+
+function _imgui_mouse_to_makie(pos, origin, image_size)
+    # ImGui reports screen positions from the top-left of the drawn image.
+    # Makie scene mouse coordinates use the GL-style bottom-left origin.
+    return (Float64(pos.x - origin.x), Float64(image_size[2] - (pos.y - origin.y)))
+end
+
+_ctrl_left_as_right_click(io) = unsafe_load(io.MouseCtrlLeftAsRightClick)
+_makie_button_for_imgui_right(ctrl_left_as_right, was_ctrl_left_click=false) =
+    (ctrl_left_as_right || was_ctrl_left_click) ? Makie.Mouse.left : Makie.Mouse.right
+_should_open_axis_popup(was_dragging, was_ctrl_left_click, ctrl_left_as_right) =
+    !(was_dragging || was_ctrl_left_click || ctrl_left_as_right)
 
 function draw_axisscale_buttons(scale, ticks, idx)
     if ig.RadioButton("linear##$(idx)", scale[] === identity)
@@ -238,62 +251,81 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
     if ig.IsItemHovered()
         # Update the mouse position
         pos = ig.GetMousePos()
-        new_pos = (pos.x - cursor_pos.x, pos.y - cursor_pos.y)
+        new_pos = _imgui_mouse_to_makie(pos, cursor_pos, image_size)
         if new_pos != scene.events.mouseposition[]
             scene.events.mouseposition[] = new_pos
             @debug "mouse position updated", scene.events.mouseposition
         end
 
-        # Update the mouse buttons
-        for (igkey, makiekey) in ((ig.ImGuiKey_MouseLeft, Makie.Mouse.left),
-            (ig.ImGuiKey_MouseRight, Makie.Mouse.right))
-            if ig.IsKeyPressed(igkey)
-                scene.events.mousebutton[] = Makie.MouseButtonEvent(makiekey, Makie.Mouse.press)
-                @debug "mouse button pressed event", scene.events.mousebutton
+        ctrl_left_as_right = _ctrl_left_as_right_click(io)
+
+        # Update pressed and released keys. Makie mouse gestures consult modifier
+        # state, so this must happen before forwarding mouse button events.
+        for (igkey, glfwkey) in ((ig.lib.ImGuiKey_X, Int(GLFW.KEY_X)),
+            (ig.lib.ImGuiKey_Y, Int(GLFW.KEY_Y)),
+            (ig.lib.ImGuiKey_LeftCtrl, Int(GLFW.KEY_LEFT_CONTROL)))
+            if ig.IsKeyPressed(igkey) ||
+                    (ctrl_left_as_right && igkey == ig.lib.ImGuiKey_LeftCtrl)
+                event = Makie.KeyEvent(Makie.Keyboard.Button(glfwkey), Makie.Keyboard.press)
+                scene.events.keyboardbutton[] = event
+                @debug "keyboard button pressed event", scene.events.keyboardbutton
             elseif ig.IsKeyReleased(igkey)
-                scene.events.mousebutton[] = Makie.MouseButtonEvent(makiekey, Makie.Mouse.release)
-                @debug "mouse button released event", scene.events.mousebutton
+                event = Makie.KeyEvent(Makie.Keyboard.Button(glfwkey), Makie.Keyboard.release)
+                scene.events.keyboardbutton[] = event
+                @debug "keyboard button released event", scene.events.keyboardbutton
             end
         end
 
+        # Update the mouse buttons. On macOS, ImGui may report Ctrl+left-click
+        # as a right click. Makie's default reset gesture is Ctrl+left-click, so
+        # translate that converted event back before forwarding it.
+        if ig.IsKeyPressed(ig.ImGuiKey_MouseLeft)
+            scene.events.mousebutton[] = Makie.MouseButtonEvent(Makie.Mouse.left, Makie.Mouse.press)
+            @debug "mouse button pressed event", scene.events.mousebutton
+        elseif ig.IsKeyReleased(ig.ImGuiKey_MouseLeft)
+            scene.events.mousebutton[] = Makie.MouseButtonEvent(Makie.Mouse.left, Makie.Mouse.release)
+            @debug "mouse button released event", scene.events.mousebutton
+        end
+
+        if ig.IsKeyPressed(ig.ImGuiKey_MouseRight)
+            makie_button = _makie_button_for_imgui_right(ctrl_left_as_right)
+            imfigure.was_ctrl_left_click = ctrl_left_as_right
+            scene.events.mousebutton[] = Makie.MouseButtonEvent(makie_button, Makie.Mouse.press)
+            @debug "mouse button pressed event", scene.events.mousebutton
+        elseif ig.IsKeyReleased(ig.ImGuiKey_MouseRight)
+            makie_button = _makie_button_for_imgui_right(false, imfigure.was_ctrl_left_click)
+            scene.events.mousebutton[] = Makie.MouseButtonEvent(makie_button, Makie.Mouse.release)
+            imfigure.was_ctrl_left_click = false
+            @debug "mouse button released event", scene.events.mousebutton
+        end
+
         # Record if the mouse is dragging
-        if ig.IsMouseDragging(ig.lib.ImGuiMouseButton_Right)
+        if !imfigure.was_ctrl_left_click && ig.IsMouseDragging(ig.lib.ImGuiMouseButton_Right)
             imfigure.was_dragging = true
         end
 
-        # Update the scroll rat
+        # Update the scroll rate
         wheel_y = unsafe_load(io.MouseWheel)
         wheel_x = unsafe_load(io.MouseWheelH)
         if (wheel_x, wheel_y) != scene.events.scroll[]
             scene.events.scroll[] = (wheel_x, wheel_y)
             @debug "scrolling" scene.events.scroll
         end
-
-        # Update pressed and released keys. For now we only support X/Y/left
-        # Ctrl because those are the ones that Makie uses by default and to do
-        # it properly for all keys we need to make a mapping from ImGuiKey's to
-        # GLFW keys.
-        for (igkey, glfwkey) in ((ig.lib.ImGuiKey_X, Int(GLFW.KEY_X)),
-            (ig.lib.ImGuiKey_Y, Int(GLFW.KEY_Y)),
-            (ig.lib.ImGuiKey_LeftCtrl, Int(GLFW.KEY_LEFT_CONTROL)))
-            if ig.IsKeyPressed(igkey)
-                scene.events.keyboardbutton[] = Makie.KeyEvent(Makie.Keyboard.Button(glfwkey), Makie.Keyboard.press)
-                @debug "keyboard button pressed event", scene.events.keyboardbutton
-            elseif ig.IsKeyReleased(igkey)
-                scene.events.keyboardbutton[] = Makie.KeyEvent(Makie.Keyboard.Button(glfwkey), Makie.Keyboard.release)
-                @debug "keyboard button released event", scene.events.keyboardbutton
-            end
-        end
+    elseif imfigure.was_ctrl_left_click && ig.IsKeyReleased(ig.ImGuiKey_MouseRight)
+        scene.events.mousebutton[] = Makie.MouseButtonEvent(Makie.Mouse.left, Makie.Mouse.release)
+        imfigure.was_ctrl_left_click = false
+        @debug "mouse button released event", scene.events.mousebutton
     end
 
     # Always clear the dragging field when a new potential drag (right-click) is
     # started.
-    if ig.IsMouseClicked(ig.lib.ImGuiMouseButton_Right)
+    ctrl_left_as_right = _ctrl_left_as_right_click(ig.GetIO())
+    if !ctrl_left_as_right && ig.IsMouseClicked(ig.lib.ImGuiMouseButton_Right)
         imfigure.was_dragging = false
     end
 
     # Only display the popup if we're not dragging
-    if !imfigure.was_dragging
+    if _should_open_axis_popup(imfigure.was_dragging, imfigure.was_ctrl_left_click, ctrl_left_as_right)
         for x in f.content
             if x isa Makie.Axis && GLMakie.is_mouseinside(x)
                 draw_popup(x)
