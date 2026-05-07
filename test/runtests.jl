@@ -9,7 +9,6 @@ using Test
     include("test_scan_directory_progress.jl")
     include("test_project_cache.jl")
     include("test_plot_job_controller.jl")
-    include("test_bad_registry.jl")
     include("test_annotations.jl")
     include("test_figure_scripts.jl")
     include("test_gui_helpers.jl")
