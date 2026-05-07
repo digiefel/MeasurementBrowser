@@ -127,7 +127,27 @@ end
             )
             @test hasproperty(cached_plot, :df)
             @test hasproperty(cached_plot, :pulse_groups)
+            @test cached_plot.debug == false
             @test nrow(cached_plot.df) > 0
+
+            debug_ui = Dict{Symbol,Any}(
+                :cache_identity => loaded.identity,
+                :cache_status => loaded.status,
+                :debug_plot_mode => true,
+            )
+            debug_job = MeasurementBrowser._plot_job(
+                debug_ui,
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+                :pund,
+                :main;
+                target_id="main",
+            )
+            cached_debug_plot = MeasurementBrowser._run_plot_job(debug_job, () -> false)
+            @test cached_debug_plot.debug == true
+            @test hasproperty(cached_debug_plot, :debug_boundaries)
+            @test hasproperty(cached_debug_plot, :debug_labels)
+            @test nrow(cached_debug_plot.df) == nrow(cached_plot.df)
 
             sleep(0.05)
             touch(pund_measurement.filepath)
