@@ -24,7 +24,7 @@ There is **no AppState struct**. Everything lives in `ui_state`, threaded by ref
 
 - `_init_scan_state!` (scan/progress)
 - `_init_cache_state!` (HDF5 cache)
-- `_init_bad_state!` (BadRegistry — will become Tags)
+- `_init_bad_state!` (BadRegistry)
 - `_init_figure_script_state!` (figure-script export)
 - `_init_plot_state!` (plot job queue)
 

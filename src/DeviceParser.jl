@@ -2,6 +2,12 @@
 DeviceParser.jl - Parse device hierarchy from measurement filenames
 """
 
+# TODO: invert ownership — `DeviceInfo` is currently nested inside every
+# `MeasurementInfo`, but devices own measurements, not the other way around.
+# `DeviceInfo` should live on the hierarchy leaf; `MeasurementInfo` should
+# carry only the path/leaf reference. This will simplify per-device state
+# (parameters, tags, notes, coords) and remove redundant `DeviceInfo` copies.
+
 using Dates
 
 # ---------------------------------------------------------------------------

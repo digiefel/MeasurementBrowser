@@ -28,7 +28,7 @@ metadata)       │  --------     -----------     ------                │
 ```
 MeasurementBrowser.jl (root)
   ├── DeviceParser.jl       — filename parsing, hierarchy types, devices_info.txt
-  ├── BadRegistry.jl        — load/save bad_measurements (will be subsumed by Tags)
+  ├── BadRegistry.jl        — load/save bad_measurements
   ├── PlotJobs.jl           — async figure rendering job queue
   ├── Gui.jl                — slim shell; includes files in src/Gui/        [see gui.md]
   │     └── Gui/
@@ -53,8 +53,8 @@ When you change a subpackage, run `Pkg.instantiate()` in its directory too — s
 
 All metadata lives at the **source root** alongside the CSVs (not inside the repo). Lean, hand-editable text. See [storage](storage.md) for formats.
 
-- `devices_info.txt` — per-device parameters with hierarchical path matching (area, thickness, future spatial coords).
-- `bad_measurements` — flat list of paths/IDs flagged bad. (Will be migrated into `tags.txt` — see the spatial-browser plan.)
+- `devices_info.txt` — per-device parameters with hierarchical path matching (area, thickness, etc.).
+- `bad_measurements` — flat list of paths/IDs flagged bad.
 
 ## Conventions cheatsheet
 
@@ -74,11 +74,6 @@ All metadata lives at the **source root** alongside the CSVs (not inside the rep
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
 | [figure_scripts.md](figure_scripts.md) | You're working on the figure-script export feature. |
 
-Not yet written (create when first agent touches the area):
-
-- `scanning.md` — `scan_directory`, fixture-by-fixture walkthrough, `devices_info.txt` parser internals.
-- `plotting.md` — `DataPlotter` API, `PlotJob` async lifecycle, `MakieIntegration` constraints.
-
 ## Doc maintenance rule
 
 **Any change that affects structure described in these docs must update them in the same commit.** That includes:
@@ -89,3 +84,5 @@ Not yet written (create when first agent touches the area):
 - Restructuring `Gui.jl` panels or `ui_state` keys.
 
 If you're not sure whether a change is "structural enough" to document, it probably is. Err on the side of updating.
+
+These docs describe **current state only**. No history, no "used to be", no references to in-flight work or open plans. If a change supersedes an old structure, replace the description rather than annotating the transition. Past states belong in `git log`; in-flight feature plans belong in plan files.
