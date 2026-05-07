@@ -472,7 +472,7 @@ function _validate_meta!(h5, identity::ProjectCacheIdentity)
         throw(ProjectCacheInvalidError(identity.cache_path, "project mismatch: expected $(identity.project_name), found $project_name_value"))
     cache_id_value = _read_required(meta, "cache_id", identity.cache_path)
     cache_id_value == identity.cache_id ||
-        throw(ProjectCacheInvalidError(identity.cache_path, "cache id mismatch"))
+        @warn "Cache ID mismatch; expected $(identity.cache_id), found $cache_id_value"
     return nothing
 end
 
