@@ -283,6 +283,26 @@ end
     @test [node.name for node in ui2[:selected_devices]] == ["A", "B"]
     @test [m.id for m in ui2[:selected_measurements]] == ["m1", "m2"]
 
+    mktempdir() do dir
+        ui_reload = Dict{Symbol,Any}(
+            :scan_hierarchy => hierarchy,
+            :measurement_index => Dict("m1" => m1, "m2" => m2),
+            :selected_device_paths => ["A", "B"],
+            :selected_measurement_ids => ["m1", "m2"],
+            :bad_registry => MeasurementBrowser.BadRegistry(),
+            :bad_registry_error => "",
+            :show_bad => false,
+        )
+        MeasurementBrowser._apply_visible_selection!(ui_reload)
+        @test [node.name for node in ui_reload[:selected_devices]] == ["A", "B"]
+
+        write(joinpath(dir, "bad_measurements"), "device B\n")
+        MeasurementBrowser._load_bad_registry_for_root!(ui_reload, dir)
+        @test ui_reload[:bad_registry].devices == Set(["B"])
+        @test [node.name for node in ui_reload[:selected_devices]] == ["A"]
+        @test [m.id for m in ui_reload[:selected_measurements]] == ["m1"]
+    end
+
     @test MeasurementBrowser._selection_targets([1, 2, 3], 2) == [1, 2, 3]
     @test MeasurementBrowser._selection_targets([1, 2, 3], 4) == [4]
 

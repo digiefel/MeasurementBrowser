@@ -239,7 +239,9 @@ end
             )
 
             ui_state = _init_cache_test_ui(cache_id, dir)
+            write(joinpath(dir, "bad_measurements"), "device A\n")
             MeasurementBrowser._open_project_path!(ui_state, dir; persist=false)
+            @test ui_state[:bad_registry].devices == Set(["A"])
             @test get(ui_state, :scan_state, :idle) in (:cache_reload, :cache_discovery, :done)
             MeasurementBrowser._launch_source_scan_job!(
                 ui_state,
