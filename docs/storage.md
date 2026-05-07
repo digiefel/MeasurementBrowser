@@ -30,12 +30,61 @@ measurement <measurement_id>
 
 Loaded by `BadRegistry` ([src/BadRegistry.jl](../src/BadRegistry.jl)). Loaded at project init in [src/Gui/BadAndStyling.jl](../src/Gui/BadAndStyling.jl) via `_load_bad_registry_for_root!`; persisted via `save_bad_registry`.
 
+If `tags.txt` is absent and `bad_measurements` is present, `Annotations.Tags.load` reads the legacy file and produces an in-memory `TagState` with a single `bad` catalog entry (color `(0xff, 0x30, 0x30)`, priority `100`) plus one assignment per `device <path>` line. `measurement <id>` lines are ignored. `load` does not write to disk.
+
+## layout.txt
+
+Tab-separated, one record per line, no header:
+
+```
+<path>	<x_um>	<y_um>
+```
+
+Lines starting with `#` and blank lines are ignored. Saved sorted by path. Loaded and saved by [src/Annotations/src/Layout.jl](../src/Annotations/src/Layout.jl) (`Annotations.Layout.load` / `Annotations.Layout.save`). Saving an empty map removes the file. Malformed rows raise `LayoutParseError`.
+
+## tags.txt
+
+Two bracket-headed sections, tab-separated rows:
+
+```
+[catalog]
+bad	ff3030	100
+todo	30c0ff	50
+
+[assignments]
+RuO2test/A9/VI/D1	bad
+RuO2test/A10/VI	todo
+```
+
+Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<path>\t<tag_name>`. Lines starting with `#` and blank lines are ignored; whitespace inside rows is tolerated on read. Loaded and saved by [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) (`Annotations.Tags.load` / `Annotations.Tags.save`). Saving empty state removes the file. Malformed rows raise `TagsParseError`.
+
+## notes.txt
+
+Fenced sections, robust against `[brackets]` inside note bodies:
+
+````
+[ChipB]
+```
+Oxygen flow: 5%
+```
+[ChipB/SiteVI]
+```
+dust particle visible
+[observed in second pass]
+```
+````
+
+Each section is `[<path>]` on its own line, followed by an opening triple-backtick fence, then body lines, then a closing fence. The parser keys on the fences, not the brackets, so `[anything]` inside a body is preserved verbatim. The trailing newline before the closing fence is trimmed; other whitespace is preserved. Loaded and saved by [src/Annotations/src/Notes.jl](../src/Annotations/src/Notes.jl) (`Annotations.Notes.read_section`, `Annotations.Notes.merged_view`, `Annotations.Notes.write_section!`). Malformed sections raise `NotesParseError`.
+
 ## File ownership matrix
 
 | File | Concern | Read by | Written by |
 |---|---|---|---|
 | `devices_info.txt` | Per-path parameters | `_load_scan_metadata` ([DeviceParser.jl:497](../src/DeviceParser.jl)) | Hand-edited |
-| `bad_measurements` | Bad flag | `load_bad_registry` | `save_bad_registry` |
+| `bad_measurements` | Bad flag | `load_bad_registry`; `Annotations.Tags.load` (legacy fallback) | `save_bad_registry` |
+| `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
+| `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
+| `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |
 
 ## Conventions for metadata file
 

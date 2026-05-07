@@ -45,6 +45,7 @@ Subpackages (path-deps; each has its own Project.toml):
   src/DataLoader/    — CSV readers (read_fe_pund, read_iv_sweep, …)
   src/DataAnalysis/  — analyzers (analyze_pund, analyze_tlm_combined, …)
   src/DataPlotter/   — figure_for_file, figure_for_files; depends on Loader+Analysis
+  src/Annotations/   — on-disk annotation formats (Coords, Layout, Tags, Notes)
 ```
 
 When you change a subpackage, run `Pkg.instantiate()` in its directory too — see [CLAUDE.md](../CLAUDE.md).
@@ -72,6 +73,7 @@ All metadata lives at the **source root** alongside the CSVs (not inside the rep
 | [data-model.md](data-model.md) | You're touching `DeviceParser`, hierarchy traversal, or paths/IDs. |
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
+| [annotations.md](annotations.md) | You're touching `src/Annotations/` — coords, layout, tags, notes. |
 | [figure_scripts.md](figure_scripts.md) | You're working on the figure-script export feature. |
 
 ## Doc maintenance rule
