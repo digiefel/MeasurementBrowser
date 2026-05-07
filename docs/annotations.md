@@ -35,10 +35,11 @@ The subpackage is consumed via `using Annotations` and namespaced access (`Annot
 ### `Tags`
 
 - `TagDef(name, color::NTuple{3,UInt8}, priority::Int)` — single catalog entry.
-- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `TagState()` is the empty state.
-- `load(root) -> TagState`. If `tags.txt` is absent and `bad_measurements` is present, builds an in-memory state from the legacy file (see [storage.md](storage.md#bad_measurements)) — `load` itself never writes to disk.
-- `save(root, state)` — empty state removes the file.
-- `effective(state, path, ancestor_paths) -> Set{String}` — union of `path`'s assignments with assignments on every entry of `ancestor_paths`.
+- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}}, measurement_assignments::Dict{String, Set{String}})` — full state. `assignments` is device-path-keyed; `measurement_assignments` is measurement-ID-keyed. `TagState()` is the empty state.
+- `load(root) -> TagState`. Reads `tags.txt` if present, then reads `bad_measurements` if present and merges its entries as `bad` assignments into both maps. See [storage.md](storage.md#bad_measurements) and [storage.md](storage.md#tags.txt). `load` never writes to disk.
+- `save(root, state)` — writes only `tags.txt`. Empty state removes the file.
+- `effective(state, path, ancestor_paths) -> Set{String}` — union of `path`'s device-path assignments with assignments on every entry of `ancestor_paths`. Does not include measurement-ID tags.
+- `assigned_to_measurement(state, measurement_id) -> Set{String}` — explicit tags on `measurement_id`; empty set if none. Measurement-ID tags are not ancestor-walked; callers compose `effective` and `assigned_to_measurement` to get the full applicable set for a measurement.
 - `dominant_color(state, effective_tags) -> Union{Nothing, NTuple{3,UInt8}}` — highest-priority hit's color among catalog entries whose name is in `effective_tags`. Returns `nothing` for an empty input or no catalog matches.
 
 ### `Notes`
