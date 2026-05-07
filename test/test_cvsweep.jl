@@ -52,6 +52,23 @@ Frequency_Hz,Bias_V,Cp (F),Rp (Ohm),Time_sec,Status_Cp,Status_Rp,Status_Combined
 """,
         )
 
+        no_status_path = joinpath(
+            dir,
+            "RuO2test_A9",
+            "VI",
+            "FeCap",
+            "E4",
+            "RuO2test_A9_VI_FeCap_E4_20260505_172807_CVSweep.csv",
+        )
+        _write_csv(
+            no_status_path,
+            """
+Frequency_Hz,Bias_V,Cp (F),G (S),Time_sec
+1000.0,1.0,5.0e-12,1.0e-9,0.1
+1000.0,-1.0,6.0e-12,1.5e-9,0.2
+""",
+        )
+
         headerless_path = joinpath(
             dir,
             "RuO2test_A8",
@@ -89,6 +106,11 @@ Bias_V,Cp (F),Rp (Ohm),Time_sec,Status_Cp,Status_Rp,Status_Combined
             "status_combined",
         ]
         @test sort(unique(g_loaded.df.frequency_Hz)) == [1000.0, 10000.0]
+
+        no_status_loaded = read_cv_sweep(basename(no_status_path), dirname(no_status_path))
+        @test all(no_status_loaded.df.status_cp .== 0)
+        @test all(no_status_loaded.df.status_secondary .== 0)
+        @test all(no_status_loaded.df.status_combined .== 0)
 
         g_plot_loaded = MeasurementBrowser.load_plot_for_file(RUO2_PROJECT, g_path, :cvsweep)
         g_plot_analyzed = MeasurementBrowser.analyze_plot_for_file(RUO2_PROJECT, :cvsweep, g_plot_loaded)

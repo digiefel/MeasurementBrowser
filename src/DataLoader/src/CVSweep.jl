@@ -31,17 +31,20 @@ function read_cv_sweep(filename, workdir=".")
         "Bias_V" => :bias_V,
         "Cp (F)" => :cp_F,
         "Time_sec" => :time_s,
-        "Status_Cp" => :status_cp,
-        "Status_Combined" => :status_combined,
     )
+    "Status_Cp" in columns && (rename_map["Status_Cp"] = :status_cp)
+    "Status_Combined" in columns && (rename_map["Status_Combined"] = :status_combined)
     if secondary_kind === :conductance
         rename_map["G (S)"] = :secondary_value
-        rename_map["Status_G"] = :status_secondary
+        "Status_G" in columns && (rename_map["Status_G"] = :status_secondary)
     else
         rename_map["Rp (Ohm)"] = :secondary_value
-        rename_map["Status_Rp"] = :status_secondary
+        "Status_Rp" in columns && (rename_map["Status_Rp"] = :status_secondary)
     end
     rename!(df, rename_map)
+    for status_column in (:status_cp, :status_secondary, :status_combined)
+        hasproperty(df, status_column) || (df[!, status_column] = zeros(Int, nrow(df)))
+    end
 
     return (
         df=select(
