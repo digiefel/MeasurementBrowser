@@ -104,12 +104,12 @@ function _ruo2_write_cached_analyzed_plot!(measurement_group, kind::Symbol, anal
     for name in propertynames(analyzed)
         name === :df && continue
         value = getproperty(analyzed, name)
-        if _cache_scalar_supported(value)
+        if name === :pulse_groups || name === :debug_boundaries || name === :debug_labels
+            continue
+        elseif _cache_scalar_supported(value)
             scalars[name] = value
         elseif value isa AbstractVector && _cache_vector_supported(value)
             arrays[name] = collect(value)
-        elseif name === :pulse_groups || name === :debug_boundaries || name === :debug_labels
-            continue
         else
             error("Unsupported RuO2 cached plot field '$name' of type $(typeof(value))")
         end
