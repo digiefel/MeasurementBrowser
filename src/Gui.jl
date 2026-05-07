@@ -183,7 +183,7 @@ function _persist_current_project_preferences!(ui_state)
 end
 
 function _project_for_preference(pref::AbstractString)
-    pref == "auto" && return something(_default_project[], RUO2_PROJECT)
+    pref == "auto" && return something(_default_project[])
     for project in KNOWN_PROJECTS
         project_name(project) == pref && return project
     end
@@ -717,12 +717,14 @@ function _ensure_figure_script_group_matches!(ui_state)
 end
 
 function _selected_measurements_in_panel_order(ui_state)
-    proj = get(ui_state, :project, RUO2_PROJECT)
     filter_meas = get(ui_state, :_imgui_text_filter_meas, nothing)
     all_measurements = _selected_measurements(ui_state)
-    visible_measurements = filter_meas === nothing ?
-        all_measurements :
+    visible_measurements = if filter_meas === nothing
+        all_measurements
+    else
+        proj = ui_state[:project]
         _visible_measurements(ui_state, proj, all_measurements, filter_meas)
+    end
     selected_ids = Set(get(ui_state, :selected_measurement_ids, String[]))
     return [measurement for measurement in visible_measurements if measurement.id in selected_ids]
 end
@@ -2877,7 +2879,7 @@ end
 
 # Right panel (measurements list) rendering
 function _render_measurements_panel(ui_state, filter_meas)
-    proj = get(ui_state, :project, RUO2_PROJECT)
+    proj = ui_state[:project]
     ig.BeginChild("Measurements", (0, 0), true)
     ig.SeparatorText("Measurement Selection")
 
@@ -3331,7 +3333,7 @@ function render_project_window(ui_state)
         pref = get(ui_state, :project_preference, "auto")
         changed = false
 
-        default_project = something(_default_project[], RUO2_PROJECT)
+        default_project = something(_default_project[])
         default_label = "Default ($(project_name(default_project)))"
 
         if ig.RadioButton(default_label, pref == "auto")
@@ -3385,7 +3387,7 @@ function render_project_window(ui_state)
 end
 
 function render_info_window(ui_state)
-    proj = get(ui_state, :project, RUO2_PROJECT)
+    proj = ui_state[:project]
     selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
     selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
     if ig.Begin("Information Panel")
@@ -3538,7 +3540,7 @@ end
 function render_figure_script_window(ui_state)
     get(ui_state, :show_figure_script_window, false) || return
 
-    proj = get(ui_state, :project, RUO2_PROJECT)
+    proj = ui_state[:project]
     selected_measurements = _selected_measurements_in_panel_order(ui_state)
     selected_count = length(selected_measurements)
     job_running = _figure_script_job_running(ui_state)
