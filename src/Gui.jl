@@ -1354,7 +1354,9 @@ end
 function _cache_progress_models(ui_state)
     models = NamedTuple[]
     load_progress = get(ui_state, :cache_load_progress, nothing)
-    if load_progress isa Dict
+    cache_state = get(ui_state, :cache_state, :idle)
+    state = get(ui_state, :scan_state, :idle)
+    if load_progress isa Dict && (cache_state == :loading || state == :cache_load)
         total = get(load_progress, :total_csv, 0)
         processed = get(load_progress, :processed_csv, 0)
         loaded = get(load_progress, :loaded_measurements, 0)
@@ -1368,7 +1370,6 @@ function _cache_progress_models(ui_state)
             show_bar=true,
         ))
     end
-    state = get(ui_state, :scan_state, :idle)
     if state in (:cache_discovery, :cache_update, :cache_reload)
         activity = _cache_activity_model(ui_state)
         push!(models, (
@@ -1612,6 +1613,16 @@ function _scan_running(ui_state)
         :cache_reload,
         :cache_load,
         :cache_check,
+        :cache_discovery,
+        :cache_update,
+        :canceling,
+    )
+end
+
+function _cache_action_blocked(ui_state)
+    return get(ui_state, :scan_state, :idle) in (
+        :cache_reload,
+        :cache_load,
         :cache_discovery,
         :cache_update,
         :canceling,
@@ -2023,7 +2034,7 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
 end
 
 function _queue_cache_update!(ui_state; full_rebuild::Bool=false)
-    if _scan_running(ui_state)
+    if _cache_action_blocked(ui_state)
         _request_scan_cancel!(ui_state)
         return
     end
@@ -2073,14 +2084,13 @@ function _poll_scan_events!(ui_state)
             _append_cache_measurements!(ui_state, msg.measurements)
         elseif msg.kind == :cache_loaded
             _apply_cache_metadata!(ui_state, msg.metadata)
-            _load_bad_registry_for_root!(ui_state, msg.metadata.identity.root_path)
+            delete!(ui_state, :cache_load_progress)
             ui_state[:cache_state] = :checking
             ui_state[:scan_state] = :cache_check
         elseif msg.kind == :reload_result
             _apply_cache_metadata!(ui_state, msg.metadata)
             ui_state[:cache_state] = :ready
             ui_state[:scan_state] = :done
-            _load_bad_registry_for_root!(ui_state, msg.metadata.identity.root_path)
             msg.persist && _persist_preferences!(ui_state; path=msg.metadata.identity.root_path)
             _finalize_scan!(ui_state)
         elseif msg.kind == :cache_missing
@@ -2092,7 +2102,6 @@ function _poll_scan_events!(ui_state)
             ui_state[:cache_state] = :missing
             ui_state[:cache_error] = msg.error
             ui_state[:scan_state] = :cache_missing
-            _load_bad_registry_for_root!(ui_state, identity.root_path)
             msg.persist && _persist_preferences!(ui_state; path=identity.root_path)
             _finalize_scan!(ui_state)
         elseif msg.kind == :canceled
@@ -3227,7 +3236,7 @@ function _render_cache_controls!(ui_state; compact::Bool)
     status = get(ui_state, :cache_status, nothing)
     cache_state = get(ui_state, :cache_state, :idle)
     model = _cache_toolbar_model(ui_state)
-    running = _scan_running(ui_state)
+    running = _cache_action_blocked(ui_state)
     activity = _cache_activity_model(ui_state)
 
     if compact

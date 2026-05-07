@@ -192,6 +192,26 @@ end
         :scan_state => :cache_check,
         :source_check_progress => Dict{Symbol,Any}(),
     )))
+    @test isempty(MeasurementBrowser._cache_progress_models(Dict{Symbol,Any}(
+        :cache_state => :checking,
+        :scan_state => :cache_check,
+        :cache_load_progress => Dict{Symbol,Any}(
+            :phase => :cache_load,
+            :total_csv => 8,
+            :processed_csv => 8,
+            :loaded_measurements => 32,
+            :skipped_csv => 0,
+            :current_path => "",
+        ),
+    )))
+    @test !MeasurementBrowser._cache_action_blocked(Dict{Symbol,Any}(
+        :cache_state => :checking,
+        :scan_state => :cache_check,
+    ))
+    @test MeasurementBrowser._cache_action_blocked(Dict{Symbol,Any}(
+        :cache_state => :loading,
+        :scan_state => :cache_load,
+    ))
     checking_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
         :cache_identity => cache_identity,
         :cache_state => :checking,
