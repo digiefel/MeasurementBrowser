@@ -1,6 +1,5 @@
 """
-Tags — catalog of named tags plus per-path and per-measurement-ID assignments stored at
-`<root>/tags.txt`.
+Tags — catalog of named tags plus per-key assignments stored at `<root>/tags.txt`.
 
 The file has two sections, each introduced by a bracketed header:
 
@@ -9,26 +8,30 @@ The file has two sections, each introduced by a bracketed header:
     todo\\t30c0ff\\t50
 
     [assignments]
-    device         RuO2test/A9/VI/D1    bad
-    measurement    abc123hash           bad
-    device         RuO2test/A10/VI      todo
+    RuO2test/A9/VI/D1                                          bad
+    /Users/davide/data/RuO2test/A9/VI/D1/3V FE PUND.csv        bad
+    RuO2test/A10/VI                                            todo
 
-Assignment rows carry an explicit kind prefix (`device` or `measurement`), followed by the key
-and the tag name. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting
-with `#` are comments. Unknown kind tokens raise `TagsParseError`.
+Assignment rows are `<key>\\t<tag_name>`. Keys are either device-path strings
+(slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or measurement-ID strings
+(absolute filesystem paths, optionally with `#cycle=N` / `#split=X` suffixes).
+The two namespaces never overlap, so no kind prefix is needed. Fields are
+tab-separated on write; whitespace-tolerant on read. Lines starting with `#`
+are comments. Malformed rows raise `TagsParseError`.
 
-`Tags.load` reads both `tags.txt` and `bad_measurements` when both are present. Entries from
-`bad_measurements` are merged as `bad` assignments: `device <path>` lines into `assignments`,
-`measurement <id>` lines into `measurement_assignments`. If the catalog has no `bad` entry it
-is added. This makes repeated `load → save` cycles idempotent as long as `bad_measurements`
+`Tags.load` reads both `tags.txt` and `bad_measurements` when both are present.
+Entries from `bad_measurements` are merged as `bad` assignments into the single
+`assignments` map: `device <path>` and `measurement <id>` lines both land in
+`assignments`, prefix-stripped. If the catalog has no `bad` entry it is added.
+This makes repeated `load → save` cycles idempotent as long as `bad_measurements`
 has not grown.
 
-`Tags.save` writes only `tags.txt`. After `load → save`, subsequent `load → save` cycles
-produce byte-identical output as long as `bad_measurements` has not grown.
+`Tags.save` writes only `tags.txt`. After `load → save`, subsequent `load → save`
+cycles produce byte-identical output as long as `bad_measurements` has not grown.
 """
 module Tags
 
-export TagDef, TagState, load, save, effective, dominant_color, assigned_to_measurement,
+export TagDef, TagState, load, save, effective, dominant_color,
        tags_path, TAGS_FILENAME
 
 const TAGS_FILENAME = "tags.txt"
@@ -55,23 +58,21 @@ end
 """
     TagState
 
-Catalog of `TagDef`s plus two assignment maps:
+Catalog of `TagDef`s plus a single `assignments` map.
 
-- `assignments` — device-path-keyed: explicit tags per path string.
-- `measurement_assignments` — measurement-ID-keyed: explicit tags per ID.
+Keys are arbitrary strings — either device-path keys (slash-joined segments,
+e.g. `"RuO2test/A9/VI/D1"`) or measurement-ID strings (absolute paths with
+optional `#cycle=N` / `#split=X` suffixes). The two namespaces never overlap.
 
-Both maps record only explicitly attached tags; inheritance is applied at lookup time via
-`effective` (device paths) or `assigned_to_measurement` (measurement IDs). Measurement-ID
-lookup is not ancestor-walked; callers compose `effective` and `assigned_to_measurement`
-themselves.
+Only explicitly attached tags are stored; inheritance is applied at lookup time
+via `effective`.
 """
 struct TagState
     catalog::Vector{TagDef}
     assignments::Dict{String,Set{String}}
-    measurement_assignments::Dict{String,Set{String}}
 end
 
-TagState() = TagState(TagDef[], Dict{String,Set{String}}(), Dict{String,Set{String}}())
+TagState() = TagState(TagDef[], Dict{String,Set{String}}())
 
 struct TagsParseError <: Exception
     path::String
@@ -109,10 +110,9 @@ function _split_row(line::AbstractString)
     return [strip(p) for p in split(line) if !isempty(strip(p))]
 end
 
-# Merge entries from bad_measurements into a mutable catalog + assignment pair.
+# Merge entries from bad_measurements into a mutable catalog + assignments pair.
 function _merge_legacy!(catalog::Vector{TagDef},
                         assignments::Dict{String,Set{String}},
-                        measurement_assignments::Dict{String,Set{String}},
                         root::AbstractString)
     path = _legacy_bad_path(root)
     isfile(path) || return
@@ -128,11 +128,8 @@ function _merge_legacy!(catalog::Vector{TagDef},
         kind = parts[1]
         value = strip(parts[2])
         isempty(value) && continue
-        if kind == "device"
+        if kind == "device" || kind == "measurement"
             set = get!(() -> Set{String}(), assignments, String(value))
-            push!(set, LEGACY_BAD_TAG)
-        elseif kind == "measurement"
-            set = get!(() -> Set{String}(), measurement_assignments, String(value))
             push!(set, LEGACY_BAD_TAG)
         end
     end
@@ -143,7 +140,6 @@ function load(root::AbstractString)::TagState
 
     catalog = TagDef[]
     assignments = Dict{String,Set{String}}()
-    measurement_assignments = Dict{String,Set{String}}()
 
     if isfile(path)
         section = :none
@@ -174,23 +170,14 @@ function load(root::AbstractString)::TagState
                     "bad priority '$(fields[3])'"))
                 push!(catalog, TagDef(name, color, priority))
             elseif section == :assignments
-                length(fields) == 3 || throw(TagsParseError(path, line_number,
-                    "expected '<kind>\\t<key>\\t<tag_name>'"))
-                kind_tok = String(fields[1])
-                key = String(fields[2])
-                tag = String(fields[3])
+                length(fields) == 2 || throw(TagsParseError(path, line_number,
+                    "expected '<key>\\t<tag_name>'"))
+                key = String(fields[1])
+                tag = String(fields[2])
                 (isempty(key) || isempty(tag)) &&
                     throw(TagsParseError(path, line_number, "empty key or tag name"))
-                if kind_tok == "device"
-                    set = get!(() -> Set{String}(), assignments, key)
-                    push!(set, tag)
-                elseif kind_tok == "measurement"
-                    set = get!(() -> Set{String}(), measurement_assignments, key)
-                    push!(set, tag)
-                else
-                    throw(TagsParseError(path, line_number,
-                        "unknown assignment kind '$kind_tok'; expected 'device' or 'measurement'"))
-                end
+                set = get!(() -> Set{String}(), assignments, key)
+                push!(set, tag)
             else
                 throw(TagsParseError(path, line_number,
                     "row outside of any section; expected '[catalog]' or '[assignments]' header first"))
@@ -198,9 +185,9 @@ function load(root::AbstractString)::TagState
         end
     end
 
-    _merge_legacy!(catalog, assignments, measurement_assignments, root)
+    _merge_legacy!(catalog, assignments, root)
 
-    return TagState(catalog, assignments, measurement_assignments)
+    return TagState(catalog, assignments)
 end
 
 function _format_color(color::NTuple{3,UInt8})
@@ -213,7 +200,7 @@ end
 
 function save(root::AbstractString, state::TagState)
     path = tags_path(root)
-    if isempty(state.catalog) && isempty(state.assignments) && isempty(state.measurement_assignments)
+    if isempty(state.catalog) && isempty(state.assignments)
         rm(path; force=true)
         return
     end
@@ -224,20 +211,13 @@ function save(root::AbstractString, state::TagState)
             println(io, tag.name, '\t', _format_color(tag.color), '\t', tag.priority)
         end
 
-        has_assignments = !isempty(state.assignments) || !isempty(state.measurement_assignments)
-        if has_assignments
+        if !isempty(state.assignments)
             println(io)
             println(io, "[assignments]")
             for key in sort!(collect(keys(state.assignments)))
                 tags = sort!(collect(state.assignments[key]))
                 for tag in tags
-                    println(io, "device\t", key, '\t', tag)
-                end
-            end
-            for key in sort!(collect(keys(state.measurement_assignments)))
-                tags = sort!(collect(state.measurement_assignments[key]))
-                for tag in tags
-                    println(io, "measurement\t", key, '\t', tag)
+                    println(io, key, '\t', tag)
                 end
             end
         end
@@ -247,12 +227,16 @@ end
 """
     effective(state, path, ancestor_paths) -> Set{String}
 
-Return tags that apply to `path`: its own device-path assignments unioned with any
+Return tags that apply to `path`: its own assignments unioned with any
 assignments on ancestor paths. The caller supplies `ancestor_paths`
 (order doesn't affect the union).
 
-Measurement-ID tags are not included here; callers compose `effective` and
-`assigned_to_measurement` themselves.
+To get the full applicable set for a measurement, call:
+
+    effective(state, measurement_id, [device_path; device_ancestors...])
+
+This works because all keys — device paths and measurement IDs — live in the
+same `assignments` map and are looked up uniformly.
 """
 function effective(state::TagState, path::AbstractString, ancestor_paths)::Set{String}
     out = Set{String}()
@@ -264,21 +248,6 @@ function effective(state::TagState, path::AbstractString, ancestor_paths)::Set{S
     own = get(state.assignments, String(path), nothing)
     own !== nothing && union!(out, own)
     return out
-end
-
-"""
-    assigned_to_measurement(state, measurement_id) -> Set{String}
-
-Return the tags explicitly assigned to `measurement_id`. Returns an empty set when
-no tags are recorded for that ID.
-
-Measurement-ID tags are not ancestor-walked. Callers combine this with `effective`
-on the device path to get the full applicable set.
-"""
-function assigned_to_measurement(state::TagState, measurement_id::AbstractString)::Set{String}
-    tags = get(state.measurement_assignments, String(measurement_id), nothing)
-    tags === nothing && return Set{String}()
-    return copy(tags)
 end
 
 """

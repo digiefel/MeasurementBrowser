@@ -77,7 +77,6 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 state = Annotations.Tags.load(dir)
                 @test isempty(state.catalog)
                 @test isempty(state.assignments)
-                @test isempty(state.measurement_assignments)
             end
         end
 
@@ -91,7 +90,6 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
             @test bad.priority == 100
             @test "bad" in state.assignments["RuO2test/A9/VI/D1"]
             @test "todo" in state.assignments["RuO2test/A10/VI"]
-            @test isempty(state.measurement_assignments)
 
             mktempdir() do tmp
                 Annotations.Tags.save(tmp, state)
@@ -99,7 +97,6 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 @test Set(t.name for t in roundtripped.catalog) ==
                     Set(t.name for t in state.catalog)
                 @test roundtripped.assignments == state.assignments
-                @test roundtripped.measurement_assignments == state.measurement_assignments
             end
         end
 
@@ -118,25 +115,24 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 @test state.catalog[1].priority == 100
                 @test state.assignments["RuO2test/A9/VI/D1"] == Set(["bad"])
                 @test state.assignments["RuO2test/A9/VI/D2"] == Set(["bad"])
-                @test isempty(state.measurement_assignments)
                 @test !isfile(Annotations.Tags.tags_path(dir))
             end
         end
 
-        @testset "legacy bad_measurements migration — measurement lines" begin
+        @testset "legacy bad_measurements migration — device and measurement lines" begin
             mktempdir() do dir
                 write(joinpath(dir, "bad_measurements"),
                     """
                     # comment
                     device RuO2test/A9/VI/D1
                     device RuO2test/A9/VI/D2
-                    measurement abc123hash
+                    measurement /abs/path/to/3V FE PUND.csv#cycle=1
                     """)
                 state = Annotations.Tags.load(dir)
+                # Both device and measurement keys land in the same assignments map
                 @test state.assignments["RuO2test/A9/VI/D1"] == Set(["bad"])
                 @test state.assignments["RuO2test/A9/VI/D2"] == Set(["bad"])
-                @test Annotations.Tags.assigned_to_measurement(state, "abc123hash") ==
-                    Set(["bad"])
+                @test state.assignments["/abs/path/to/3V FE PUND.csv#cycle=1"] == Set(["bad"])
                 @test length(state.catalog) == 1
                 @test state.catalog[1].name == "bad"
                 @test !isfile(Annotations.Tags.tags_path(dir))
@@ -146,28 +142,28 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
         @testset "combined tags.txt + bad_measurements" begin
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"),
-                    "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\ndevice\tRuO2test/A10/VI\ttodo\n")
+                    "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\nRuO2test/A10/VI\ttodo\n")
                 write(joinpath(dir, "bad_measurements"),
-                    "device RuO2test/A9/VI/D1\nmeasurement abc123hash\n")
+                    "device RuO2test/A9/VI/D1\nmeasurement /abs/path/meas.csv\n")
                 state = Annotations.Tags.load(dir)
 
                 names = Set(t.name for t in state.catalog)
                 @test "todo" in names
                 @test "bad" in names
 
+                # All three keys in a single assignments map
                 @test "todo" in state.assignments["RuO2test/A10/VI"]
                 @test "bad" in state.assignments["RuO2test/A9/VI/D1"]
-                @test Annotations.Tags.assigned_to_measurement(state, "abc123hash") ==
-                    Set(["bad"])
+                @test "bad" in state.assignments["/abs/path/meas.csv"]
             end
         end
 
         @testset "idempotency: load → save → load → save" begin
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"),
-                    "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\ndevice\tRuO2test/A10/VI\ttodo\n")
+                    "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\nRuO2test/A10/VI\ttodo\n")
                 write(joinpath(dir, "bad_measurements"),
-                    "device RuO2test/A9/VI/D1\nmeasurement abc123hash\n")
+                    "device RuO2test/A9/VI/D1\nmeasurement /abs/path/meas.csv\n")
 
                 state1 = Annotations.Tags.load(dir)
                 Annotations.Tags.save(dir, state1)
@@ -181,31 +177,43 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
             end
         end
 
-        @testset "assigned_to_measurement" begin
+        @testset "effective with measurement-ID key and device ancestors" begin
+            # Canonical pattern: is this measurement bad?
+            # Pass measurement ID as the key, device path + ancestors as ancestor_paths.
             mktempdir() do dir
-                write(joinpath(dir, "bad_measurements"), "measurement abc123\n")
+                write(joinpath(dir, "bad_measurements"),
+                    "measurement /abs/path/meas.csv\ndevice RuO2test/A9/VI/D1\n")
                 state = Annotations.Tags.load(dir)
-                @test Annotations.Tags.assigned_to_measurement(state, "abc123") ==
-                    Set(["bad"])
-                @test isempty(Annotations.Tags.assigned_to_measurement(state, "nothere"))
-                @test state.catalog[1].name == "bad"
+
+                # measurement key is found directly
+                eff_meas = Annotations.Tags.effective(state, "/abs/path/meas.csv", String[])
+                @test "bad" in eff_meas
+
+                # device ancestor inheritance also works via effective
+                eff_dev = Annotations.Tags.effective(state, "RuO2test/A9/VI/D1/leaf",
+                    ["RuO2test/A9/VI/D1"])
+                @test "bad" in eff_dev
+
+                # compose: measurement key + device-path ancestors in one call
+                eff_combined = Annotations.Tags.effective(state, "/abs/path/meas.csv",
+                    ["RuO2test/A9", "RuO2test/A9/VI/D1"])
+                @test "bad" in eff_combined
             end
         end
 
-        @testset "measurement_assignments in TagState constructor" begin
-            state = Annotations.Tags.TagState(
-                Annotations.Tags.TagDef[],
-                Dict{String,Set{String}}("ChipA" => Set(["bad"])),
-                Dict{String,Set{String}}("meas42" => Set(["bad"])),
-            )
-            @test Annotations.Tags.assigned_to_measurement(state, "meas42") == Set(["bad"])
-            @test isempty(Annotations.Tags.assigned_to_measurement(state, "other"))
-        end
-
-        @testset "unknown assignment kind raises error" begin
+        @testset "unknown section raises error" begin
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"),
-                    "[catalog]\nbad\tff3030\t100\n\n[assignments]\nunknown\tsome/path\tbad\n")
+                    "[catalog]\nbad\tff3030\t100\n\n[assignments]\nsome/path\tbad\n")
+                state = Annotations.Tags.load(dir)
+                @test "bad" in state.assignments["some/path"]
+            end
+        end
+
+        @testset "malformed assignment row raises error" begin
+            mktempdir() do dir
+                write(joinpath(dir, "tags.txt"),
+                    "[catalog]\nbad\tff3030\t100\n\n[assignments]\nonlyone\n")
                 @test_throws Annotations.Tags.TagsParseError Annotations.Tags.load(dir)
             end
         end
@@ -217,7 +225,6 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                     "ChipA" => Set(["bad"]),
                     "ChipA/SiteVI/D1" => Set(["todo"]),
                 ),
-                Dict{String,Set{String}}(),
             )
             eff = Annotations.Tags.effective(state, "ChipA/SiteVI/D1",
                 ["ChipA", "ChipA/SiteVI"])
@@ -233,8 +240,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 Annotations.Tags.TagDef("hi", (0xff, 0x00, 0x00), 100),
                 Annotations.Tags.TagDef("mid", (0x80, 0x80, 0x80), 50),
             ]
-            state = Annotations.Tags.TagState(catalog, Dict{String,Set{String}}(),
-                Dict{String,Set{String}}())
+            state = Annotations.Tags.TagState(catalog, Dict{String,Set{String}}())
             @test Annotations.Tags.dominant_color(state, Set(["low", "hi", "mid"])) ==
                 (0xff, 0x00, 0x00)
             @test Annotations.Tags.dominant_color(state, Set(["low", "mid"])) ==

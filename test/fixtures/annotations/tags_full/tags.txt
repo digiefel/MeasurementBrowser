@@ -4,5 +4,5 @@ bad	ff3030	100
 todo	30c0ff	50
 
 [assignments]
-device	RuO2test/A9/VI/D1	bad
-device	RuO2test/A10/VI	todo
+RuO2test/A10/VI	todo
+RuO2test/A9/VI/D1	bad
