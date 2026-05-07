@@ -1,0 +1,8 @@
+# sample catalog + assignments
+[catalog]
+bad	ff3030	100
+todo	30c0ff	50
+
+[assignments]
+RuO2test/A9/VI/D1	bad
+RuO2test/A10/VI	todo
