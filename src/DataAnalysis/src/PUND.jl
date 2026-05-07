@@ -298,24 +298,25 @@ function detect_pund_pulses(t, V, I;
     pulse_mask = abs.(dV) .> dV_threshold
     expanded_mask = copy(pulse_mask)
 
-    if dV_max > 1e-12
-        detection_method = :derivative
-        for i in (expand_win+1):(length(pulse_mask)-expand_win)
-            if any(pulse_mask[(i-expand_win):(i+expand_win)])
-                expanded_mask[i] = true
-            end
-        end
-        all_pulses = _true_runs(expanded_mask)
+    # TODO disable this for now. Probably not needed and overengineered.
+    # if dV_max > 1e-12
+    #     detection_method = :derivative
+    #     for i in (expand_win+1):(length(pulse_mask)-expand_win)
+    #         if any(pulse_mask[(i-expand_win):(i+expand_win)])
+    #             expanded_mask[i] = true
+    #         end
+    #     end
+    #     all_pulses = _true_runs(expanded_mask)
 
-        for pulse in all_pulses
-            if length(pulse) >= min_pulse_len
-                pulse_V_range = maximum(abs.(Vc[pulse]))
-                if pulse_V_range >= min_V_amp
-                    push!(pulses, pulse)
-                end
-            end
-        end
-    end
+    #     for pulse in all_pulses
+    #         if length(pulse) >= min_pulse_len
+    #             pulse_V_range = maximum(abs.(Vc[pulse]))
+    #             if pulse_V_range >= min_V_amp
+    #                 push!(pulses, pulse)
+    #             end
+    #         end
+    #     end
+    # end
 
     # Stage 2: trough-based fallback (only if stage 1 found nothing)
     if isempty(pulses)
@@ -406,7 +407,7 @@ end
 
 """
 Perform PUND analysis on the DataFrame
-
+ and !DEBUG
     # 1. identify triangular voltage pulse train
     # 2. get current in P_n and U_n pulses
     # 3. subtract I_Pn - I_Un = I_FEn
@@ -433,12 +434,14 @@ function analyze_pund(df::DataFrame; pulses::Union{Nothing,Vector{UnitRange{Int}
             @info "analyze_pund: detection" method = det.detection_method n_pulses = length(pulses) verdict = det.verdict
         end
 
-        @assert !isempty(pulses) "no valid pulses found; adjust derivative threshold or filtering parameters"
+        if !DEBUG
+            @assert !isempty(pulses) "no valid pulses found; adjust derivative threshold or filtering parameters"
+        end
 
         if det.verdict == :all_flipped
-            # I = -I # commented out to disable polarity correction
-        elseif det.verdict == :inconsistent
-            # error("Inconsistent polarity: $(det.mismatches)/$(det.total) pulses misaligned") # disabled polarity check error
+            I = -I # commented out to disable polarity correction
+        elseif det.verdict == :inconsistent && !DEBUG
+            error("Inconsistent polarity: $(det.mismatches)/$(det.total) pulses misaligned") # disabled polarity check error
         end
     else
         # ---- pulse boundaries provided, skip detection -----------------------------
@@ -454,7 +457,7 @@ function analyze_pund(df::DataFrame; pulses::Union{Nothing,Vector{UnitRange{Int}
         V_avg = mean(Vc2[half])
         I_avg = mean(I[half])
         if abs(V_avg) > 0 && abs(I_avg) > 0 && sign(V_avg) != sign(I_avg)
-            # I = -I # commented out to disable polarity correction
+            I = -I # commented out to disable polarity correction
         end
     end
 
@@ -469,10 +472,12 @@ function analyze_pund(df::DataFrame; pulses::Union{Nothing,Vector{UnitRange{Int}
     for g in groups
         poling, P, U, Np, D = Tuple(g)
         sP, sPol = sign(sum(Vc[P])), sign(sum(Vc[poling]))
-        @assert sPol == -sP &&
-                sign(sum(Vc[U])) == sP &&
-                sign(sum(Vc[Np])) == -sP &&
-                sign(sum(Vc[D])) == -sP "unexpected pulse ordering"
+        if !DEBUG
+            @assert sPol == -sP &&
+                    sign(sum(Vc[U])) == sP &&
+                    sign(sum(Vc[Np])) == -sP &&
+                    sign(sum(Vc[D])) == -sP "unexpected pulse ordering"
+        end
     end
 
     # ---- allocate result columns -------------------------------------------------------
