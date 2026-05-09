@@ -100,6 +100,24 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
             end
         end
 
+        @testset "generated measurement keys keep suffix fragments" begin
+            mktempdir() do dir
+                key = "/abs/path/to/meas.csv#cycle=10000000"
+                write(joinpath(dir, "tags.txt"),
+                    """
+                    # sample generated tags file
+                    [catalog]
+                    bad\t#ff3030\t100
+
+                    [assignments]
+                    $key\tbad
+                    """)
+                state = Annotations.Tags.load(dir)
+                @test state.catalog[1].color == (0xff, 0x30, 0x30)
+                @test state.assignments[key] == Set(["bad"])
+            end
+        end
+
         @testset "legacy bad_measurements migration — device only" begin
             mktempdir() do dir
                 write(joinpath(dir, "bad_measurements"),

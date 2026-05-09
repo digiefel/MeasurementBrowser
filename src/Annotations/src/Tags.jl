@@ -87,12 +87,6 @@ function Base.showerror(io::IO, err::TagsParseError)
     print(io, "Invalid $(basename(err.path)) at line $(err.line_number): $(err.message)")
 end
 
-function _strip_comment(line::AbstractString)
-    idx = findfirst('#', line)
-    idx === nothing && return line
-    return line[1:prevind(line, idx)]
-end
-
 function _parse_color_hex(path::String, line_number::Int, raw::AbstractString)
     s = strip(raw)
     startswith(s, '#') && (s = s[2:end])
@@ -147,8 +141,9 @@ function load(root::AbstractString)::TagState
     if isfile(path)
         section = :none
         for (line_number, raw) in enumerate(eachline(path))
-            body = strip(_strip_comment(raw))
+            body = strip(raw)
             isempty(body) && continue
+            startswith(body, '#') && continue
             if startswith(body, '[') && endswith(body, ']')
                 header = strip(body[2:end-1])
                 if header == "catalog"
