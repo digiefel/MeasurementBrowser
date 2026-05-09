@@ -308,6 +308,13 @@ function _cache_toolbar_model(ui_state)
             detail="Cache update was canceled.",
         )
     elseif status isa ProjectCacheStatus
+        if !get(ui_state, :cache_source_checked, true)
+            return (
+                label="Cache: Loaded",
+                color=(0.20, 0.58, 0.30, 1.0),
+                detail="$(status.cached_files) files cached; source not checked",
+            )
+        end
         if status.error_files > 0
             return (
                 label="Cache: Errors",
@@ -569,9 +576,11 @@ function render_menu_bar(ui_state)
             ig.EndMenu()
         end
         _render_cache_toolbar_button!(ui_state)
-        bad_visibility_toggle_enabled = isempty(get(ui_state, :tag_state_error, "")) || get(ui_state, :show_bad, true)
+        show_bad_effective = _show_bad_effective(ui_state)
+        bad_visibility_toggle_enabled = _tag_state_ready(ui_state) ||
+                                        isempty(get(ui_state, :tag_state_error, ""))
         !bad_visibility_toggle_enabled && ig.BeginDisabled()
-        if ig.MenuItem("Show Bad", C_NULL, get(ui_state, :show_bad, true))
+        if ig.MenuItem("Show Bad", C_NULL, show_bad_effective)
             ui_state[:show_bad] = !get(ui_state, :show_bad, true)
             _apply_visible_selection!(ui_state)
         end

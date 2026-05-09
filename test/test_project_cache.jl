@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using DataFrames: nrow
 using Test
 
 const _CACHE_FIXTURES = (
@@ -129,6 +130,12 @@ end
             @test hasproperty(cached_plot, :pulse_groups)
             @test cached_plot.debug == false
             @test nrow(cached_plot.df) > 0
+            cached_stats = MeasurementBrowser.compute_pund_stats_from_analyzed_plot(
+                cached_plot,
+                pund_measurement.device_info.parameters,
+            )
+            @test haskey(cached_stats, :voltage_max_V)
+            @test haskey(cached_stats, :frequency_kHz)
 
             debug_ui = Dict{Symbol,Any}(
                 :cache_identity => loaded.identity,
@@ -204,7 +211,7 @@ end
             @test snapshot.status.fresh_files == 1
             @test snapshot.status.error_files == 1
             @test length(snapshot.errors) == 1
-            @test snapshot.errors[1].path == realpath(bad_path)
+            @test snapshot.errors[1].path == normpath(abspath(bad_path))
             @test occursin("Could not find FE PUND data header", snapshot.errors[1].message)
 
             loaded = load_project_cache(dir, MeasurementBrowser.RUO2_PROJECT, cache_id)
@@ -254,6 +261,47 @@ end
             @test ui_state[:cache_status].fresh_files == 1
             @test length(ui_state[:all_measurements]) == 1
             @test get(ui_state, :source_scan_state, :idle) == :done
+        finally
+            _remove_cache_file(cache_id)
+        end
+    end
+
+    mktempdir() do dir
+        cache_id = MeasurementBrowser.project_cache_id(dir)
+        _remove_cache_file(cache_id)
+        try
+            _copy_cache_fixture!(dir, _CACHE_FIXTURES.wakeup)
+            _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
+            build_project_cache!(
+                dir,
+                MeasurementBrowser.RUO2_PROJECT,
+                cache_id;
+                full_rebuild=true,
+            )
+
+            source_path = String(dir)
+            ui_state = _init_cache_test_ui(cache_id, source_path)
+            rm(source_path; recursive=true)
+            MeasurementBrowser._open_project_path!(ui_state, source_path; persist=false)
+            _drain_scan_job!(ui_state)
+
+            @test ui_state[:cache_state] == :ready
+            @test ui_state[:cache_source_checked] == false
+            @test get(ui_state, :source_scan_state, :idle) == :idle
+            @test length(ui_state[:all_measurements]) == 2
+            @test ui_state[:cache_status].cached_files == 2
+
+            measurements = ui_state[:all_measurements]
+            job = MeasurementBrowser._plot_job(
+                ui_state,
+                MeasurementBrowser.RUO2_PROJECT,
+                measurements,
+                :pund_fatigue,
+                :main;
+                target_id="main",
+            )
+            combined = MeasurementBrowser._run_plot_job(job, () -> false)
+            @test combined !== nothing
         finally
             _remove_cache_file(cache_id)
         end

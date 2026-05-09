@@ -68,6 +68,17 @@ function _run_plot_job(job::PlotJob, should_cancel)
         return _measurement_group_for_cached_plot(job.cache_identity, measurement)
     end
 
+    cached_loaded = _cached_loaded_plot_for_files(job, should_cancel)
+    if cached_loaded !== nothing
+        return analyze_plot_for_files(
+            job.project,
+            job.plot_kind,
+            cached_loaded;
+            DEBUG=job.debug,
+            should_cancel,
+        )
+    end
+
     paths = [measurement.filepath for measurement in job.measurements]
     loaded = load_plot_for_files(
         job.project,
@@ -84,6 +95,33 @@ function _run_plot_job(job::PlotJob, should_cancel)
         DEBUG=job.debug,
         should_cancel,
     )
+end
+
+function _cached_loaded_plot_for_files(job::PlotJob, should_cancel)
+    job.project isa RuO2Project || return nothing
+    job.plot_kind === :pund_fatigue || return nothing
+    job.cache_identity isa ProjectCacheIdentity || return nothing
+
+    entries = NamedTuple[]
+    for (measurement, params) in zip(job.measurements, job.device_params)
+        _check_plot_cancel(should_cancel)
+        cached = _measurement_group_for_cached_plot(job.cache_identity, measurement)
+        hasproperty(cached, :df) || return nothing
+        timestamp = measurement.timestamp === nothing ? 0.0 : datetime2unix(measurement.timestamp)
+        if measurement.measurement_kind === :wakeup
+            push!(entries, (kind=:wakeup, df=cached.df, params=params, timestamp=timestamp))
+        elseif measurement.measurement_kind === :pund
+            df = DataFrame(
+                time=cached.df.time,
+                current=cached.df.current,
+                voltage=cached.df.voltage,
+            )
+            push!(entries, (kind=:pund, df=df, params=params, timestamp=timestamp))
+        else
+            return nothing
+        end
+    end
+    return (entries=entries,)
 end
 
 function _draw_plot_job(job::PlotJob, data)

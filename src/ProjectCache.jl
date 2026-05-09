@@ -135,8 +135,7 @@ function _cache_slug(value::AbstractString)
 end
 
 function _cache_normalize_path(path::AbstractString)
-    norm_path = abspath(expanduser(String(path)))
-    return ispath(norm_path) ? realpath(norm_path) : norm_path
+    return normpath(abspath(expanduser(String(path))))
 end
 
 function project_cache_id(root_path::AbstractString)

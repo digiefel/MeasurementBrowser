@@ -10,10 +10,9 @@ function _load_tag_state_for_root!(ui_state, root_path::String)
         ui_state[:tag_state_error] = ""
         _apply_visible_selection!(ui_state)
     catch err
-        if err isa Annotations.Tags.TagsParseError
+        if err isa Annotations.Tags.TagsParseError || err isa IOError
             ui_state[:tag_state] = nothing
             ui_state[:tag_state_error] = sprint(showerror, err)
-            ui_state[:show_bad] = true
             _apply_visible_selection!(ui_state)
             return
         end
@@ -24,6 +23,10 @@ end
 function _tag_state_ready(ui_state)
     return get(ui_state, :tag_state, nothing) isa Annotations.Tags.TagState &&
            isempty(get(ui_state, :tag_state_error, ""))
+end
+
+function _show_bad_effective(ui_state)
+    return get(ui_state, :show_bad, true) || !_tag_state_ready(ui_state)
 end
 
 function _tag_state_or_error(ui_state)
@@ -81,14 +84,12 @@ function _assert_tag_state_visibility_available(ui_state)
 end
 
 function _device_is_visible(ui_state, device_key::String)
-    get(ui_state, :show_bad, true) && return true
-    _assert_tag_state_visibility_available(ui_state)
+    _show_bad_effective(ui_state) && return true
     return !_device_is_explicitly_bad(ui_state, device_key)
 end
 
 function _measurement_is_visible(ui_state, measurement::MeasurementInfo)
-    get(ui_state, :show_bad, true) && return true
-    _assert_tag_state_visibility_available(ui_state)
+    _show_bad_effective(ui_state) && return true
     return !_measurement_is_bad(ui_state, measurement)
 end
 

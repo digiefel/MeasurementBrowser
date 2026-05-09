@@ -81,7 +81,10 @@ function render_info_window(ui_state)
                 cache = get(ui_state, :computed_stats_cache, Dict{Tuple{String,Int},Dict{Symbol,Any}}())
                 cache_key = (m.filepath, get(m.parameters, :fatigue_cycle, 0))
                 stats = get!(cache, cache_key) do
-                    compute_pund_stats(m.filepath, m.parameters, m.device_info.parameters)
+                    cached = _compute_cached_pund_stats(ui_state, m)
+                    cached === nothing ?
+                        compute_pund_stats(m.filepath, m.parameters, m.device_info.parameters) :
+                        cached
                 end
                 if !isempty(stats)
                     order = [:voltage_max_V, :voltage_baseline_V, :voltage_min_V, :frequency_kHz, :Pr_max_uCcm2]
@@ -108,6 +111,18 @@ function render_info_window(ui_state)
         ig.EndTable()
     end
     ig.End()
+end
+
+function _compute_cached_pund_stats(ui_state, measurement::MeasurementInfo)
+    identity = get(ui_state, :cache_identity, nothing)
+    identity isa ProjectCacheIdentity || return nothing
+    try
+        analyzed = _measurement_group_for_cached_plot(identity, measurement)
+        return compute_pund_stats_from_analyzed_plot(analyzed, measurement.device_info.parameters)
+    catch err
+        @debug "Could not compute PUND statistics from cache" exception=(err, catch_backtrace())
+        return nothing
+    end
 end
 
 function _figure_script_output_path(ui_state)

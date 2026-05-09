@@ -80,6 +80,15 @@ end
     ))
     @test fresh_model.label == "Cache: Fresh"
 
+    unchecked_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+        :cache_identity => cache_identity,
+        :cache_state => :ready,
+        :cache_source_checked => false,
+        :cache_status => MeasurementBrowser.ProjectCacheStatus(2, 2, 2, 0, 0, 0, 0),
+    ))
+    @test unchecked_model.label == "Cache: Loaded"
+    @test occursin("source not checked", unchecked_model.detail)
+
     stale_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
         :cache_identity => cache_identity,
         :cache_state => :ready,
@@ -361,17 +370,35 @@ end
         :show_bad => false,
     )
     @test !MeasurementBrowser._tag_state_ready(ui4)
-    @test_throws ErrorException MeasurementBrowser._device_is_visible(ui4, "A")
-    @test_throws ErrorException MeasurementBrowser._measurement_is_visible(ui4, m1)
+    @test MeasurementBrowser._show_bad_effective(ui4)
+    @test MeasurementBrowser._device_is_visible(ui4, "A")
+    @test MeasurementBrowser._measurement_is_visible(ui4, m1)
 
     mktempdir() do dir
         write(joinpath(dir, "tags.txt"),
             "[catalog]\nbad\tff3030\t100\n\n[assignments]\nonlyone\n")
-        ui5 = Dict{Symbol,Any}(:show_bad => false)
+        ui5 = Dict{Symbol,Any}(
+            :scan_hierarchy => hierarchy,
+            :measurement_index => Dict("m1" => m1, "m2" => m2),
+            :selected_device_paths => ["A", "B"],
+            :selected_measurement_ids => ["m1", "m2"],
+            :show_bad => false,
+        )
         MeasurementBrowser._load_tag_state_for_root!(ui5, dir)
-        @test ui5[:show_bad] == true
+        @test ui5[:show_bad] == false
+        @test MeasurementBrowser._show_bad_effective(ui5)
         @test ui5[:tag_state] === nothing
         @test !isempty(ui5[:tag_state_error])
+        @test [node.name for node in ui5[:selected_devices]] == ["A", "B"]
+        @test [m.id for m in ui5[:selected_measurements]] == ["m1", "m2"]
+
+        write(joinpath(dir, "tags.txt"),
+            "[catalog]\nbad\tff3030\t100\n\n[assignments]\nB\tbad\n")
+        MeasurementBrowser._load_tag_state_for_root!(ui5, dir)
+        @test MeasurementBrowser._tag_state_ready(ui5)
+        @test !MeasurementBrowser._show_bad_effective(ui5)
+        @test [node.name for node in ui5[:selected_devices]] == ["A"]
+        @test [m.id for m in ui5[:selected_measurements]] == ["m1"]
     end
 
     m3 = MeasurementInfo(

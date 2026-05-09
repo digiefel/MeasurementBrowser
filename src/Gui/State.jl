@@ -23,8 +23,7 @@ end
 const _MAX_RECENT_PROJECTS = 12
 
 function _normalize_project_path(path::AbstractString)
-    norm_path = abspath(expanduser(String(path)))
-    return ispath(norm_path) ? realpath(norm_path) : norm_path
+    return normpath(abspath(expanduser(String(path))))
 end
 
 function _sanitize_project_preference(pref::String)
@@ -226,6 +225,7 @@ function _init_cache_state!(ui_state)
     ui_state[:cache_id] = ""
     ui_state[:cache_identity] = nothing
     ui_state[:cache_status] = nothing
+    ui_state[:cache_source_checked] = false
     ui_state[:cache_semantic_fields] = Dict{Symbol,Vector{Symbol}}()
     ui_state[:cache_errors] = ProjectCacheFileError[]
 end
@@ -804,6 +804,7 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
     ui_state[:cache_id] = snapshot.identity.cache_id
     ui_state[:cache_identity] = snapshot.identity
     ui_state[:cache_status] = snapshot.status
+    ui_state[:cache_source_checked] = true
     ui_state[:cache_semantic_fields] = snapshot.semantic_fields
     ui_state[:cache_errors] = snapshot.errors
     ui_state[:cache_state] = :ready
@@ -819,6 +820,7 @@ function _apply_cache_metadata!(ui_state, metadata)
     ui_state[:cache_id] = identity.cache_id
     ui_state[:cache_identity] = identity
     ui_state[:cache_status] = metadata.status
+    ui_state[:cache_source_checked] = get(metadata, :source_checked, false)
     ui_state[:cache_semantic_fields] = metadata.semantic_fields
     ui_state[:cache_errors] = metadata.errors
     ui_state[:skipped_count] = metadata.skipped_count
@@ -944,7 +946,7 @@ function _launch_project_reload_job!(
     identity = project_cache_identity(cache_id, proj, path)
     current_root = get(ui_state, :root_path, "")
     if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
-        _begin_scan!(ui_state, identity.root_path, proj, isfile(joinpath(identity.root_path, "device_info.txt")))
+        _begin_scan!(ui_state, identity.root_path, proj, false)
     else
         ui_state[:root_path] = identity.root_path
         ui_state[:project] = proj
@@ -973,71 +975,30 @@ function _launch_project_reload_job!(
 
     Base.Threads.@spawn begin
         try
-            cached_fingerprints, cached_statuses = _cached_cache_index(identity)
-            cache_metadata_ref = Ref{Any}(nothing)
-            status_ref = Ref{Union{Nothing,ProjectCacheStatus}}(nothing)
-            errors = Channel{Any}(Inf)
-
-            @sync begin
-                Base.Threads.@spawn try
-                    metadata = _stream_project_cache_contents(
-                        identity.root_path,
-                        proj,
-                        cache_id;
-                        should_cancel=() -> cancel_token[],
-                        on_progress=(progress) -> put!(events, (
-                            kind=:progress,
-                            scan_id=scan_id,
-                            progress=progress,
-                        )),
-                        on_file_loaded=(measurements) -> put!(events, (
-                            kind=:cache_measurements,
-                            scan_id=scan_id,
-                            measurements=measurements,
-                        )),
-                    )
-                    cache_metadata_ref[] = metadata
-                    put!(events, (
-                        kind=:cache_loaded,
-                        scan_id=scan_id,
-                        metadata=metadata,
-                    ))
-                catch err
-                    put!(errors, (err, catch_backtrace()))
-                end
-
-                Base.Threads.@spawn try
-                    raw = collect_csv_fingerprints(
-                        identity.root_path;
-                        should_cancel=() -> cancel_token[],
-                        on_progress=(progress) -> put!(events, (
-                            kind=:progress,
-                            scan_id=scan_id,
-                            progress=progress,
-                        )),
-                        phase=:cache_check,
-                    )
-                    status_ref[] = _cache_status_from_fingerprints(raw, cached_fingerprints, cached_statuses)
-                catch err
-                    put!(errors, (err, catch_backtrace()))
-                end
-            end
-
-            if isready(errors)
-                err, bt = take!(errors)
-                throw(err)
-            end
-            metadata = cache_metadata_ref[]
-            status = status_ref[]
-            metadata === nothing && error("Cache reload finished without loading cache contents")
-            status === nothing && error("Cache reload finished without checking source files")
+            metadata = _stream_project_cache_contents(
+                identity.root_path,
+                proj,
+                cache_id;
+                should_cancel=() -> cancel_token[],
+                on_progress=(progress) -> put!(events, (
+                    kind=:progress,
+                    scan_id=scan_id,
+                    progress=progress,
+                )),
+                on_file_loaded=(measurements) -> put!(events, (
+                    kind=:cache_measurements,
+                    scan_id=scan_id,
+                    measurements=measurements,
+                )),
+            )
             checked_metadata = (
                 identity=metadata.identity,
-                status=status,
+                status=metadata.status,
                 semantic_fields=metadata.semantic_fields,
                 errors=metadata.errors,
                 skipped_count=metadata.skipped_count,
                 has_device_metadata=metadata.has_device_metadata,
+                source_checked=false,
             )
             put!(events, (
                 kind=:reload_result,
@@ -1183,7 +1144,7 @@ function _poll_scan_events!(ui_state)
         elseif msg.kind == :cache_missing
             identity = msg.identity
             proj = _project_by_name(identity.project_name)
-            _begin_scan!(ui_state, identity.root_path, proj, isfile(joinpath(identity.root_path, "device_info.txt")))
+            _begin_scan!(ui_state, identity.root_path, proj, false)
             ui_state[:cache_id] = identity.cache_id
             ui_state[:cache_identity] = identity
             ui_state[:cache_state] = :missing
@@ -1230,6 +1191,7 @@ function _poll_source_scan_events!(ui_state)
             ui_state[:cache_identity] = msg.identity
             ui_state[:cache_id] = msg.identity.cache_id
             ui_state[:cache_status] = msg.status
+            ui_state[:cache_source_checked] = true
             ui_state[:source_scan_state] = :done
             msg.persist && _persist_preferences!(ui_state; path=msg.identity.root_path)
             _finalize_source_scan!(ui_state)

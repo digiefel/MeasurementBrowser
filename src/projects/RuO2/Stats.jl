@@ -5,6 +5,7 @@ using Statistics: mean
 
 """
     compute_pund_stats(filepath, measurement_params, device_params) -> Dict{Symbol,Any}
+    compute_pund_stats_from_analyzed_plot(analyzed, device_params) -> Dict{Symbol,Any}
 
 Compute data-derived statistics for a PUND measurement by reading the CSV.
 Returns a Dict with keys:
@@ -15,6 +16,82 @@ Returns a Dict with keys:
   :Pr_max_uCcm2       — maximum remnant polarization across repetitions (µC/cm², if area_um2 available)
 Returns an empty Dict on failure (missing file, unreadable data, etc.).
 """
+function _pund_stats_from_analysis_df(df, device_params::Dict{Symbol,Any})::Dict{Symbol,Any}
+    result = Dict{Symbol,Any}()
+    nrow(df) == 0 && return result
+
+    t = df.time
+    V = df.voltage
+    I = df.current
+
+    n_pre = min(9, length(V))
+    V_baseline = mean(V[1:n_pre])
+    Vc = V .- V_baseline
+
+    result[:voltage_baseline_V] = round(V_baseline; digits=3)
+    result[:voltage_max_V] = round(maximum(Vc); digits=3)
+    result[:voltage_min_V] = round(minimum(Vc); digits=3)
+
+    det = detect_pund_pulses(t, V, I)
+    if !isempty(det.pulses)
+        t_start = t[first(det.pulses[1])]
+        t_end = t[last(det.pulses[end])]
+        total_span = t_end - t_start
+        if total_span > 0
+            pulse_period = total_span / length(det.pulses)
+            result[:frequency_kHz] = round(1.0 / (pulse_period * 1e3); digits=2)
+        end
+    end
+
+    df_an = hasproperty(df, :Q_FE) && hasproperty(df, :pulse_idx) ?
+        df : analyze_pund(df; pulses=det.pulses)
+    area_um2 = haskey(device_params, :area_um2) ? Float64(device_params[:area_um2]) : NaN
+
+    if isfinite(area_um2) && area_um2 > 0
+        pid = df_an.pulse_idx
+        maxpid = maximum(pid)
+        n_groups = maxpid ÷ 5
+        area_cm2 = area_um2 / 1e8
+
+        pr_vals = Float64[]
+        for rep in 1:n_groups
+            P_code = rep * 5 - 3
+            N_code = rep * 5 - 1
+            rep_mask = (pid .== P_code) .| (pid .== N_code)
+
+            Q_FE = df_an.Q_FE
+            valid = rep_mask .& isfinite.(Q_FE) .& .!isnan.(Q_FE)
+            if any(valid)
+                Qc = Q_FE[valid] .- mean(Q_FE[valid])
+                P_FE = (Qc ./ area_cm2) .* 1e6
+                ymin = minimum(P_FE)
+                ymax = maximum(P_FE)
+                if isfinite(ymin) && isfinite(ymax)
+                    push!(pr_vals, 0.5 * (ymax - ymin))
+                end
+            end
+        end
+
+        if !isempty(pr_vals)
+            result[:Pr_max_uCcm2] = round(maximum(pr_vals); digits=3)
+        end
+    end
+
+    return result
+end
+
+function compute_pund_stats_from_analyzed_plot(
+    analyzed,
+    device_params::Dict{Symbol,Any},
+)::Dict{Symbol,Any}
+    try
+        hasproperty(analyzed, :df) || return Dict{Symbol,Any}()
+        return _pund_stats_from_analysis_df(analyzed.df, device_params)
+    catch
+        return Dict{Symbol,Any}()
+    end
+end
+
 function compute_pund_stats(filepath::AbstractString,
     measurement_params::Dict{Symbol,Any},
     device_params::Dict{Symbol,Any})::Dict{Symbol,Any}
@@ -34,65 +111,7 @@ function compute_pund_stats(filepath::AbstractString,
         end
 
         nrow(df) == 0 && return result
-
-        t = df.time
-        V = df.voltage
-        I = df.current
-
-        # Voltage baseline & stats
-        n_pre = min(9, length(V))
-        V_baseline = mean(V[1:n_pre])
-        Vc = V .- V_baseline
-
-        result[:voltage_baseline_V] = round(V_baseline; digits=3)
-        result[:voltage_max_V] = round(maximum(Vc); digits=3)
-        result[:voltage_min_V] = round(minimum(Vc); digits=3)
-
-        # Frequency from pulse detection
-        det = detect_pund_pulses(t, V, I)
-        if !isempty(det.pulses)
-            t_start = t[first(det.pulses[1])]
-            t_end = t[last(det.pulses[end])]
-            total_span = t_end - t_start
-            if total_span > 0
-                pulse_period = total_span / length(det.pulses)
-                result[:frequency_kHz] = round(1.0 / (pulse_period * 1e3); digits=2)
-            end
-        end
-
-        # Pr from full PUND analysis
-        df_an = analyze_pund(df; pulses=det.pulses)
-        area_um2 = haskey(device_params, :area_um2) ? Float64(device_params[:area_um2]) : NaN
-
-        if isfinite(area_um2) && area_um2 > 0
-            pid = df_an.pulse_idx
-            maxpid = maximum(pid)
-            n_groups = maxpid ÷ 5
-            area_cm2 = area_um2 / 1e8
-
-            pr_vals = Float64[]
-            for rep in 1:n_groups
-                P_code = rep * 5 - 3
-                N_code = rep * 5 - 1
-                rep_mask = (pid .== P_code) .| (pid .== N_code)
-
-                Q_FE = df_an.Q_FE
-                valid = rep_mask .& isfinite.(Q_FE) .& .!isnan.(Q_FE)
-                if any(valid)
-                    Qc = Q_FE[valid] .- mean(Q_FE[valid])
-                    P_FE = (Qc ./ area_cm2) .* 1e6
-                    ymin = minimum(P_FE)
-                    ymax = maximum(P_FE)
-                    if isfinite(ymin) && isfinite(ymax)
-                        push!(pr_vals, 0.5 * (ymax - ymin))
-                    end
-                end
-            end
-
-            if !isempty(pr_vals)
-                result[:Pr_max_uCcm2] = round(maximum(pr_vals); digits=3)
-            end
-        end
+        merge!(result, _pund_stats_from_analysis_df(df, device_params))
     catch
         # Return whatever we managed to compute (or empty on total failure)
     end
