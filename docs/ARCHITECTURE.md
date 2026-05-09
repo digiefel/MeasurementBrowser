@@ -28,7 +28,6 @@ metadata)       │  --------     -----------     ------                │
 ```
 MeasurementBrowser.jl (root)
   ├── DeviceParser.jl       — filename parsing, hierarchy types, devices_info.txt
-  ├── BadRegistry.jl        — load/save bad_measurements
   ├── PlotJobs.jl           — async figure rendering job queue
   ├── Gui.jl                — slim shell; includes files in src/Gui/        [see gui.md]
   │     └── Gui/

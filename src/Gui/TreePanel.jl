@@ -19,7 +19,7 @@ function _measurement_matches_filter(proj, measurement::MeasurementInfo, filter_
 end
 
 function _visible_measurements(ui_state, proj, measurements, filter_meas)
-    if get(ui_state, :show_bad, true) && !ig.ImGuiTextFilter_IsActive(filter_meas)
+    if _show_bad_effective(ui_state) && !ig.ImGuiTextFilter_IsActive(filter_meas)
         return measurements
     end
 

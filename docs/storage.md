@@ -28,9 +28,9 @@ device RuO2test/A9/VI/D1
 measurement <measurement_id>
 ```
 
-Loaded by `BadRegistry` ([src/BadRegistry.jl](../src/BadRegistry.jl)). Loaded at project init in [src/Gui/BadAndStyling.jl](../src/Gui/BadAndStyling.jl) via `_load_bad_registry_for_root!`; persisted via `save_bad_registry`.
+Read by [`Annotations.Tags.load`](../src/Annotations/src/Tags.jl): the file is parsed whenever it is present, regardless of whether `tags.txt` also exists. Entries merge as `bad` assignments into the single `assignments` map; both `device <path>` and `measurement <id>` lines are stored under the bare key after stripping the prefix. If the in-memory catalog has no `bad` entry, one is added with color `(0xff, 0x30, 0x30)` and priority `100`. `load` does not write to disk.
 
-`Annotations.Tags.load` reads `bad_measurements` whenever it is present, regardless of whether `tags.txt` also exists. Entries are merged as `bad` assignments into the single `assignments` map: both `device <path>` and `measurement <id>` lines are stored under the key after stripping the prefix. If the catalog has no `bad` entry, one is added with color `(0xff, 0x30, 0x30)` and priority `100`. `load` does not write to disk. After `load → save`, the merged state is encoded in `tags.txt`, so subsequent `load → save` cycles produce byte-identical output as long as `bad_measurements` has not grown.
+Written by [`Annotations.Tags.save`](../src/Annotations/src/Tags.jl) every time it runs: the file is rewritten to mirror the current `bad`-tagged subset of `state.assignments` (one `device <key>` or `measurement <key>` line per assignment, kind picked from whether the key starts with `/`). When no key is `bad`-tagged, the file is removed. This keeps `tags.txt` and `bad_measurements` in sync so GUI mark/unmark survives reload, and subsequent `load → save` cycles produce byte-identical output as long as no external edits have grown `bad_measurements` between cycles.
 
 ## layout.txt
 
@@ -82,7 +82,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 | File | Concern | Read by | Written by |
 |---|---|---|---|
 | `devices_info.txt` | Per-path parameters | `_load_scan_metadata` ([DeviceParser.jl:497](../src/DeviceParser.jl)) | Hand-edited |
-| `bad_measurements` | Bad flag | `load_bad_registry`; `Annotations.Tags.load` (merged as `bad` assignments) | `save_bad_registry` |
+| `bad_measurements` | Bad flag (legacy mirror) | `Annotations.Tags.load` (merged as `bad` assignments) | `Annotations.Tags.save` (mirrors `bad`-tagged keys) |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
 | `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |
