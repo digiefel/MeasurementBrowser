@@ -75,6 +75,8 @@ All metadata lives at the **source root** alongside the CSVs (not inside the rep
 | [annotations.md](annotations.md) | You're touching `src/Annotations/` — coords, layout, tags, notes. |
 | [figure_scripts.md](figure_scripts.md) | You're working on the figure-script export feature. |
 
+In-flight design and roadmaps live under [plans/](plans/), separate from the current-state docs above.
+
 ## Doc maintenance rule
 
 **Any change that affects structure described in these docs must update them in the same commit.** That includes:
