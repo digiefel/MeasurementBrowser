@@ -988,7 +988,7 @@ function _launch_project_reload_job!(
         catch err
             if _is_scan_cancel_error(err) || err isa PlotCancelled
                 put!(events, (kind=:canceled, cache_id=cache_id_num))
-            elseif err isa ProjectCacheMissingError
+            elseif err isa ProjectCacheMissingError || err isa ProjectCacheInvalidError
                 put!(events, (
                     kind=:cache_missing,
                     cache_id=cache_id_num,

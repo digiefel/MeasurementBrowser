@@ -194,10 +194,11 @@ function _cache_toolbar_model(ui_state)
             detail="Reading cached measurements from the HDF5 file.",
         )
     elseif cache_state == :missing
+        message = get(ui_state, :cache_error, "")
         return (
             label="Cache: Missing",
             color=(0.82, 0.48, 0.12, 1.0),
-            detail="No HDF5 cache has been built for this project.",
+            detail=isempty(message) ? "No HDF5 cache has been built for this project." : message,
         )
     elseif cache_state == :error
         return (
