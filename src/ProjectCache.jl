@@ -589,23 +589,27 @@ function _cache_status_from_cached_statuses(statuses::Dict{String,String})
     return ProjectCacheStatus(cached, cached, cached - error_count, 0, 0, 0, error_count)
 end
 
-function _rebuild_indexes!(h5, identity::ProjectCacheIdentity, project::AbstractProject)
-    files_group = _ensure_group(h5, "files")
+function _hierarchy_from_cache_statuses(source::SourceScan, statuses::Dict{String,String})
     measurements = MeasurementInfo[]
     skipped_count = 0
-    for file_key in sort!(collect(keys(files_group)))
-        file_group = files_group[file_key]
-        status = _file_status(file_group)
-        status in ("skipped", "error") && (skipped_count += 1)
-        append!(measurements, _read_file_measurements(file_group, identity.cache_path))
+    for source_file in source.files
+        status = get(statuses, source_file.fingerprint.path, "missing")
+        if status in ("ok", "error")
+            append!(measurements, source_file.measurements)
+        elseif status == "skipped"
+            skipped_count += 1
+        end
     end
-    hierarchy = MeasurementHierarchy(
+    return MeasurementHierarchy(
         measurements,
-        identity.root_path,
-        _read_cache_has_device_metadata(h5, identity.cache_path),
-        project,
+        source.root_path,
+        source.hierarchy.has_device_metadata,
+        source.project,
         skipped_count,
     )
+end
+
+function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy)
     index_group = _replace_group(h5, "indexes")
     _write_string_vector!(index_group, "measurement_ids", [m.id for m in hierarchy.all_measurements])
     _write_string_vector!(index_group, "measurement_keys", [_measurement_group_key(m.id) for m in hierarchy.all_measurements])
@@ -615,35 +619,27 @@ function _rebuild_indexes!(h5, identity::ProjectCacheIdentity, project::Abstract
         m.timestamp === nothing ? "" : Dates.format(m.timestamp, dateformat"yyyy-mm-ddTHH:MM:SS.s")
         for m in hierarchy.all_measurements
     ])
-    _write_dataset!(index_group, "skipped_count", Int64[skipped_count])
+    _write_dataset!(index_group, "skipped_count", Int64[hierarchy.skipped_count])
     return hierarchy
 end
 
 """
-Refresh cached measurement metadata after project annotations that need the full measurement list.
-This keeps derived parameters consistent for entries that were reused from an existing cache.
+Refresh cached measurement metadata from the in-memory source scan.
+This keeps reused cache entries consistent without rereading every measurement from HDF5.
 """
-function _annotate_cached_measurement_metadata!(h5, identity::ProjectCacheIdentity, project::AbstractProject)
+function _refresh_cached_measurement_metadata!(h5, source::SourceScan)
     files_group = _ensure_group(h5, "files")
-    measurement_locations = Tuple{String,String}[]
-    measurements = MeasurementInfo[]
-    for file_key in sort!(collect(keys(files_group)))
+    for source_file in source.files
+        file_key = _file_group_key(source_file.fingerprint.path)
+        haskey(files_group, file_key) || continue
         file_group = files_group[file_key]
         haskey(file_group, "measurements") || continue
-        measurement_keys = String.(_read_required(file_group, "measurement_keys", identity.cache_path))
         measurements_group = file_group["measurements"]
-        for measurement_key in measurement_keys
-            haskey(measurements_group, measurement_key) ||
-                throw(ProjectCacheInvalidError(identity.cache_path, "missing measurement group '$measurement_key'"))
-            push!(measurement_locations, (file_key, measurement_key))
-            push!(measurements, _read_measurement_metadata(measurements_group[measurement_key], identity.cache_path))
+        for measurement in source_file.measurements
+            measurement_key = _measurement_group_key(measurement.id)
+            haskey(measurements_group, measurement_key) || continue
+            _write_measurement_metadata!(measurements_group[measurement_key], measurement)
         end
-    end
-
-    annotate_measurements!(project, measurements)
-    for (index, (file_key, measurement_key)) in enumerate(measurement_locations)
-        measurement_group = files_group[file_key]["measurements"][measurement_key]
-        _write_measurement_metadata!(measurement_group, measurements[index])
     end
     return nothing
 end
@@ -657,7 +653,15 @@ function _write_file_error_group!(
     file_group = _replace_group(files_group, _file_group_key(fingerprint.path))
     _write_fingerprint!(file_group, fingerprint)
     _write_dataset!(file_group, "source_file_id", source.id; compress=false)
-    _write_string_vector!(file_group, "measurement_keys", String[])
+    measurement_keys = String[]
+    measurements_group = _ensure_group(file_group, "measurements")
+    for measurement in source.measurements
+        measurement_key = _measurement_group_key(measurement.id)
+        push!(measurement_keys, measurement_key)
+        measurement_group = _replace_group(measurements_group, measurement_key)
+        _write_measurement_metadata!(measurement_group, measurement)
+    end
+    _write_string_vector!(file_group, "measurement_keys", measurement_keys)
     _write_dataset!(file_group, "status", "error"; compress=false)
     _write_dataset!(file_group, "error_type", string(typeof(err)); compress=false)
     _write_dataset!(file_group, "error_message", sprint(showerror, err); compress=false)
@@ -694,6 +698,7 @@ function write_project_cache!(
         end
         files_group = _ensure_group(h5, "files")
         cached = _cached_file_fingerprints(h5, identity.cache_path)
+        statuses = cache_exists ? _cached_file_statuses(h5) : Dict{String,String}()
         raw_paths = Set(keys(fingerprints))
         deleted_paths = sort!([path for path in keys(cached) if !(path in raw_paths)])
         write_paths = if !cache_exists || mode in (:build, :rebuild)
@@ -711,6 +716,7 @@ function write_project_cache!(
             cached_path in raw_paths && continue
             key = _file_group_key(cached_path)
             haskey(files_group, key) && HDF5.delete_object(files_group, key)
+            delete!(statuses, cached_path)
             processed += 1
             on_progress !== nothing && on_progress((
                 phase=:cache_update,
@@ -726,15 +732,18 @@ function write_project_cache!(
             _check_cancel(should_cancel)
             source_file = source_by_path[path]
             try
-                loaded_measurements += _write_file_group!(
+                measurement_count = _write_file_group!(
                     files_group,
                     source.project,
                     source_file;
                     should_cancel,
                 )
+                loaded_measurements += measurement_count
+                statuses[path] = measurement_count == 0 ? "skipped" : "ok"
             catch err
                 (err isa ScanCancelled || err isa PlotCancelled) && rethrow()
                 _write_file_error_group!(files_group, source_file.fingerprint, source_file, err)
+                statuses[path] = "error"
             end
             processed += 1
             on_progress !== nothing && on_progress((
@@ -746,10 +755,28 @@ function write_project_cache!(
                 current_path=path,
             ))
         end
+        on_progress !== nothing && on_progress((
+            phase=:cache_finalize,
+            total_csv=1,
+            processed_csv=0,
+            loaded_measurements=loaded_measurements,
+            skipped_csv=0,
+            current_path=identity.cache_path,
+        ))
         _write_meta!(h5, identity)
         _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
-        _annotate_cached_measurement_metadata!(h5, identity, source.project)
-        _rebuild_indexes!(h5, identity, source.project)
+        _refresh_cached_measurement_metadata!(h5, source)
+        hierarchy = _hierarchy_from_cache_statuses(source, statuses)
+        _rebuild_indexes!(h5, hierarchy)
+        on_progress !== nothing && on_progress((
+            phase=:cache_finalize,
+            total_csv=1,
+            processed_csv=1,
+            loaded_measurements=loaded_measurements,
+            skipped_csv=0,
+            current_path=identity.cache_path,
+        ))
+        hierarchy
     end
     status = _cache_status_from_fingerprints(identity, fingerprints)
     errors = _cache_file_errors(identity)

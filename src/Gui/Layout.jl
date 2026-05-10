@@ -18,15 +18,21 @@ function _cache_activity_model(ui_state)
             cancel_label="Cancel Reload",
         )
     elseif state == :writing
-        progress_text = total > 0 ?
+        phase = get(progress, :phase, :idle)
+        progress_text = phase == :cache_finalize ?
+            "Finalizing cache metadata and indexes" :
+            total > 0 ?
             @sprintf("Processed %d/%d cache entries, cached %d measurements", processed, total, loaded) :
             @sprintf("Cached %d measurements", loaded)
         operation = get(ui_state, :cache_operation, :update)
-        title = operation == :build ? "Cache: Building" :
+        title = phase == :cache_finalize ? "Cache: Finalizing" :
+            operation == :build ? "Cache: Building" :
             operation == :rebuild ? "Cache: Rebuilding" : "Cache: Updating"
         return (
             title,
-            detail="Writing source measurements into the HDF5 cache.",
+            detail=phase == :cache_finalize ?
+                "Finalizing the HDF5 cache." :
+                "Writing source measurements into the HDF5 cache.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Cache Build",
