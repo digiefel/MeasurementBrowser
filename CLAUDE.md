@@ -40,7 +40,7 @@ Gui.jl uses:
 
 ### Data Flow
 
-1. **Scan:** `scan_directory()` walks a folder tree, creating `MeasurementInfo` structs from CSV filenames via regex patterns (`RuO2test_CHIP_TYPE_GEOMETRY_...`). Some files expand into multiple virtual measurements (breakdown → per-device, PUND fatigue → per-cycle).
+1. **Scan:** `scan_source()` walks a folder tree, creating `MeasurementInfo` structs from CSV filenames via regex patterns (`RuO2test_CHIP_TYPE_GEOMETRY_...`). Some files expand into multiple virtual measurements (breakdown → per-device, PUND fatigue → per-cycle).
 
 2. **Hierarchy:** Measurements organize into a `MeasurementHierarchy` tree (chip → layer → device type → geometry). Optional `device_info.txt` at root merges metadata (area, thickness) into devices.
 

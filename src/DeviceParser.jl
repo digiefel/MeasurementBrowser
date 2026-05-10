@@ -22,9 +22,9 @@ const KNOWN_PROJECTS = AbstractProject[]
 const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
 # Interface (implemented by each project via multiple dispatch):
-#   parse_device_info(::P, indexed::IndexedCsvFile) → DeviceInfo
+#   parse_device_info(::P, source::SourceFile) → DeviceInfo
 #   detect_kind(::P, filename) → Symbol
-#   interpret_file(::P, indexed) → Vector{MeasurementItem}
+#   interpret_file(::P, source) → Vector{MeasurementItem}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   expand_measurement(::P, meas) → Vector{MeasurementInfo}
@@ -39,6 +39,8 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   draw_analysis_view(result, view) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
+#   annotate_measurements!(::P, measurements) → nothing
+#   augment_measurements_stats!(::P, stats, measurements) → stats
 
 load_plot_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
 analyze_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = loaded
@@ -49,7 +51,19 @@ draw_plot_for_files(::AbstractProject, combined_kind, analyzed; kwargs...) = not
 available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
-interpret_file(::AbstractProject, indexed::IndexedCsvFile; kwargs...) = MeasurementItem[]
+interpret_file(::AbstractProject, source::SourceFile; kwargs...) = MeasurementItem[]
+
+"""
+Attach project-specific derived metadata to measurements after the complete measurement list is known.
+Use this for values that depend on device-level measurement history and should reach plots or cache metadata.
+"""
+annotate_measurements!(::AbstractProject, measurements::Vector) = nothing
+
+"""
+Add project-specific aggregate values to the stats shown for a selected device.
+Use this for information-panel summaries computed from the selected device's measurements.
+"""
+augment_measurements_stats!(::AbstractProject, stats::Dict{Symbol,Any}, measurements::Vector) = stats
 
 struct PlotCancelled <: Exception end
 
@@ -71,6 +85,9 @@ device_path_label(::AbstractProject, device_info::DeviceInfo) = join(device_info
 device_path_key(location::AbstractVector{<:AbstractString}) = join(location, "/")
 device_path_key(device_info::DeviceInfo) = device_path_key(device_info.location)
 
+"""
+Parse a stored device path key back into the tuple form used by the hierarchy index.
+"""
 function device_path_tuple(key::AbstractString)
     stripped = strip(String(key))
     isempty(stripped) && error("Device path key cannot be empty")
@@ -113,12 +130,23 @@ end
 
 HierarchyNode(name::String, kind::Symbol) = HierarchyNode(name, kind, HierarchyNode[], MeasurementInfo[])
 
+struct SourceScan
+    root_path::String
+    project::AbstractProject
+    files::Vector{SourceFile}
+    hierarchy::MeasurementHierarchy
+end
+
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
 
+"""
+Construct `MeasurementInfo` directly from one source file.
+This is mainly for single-file code paths; full scans use `interpret_measurements` first.
+"""
 function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
-    indexed = index_csv_file(filepath)
+    indexed = index_source_file(filepath)
     filename = indexed.filename
     device_info = parse_device_info(project, indexed)
     measurement_kind = detect_kind(project, filename)
@@ -183,6 +211,10 @@ function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
     return MeasurementInfo(indexed.id, filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters, wakeup_count)
 end
 
+"""
+Extract a measurement timestamp from supported filename conventions.
+Returns `nothing` when the filename does not carry a parseable timestamp.
+"""
 function parse_timestamp(filename::String)
     if (m = match(r"; (\d{4}-\d{2}-\d{2}) (\d{2})_(\d{2})_(\d{2})\]", filename)) !== nothing
         date_str, hour, minute, second = m.captures
@@ -202,6 +234,10 @@ function parse_timestamp(filename::String)
     return nothing
 end
 
+"""
+Extract lightweight measurement parameters encoded in the filename.
+These are generic hints used before project-specific parsing or device metadata is applied.
+"""
 function parse_parameters(filename::String)
     params = Dict{Symbol,Any}()
     if (m = match(r"(\d+(?:\.\d+)?)V", filename)) !== nothing
@@ -256,6 +292,12 @@ function natural_key(s::AbstractString)
     return Tuple(parts)
 end
 
+"""
+Return the chronological sort key for measurement lists, placing missing timestamps last.
+"""
+measurement_timestamp_key(m::MeasurementInfo) =
+    m.timestamp === nothing ? DateTime(Dates.year(typemax(Date))) : m.timestamp
+
 function Base.sort!(node::HierarchyNode)
     function _roman_sortable(children::Vector{HierarchyNode})
         isempty(children) && return false
@@ -273,7 +315,7 @@ function Base.sort!(node::HierarchyNode)
         sort!(node.children, by=c -> natural_key(c.name))
     end
     for ch in node.children
-        sort!(ch.measurements, by=m -> m.timestamp === nothing ? DateTime(Dates.year(typemax(Date))) : m.timestamp)
+        sort!(ch.measurements, by=measurement_timestamp_key)
     end
     return node
 end
@@ -286,7 +328,12 @@ end
 # ---------------------------------------------------------------------------
 # Hierarchy construction
 # ---------------------------------------------------------------------------
+"""
+Build the device tree and lookup index from a flat measurement list.
+The constructor also runs the project annotation hook, so measurement parameters may be finalized here.
+"""
 function MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String, has_dev_metadata::Bool, project::AbstractProject, skipped_count::Int=0)
+    annotate_measurements!(project, measurements)
     root = HierarchyNode("/", :root)
     index = Dict{Tuple{Vararg{String}},HierarchyNode}()
     function ensure_child(parent::HierarchyNode, name::String, kind::Symbol, path_tuple::Tuple{Vararg{String}})
@@ -480,6 +527,10 @@ function _load_device_info_txt(path::AbstractString)
     return meta
 end
 
+"""
+Find device metadata entries that apply to a parsed device location.
+Exact path fragments can match at any level, with more specific matches overriding broader ones.
+"""
 function _lookup_device_params(meta::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}, loc::Vector{String})
     isempty(loc) && return nothing
 
@@ -505,6 +556,10 @@ function _load_scan_metadata(root_path::String)
     return isfile(meta_path) ? _load_device_info_txt(meta_path) : nothing
 end
 
+"""
+Create the short title shown for a measurement in panels and plots.
+The title combines project label, device label, and header date when available, with the filename as fallback.
+"""
 function build_clean_title(
     project::AbstractProject,
     filename::String,
@@ -554,13 +609,19 @@ function _measurement_info_from_item(item::MeasurementItem)
     )
 end
 
+"""
+Interpret a source CSV into project measurement items.
+The project parser handles filename/header semantics; this wrapper overlays device metadata loaded
+from `device_info.txt` when present. Source scans and cache builds both use this path before
+constructing `MeasurementInfo`.
+"""
 function interpret_measurements(
     project::AbstractProject,
-    indexed::IndexedCsvFile,
+    source::SourceFile,
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    items = interpret_file(project, indexed; should_cancel=should_cancel)
+    items = interpret_file(project, source; should_cancel=should_cancel)
     if meta !== nothing
         for item in items
             dev_params = _lookup_device_params(meta, item.device_path)
@@ -576,9 +637,13 @@ function _is_scan_cancel_error(err)
     return any(_is_scan_cancel_error, err.exceptions)
 end
 
-function _interpret_indexed_files(
+"""
+Interpret source CSV files concurrently while preserving the original file order in callbacks.
+Progress counts files attempted, measurements loaded, and files that produced no visible measurements.
+"""
+function _interpret_source_files(
     project::AbstractProject,
-    indexed_files::Vector{IndexedCsvFile},
+    source_files::Vector{SourceFile},
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
     should_cancel::Union{Nothing,Function}=nothing,
     on_result::Function,
@@ -590,30 +655,25 @@ function _interpret_indexed_files(
     progress_lock = ReentrantLock()
     worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
 
-    @sync for (index, indexed) in pairs(indexed_files)
+    @sync for (index, source) in pairs(source_files)
         Base.acquire(worker_limit)
         Base.Threads.@spawn begin
             try
-                items = try
-                    interpret_measurements(project, indexed, meta; should_cancel=should_cancel)
-                catch err
-                    _is_scan_cancel_error(err) && rethrow()
-                    @warn "Could not interpret measurement file $(indexed.filepath)" error = err
-                    MeasurementItem[]
-                end
-
-                on_result(index, indexed, items)
-                isempty(items) && Base.Threads.atomic_add!(skipped_csv, 1)
-                isempty(items) || Base.Threads.atomic_add!(loaded_measurements, length(items))
+                items = interpret_measurements(project, source, meta; should_cancel=should_cancel)
+                measurements = [_measurement_info_from_item(item) for item in items]
+                scanned = source_file_with_measurements(source, measurements)
+                on_result(index, scanned)
+                isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)
+                isempty(measurements) || Base.Threads.atomic_add!(loaded_measurements, length(measurements))
                 processed_now = Base.Threads.atomic_add!(processed_csv, 1) + 1
 
                 if on_progress !== nothing
                     progress = (
-                        total_csv=length(indexed_files),
+                        total_csv=length(source_files),
                         processed_csv=processed_now,
                         loaded_measurements=loaded_measurements[],
                         skipped_csv=skipped_csv[],
-                        current_path=indexed.filepath,
+                        current_path=source.filepath,
                     )
                     lock(progress_lock) do
                         on_progress(progress)
@@ -629,36 +689,41 @@ function _interpret_indexed_files(
         processed_csv=processed_csv[],
         loaded_measurements=loaded_measurements[],
         skipped_csv=skipped_csv[],
-        total_csv=length(indexed_files),
+        total_csv=length(source_files),
     )
 end
 
-function scan_directory(
+"""
+Scan a project directory into the measurement hierarchy used by the browser.
+The scan indexes CSV files, interprets them with the selected project, applies device metadata, and builds the tree.
+"""
+function scan_source(
     root_path::String;
     project::Union{AbstractProject,Nothing}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
     should_cancel::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
-)::MeasurementHierarchy
+)::SourceScan
     proj = _resolve_scan_project(project)
-    meta = _load_scan_metadata(root_path)
-    count_first && _count_csv(root_path; should_cancel, on_progress)
-    indexed_files = collect_indexed_csv_files(root_path; should_cancel=should_cancel)
-    measurements_by_file = Vector{Vector{MeasurementItem}}(undef, length(indexed_files))
+    root = source_path(root_path)
+    meta = _load_scan_metadata(root)
+    count_first && _count_csv(root; should_cancel, on_progress)
+    source_files = collect_source_files(root; should_cancel=should_cancel)
+    scanned_files = Vector{SourceFile}(undef, length(source_files))
     _emit_progress(on_progress;
         phase=:scanning,
-        total_csv=length(indexed_files),
+        total_csv=length(source_files),
         processed_csv=0,
         loaded_measurements=0,
         skipped_csv=0,
     )
 
-    summary = _interpret_indexed_files(
+    summary = _interpret_source_files(
         proj,
-        indexed_files,
+        source_files,
         meta;
         should_cancel=should_cancel,
-        on_result=(index, _, items) -> (measurements_by_file[index] = items),
+        on_result=(index, source) -> (scanned_files[index] = source),
         on_progress=(progress) -> _emit_progress(
             on_progress;
             phase=:scanning,
@@ -672,17 +737,17 @@ function scan_directory(
 
     measurements = MeasurementInfo[]
     sizehint!(measurements, summary.loaded_measurements)
-    for items in measurements_by_file
-        for item in items
-            push!(measurements, _measurement_info_from_item(item))
-        end
+    for source in scanned_files
+        append!(measurements, source.measurements)
     end
 
-    return MeasurementHierarchy(measurements, root_path, meta !== nothing, proj, summary.skipped_csv)
+    hierarchy = MeasurementHierarchy(measurements, root, meta !== nothing, proj, summary.skipped_csv)
+    return SourceScan(root, proj, scanned_files, hierarchy)
 end
 
 """
-Get statistics about a set of measurements.
+Collect generic device-summary fields for the information panel.
+Projects can extend the returned dictionary with measurements-derived stats.
 """
 function get_measurements_stats(measurements::Vector{MeasurementInfo}, project::AbstractProject)
     stats = Dict{Symbol,Any}()
@@ -708,5 +773,5 @@ function get_measurements_stats(measurements::Vector{MeasurementInfo}, project::
             stats[:parameter_ranges][param] = (minimum(values), maximum(values))
         end
     end
-    return stats
+    return augment_measurements_stats!(project, stats, measurements)
 end

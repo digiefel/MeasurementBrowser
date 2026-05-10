@@ -283,7 +283,7 @@ end
             temp_root,
             "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv",
         )
-        hierarchy = scan_directory(temp_root; project=MeasurementBrowser.TASE_PROJECT)
+        hierarchy = scan_source(temp_root; project=MeasurementBrowser.TASE_PROJECT).hierarchy
         measurement = only(hierarchy.all_measurements)
         group = NamedMeasurementGroup(
             "reference",

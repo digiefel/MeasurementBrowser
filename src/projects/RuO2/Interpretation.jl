@@ -35,7 +35,7 @@ function _ruo2_prefixed_filename_device(filename::AbstractString, prefix_units::
     return String(parts[1])
 end
 
-function _ruo2_nested_location(indexed::IndexedCsvFile)
+function _ruo2_nested_location(indexed::SourceFile)
     parent = dirname(indexed.filepath)
     tail = String[]
     while true
@@ -76,7 +76,7 @@ function _ruo2_location_from_identifier(identifier::AbstractString)
     return [chip, site, subsite, device]
 end
 
-function _ruo2_header_identifier(indexed::IndexedCsvFile)
+function _ruo2_header_identifier(indexed::SourceFile)
     raw = get(indexed.header_summary, :device_id, nothing)
     raw isa AbstractString || return nothing
     stripped = strip(String(raw))
@@ -92,7 +92,7 @@ function _ruo2_filename_identifier(filename::AbstractString)
     return String(match_obj.captures[1])
 end
 
-function _ruo2_resolve_location(indexed::IndexedCsvFile)
+function _ruo2_resolve_location(indexed::SourceFile)
     nested = _ruo2_nested_location(indexed)
     header_identifier = _ruo2_header_identifier(indexed)
     if nested !== nothing
@@ -114,7 +114,7 @@ function _ruo2_resolve_location(indexed::IndexedCsvFile)
     return nothing
 end
 
-function parse_device_info(::RuO2Project, indexed::IndexedCsvFile)
+function parse_device_info(::RuO2Project, indexed::SourceFile)
     location = _ruo2_resolve_location(indexed)
     location === nothing && error("Could not resolve RuO2 device path from $(indexed.filepath)")
     return DeviceInfo(location)
@@ -124,6 +124,10 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
     lower = lowercase(filename)
     if occursin("pund_fatigue", lower) || occursin("pund fatigue", lower)
         return :pund_fatigue
+    elseif occursin("pund", lower) && occursin("wakeup", lower)
+        return :pund_wakeup
+    elseif occursin(r"(^|[\s_\-])pn($|[\s_\-\[])", lower)
+        return :pn
     elseif occursin("fe pund", lower) || occursin("fepund", lower) || occursin("_pund", lower)
         return :pund
     elseif occursin("cvsweep", lower)
@@ -141,7 +145,7 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
     end
 end
 
-function interpret_file(::RuO2Project, indexed::IndexedCsvFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
+function interpret_file(::RuO2Project, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
     kind = detect_kind(RUO2_PROJECT, indexed.filename)
     kind == :unknown && return MeasurementItem[]
     if kind == :cvsweep && _ruo2_cvsweep_schema(indexed.filepath) === nothing
@@ -173,6 +177,8 @@ function interpret_file(::RuO2Project, indexed::IndexedCsvFile; should_cancel::U
     expanded = _ruo2_expand_multi_device_item(base)
     if kind == :pund_fatigue
         return vcat([_ruo2_expand_pund_fatigue_item(item; should_cancel=should_cancel) for item in expanded]...)
+    elseif kind == :pund_wakeup
+        return vcat([_ruo2_expand_pund_wakeup_item(item) for item in expanded]...)
     end
     return expanded
 end
@@ -213,4 +219,36 @@ function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Un
         merge(deepcopy(item.parameters), Dict{Symbol,Any}(:fatigue_cycle => c, :voltage_V => voltage_V)),
         item.title * " cycle $c",
     ) for c in cycles]
+end
+
+function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{MeasurementItem}
+    item.kind == :pund_wakeup || return [item]
+    pn_params = deepcopy(item.parameters)
+    pn_params[:pund_wakeup_segment] = :pn
+    pund_params = deepcopy(item.parameters)
+    pund_params[:pund_wakeup_segment] = :pund
+    return [
+        MeasurementItem(
+            item_id(item.source_file_id; split="pn"),
+            item.source_file_id,
+            item.filepath,
+            :pn,
+            copy(item.device_path),
+            item.timestamp,
+            deepcopy(item.device_parameters),
+            pn_params,
+            item.title * " PN",
+        ),
+        MeasurementItem(
+            item_id(item.source_file_id; split="pund"),
+            item.source_file_id,
+            item.filepath,
+            :pund,
+            copy(item.device_path),
+            item.timestamp,
+            deepcopy(item.device_parameters),
+            pund_params,
+            item.title * " PUND",
+        ),
+    ]
 end

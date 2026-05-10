@@ -84,6 +84,6 @@ Virtual measurements share a filepath but get distinct `id`s.
 | Type definitions | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 58–106 |
 | Hierarchy construction | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 283–344 |
 | Path key helpers | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 65–74 |
-| `scan_directory` | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 630–676 |
+| `scan_source` | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 630–676 |
 | Metadata merge (path-prefix) | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 477–493 |
 | Fixtures showing tree shape | [test/test_scan_directory_progress.jl](../test/test_scan_directory_progress.jl) |

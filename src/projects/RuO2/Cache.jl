@@ -1,33 +1,19 @@
 using DataFrames
 
-function project_cache_file_matches(::RuO2Project, indexed::IndexedCsvFile)
-    detect_kind(RUO2_PROJECT, indexed.filename) === :unknown && return false
-    location = _ruo2_resolve_location(indexed)
-    return location !== nothing
-end
-
 function project_cache_semantic_fields(::RuO2Project)
     return Dict{Symbol,Vector{Symbol}}(
         :measurement => [:measurement_id, :measurement_kind, :timestamp, :source_file],
         :device => [:device_key, :device_path, :area_um2, :x, :y],
         :signal => [:time, :voltage, :current, :cycle, :frequency],
-        :summary => [:voltage_V, :temperature_K, :fatigue_cycle, :wakeup_pulse_count],
+        :summary => [:voltage_V, :temperature_K, :fatigue_cycle, :wakeup_pulse_count,
+                     :global_pund_pulse_count, :pund_wakeup_segment],
     )
-end
-
-function project_cache_transform(
-    ::RuO2Project,
-    indexed::IndexedCsvFile,
-    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    return interpret_measurements(RUO2_PROJECT, indexed, meta; should_cancel)
 end
 
 function project_cache_write_file_payload!(
     file_group,
     ::RuO2Project,
-    indexed::IndexedCsvFile,
+    indexed::SourceFile,
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )
@@ -38,7 +24,7 @@ function project_cache_write_file_payload!(
     end
     invoke(
         project_cache_write_file_payload!,
-        Tuple{Any,AbstractProject,IndexedCsvFile,Vector{MeasurementInfo}},
+        Tuple{Any,AbstractProject,SourceFile,Vector{MeasurementInfo}},
         file_group,
         RUO2_PROJECT,
         indexed,
@@ -152,12 +138,14 @@ function _ruo2_read_cached_analyzed_plot(plot_group, kind::Symbol, cache_path::A
     end
 
     title = String(get(scalars, :title, ""))
-    if kind === :pund
+    if kind === :pund || kind === :pn
+        group_size = Int(get(scalars, :pulse_group_size, kind === :pn ? 1 : 5))
         return (
             df=df,
             title=title,
             area_um2=get(scalars, :area_um2, nothing),
-            pulse_groups=_ruo2_cached_pulse_groups(df),
+            pulse_groups=_ruo2_cached_pulse_groups(df, group_size),
+            pulse_group_size=group_size,
             remnant_y_label=String(get(scalars, :remnant_y_label, "Switching Charge (pC)")),
             debug=Bool(get(scalars, :debug, false)),
         )
@@ -193,13 +181,13 @@ function _ruo2_read_cached_analyzed_plot(plot_group, kind::Symbol, cache_path::A
     return (df=df, title=title)
 end
 
-function _ruo2_cached_pulse_groups(df::DataFrame)
+function _ruo2_cached_pulse_groups(df::DataFrame, group_size::Int)
     hasproperty(df, :pulse_idx) || return Tuple{Int,BitVector}[]
     isempty(df.pulse_idx) && return Tuple{Int,BitVector}[]
     max_pulse = maximum(df.pulse_idx)
     pulse_groups = Tuple{Int,BitVector}[]
-    for rep in 1:(max_pulse ÷ 5)
-        pulse_range = (rep - 1) * 5 + 1:rep * 5
+    for rep in 1:(max_pulse ÷ group_size)
+        pulse_range = (rep - 1) * group_size + 1:rep * group_size
         mask = BitVector([pulse in pulse_range for pulse in df.pulse_idx])
         any(mask) && push!(pulse_groups, (rep, mask))
     end
@@ -208,7 +196,7 @@ end
 
 function _ruo2_write_cached_pund_fatigue_file!(
     file_group,
-    indexed::IndexedCsvFile,
+    indexed::SourceFile,
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )

@@ -38,12 +38,6 @@ function Base.showerror(io::IO, err::ProjectCacheBuildError)
     showerror(io, err.cause)
 end
 
-struct FileFingerprint
-    path::String
-    size_bytes::Int64
-    mtime_ns::Int64
-end
-
 struct ProjectCacheIdentity
     cache_id::String
     project_name::String
@@ -76,17 +70,6 @@ end
 
 project_cache_semantic_fields(::AbstractProject) = Dict{Symbol,Vector{Symbol}}()
 
-project_cache_file_matches(::AbstractProject, ::IndexedCsvFile) = true
-
-function project_cache_transform(
-    project::AbstractProject,
-    indexed::IndexedCsvFile,
-    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    throw(ProjectCacheUnsupportedError(project_name(project)))
-end
-
 function project_cache_write_measurement_payload!(
     group,
     project::AbstractProject,
@@ -96,10 +79,16 @@ function project_cache_write_measurement_payload!(
     throw(ProjectCacheUnsupportedError(project_name(project)))
 end
 
+"""
+    project_cache_write_file_payload!(file_group, project, source, measurements; should_cancel=nothing)
+
+Write project payloads for all measurements produced from a source file.
+Projects can override this when file-level context helps populate measurement groups efficiently.
+"""
 function project_cache_write_file_payload!(
     file_group,
     project::AbstractProject,
-    indexed::IndexedCsvFile,
+    source::SourceFile,
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )
@@ -111,6 +100,11 @@ function project_cache_write_file_payload!(
     return nothing
 end
 
+"""
+    project_cache_read_plot_payload(project, measurement, file_group, measurement_group)
+
+Load the project-specific payload used to render a cached measurement without reparsing the CSV.
+"""
 function project_cache_read_plot_payload(
     project::AbstractProject,
     measurement::MeasurementInfo,
@@ -135,7 +129,7 @@ function _cache_slug(value::AbstractString)
 end
 
 function _cache_normalize_path(path::AbstractString)
-    return normpath(abspath(expanduser(String(path))))
+    return source_path(path)
 end
 
 function project_cache_id(root_path::AbstractString)
@@ -174,72 +168,6 @@ end
 
 _file_group_key(path::AbstractString) = _hash_key(_cache_normalize_path(path))
 _measurement_group_key(id::AbstractString) = _hash_key(id)
-
-function file_fingerprint(path::AbstractString)
-    normalized = _cache_normalize_path(path)
-    stat_info = stat(normalized)
-    return FileFingerprint(normalized, Int64(stat_info.size), Int64(stat_info.mtime * 1_000_000_000))
-end
-
-function collect_csv_fingerprints(
-    root_path::AbstractString;
-    should_cancel::Union{Nothing,Function}=nothing,
-    on_progress::Union{Nothing,Function}=nothing,
-    phase::Symbol=:cache_discovery,
-)
-    root = _cache_normalize_path(root_path)
-    paths = String[]
-    for (dir, _, names) in walkdir(root)
-        for name in names
-            _check_cancel(should_cancel)
-            endswith(lowercase(name), ".csv") || continue
-            path = joinpath(dir, name)
-            push!(paths, path)
-            _emit_progress(on_progress;
-                phase,
-                total_csv=0,
-                processed_csv=length(paths),
-                loaded_measurements=0,
-                skipped_csv=0,
-                current_path=path,
-            )
-        end
-    end
-
-    fingerprints = Dict{String,FileFingerprint}()
-    fingerprint_lock = ReentrantLock()
-    progress_lock = ReentrantLock()
-    processed = Base.Threads.Atomic{Int}(0)
-    worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
-
-    @sync for path in paths
-        Base.acquire(worker_limit)
-        Base.Threads.@spawn begin
-            try
-                _check_cancel(should_cancel)
-                fp = file_fingerprint(path)
-                lock(fingerprint_lock) do
-                    fingerprints[fp.path] = fp
-                end
-                processed_now = Base.Threads.atomic_add!(processed, 1) + 1
-                lock(progress_lock) do
-                    _emit_progress(on_progress;
-                        phase,
-                        total_csv=length(paths),
-                        processed_csv=processed_now,
-                        loaded_measurements=0,
-                        skipped_csv=0,
-                        current_path=fp.path,
-                    )
-                end
-            finally
-                Base.release(worker_limit)
-            end
-            _check_cancel(should_cancel)
-        end
-    end
-    return fingerprints
-end
 
 function _dataset_chunk(data)
     data isa AbstractVector || return nothing
@@ -508,21 +436,13 @@ end
 function _write_file_group!(
     files_group,
     project::AbstractProject,
-    fingerprint::FileFingerprint,
-    indexed::IndexedCsvFile,
-    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
+    source::SourceFile;
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    file_group = _replace_group(files_group, _file_group_key(fingerprint.path))
-    _write_fingerprint!(file_group, fingerprint)
-    _write_dataset!(file_group, "source_file_id", indexed.id; compress=false)
-    if !project_cache_file_matches(project, indexed)
-        _write_string_vector!(file_group, "measurement_keys", String[])
-        _write_dataset!(file_group, "status", "skipped"; compress=false)
-        return 0
-    end
-    items = project_cache_transform(project, indexed, meta; should_cancel)
-    measurements = [_measurement_info_from_item(item) for item in items]
+    file_group = _replace_group(files_group, _file_group_key(source.fingerprint.path))
+    _write_fingerprint!(file_group, source.fingerprint)
+    _write_dataset!(file_group, "source_file_id", source.id; compress=false)
+    measurements = MeasurementInfo[source.measurements...]
 
     measurement_keys = String[]
     measurements_group = _ensure_group(file_group, "measurements")
@@ -533,7 +453,7 @@ function _write_file_group!(
         _write_measurement_metadata!(measurement_group, measurement)
     end
     _write_string_vector!(file_group, "measurement_keys", measurement_keys)
-    project_cache_write_file_payload!(file_group, project, indexed, measurements; should_cancel)
+    project_cache_write_file_payload!(file_group, project, source, measurements; should_cancel)
     _write_dataset!(file_group, "status", isempty(measurements) ? "skipped" : "ok"; compress=false)
     return length(measurements)
 end
@@ -613,6 +533,14 @@ function _cache_status_from_fingerprints(
     end
 end
 
+function _source_fingerprints(source::SourceScan)
+    fingerprints = Dict{String,FileFingerprint}()
+    for file in source.files
+        fingerprints[file.fingerprint.path] = file.fingerprint
+    end
+    return fingerprints
+end
+
 function _cache_status_from_fingerprints(
     raw::Dict{String,FileFingerprint},
     cached::Dict{String,FileFingerprint},
@@ -647,13 +575,12 @@ function _cached_cache_index(identity::ProjectCacheIdentity)
     end
 end
 
-function cache_status(
-    identity::ProjectCacheIdentity;
-    should_cancel::Union{Nothing,Function}=nothing,
-    on_progress::Union{Nothing,Function}=nothing,
-)
-    raw = collect_csv_fingerprints(identity.root_path; should_cancel, on_progress, phase=:cache_check)
-    return _cache_status_from_fingerprints(identity, raw)
+function cache_status(identity::ProjectCacheIdentity, source::SourceScan)
+    identity.root_path == source.root_path ||
+        error("Cache root $(identity.root_path) does not match source scan root $(source.root_path)")
+    project_name(source.project) == identity.project_name ||
+        error("Cache project $(identity.project_name) does not match source scan project $(project_name(source.project))")
+    return _cache_status_from_fingerprints(identity, _source_fingerprints(source))
 end
 
 function _cache_status_from_cached_statuses(statuses::Dict{String,String})
@@ -692,15 +619,44 @@ function _rebuild_indexes!(h5, identity::ProjectCacheIdentity, project::Abstract
     return hierarchy
 end
 
+"""
+Refresh cached measurement metadata after project annotations that need the full measurement list.
+This keeps derived parameters consistent for entries that were reused from an existing cache.
+"""
+function _annotate_cached_measurement_metadata!(h5, identity::ProjectCacheIdentity, project::AbstractProject)
+    files_group = _ensure_group(h5, "files")
+    measurement_locations = Tuple{String,String}[]
+    measurements = MeasurementInfo[]
+    for file_key in sort!(collect(keys(files_group)))
+        file_group = files_group[file_key]
+        haskey(file_group, "measurements") || continue
+        measurement_keys = String.(_read_required(file_group, "measurement_keys", identity.cache_path))
+        measurements_group = file_group["measurements"]
+        for measurement_key in measurement_keys
+            haskey(measurements_group, measurement_key) ||
+                throw(ProjectCacheInvalidError(identity.cache_path, "missing measurement group '$measurement_key'"))
+            push!(measurement_locations, (file_key, measurement_key))
+            push!(measurements, _read_measurement_metadata(measurements_group[measurement_key], identity.cache_path))
+        end
+    end
+
+    annotate_measurements!(project, measurements)
+    for (index, (file_key, measurement_key)) in enumerate(measurement_locations)
+        measurement_group = files_group[file_key]["measurements"][measurement_key]
+        _write_measurement_metadata!(measurement_group, measurements[index])
+    end
+    return nothing
+end
+
 function _write_file_error_group!(
     files_group,
     fingerprint::FileFingerprint,
-    indexed::IndexedCsvFile,
+    source::SourceFile,
     err,
 )
     file_group = _replace_group(files_group, _file_group_key(fingerprint.path))
     _write_fingerprint!(file_group, fingerprint)
-    _write_dataset!(file_group, "source_file_id", indexed.id; compress=false)
+    _write_dataset!(file_group, "source_file_id", source.id; compress=false)
     _write_string_vector!(file_group, "measurement_keys", String[])
     _write_dataset!(file_group, "status", "error"; compress=false)
     _write_dataset!(file_group, "error_type", string(typeof(err)); compress=false)
@@ -708,40 +664,45 @@ function _write_file_error_group!(
     return nothing
 end
 
-function build_project_cache!(
-    root_path::AbstractString,
-    project::AbstractProject,
-    cache_id::AbstractString;
-    full_rebuild::Bool=false,
+function write_project_cache!(
+    identity::ProjectCacheIdentity,
+    source::SourceScan;
+    mode::Symbol=:update,
     should_cancel::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )
-    identity = project_cache_identity(cache_id, project, root_path)
+    mode in (:build, :rebuild, :update) || error("Unsupported cache write mode '$mode'")
+    identity.root_path == source.root_path ||
+        error("Cache root $(identity.root_path) does not match source scan root $(source.root_path)")
+    project_name(source.project) == identity.project_name ||
+        error("Cache project $(identity.project_name) does not match source scan project $(project_name(source.project))")
     mkpath(dirname(identity.cache_path))
-    @info "Starting project cache build" root = identity.root_path cache = identity.cache_path full_rebuild
-    fingerprints = collect_csv_fingerprints(identity.root_path; should_cancel, on_progress)
-    @info "Discovered CSV files for project cache" count = length(fingerprints) root = identity.root_path
+    @info "Starting project cache write" root = identity.root_path cache = identity.cache_path mode
     cache_exists = isfile(identity.cache_path)
-    mode = (!cache_exists || full_rebuild) ? "w" : "r+"
-    meta = _load_scan_metadata(identity.root_path)
+    h5_mode = (!cache_exists || mode in (:build, :rebuild)) ? "w" : "r+"
     processed = 0
     loaded_measurements = 0
+    fingerprints = _source_fingerprints(source)
+    source_by_path = Dict(file.fingerprint.path => file for file in source.files)
 
-    hierarchy = h5open(identity.cache_path, mode) do h5
-        if cache_exists && !full_rebuild
+    hierarchy = h5open(identity.cache_path, h5_mode) do h5
+        if cache_exists && mode == :update
             _validate_meta!(h5, identity)
         else
             _write_meta!(h5, identity)
-            _write_semantic_fields!(h5, project_cache_semantic_fields(project))
+            _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
         end
         files_group = _ensure_group(h5, "files")
         cached = _cached_file_fingerprints(h5, identity.cache_path)
         raw_paths = Set(keys(fingerprints))
         deleted_paths = sort!([path for path in keys(cached) if !(path in raw_paths)])
-        write_paths = if !cache_exists || full_rebuild
+        write_paths = if !cache_exists || mode in (:build, :rebuild)
             sort!(collect(keys(fingerprints)))
         else
-            sort!([path for path in keys(fingerprints) if !haskey(cached, path)])
+            sort!([
+                path for path in keys(fingerprints)
+                if !haskey(cached, path) || !_same_fingerprint(fingerprints[path], cached[path])
+            ])
         end
         total_changes = length(deleted_paths) + length(write_paths)
 
@@ -763,20 +724,17 @@ function build_project_cache!(
 
         for path in write_paths
             _check_cancel(should_cancel)
-            fp = fingerprints[path]
-            indexed = index_csv_file(path)
+            source_file = source_by_path[path]
             try
                 loaded_measurements += _write_file_group!(
                     files_group,
-                    project,
-                    fp,
-                    indexed,
-                    meta;
+                    source.project,
+                    source_file;
                     should_cancel,
                 )
             catch err
                 (err isa ScanCancelled || err isa PlotCancelled) && rethrow()
-                _write_file_error_group!(files_group, fp, indexed, err)
+                _write_file_error_group!(files_group, source_file.fingerprint, source_file, err)
             end
             processed += 1
             on_progress !== nothing && on_progress((
@@ -789,25 +747,24 @@ function build_project_cache!(
             ))
         end
         _write_meta!(h5, identity)
-        _write_semantic_fields!(h5, project_cache_semantic_fields(project))
-        _rebuild_indexes!(h5, identity, project)
+        _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
+        _annotate_cached_measurement_metadata!(h5, identity, source.project)
+        _rebuild_indexes!(h5, identity, source.project)
     end
     status = _cache_status_from_fingerprints(identity, fingerprints)
     errors = _cache_file_errors(identity)
-    @info "Finished project cache build" cache = identity.cache_path cached_files = status.cached_files error_files = status.error_files
+    @info "Finished project cache write" cache = identity.cache_path cached_files = status.cached_files error_files = status.error_files
     return ProjectCacheSnapshot(
         identity,
         hierarchy,
         status,
-        project_cache_semantic_fields(project),
+        project_cache_semantic_fields(source.project),
         errors,
     )
 end
 
 function _load_project_cache_contents(
-    root_path::AbstractString,
-    project::AbstractProject,
-    cache_id::AbstractString,
+    identity::ProjectCacheIdentity,
     ;
     should_cancel::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
@@ -815,9 +772,7 @@ function _load_project_cache_contents(
 )
     measurements = MeasurementInfo[]
     metadata = _stream_project_cache_contents(
-        root_path,
-        project,
-        cache_id;
+        identity;
         should_cancel,
         on_progress,
         on_file_loaded=(file_measurements) -> begin
@@ -829,7 +784,7 @@ function _load_project_cache_contents(
         measurements,
         metadata.identity.root_path,
         metadata.has_device_metadata,
-        project,
+        _project_by_name(identity.project_name),
         metadata.skipped_count,
     )
     return ProjectCacheSnapshot(
@@ -841,16 +796,18 @@ function _load_project_cache_contents(
     )
 end
 
+"""
+    _stream_project_cache_contents(identity; should_cancel=nothing, on_progress=nothing, on_file_loaded=nothing)
+
+Read cached files incrementally so the UI can populate measurements and progress while avoiding CSV parsing.
+"""
 function _stream_project_cache_contents(
-    root_path::AbstractString,
-    project::AbstractProject,
-    cache_id::AbstractString,
+    identity::ProjectCacheIdentity,
     ;
     should_cancel::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
     on_file_loaded::Union{Nothing,Function}=nothing,
 )
-    identity = project_cache_identity(cache_id, project, root_path)
     isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
     _check_cancel(should_cancel)
     metadata = h5open(identity.cache_path, "r") do h5
@@ -905,23 +862,18 @@ function _stream_project_cache_contents(
     )
 end
 
+"""
+    load_project_cache(identity; should_cancel=nothing, on_progress=nothing)
+
+Load a cache snapshot for browsing without touching the source CSV tree.
+"""
 function load_project_cache(
-    root_path::AbstractString,
-    project::AbstractProject,
-    cache_id::AbstractString,
+    identity::ProjectCacheIdentity,
     ;
     should_cancel::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )
-    snapshot = _load_project_cache_contents(root_path, project, cache_id; should_cancel, on_progress)
-    status = cache_status(snapshot.identity; should_cancel, on_progress)
-    return ProjectCacheSnapshot(
-        snapshot.identity,
-        snapshot.hierarchy,
-        status,
-        snapshot.semantic_fields,
-        snapshot.errors,
-    )
+    return _load_project_cache_contents(identity; should_cancel, on_progress)
 end
 
 function _measurement_group_for_cached_plot(

@@ -335,7 +335,7 @@ function _load_measurements_from_source_files(
     meta = _load_scan_metadata(String(root_path))
     measurements = MeasurementInfo[]
     for source_file in source_files
-        indexed = index_csv_file(source_file)
+        indexed = index_source_file(source_file)
         items = interpret_measurements(project, indexed, meta; should_cancel=should_cancel)
         isempty(items) && throw(FigureScriptResolutionError(
             "Measurement source file '$source_file' did not produce any measurements for project $(project_name(project))",

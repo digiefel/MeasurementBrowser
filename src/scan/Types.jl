@@ -1,11 +1,19 @@
 using Dates
 
-struct IndexedCsvFile
+struct FileFingerprint
+    path::String
+    size_bytes::Int64
+    mtime_ns::Int64
+end
+
+struct SourceFile
     id::String
     filepath::String
     filename::String
     timestamp::Union{DateTime,Nothing}
     header_summary::Dict{Symbol,Any}
+    fingerprint::FileFingerprint
+    measurements::Vector
 end
 
 struct MeasurementItem
@@ -20,7 +28,20 @@ struct MeasurementItem
     title::String
 end
 
-file_id(path::AbstractString) = abspath(String(path))
+source_path(path::AbstractString) = normpath(abspath(expanduser(String(path))))
+file_id(path::AbstractString) = source_path(path)
+
+function source_file_with_measurements(source::SourceFile, measurements::Vector)
+    return SourceFile(
+        source.id,
+        source.filepath,
+        source.filename,
+        source.timestamp,
+        source.header_summary,
+        source.fingerprint,
+        measurements,
+    )
+end
 
 function item_id(
     source_file_id::AbstractString;

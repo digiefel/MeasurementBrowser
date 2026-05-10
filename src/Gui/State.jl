@@ -201,14 +201,6 @@ function _new_scan_progress()
 end
 
 function _init_scan_state!(ui_state)
-    ui_state[:scan_state] = :idle
-    ui_state[:scan_progress] = _new_scan_progress()
-    ui_state[:scan_error] = ""
-    ui_state[:scan_seq] = 0
-    ui_state[:active_scan_id] = 0
-    ui_state[:scan_events] = nothing
-    ui_state[:scan_cancel_token] = nothing
-    ui_state[:scan_path] = ""
     ui_state[:source_scan_state] = :idle
     ui_state[:source_scan_progress] = _new_scan_progress()
     ui_state[:source_scan_error] = ""
@@ -217,10 +209,12 @@ function _init_scan_state!(ui_state)
     ui_state[:source_scan_events] = nothing
     ui_state[:source_scan_cancel_token] = nothing
     ui_state[:source_scan_path] = ""
+    ui_state[:source_scan_result] = nothing
 end
 
 function _init_cache_state!(ui_state)
     ui_state[:cache_state] = :idle
+    ui_state[:cache_progress] = _new_scan_progress()
     ui_state[:cache_error] = ""
     ui_state[:cache_id] = ""
     ui_state[:cache_identity] = nothing
@@ -228,6 +222,10 @@ function _init_cache_state!(ui_state)
     ui_state[:cache_source_checked] = false
     ui_state[:cache_semantic_fields] = Dict{Symbol,Vector{Symbol}}()
     ui_state[:cache_errors] = ProjectCacheFileError[]
+    ui_state[:cache_seq] = 0
+    ui_state[:active_cache_id] = 0
+    ui_state[:cache_events] = nothing
+    ui_state[:cache_cancel_token] = nothing
 end
 
 function _init_tag_state!(ui_state)
@@ -416,7 +414,7 @@ function _figure_script_job_request(
         :all_measurements => all_measurements,
         :group_name => String(group_name),
         :group_index => group_index,
-        :scan_id => get(ui_state, :active_scan_id, 0),
+        :scan_id => get(ui_state, :source_scan_seq, 0),
         :root_path => get(ui_state, :root_path, ""),
         :status_message => String(status_message),
         :completion_message => String(completion_message),
@@ -497,7 +495,7 @@ function _poll_figure_script_job_events!(ui_state)
 
         if msg.kind == :done
             _record_figure_script_job_profile!(ui_state, msg.operation, msg.profile)
-            if msg.scan_id == get(ui_state, :active_scan_id, 0) &&
+            if msg.scan_id == get(ui_state, :source_scan_seq, 0) &&
                msg.root_path == get(ui_state, :root_path, "")
                 ui_state[:figure_script_groups] = msg.groups
                 _invalidate_figure_script_group_matches!(ui_state)
@@ -696,35 +694,22 @@ function _delete_selected_figure_script_group!(ui_state)
 end
 
 function _scan_running(ui_state)
-    return get(ui_state, :scan_state, :idle) in (
-        :cache_reload,
-        :cache_load,
-        :cache_check,
-        :cache_discovery,
-        :cache_update,
-        :canceling,
-    )
+    return _source_scan_running(ui_state)
 end
 
 function _cache_action_blocked(ui_state)
-    return get(ui_state, :scan_state, :idle) in (
-        :cache_reload,
-        :cache_load,
-        :cache_discovery,
-        :cache_update,
-        :canceling,
-    )
+    return get(ui_state, :cache_state, :idle) in (:loading, :writing, :canceling)
 end
 
 function _source_scan_running(ui_state)
-    return get(ui_state, :source_scan_state, :idle) in (:counting, :cache_check, :canceling)
+    return get(ui_state, :source_scan_state, :idle) in (:counting, :scanning, :canceling)
 end
 
-function _request_scan_cancel!(ui_state)
-    token = get(ui_state, :scan_cancel_token, nothing)
+function _request_cache_cancel!(ui_state)
+    token = get(ui_state, :cache_cancel_token, nothing)
     token === nothing && return
     Base.Threads.atomic_xchg!(token, true)
-    ui_state[:scan_state] = :canceling
+    ui_state[:cache_state] = :canceling
 end
 
 function _request_source_scan_cancel!(ui_state)
@@ -803,13 +788,18 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
     ui_state[:project] = _project_by_name(snapshot.identity.project_name)
     ui_state[:cache_id] = snapshot.identity.cache_id
     ui_state[:cache_identity] = snapshot.identity
-    ui_state[:cache_status] = snapshot.status
-    ui_state[:cache_source_checked] = true
+    source = get(ui_state, :source_scan_result, nothing)
+    if source isa SourceScan && source.root_path == snapshot.identity.root_path
+        ui_state[:cache_status] = cache_status(snapshot.identity, source)
+        ui_state[:cache_source_checked] = true
+    else
+        ui_state[:cache_status] = snapshot.status
+        ui_state[:cache_source_checked] = false
+    end
     ui_state[:cache_semantic_fields] = snapshot.semantic_fields
     ui_state[:cache_errors] = snapshot.errors
     ui_state[:cache_state] = :ready
     ui_state[:cache_error] = ""
-    ui_state[:scan_state] = :done
     return nothing
 end
 
@@ -826,6 +816,27 @@ function _apply_cache_metadata!(ui_state, metadata)
     ui_state[:skipped_count] = metadata.skipped_count
     ui_state[:has_device_metadata] = metadata.has_device_metadata
     ui_state[:cache_error] = ""
+    return nothing
+end
+
+function _apply_source_scan!(ui_state, source::SourceScan)
+    ui_state[:source_scan_result] = source
+    _apply_scan_snapshot!(ui_state, (
+        hierarchy=source.hierarchy,
+        measurement_index=_build_measurement_index(source.hierarchy.all_measurements),
+        device_metadata_keys=_device_metadata_keys(source.hierarchy.all_measurements),
+        skipped_count=source.hierarchy.skipped_count,
+    ))
+    ui_state[:root_path] = source.root_path
+    ui_state[:project] = source.project
+    ui_state[:has_device_metadata] = source.hierarchy.has_device_metadata
+    identity = get(ui_state, :cache_identity, nothing)
+    if identity isa ProjectCacheIdentity && identity.root_path == source.root_path
+        ui_state[:cache_status] = isfile(identity.cache_path) ?
+            cache_status(identity, source) :
+            ProjectCacheStatus(length(source.files), 0, 0, 0, length(source.files), 0, 0)
+        ui_state[:cache_source_checked] = true
+    end
     return nothing
 end
 
@@ -881,9 +892,10 @@ function _launch_source_scan_job!(
     scan_id = ui_state[:source_scan_seq]
     ui_state[:active_source_scan_id] = scan_id
     ui_state[:source_scan_path] = norm_path
-    ui_state[:source_scan_state] = :cache_check
+    ui_state[:source_scan_state] = :scanning
     ui_state[:source_scan_progress] = _new_scan_progress()
     ui_state[:source_scan_error] = ""
+    _begin_scan!(ui_state, norm_path, proj, false)
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
@@ -892,28 +904,21 @@ function _launch_source_scan_job!(
 
     Base.Threads.@spawn begin
         try
-            cached_fingerprints, cached_statuses = try
-                _cached_cache_index(identity)
-            catch err
-                err isa ProjectCacheMissingError || rethrow()
-                (Dict{String,FileFingerprint}(), Dict{String,String}())
-            end
-            raw = collect_csv_fingerprints(
+            source = scan_source(
                 norm_path;
+                project=proj,
                 should_cancel=() -> cancel_token[],
                 on_progress=(progress) -> put!(events, (
                     kind=:progress,
                     scan_id=scan_id,
                     progress=progress,
                 )),
-                phase=:cache_check,
             )
-            status = _cache_status_from_fingerprints(raw, cached_fingerprints, cached_statuses)
             put!(events, (
                 kind=:source_scan_result,
                 scan_id=scan_id,
                 identity=identity,
-                status=status,
+                source=source,
                 persist=persist,
             ))
         catch err
@@ -936,11 +941,11 @@ function _launch_project_reload_job!(
     cache_id::String;
     persist::Bool=true,
 )
-    if _scan_running(ui_state)
-        _request_scan_cancel!(ui_state)
-    end
     if _source_scan_running(ui_state)
         _request_source_scan_cancel!(ui_state)
+    end
+    if _cache_action_blocked(ui_state)
+        _request_cache_cancel!(ui_state)
     end
 
     identity = project_cache_identity(cache_id, proj, path)
@@ -952,73 +957,47 @@ function _launch_project_reload_job!(
         ui_state[:project] = proj
     end
 
-    scan_id = get(ui_state, :scan_seq, 0) + 1
-    ui_state[:scan_seq] = scan_id
-    ui_state[:active_scan_id] = scan_id
-    ui_state[:scan_path] = identity.root_path
-    ui_state[:scan_state] = :cache_reload
-    ui_state[:scan_progress] = _new_scan_progress()
-    ui_state[:scan_error] = ""
+    cache_id_num = get(ui_state, :cache_seq, 0) + 1
+    ui_state[:cache_seq] = cache_id_num
+    ui_state[:active_cache_id] = cache_id_num
+    ui_state[:cache_progress] = _new_scan_progress()
     ui_state[:cache_id] = cache_id
     ui_state[:cache_identity] = identity
     ui_state[:cache_state] = :loading
     ui_state[:cache_error] = ""
     ui_state[:cache_status] = nothing
     ui_state[:cache_errors] = ProjectCacheFileError[]
-    delete!(ui_state, :cache_load_progress)
-    delete!(ui_state, :source_check_progress)
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
-    ui_state[:scan_events] = events
-    ui_state[:scan_cancel_token] = cancel_token
+    ui_state[:cache_events] = events
+    ui_state[:cache_cancel_token] = cancel_token
 
     Base.Threads.@spawn begin
         try
-            metadata = _stream_project_cache_contents(
-                identity.root_path,
-                proj,
-                cache_id;
+            snapshot = load_project_cache(
+                identity;
                 should_cancel=() -> cancel_token[],
                 on_progress=(progress) -> put!(events, (
                     kind=:progress,
-                    scan_id=scan_id,
+                    cache_id=cache_id_num,
                     progress=progress,
                 )),
-                on_file_loaded=(measurements) -> put!(events, (
-                    kind=:cache_measurements,
-                    scan_id=scan_id,
-                    measurements=measurements,
-                )),
             )
-            checked_metadata = (
-                identity=metadata.identity,
-                status=metadata.status,
-                semantic_fields=metadata.semantic_fields,
-                errors=metadata.errors,
-                skipped_count=metadata.skipped_count,
-                has_device_metadata=metadata.has_device_metadata,
-                source_checked=false,
-            )
-            put!(events, (
-                kind=:reload_result,
-                scan_id=scan_id,
-                metadata=checked_metadata,
-                persist=persist,
-            ))
+            put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=persist))
         catch err
             if _is_scan_cancel_error(err) || err isa PlotCancelled
-                put!(events, (kind=:canceled, scan_id=scan_id))
+                put!(events, (kind=:canceled, cache_id=cache_id_num))
             elseif err isa ProjectCacheMissingError
                 put!(events, (
                     kind=:cache_missing,
-                    scan_id=scan_id,
+                    cache_id=cache_id_num,
                     identity=identity,
                     error=sprint(showerror, err),
                     persist=persist,
                 ))
             else
-                put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
+                put!(events, (kind=:error, cache_id=cache_id_num, error=err, bt=catch_backtrace()))
             end
         finally
             close(events)
@@ -1035,45 +1014,59 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
     _cancel_figure_script_job!(ui_state)
     _clear_plot_jobs!(ui_state)
 
-    scan_id = get(ui_state, :scan_seq, 0) + 1
-    ui_state[:scan_seq] = scan_id
-    ui_state[:active_scan_id] = scan_id
-    ui_state[:scan_path] = identity.root_path
-    ui_state[:scan_state] = :cache_update
-    ui_state[:scan_progress] = _new_scan_progress()
-    ui_state[:scan_error] = ""
-    ui_state[:cache_state] = :updating
-    ui_state[:cache_operation] = full_rebuild ? :rebuild :
-        previous_cache_state == :missing ? :create : :update
+    cache_id_num = get(ui_state, :cache_seq, 0) + 1
+    ui_state[:cache_seq] = cache_id_num
+    ui_state[:active_cache_id] = cache_id_num
+    ui_state[:cache_progress] = _new_scan_progress()
+    ui_state[:cache_state] = :writing
+    operation = full_rebuild ? (previous_cache_state == :missing ? :build : :rebuild) : :update
+    ui_state[:cache_operation] = operation
     ui_state[:cache_error] = ""
-    delete!(ui_state, :cache_load_progress)
-    delete!(ui_state, :source_check_progress)
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
-    ui_state[:scan_events] = events
-    ui_state[:scan_cancel_token] = cancel_token
+    ui_state[:cache_events] = events
+    ui_state[:cache_cancel_token] = cancel_token
+    existing_source = get(ui_state, :source_scan_result, nothing)
+    if !(existing_source isa SourceScan) ||
+       existing_source.root_path != identity.root_path ||
+       project_name(existing_source.project) != identity.project_name
+        existing_source = nothing
+    end
 
     Base.Threads.@spawn begin
         try
-            snapshot = build_project_cache!(
-                identity.root_path,
-                project,
-                identity.cache_id;
-                full_rebuild,
+            source = existing_source
+            if source === nothing
+                source = scan_source(
+                    identity.root_path;
+                    project,
+                    should_cancel=() -> cancel_token[],
+                    on_progress=(progress) -> put!(events, (
+                        kind=:source_progress,
+                        cache_id=cache_id_num,
+                        progress=progress,
+                    )),
+                )
+                put!(events, (kind=:source_scan_result, cache_id=cache_id_num, source=source))
+            end
+            snapshot = write_project_cache!(
+                identity,
+                source;
+                mode=operation,
                 should_cancel=() -> cancel_token[],
                 on_progress=(progress) -> put!(events, (
                     kind=:progress,
-                    scan_id=scan_id,
+                    cache_id=cache_id_num,
                     progress=progress,
                 )),
             )
-            put!(events, (kind=:cache_result, scan_id=scan_id, snapshot=snapshot))
+            put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=true))
         catch err
             if _is_scan_cancel_error(err) || err isa PlotCancelled
-                put!(events, (kind=:canceled, scan_id=scan_id))
+                put!(events, (kind=:canceled, cache_id=cache_id_num))
             else
-                put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
+                put!(events, (kind=:error, cache_id=cache_id_num, error=err, bt=catch_backtrace()))
             end
         finally
             close(events)
@@ -1083,15 +1076,10 @@ end
 
 function _queue_cache_update!(ui_state; full_rebuild::Bool=false)
     if _cache_action_blocked(ui_state)
-        _request_scan_cancel!(ui_state)
+        _request_cache_cancel!(ui_state)
         return
     end
     _launch_cache_update_job!(ui_state; full_rebuild)
-end
-
-function _finalize_scan!(ui_state)
-    ui_state[:scan_events] = nothing
-    ui_state[:scan_cancel_token] = nothing
 end
 
 function _finalize_source_scan!(ui_state)
@@ -1099,13 +1087,18 @@ function _finalize_source_scan!(ui_state)
     ui_state[:source_scan_cancel_token] = nothing
 end
 
-function _poll_scan_events!(ui_state)
-    events = get(ui_state, :scan_events, nothing)
+function _finalize_cache!(ui_state)
+    ui_state[:cache_events] = nothing
+    ui_state[:cache_cancel_token] = nothing
+end
+
+function _poll_cache_events!(ui_state)
+    events = get(ui_state, :cache_events, nothing)
     events === nothing && return
 
     while isready(events)
         msg = take!(events)
-        msg.scan_id == get(ui_state, :active_scan_id, 0) || continue
+        msg.cache_id == get(ui_state, :active_cache_id, 0) || continue
 
         if msg.kind == :progress
             p = msg.progress
@@ -1117,30 +1110,25 @@ function _poll_scan_events!(ui_state)
                 :skipped_csv => p.skipped_csv,
                 :current_path => p.current_path,
             )
-            ui_state[:scan_progress] = progress_dict
-            p.phase == :cache_load && (ui_state[:cache_load_progress] = progress_dict)
-            p.phase == :cache_check && (ui_state[:source_check_progress] = progress_dict)
-            p.phase in (:scanning, :cache_update) && (ui_state[:skipped_count] = p.skipped_csv)
-            if !(get(ui_state, :cache_state, :idle) == :loading && p.phase == :cache_check)
-                ui_state[:scan_state] = p.phase
-            end
+            ui_state[:cache_progress] = progress_dict
+        elseif msg.kind == :source_progress
+            p = msg.progress
+            ui_state[:source_scan_progress] = Dict{Symbol,Any}(
+                :phase => p.phase,
+                :total_csv => p.total_csv,
+                :processed_csv => p.processed_csv,
+                :loaded_measurements => p.loaded_measurements,
+                :skipped_csv => p.skipped_csv,
+                :current_path => p.current_path,
+            )
+            ui_state[:source_scan_state] = p.phase
+        elseif msg.kind == :source_scan_result
+            _apply_source_scan!(ui_state, msg.source)
+            ui_state[:source_scan_state] = :done
         elseif msg.kind == :cache_result
             _apply_cache_snapshot!(ui_state, msg.snapshot)
-            _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
-            _finalize_scan!(ui_state)
-        elseif msg.kind == :cache_measurements
-            _append_cache_measurements!(ui_state, msg.measurements)
-        elseif msg.kind == :cache_loaded
-            _apply_cache_metadata!(ui_state, msg.metadata)
-            delete!(ui_state, :cache_load_progress)
-            ui_state[:cache_state] = :checking
-            ui_state[:scan_state] = :cache_check
-        elseif msg.kind == :reload_result
-            _apply_cache_metadata!(ui_state, msg.metadata)
-            ui_state[:cache_state] = :ready
-            ui_state[:scan_state] = :done
-            msg.persist && _persist_preferences!(ui_state; path=msg.metadata.identity.root_path)
-            _finalize_scan!(ui_state)
+            get(msg, :persist, false) && _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
+            _finalize_cache!(ui_state)
         elseif msg.kind == :cache_missing
             identity = msg.identity
             proj = _project_by_name(identity.project_name)
@@ -1149,20 +1137,16 @@ function _poll_scan_events!(ui_state)
             ui_state[:cache_identity] = identity
             ui_state[:cache_state] = :missing
             ui_state[:cache_error] = msg.error
-            ui_state[:scan_state] = :cache_missing
             msg.persist && _persist_preferences!(ui_state; path=identity.root_path)
-            _finalize_scan!(ui_state)
+            _finalize_cache!(ui_state)
         elseif msg.kind == :canceled
-            ui_state[:scan_state] = :canceled
             ui_state[:cache_state] = :canceled
-            _finalize_scan!(ui_state)
+            _finalize_cache!(ui_state)
         elseif msg.kind == :error
-            ui_state[:scan_state] = :error
-            ui_state[:scan_error] = sprint(showerror, msg.error, msg.bt)
             ui_state[:cache_state] = :error
-            ui_state[:cache_error] = ui_state[:scan_error]
-            @error "Scan job failed" exception = (msg.error, msg.bt)
-            _finalize_scan!(ui_state)
+            ui_state[:cache_error] = sprint(showerror, msg.error, msg.bt)
+            @error "Cache job failed" exception = (msg.error, msg.bt)
+            _finalize_cache!(ui_state)
         end
     end
 end
@@ -1190,8 +1174,7 @@ function _poll_source_scan_events!(ui_state)
         elseif msg.kind == :source_scan_result
             ui_state[:cache_identity] = msg.identity
             ui_state[:cache_id] = msg.identity.cache_id
-            ui_state[:cache_status] = msg.status
-            ui_state[:cache_source_checked] = true
+            _apply_source_scan!(ui_state, msg.source)
             ui_state[:source_scan_state] = :done
             msg.persist && _persist_preferences!(ui_state; path=msg.identity.root_path)
             _finalize_source_scan!(ui_state)

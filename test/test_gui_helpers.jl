@@ -1,5 +1,6 @@
 using MeasurementBrowser
 using Annotations
+using Dates
 using Test
 
 function _drain_figure_script_job!(ui_state)
@@ -102,23 +103,9 @@ end
         :cache_status => MeasurementBrowser.ProjectCacheStatus(3, 2, 1, 0, 0, 0, 1),
     ))
     @test errors_model.label == "Cache: Errors"
-    discovery_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
-        :scan_state => :cache_discovery,
-        :scan_progress => Dict{Symbol,Any}(
-            :phase => :cache_discovery,
-            :total_csv => 0,
-            :processed_csv => 12,
-            :loaded_measurements => 0,
-            :skipped_csv => 0,
-            :current_path => "",
-        ),
-    ))
-    @test discovery_model.title == "Cache: Preparing Build"
-    @test discovery_model.progress == "Found 12 source CSV files"
-
     load_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
-        :scan_state => :cache_load,
-        :scan_progress => Dict{Symbol,Any}(
+        :cache_state => :loading,
+        :cache_progress => Dict{Symbol,Any}(
             :phase => :cache_load,
             :total_csv => 5,
             :processed_csv => 2,
@@ -130,51 +117,40 @@ end
     @test load_model.title == "Cache: Loading"
     @test load_model.progress == "Read 2/5 cached files, loaded 14 measurements"
 
-    check_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
-        :scan_state => :cache_check,
-        :scan_progress => Dict{Symbol,Any}(
-            :phase => :cache_check,
+    write_model = MeasurementBrowser._cache_activity_model(Dict{Symbol,Any}(
+        :cache_state => :writing,
+        :cache_operation => :rebuild,
+        :cache_progress => Dict{Symbol,Any}(
+            :phase => :cache_write,
             :total_csv => 5,
             :processed_csv => 3,
-            :loaded_measurements => 0,
+            :loaded_measurements => 12,
             :skipped_csv => 0,
             :current_path => "",
         ),
     ))
-    @test check_model.title == "Source: Checking"
-    @test check_model.progress == "Checked 3/5 source CSV files"
-    source_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
-        :scan_state => :cache_check,
-        :source_check_progress => Dict{Symbol,Any}(
-            :phase => :cache_check,
-            :total_csv => 5,
-            :processed_csv => 3,
-            :loaded_measurements => 0,
-            :skipped_csv => 0,
-            :current_path => "",
-        ),
-    ))
-    @test length(source_models) == 1
-    @test source_models[1].title == "Source: Checking"
+    @test write_model.title == "Cache: Rebuilding"
+    @test write_model.progress == "Processed 3/5 cache entries, cached 12 measurements"
+
     rescan_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
-        :source_scan_state => :cache_check,
+        :source_scan_state => :scanning,
         :source_scan_progress => Dict{Symbol,Any}(
-            :phase => :cache_check,
+            :phase => :scanning,
             :total_csv => 8,
             :processed_csv => 2,
-            :loaded_measurements => 0,
+            :loaded_measurements => 10,
             :skipped_csv => 0,
             :current_path => "",
         ),
     ))
     @test length(rescan_models) == 1
-    @test rescan_models[1].title == "Rescan: Checking Source"
-    @test rescan_models[1].progress == "Checking 2/8 source CSV files"
+    @test rescan_models[1].title == "Source: Scanning"
+    @test rescan_models[1].progress == "Scanning 2/8 source files, loaded 10 measurements, skipped 0"
     @test rescan_models[1].show_bar == true
     finding_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
-        :source_scan_state => :cache_check,
+        :source_scan_state => :counting,
         :source_scan_progress => Dict{Symbol,Any}(
-            :phase => :cache_check,
+            :phase => :counting,
             :total_csv => 0,
             :processed_csv => 12,
             :loaded_measurements => 0,
@@ -182,12 +158,12 @@ end
             :current_path => "",
         ),
     ))
-    @test finding_models[1].progress == "Finding source CSV files: 12 found"
+    @test finding_models[1].progress == "Finding source CSV files"
     @test finding_models[1].show_bar == false
     done_rescan_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
         :source_scan_state => :done,
         :source_scan_progress => Dict{Symbol,Any}(
-            :phase => :cache_check,
+            :phase => :scanning,
             :total_csv => 8,
             :processed_csv => 8,
             :loaded_measurements => 0,
@@ -195,17 +171,12 @@ end
             :current_path => "",
         ),
     ))
-    @test done_rescan_models[1].title == "Rescan: Complete"
+    @test done_rescan_models[1].title == "Source: Complete"
     @test done_rescan_models[1].fraction == 1.0f0
     @test done_rescan_models[1].show_bar == true
     @test isempty(MeasurementBrowser._cache_progress_models(Dict{Symbol,Any}(
-        :scan_state => :cache_check,
-        :source_check_progress => Dict{Symbol,Any}(),
-    )))
-    @test isempty(MeasurementBrowser._cache_progress_models(Dict{Symbol,Any}(
-        :cache_state => :checking,
-        :scan_state => :cache_check,
-        :cache_load_progress => Dict{Symbol,Any}(
+        :cache_state => :ready,
+        :cache_progress => Dict{Symbol,Any}(
             :phase => :cache_load,
             :total_csv => 8,
             :processed_csv => 8,
@@ -215,19 +186,16 @@ end
         ),
     )))
     @test !MeasurementBrowser._cache_action_blocked(Dict{Symbol,Any}(
-        :cache_state => :checking,
-        :scan_state => :cache_check,
+        :cache_state => :ready,
     ))
     @test MeasurementBrowser._cache_action_blocked(Dict{Symbol,Any}(
         :cache_state => :loading,
-        :scan_state => :cache_load,
     ))
-    checking_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
+    writing_model = MeasurementBrowser._cache_toolbar_model(Dict{Symbol,Any}(
         :cache_identity => cache_identity,
-        :cache_state => :checking,
-        :scan_state => :cache_check,
+        :cache_state => :writing,
     ))
-    @test checking_model.label == "Cache: Loaded"
+    @test writing_model.label == "Cache: Updating"
     @test MeasurementBrowser.MakieImguiIntegration._texture_display_size((1600, 1000), 2.0f0) == (800.0, 500.0)
     @test MeasurementBrowser.MakieImguiIntegration._texture_display_size((800, 500), 1.0f0) == (800.0, 500.0)
     @test MeasurementBrowser.MakieImguiIntegration._imgui_mouse_to_makie(
@@ -243,6 +211,48 @@ end
     @test !MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(true, false, false)
     @test !MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(false, true, false)
     @test !MeasurementBrowser.MakieImguiIntegration._should_open_axis_popup(false, false, true)
+
+    pund_1 = MeasurementInfo(
+        "pund_1",
+        "pund_1.csv", "/tmp/pund_1.csv", "pund_1", :pund, DateTime(2025, 1, 1, 10),
+        DeviceInfo(["Device"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+    )
+    wakeup = MeasurementInfo(
+        "wakeup",
+        "wakeup.csv", "/tmp/wakeup.csv", "wakeup", :wakeup, DateTime(2025, 1, 1, 10, 30),
+        DeviceInfo(["Device"], Dict{Symbol,Any}()),
+        Dict{Symbol,Any}(:wakeup_pulse_count => 100),
+        100,
+    )
+    fatigue_5 = MeasurementInfo(
+        "fatigue_5",
+        "fatigue_5.csv", "/tmp/fatigue_5.csv", "fatigue_5", :pund, DateTime(2025, 1, 1, 11),
+        DeviceInfo(["Device"], Dict{Symbol,Any}()),
+        Dict{Symbol,Any}(:fatigue_cycle => 5),
+        nothing,
+    )
+    pund_2 = MeasurementInfo(
+        "pund_2",
+        "pund_2.csv", "/tmp/pund_2.csv", "pund_2", :pund, DateTime(2025, 1, 1, 12),
+        DeviceInfo(["Device"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+    )
+    pund_hierarchy = MeasurementHierarchy(
+        [pund_2, wakeup, fatigue_5, pund_1],
+        "/tmp",
+        false,
+        MeasurementBrowser.RUO2_PROJECT,
+        0,
+    )
+    @test pund_1.parameters[:global_pund_pulse_count] == 1
+    @test fatigue_5.parameters[:global_pund_pulse_count] == 5
+    @test pund_2.parameters[:global_pund_pulse_count] == 6
+    @test !haskey(wakeup.parameters, :global_pund_pulse_count)
+    pund_stats = MeasurementBrowser.get_measurements_stats(
+        pund_hierarchy.index[("Device",)].measurements,
+        MeasurementBrowser.RUO2_PROJECT,
+    )
+    @test pund_stats[:global_pund_pulse_count] == 6
+    @test pund_stats[:wakeup_pulse_count] == 100
 
     items = [1, 2, 3, 4]
     selected = Int[]
@@ -304,6 +314,35 @@ end
     @test [m.id for m in ui2[:selected_measurements]] == ["m1", "m2"]
     @test ui2[:selected_device_paths] == ["A", "B"]
     @test ui2[:selected_measurement_ids] == ["m1", "m2"]
+
+    late_a = MeasurementInfo(
+        "late_a",
+        "late_a.csv", "/tmp/late_a.csv", "late_a", :kind_a, DateTime(2025, 1, 1, 11),
+        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+    )
+    early_b = MeasurementInfo(
+        "early_b",
+        "early_b.csv", "/tmp/early_b.csv", "early_b", :kind_b, DateTime(2025, 1, 1, 10),
+        DeviceInfo(["B"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+    )
+    interleaved_hierarchy = MeasurementHierarchy(
+        [late_a, early_b],
+        "/tmp",
+        false,
+        MeasurementBrowser.RUO2_PROJECT,
+        0,
+    )
+    interleaved_ui = Dict{Symbol,Any}(
+        :scan_hierarchy => interleaved_hierarchy,
+        :measurement_index => Dict("late_a" => late_a, "early_b" => early_b),
+        :selected_device_paths => ["A", "B"],
+        :selected_measurement_ids => String[],
+        :tag_state => Annotations.Tags.TagState(),
+        :tag_state_error => "",
+        :show_bad => true,
+    )
+    MeasurementBrowser._apply_visible_selection!(interleaved_ui)
+    @test [m.id for m in interleaved_ui[:selected_all_measurements]] == ["early_b", "late_a"]
 
     ui2[:show_bad] = false
     MeasurementBrowser._apply_visible_selection!(ui2)
@@ -413,7 +452,7 @@ end
         :selected_all_measurements => MeasurementInfo[m1, m2, m3],
         :selected_measurement_id_set => Set(["m3", "m1"]),
         :all_measurements => [m1, m2, m3],
-        :active_scan_id => 1,
+        :source_scan_seq => 1,
         :root_path => "/tmp/project",
     )
     MeasurementBrowser._init_figure_script_state!(ui6)
@@ -491,7 +530,7 @@ end
         :selected_all_measurements => MeasurementInfo[m1, m2, m3],
         :selected_measurement_id_set => Set(["m1"]),
         :all_measurements => [m1, m2, m3],
-        :active_scan_id => 10,
+        :source_scan_seq => 10,
         :root_path => "/tmp/project",
     )
     MeasurementBrowser._init_figure_script_state!(ui8)
@@ -505,7 +544,7 @@ end
     @test !MeasurementBrowser._figure_script_job_running(ui8)
     @test isempty(ui8[:figure_script_status])
     @test isempty(ui8[:figure_script_error])
-    ui8[:active_scan_id] = 11
+    ui8[:source_scan_seq] = 11
     MeasurementBrowser._invalidate_figure_script_scan_cache!(ui8)
     @test ui8[:figure_script_fact_index_valid] == false
     _drain_figure_script_job!(ui8)

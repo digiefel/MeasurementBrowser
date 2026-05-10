@@ -11,20 +11,20 @@ function _write_stub_csv(path::String)
     write(path, "Time_s,Current_A,Voltage_V\n0.0,0.0,0.0\n")
 end
 
-@testset "scan_directory progress and cancel" begin
+@testset "scan_source progress and cancel" begin
     mktempdir() do dir
         _copy_fixture(dir, "Wakeup 3V [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_10_48].csv")
         _copy_fixture(dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
         write(joinpath(dir, "not_a_measurement.csv"), "header\n1,2,3\n")
 
-        # Backwards-compatible call shape
-        h = scan_directory(dir)
-        @test h isa MeasurementHierarchy
-        @test h.skipped_count == 1
+        source = scan_source(dir)
+        @test source isa SourceScan
+        @test source.hierarchy isa MeasurementHierarchy
+        @test source.hierarchy.skipped_count == 1
 
         # Progress callback shape
         events = NamedTuple[]
-        scan_directory(dir; on_progress=(p) -> push!(events, p), count_first=true)
+        scan_source(dir; on_progress=(p) -> push!(events, p), count_first=true)
         @test !isempty(events)
         @test any(e -> e.phase == :counting, events)
         @test any(e -> e.phase == :scanning, events)
@@ -34,7 +34,7 @@ end
 
         # Cooperative cancellation
         fired = Ref(false)
-        @test_throws MeasurementBrowser.ScanCancelled scan_directory(
+        @test_throws MeasurementBrowser.ScanCancelled scan_source(
             dir;
             should_cancel=() -> begin
                 if fired[]
@@ -48,7 +48,7 @@ end
     end
 end
 
-@testset "scan_directory device metadata matches exact path units across RuO2 layouts" begin
+@testset "scan_source device metadata matches exact path units across RuO2 layouts" begin
     mktempdir() do dir
         legacy_dir = joinpath(dir, "RuO2test_A9")
         mkpath(legacy_dir)
@@ -85,7 +85,8 @@ RuO2test/A9/VI/D1,10.0,legacy_exact,
 RuO2test_A10/VI/25um/D1,25.0,new_exact,
 """)
 
-        hierarchy = scan_directory(dir; project=RUO2_PROJECT)
+        source = scan_source(dir; project=RUO2_PROJECT)
+        hierarchy = source.hierarchy
         @test length(hierarchy.all_measurements) == 3
         by_location = Dict(Tuple(m.device_info.location) => m for m in hierarchy.all_measurements)
 
@@ -111,7 +112,7 @@ RuO2test_A10/VI/25um/D1,25.0,new_exact,
         )
         _write_stub_csv(prefixed_device)
 
-        prefixed_info = parse_device_info(RUO2_PROJECT, index_csv_file(prefixed_device))
+        prefixed_info = parse_device_info(RUO2_PROJECT, index_source_file(prefixed_device))
         @test prefixed_info.location == ["RuO2test_A10", "VI", "FecapBD", "A1A2"]
     end
 end

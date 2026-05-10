@@ -86,12 +86,12 @@ Bias_V,Cp (F),Rp (Ohm),Time_sec,Status_Cp,Status_Rp,Status_Combined
 """,
         )
 
-        g_items = MeasurementBrowser.interpret_file(RUO2_PROJECT, index_csv_file(g_path))
+        g_items = MeasurementBrowser.interpret_file(RUO2_PROJECT, index_source_file(g_path))
         @test length(g_items) == 1
         @test only(g_items).kind == :cvsweep
         @test only(g_items).device_path == ["RuO2test_A8", "VI", "FeCap", "B1"]
 
-        @test isempty(MeasurementBrowser.interpret_file(RUO2_PROJECT, index_csv_file(headerless_path)))
+        @test isempty(MeasurementBrowser.interpret_file(RUO2_PROJECT, index_source_file(headerless_path)))
 
         g_loaded = read_cv_sweep(basename(g_path), dirname(g_path))
         @test g_loaded.secondary_kind == :conductance

@@ -19,7 +19,7 @@ metadata)       │  --------     -----------     ------                │
                 └─────────────────────────────────────────────────────┘
 ```
 
-1. **Scan** ([scanning](scanning.md)): `scan_directory` walks a folder of CSVs, parses each filename to a `MeasurementInfo`, merges in `devices_info.txt` metadata (path-prefix matching), and inserts results into a tree.
+1. **Scan** ([scanning](scanning.md)): `scan_source` walks a folder of CSVs, parses each filename to a `MeasurementInfo`, merges in `devices_info.txt` metadata (path-prefix matching), and inserts results into a tree.
 2. **Hierarchy** ([data-model](data-model.md)): a variable-depth `MeasurementHierarchy` whose leaves hold measurements. Stable identity is the slash-joined `device_path_key`.
 3. **Plot** ([gui](gui.md), [plotting](plotting.md)): the GUI's tree panel drives a selection vector; selection feeds `figure_for_file` (single) or `figure_for_files` (combined). Figures render asynchronously via a `PlotJob` queue.
 

@@ -44,7 +44,7 @@
             )
         end
 
-        scan_directory(scan_fixture_dir; project=RUO2_PROJECT)
-        scan_directory(scan_fixture_dir; project=RUO2_PROJECT, count_first=true)
+        scan_source(scan_fixture_dir; project=RUO2_PROJECT)
+        scan_source(scan_fixture_dir; project=RUO2_PROJECT, count_first=true)
     end
 end

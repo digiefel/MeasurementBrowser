@@ -4,13 +4,13 @@ using Test
 @testset "TASE Analysis" begin
     fixture1 = joinpath(@__DIR__, "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv")
     fixture2 = joinpath(@__DIR__, "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv")
-    indexed1 = index_csv_file(fixture1)
+    source1 = index_source_file(fixture1)
     measurements = [
         MeasurementInfo(fixture1, TASE_PROJECT),
         MeasurementInfo(fixture2, TASE_PROJECT),
     ]
 
-    @test parse_device_info(TASE_PROJECT, indexed1).location == measurements[1].device_info.location
+    @test parse_device_info(TASE_PROJECT, source1).location == measurements[1].device_info.location
 
     @testset "available analyses" begin
         options = available_analyses(TASE_PROJECT, measurements)

@@ -1,43 +1,12 @@
 function _cache_activity_model(ui_state)
-    state = get(ui_state, :scan_state, :idle)
-    progress = get(ui_state, :scan_progress, _new_scan_progress())
+    state = get(ui_state, :cache_state, :idle)
+    progress = get(ui_state, :cache_progress, _new_scan_progress())
     total = get(progress, :total_csv, 0)
     processed = get(progress, :processed_csv, 0)
     loaded = get(progress, :loaded_measurements, 0)
-    skipped = get(progress, :skipped_csv, 0)
     fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
-    if state == :counting
-        return (
-            title="Source: Counting",
-            detail="Counting source CSV files before measurement discovery.",
-            progress="Found $processed CSV files",
-            fraction,
-            cancel_label="Cancel Source Scan",
-        )
-    elseif state == :scanning
-        progress_text = total > 0 ?
-            @sprintf("Scanned %d/%d source files, loaded %d measurements, skipped %d", processed, total, loaded, skipped) :
-            @sprintf("Scanned %d source files, loaded %d measurements, skipped %d", processed, loaded, skipped)
-        return (
-            title="Source: Scanning",
-            detail="Reading source CSV files to build the in-memory measurement list.",
-            progress=progress_text,
-            fraction,
-            cancel_label="Cancel Source Scan",
-        )
-    elseif state == :cache_discovery
-        progress_text = total > 0 ?
-            "Checked $processed/$total source CSV files" :
-            "Found $processed source CSV files"
-        return (
-            title="Cache: Preparing Build",
-            detail="Finding source CSV files before writing cache entries.",
-            progress=progress_text,
-            fraction,
-            cancel_label="Cancel Cache Build",
-        )
-    elseif state == :cache_load
+    if state == :loading
         progress_text = total > 0 ?
             @sprintf("Read %d/%d cached files, loaded %d measurements", processed, total, loaded) :
             @sprintf("Loaded %d measurements", loaded)
@@ -48,31 +17,12 @@ function _cache_activity_model(ui_state)
             fraction,
             cancel_label="Cancel Reload",
         )
-    elseif state == :cache_check
+    elseif state == :writing
         progress_text = total > 0 ?
-            "Checked $processed/$total source CSV files" :
-            "Found $processed source CSV files"
-        return (
-            title="Source: Checking",
-            detail="Comparing source CSV fingerprints with the loaded cache.",
-            progress=progress_text,
-            fraction,
-            cancel_label="Cancel Source Check",
-        )
-    elseif state == :cache_reload
-        return (
-            title="Cache: Reloading",
-            detail="Starting cache reload.",
-            progress="Starting...",
-            fraction,
-            cancel_label="Cancel Reload",
-        )
-    elseif state == :cache_update
-        progress_text = total > 0 ?
-            @sprintf("Processed %d/%d source files, cached %d measurements", processed, total, loaded) :
+            @sprintf("Processed %d/%d cache entries, cached %d measurements", processed, total, loaded) :
             @sprintf("Cached %d measurements", loaded)
         operation = get(ui_state, :cache_operation, :update)
-        title = operation == :create ? "Cache: Creating" :
+        title = operation == :build ? "Cache: Building" :
             operation == :rebuild ? "Cache: Rebuilding" : "Cache: Updating"
         return (
             title,
@@ -80,14 +30,6 @@ function _cache_activity_model(ui_state)
             progress=progress_text,
             fraction,
             cancel_label="Cancel Cache Build",
-        )
-    elseif state == :cache_missing
-        return (
-            title="Cache: Missing",
-            detail="No HDF5 cache exists for this project.",
-            progress="Build required",
-            fraction,
-            cancel_label="Cancel",
         )
     elseif state == :canceling
         return (
@@ -108,7 +50,7 @@ function _cache_activity_model(ui_state)
     elseif state == :error
         return (
             title="Error",
-            detail=get(ui_state, :scan_error, "Background job failed."),
+            detail=get(ui_state, :cache_error, "Cache job failed."),
             progress="Failed",
             fraction,
             cancel_label="Cancel",
@@ -145,7 +87,7 @@ end
 
 function _source_rescan_progress_model(ui_state)
     source_state = get(ui_state, :source_scan_state, :idle)
-    if !(source_state in (:counting, :cache_check, :canceling, :done, :canceled, :error))
+    if !(source_state in (:counting, :scanning, :canceling, :done, :canceled, :error))
         return nothing
     end
     if source_state == :error
@@ -160,27 +102,29 @@ function _source_rescan_progress_model(ui_state)
     progress = get(ui_state, :source_scan_progress, _new_scan_progress())
     total = get(progress, :total_csv, 0)
     processed = get(progress, :processed_csv, 0)
+    loaded = get(progress, :loaded_measurements, 0)
+    skipped = get(progress, :skipped_csv, 0)
     text = if source_state == :canceling
-        "Canceling source rescan..."
+        "Canceling source scan..."
     elseif source_state == :canceled
-        "Source rescan canceled"
+        "Source scan canceled"
     elseif source_state == :done
         total > 0 ?
-            "Source rescan complete: checked $processed/$total CSV files" :
-            "Source rescan complete"
+            "Source scan complete: scanned $processed/$total CSV files" :
+            "Source scan complete"
     else
         total > 0 ?
-            "Checking $processed/$total source CSV files" :
-            "Finding source CSV files: $processed found"
+            @sprintf("Scanning %d/%d source files, loaded %d measurements, skipped %d", processed, total, loaded, skipped) :
+            "Finding source CSV files"
     end
     title = if source_state == :done
-        "Rescan: Complete"
+        "Source: Complete"
     elseif source_state == :canceled
-        "Rescan: Canceled"
+        "Source: Canceled"
     elseif source_state == :canceling
-        "Rescan: Canceling"
+        "Source: Canceling"
     else
-        "Rescan: Checking Source"
+        "Source: Scanning"
     end
     return (
         title,
@@ -192,24 +136,8 @@ end
 
 function _cache_progress_models(ui_state)
     models = NamedTuple[]
-    load_progress = get(ui_state, :cache_load_progress, nothing)
     cache_state = get(ui_state, :cache_state, :idle)
-    state = get(ui_state, :scan_state, :idle)
-    if load_progress isa Dict && (cache_state == :loading || state == :cache_load)
-        total = get(load_progress, :total_csv, 0)
-        processed = get(load_progress, :processed_csv, 0)
-        loaded = get(load_progress, :loaded_measurements, 0)
-        text = total > 0 ?
-            "Read $processed/$total cached files, loaded $loaded measurements" :
-            "Loaded $loaded measurements"
-        push!(models, (
-            title="Cache: Loading",
-            progress=text,
-            fraction=_progress_fraction(load_progress),
-            show_bar=true,
-        ))
-    end
-    if state in (:cache_discovery, :cache_update, :cache_reload)
+    if cache_state in (:loading, :writing, :canceling)
         activity = _cache_activity_model(ui_state)
         push!(models, (
             title=activity.title,
@@ -228,34 +156,6 @@ function _source_progress_models(ui_state)
         push!(models, rescan_model)
     end
 
-    state = get(ui_state, :scan_state, :idle)
-    source_check_progress = get(ui_state, :source_check_progress, nothing)
-    if source_check_progress isa Dict
-        total = get(source_check_progress, :total_csv, 0)
-        processed = get(source_check_progress, :processed_csv, 0)
-        text = total > 0 ?
-            "Checked $processed/$total source CSV files" :
-            "Found $processed source CSV files"
-        push!(models, (
-            title="Source: Checking",
-            progress=text,
-            fraction=_progress_fraction(source_check_progress),
-            show_bar=true,
-        ))
-    elseif state == :cache_check
-        check_progress = get(ui_state, :scan_progress, _new_scan_progress())
-        total = get(check_progress, :total_csv, 0)
-        processed = get(check_progress, :processed_csv, 0)
-        text = total > 0 ?
-            "Checked $processed/$total source CSV files" :
-            "Found $processed source CSV files"
-        push!(models, (
-            title="Source: Checking",
-            progress=text,
-            fraction=_progress_fraction(check_progress),
-            show_bar=true,
-        ))
-    end
     return models
 end
 
@@ -271,7 +171,7 @@ function _cache_toolbar_model(ui_state)
             color=(0.28, 0.28, 0.28, 1.0),
             detail="Open a project folder before building a cache.",
         )
-    elseif cache_state == :updating
+    elseif cache_state == :writing
         return (
             label=activity.title,
             color=(0.18, 0.42, 0.78, 1.0),
@@ -282,12 +182,6 @@ function _cache_toolbar_model(ui_state)
             label="Cache: Loading",
             color=(0.18, 0.42, 0.78, 1.0),
             detail="Reading cached measurements from the HDF5 file.",
-        )
-    elseif cache_state == :checking
-        return (
-            label="Cache: Loaded",
-            color=(0.18, 0.42, 0.78, 1.0),
-            detail="Loaded cached measurements.",
         )
     elseif cache_state == :missing
         return (
@@ -342,6 +236,19 @@ function _cache_toolbar_model(ui_state)
         color=(0.36, 0.36, 0.36, 1.0),
         detail="No cache loaded.",
     )
+end
+
+function _source_scan_matches_cache(ui_state, identity::ProjectCacheIdentity)
+    source = get(ui_state, :source_scan_result, nothing)
+    return source isa SourceScan &&
+        source.root_path == identity.root_path &&
+        project_name(source.project) == identity.project_name
+end
+
+function _cache_build_label(ui_state, identity::ProjectCacheIdentity, cache_state::Symbol)
+    has_source = _source_scan_matches_cache(ui_state, identity)
+    verb = cache_state == :missing ? "Build" : "Rebuild"
+    return has_source ? "$(verb) Cache" : "Scan and $(verb) Cache"
 end
 
 function _cache_button_hover_color(color)
@@ -561,14 +468,6 @@ function render_menu_bar(ui_state)
             end
             !can_rescan && ig.EndDisabled()
 
-            rescan_progress = _source_rescan_progress_model(ui_state)
-            if rescan_progress !== nothing
-                ig.Spacing()
-                ig.TextDisabled(rescan_progress.title)
-                ig.TextDisabled(rescan_progress.progress)
-                _render_progress_indicator!(ui_state, rescan_progress)
-            end
-
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
                 ui_state[:show_project_window] = !get(ui_state, :show_project_window, false)
@@ -646,9 +545,16 @@ function _render_cache_controls!(ui_state; compact::Bool)
                 ig.TextDisabled(item.progress)
                 _render_progress_indicator!(ui_state, item)
             end
-        elseif get(ui_state, :scan_state, :idle) != :cache_check
-            ig.TextDisabled(activity.progress)
-            ig.ProgressBar(activity.fraction, (-1, 0))
+        end
+    end
+
+    source_progress = _source_progress_models(ui_state)
+    if !isempty(source_progress)
+        for item in source_progress
+            ig.Separator()
+            ig.TextDisabled(item.title)
+            ig.TextDisabled(item.progress)
+            _render_progress_indicator!(ui_state, item)
         end
     end
 
@@ -662,7 +568,7 @@ function _render_cache_controls!(ui_state; compact::Bool)
     if status isa ProjectCacheStatus
         ig.Separator()
         ig.Text("Files")
-        ig.Text("Total raw CSV: $(status.total_files)")
+        ig.Text("Source files: $(status.total_files)")
         ig.Text("Cached: $(status.cached_files)")
         ig.Text("Fresh: $(status.fresh_files)")
         ig.Text("Stale: $(status.stale_files)")
@@ -694,30 +600,44 @@ function _render_cache_controls!(ui_state; compact::Bool)
     has_identity = identity isa ProjectCacheIdentity
     can_update = has_identity &&
         status isa ProjectCacheStatus &&
+        get(ui_state, :cache_source_checked, false) &&
         cache_state != :missing &&
         cache_state != :error &&
-        (status.new_files > 0 || status.deleted_files > 0)
+        (status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0)
+    can_build = has_identity && cache_state != :error
+    can_scan = haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
+    can_press_scan = can_scan && !_cache_action_blocked(ui_state)
 
-    if can_update
-        running && ig.BeginDisabled()
-        if ig.Button("Update Cache", (-1, 0))
-            _queue_cache_update!(ui_state)
+    !can_press_scan && ig.BeginDisabled()
+    scan_label = _source_scan_running(ui_state) ? "Cancel Scan" : "Scan Source"
+    if ig.Button(scan_label, (-1, 0))
+        if _source_scan_running(ui_state)
+            _request_source_scan_cancel!(ui_state)
+        else
+            proj = haskey(ui_state, :project) ?
+                ui_state[:project] :
+                _project_for_preference(get(ui_state, :project_preference, "auto"))
+            _launch_source_scan_job!(ui_state, ui_state[:root_path], proj)
         end
-        running && ig.EndDisabled()
     end
+    !can_press_scan && ig.EndDisabled()
 
-    if has_identity
-        running && ig.BeginDisabled()
-        build_label = cache_state == :missing ? "Build Cache" : "Rebuild Cache"
-        if ig.Button(build_label, (-1, 0))
-            _queue_cache_update!(ui_state; full_rebuild=true)
-        end
-        running && ig.EndDisabled()
+    (!can_update || running) && ig.BeginDisabled()
+    if ig.Button("Update Cache", (-1, 0))
+        _queue_cache_update!(ui_state)
     end
+    (!can_update || running) && ig.EndDisabled()
 
-    if running && get(ui_state, :scan_state, :idle) != :cache_check
+    (!can_build || running) && ig.BeginDisabled()
+    build_label = has_identity ? _cache_build_label(ui_state, identity, cache_state) : "Build Cache"
+    if ig.Button(build_label, (-1, 0))
+        _queue_cache_update!(ui_state; full_rebuild=true)
+    end
+    (!can_build || running) && ig.EndDisabled()
+
+    if running
         if ig.Button(activity.cancel_label, (-1, 0))
-            _request_scan_cancel!(ui_state)
+            _request_cache_cancel!(ui_state)
         end
     end
 end
@@ -757,26 +677,6 @@ function render_project_window(ui_state)
             end
             ig.SameLine()
             _helpmarker(project_description(p))
-        end
-
-        source_progress = _source_progress_models(ui_state)
-        if !isempty(source_progress)
-            ig.Separator()
-            for item in source_progress
-                ig.TextDisabled(item.title)
-                ig.TextDisabled(item.progress)
-                _render_progress_indicator!(ui_state, item)
-            end
-            if _source_scan_running(ui_state)
-                if ig.Button("Cancel Rescan", (-1, 0))
-                    _request_source_scan_cancel!(ui_state)
-                end
-            elseif _scan_running(ui_state) && get(ui_state, :scan_state, :idle) == :cache_check
-                source_activity = _cache_activity_model(ui_state)
-                if ig.Button(source_activity.cancel_label, (-1, 0))
-                    _request_scan_cancel!(ui_state)
-                end
-            end
         end
 
         if changed
@@ -861,7 +761,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         on_exit=() -> _print_perf_summary(ui_state),
     ) do
         ui_state[:_frame] += 1
-        _poll_scan_events!(ui_state)
+        _poll_cache_events!(ui_state)
         _poll_source_scan_events!(ui_state)
         _poll_plot_events!(ui_state)
         _poll_figure_script_job_events!(ui_state)

@@ -23,18 +23,27 @@ function _read_csv_header_summary(path::AbstractString; max_lines::Int=50)
     return summary
 end
 
-function index_csv_file(path::AbstractString)
-    filename = basename(String(path))
-    return IndexedCsvFile(
-        file_id(path),
-        String(path),
+function file_fingerprint(path::AbstractString)
+    normalized = source_path(path)
+    stat_info = stat(normalized)
+    return FileFingerprint(normalized, Int64(stat_info.size), Int64(stat_info.mtime * 1_000_000_000))
+end
+
+function index_source_file(path::AbstractString)
+    normalized = source_path(path)
+    filename = basename(normalized)
+    return SourceFile(
+        file_id(normalized),
+        normalized,
         filename,
         parse_timestamp(filename),
-        _read_csv_header_summary(path),
+        _read_csv_header_summary(normalized),
+        file_fingerprint(normalized),
+        [],
     )
 end
 
-function walk_indexed_csv_files(
+function walk_source_files(
     root_path::AbstractString;
     on_file::Function,
     should_cancel::Union{Nothing,Function}=nothing,
@@ -43,17 +52,17 @@ function walk_indexed_csv_files(
         for name in names
             should_cancel !== nothing && should_cancel() && throw(ScanCancelled())
             endswith(lowercase(name), ".csv") || continue
-            on_file(index_csv_file(joinpath(root, name)))
+            on_file(index_source_file(joinpath(root, name)))
         end
     end
     return nothing
 end
 
-function collect_indexed_csv_files(
+function collect_source_files(
     root_path::AbstractString;
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    indexed_files = IndexedCsvFile[]
-    walk_indexed_csv_files(root_path; should_cancel=should_cancel, on_file=file -> push!(indexed_files, file))
-    return indexed_files
+    source_files = SourceFile[]
+    walk_source_files(root_path; should_cancel=should_cancel, on_file=file -> push!(source_files, file))
+    return source_files
 end
