@@ -1,3 +1,7 @@
+"""
+Load the project's tag state and refresh selection visibility for the current root.
+Parse or I/O failures leave tags unavailable but keep the browser usable with bad items shown.
+"""
 function _load_tag_state_for_root!(ui_state, root_path::String)
     if isempty(root_path)
         ui_state[:tag_state] = nothing
@@ -25,6 +29,10 @@ function _tag_state_ready(ui_state)
            isempty(get(ui_state, :tag_state_error, ""))
 end
 
+"""
+Return whether bad-tagged items should be visible in the current UI state.
+Bad items stay visible when tags cannot be loaded, so missing tag metadata never hides data.
+"""
 function _show_bad_effective(ui_state)
     return get(ui_state, :show_bad, true) || !_tag_state_ready(ui_state)
 end
@@ -93,6 +101,10 @@ function _measurement_is_visible(ui_state, measurement::MeasurementInfo)
     return !_measurement_is_bad(ui_state, measurement)
 end
 
+"""
+Resolve the current selected devices and measurements after applying tag visibility.
+The persisted selection ids are left untouched; this returns only the currently visible subset.
+"""
 function _project_visible_selection(ui_state)
     hierarchy = get(ui_state, :scan_hierarchy, nothing)
     if hierarchy === nothing
@@ -122,6 +134,10 @@ function _project_visible_selection(ui_state)
     return selected_devices, selected_measurements, selected_path
 end
 
+"""
+Synchronize derived selection fields in `ui_state` with tag visibility and panel ordering.
+The combined measurement list is globally chronological even when several devices are selected.
+"""
 function _apply_visible_selection!(ui_state)
     selected_devices, selected_measurements, selected_path = _project_visible_selection(ui_state)
 
@@ -132,6 +148,7 @@ function _apply_visible_selection!(ui_state)
             push!(all_measurements, measurement)
         end
     end
+    sort!(all_measurements, by=measurement_timestamp_key)
 
     ui_state[:selected_devices] = selected_devices
     ui_state[:selected_measurements] = selected_measurements
@@ -140,6 +157,9 @@ function _apply_visible_selection!(ui_state)
     ui_state[:selected_path] = selected_path
 end
 
+"""
+Ensure the legacy bad tag exists before writing bad-device or bad-measurement assignments.
+"""
 function _ensure_bad_catalog_entry!(tag_state::Annotations.Tags.TagState)
     any(t -> t.name == Annotations.Tags.LEGACY_BAD_TAG, tag_state.catalog) && return
     pushfirst!(tag_state.catalog,
@@ -148,6 +168,10 @@ function _ensure_bad_catalog_entry!(tag_state::Annotations.Tags.TagState)
                                 Annotations.Tags.LEGACY_BAD_PRIORITY))
 end
 
+"""
+Set or clear the bad tag on devices and persist the updated tag file.
+Returns `false` when tag state is unavailable or there is nothing to change.
+"""
 function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
     unique_keys = unique(copy(device_keys))
     isempty(unique_keys) && return false
@@ -177,6 +201,10 @@ function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
     return true
 end
 
+"""
+Set or clear the bad tag on measurements and persist the updated tag file.
+Returns `false` when tag state is unavailable or there is nothing to change.
+"""
 function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::Bool)
     unique_ids = unique(copy(measurement_ids))
     isempty(unique_ids) && return false
