@@ -27,7 +27,11 @@ end
         scan_source(dir; on_progress=(p) -> push!(events, p), count_first=true)
         @test !isempty(events)
         @test any(e -> e.phase == :counting, events)
+        @test any(e -> e.phase == :discovering, events)
         @test any(e -> e.phase == :scanning, events)
+        last_discovering = last(filter(e -> e.phase == :discovering, events))
+        @test last_discovering.processed_csv == 3
+        @test last_discovering.total_csv == 0
         last_scanning = last(filter(e -> e.phase == :scanning, events))
         @test last_scanning.processed_csv == 3
         @test last_scanning.total_csv == 3

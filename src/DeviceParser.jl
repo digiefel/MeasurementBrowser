@@ -708,7 +708,26 @@ function scan_source(
     root = source_path(root_path)
     meta = _load_scan_metadata(root)
     count_first && _count_csv(root; should_cancel, on_progress)
-    source_files = collect_source_files(root; should_cancel=should_cancel)
+    _emit_progress(on_progress;
+        phase=:discovering,
+        total_csv=0,
+        processed_csv=0,
+        loaded_measurements=0,
+        skipped_csv=0,
+    )
+    source_files = collect_source_files(
+        root;
+        should_cancel=should_cancel,
+        on_file=(file, count) -> _emit_progress(
+            on_progress;
+            phase=:discovering,
+            total_csv=0,
+            processed_csv=count,
+            loaded_measurements=0,
+            skipped_csv=0,
+            current_path=file.filepath,
+        ),
+    )
     scanned_files = Vector{SourceFile}(undef, length(source_files))
     _emit_progress(on_progress;
         phase=:scanning,

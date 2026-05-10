@@ -87,7 +87,7 @@ end
 
 function _source_rescan_progress_model(ui_state)
     source_state = get(ui_state, :source_scan_state, :idle)
-    if !(source_state in (:counting, :scanning, :canceling, :done, :canceled, :error))
+    if !(source_state in (:counting, :discovering, :scanning, :canceling, :done, :canceled, :error))
         return nothing
     end
     if source_state == :error
@@ -112,10 +112,12 @@ function _source_rescan_progress_model(ui_state)
         total > 0 ?
             "Source scan complete: scanned $processed/$total CSV files" :
             "Source scan complete"
+    elseif source_state in (:counting, :discovering)
+        processed > 0 ? "Finding source CSV files: $processed found" : "Finding source CSV files"
     else
         total > 0 ?
             @sprintf("Scanning %d/%d source files, loaded %d measurements, skipped %d", processed, total, loaded, skipped) :
-            "Finding source CSV files"
+            "Scanning source files"
     end
     title = if source_state == :done
         "Source: Complete"
@@ -123,6 +125,8 @@ function _source_rescan_progress_model(ui_state)
         "Source: Canceled"
     elseif source_state == :canceling
         "Source: Canceling"
+    elseif source_state in (:counting, :discovering)
+        "Source: Finding Files"
     else
         "Source: Scanning"
     end

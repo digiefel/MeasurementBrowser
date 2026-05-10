@@ -61,8 +61,12 @@ end
 function collect_source_files(
     root_path::AbstractString;
     should_cancel::Union{Nothing,Function}=nothing,
+    on_file::Union{Nothing,Function}=nothing,
 )
     source_files = SourceFile[]
-    walk_source_files(root_path; should_cancel=should_cancel, on_file=file -> push!(source_files, file))
+    walk_source_files(root_path; should_cancel=should_cancel, on_file=file -> begin
+        push!(source_files, file)
+        on_file !== nothing && on_file(file, length(source_files))
+    end)
     return source_files
 end

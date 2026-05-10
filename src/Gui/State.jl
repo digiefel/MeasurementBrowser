@@ -702,7 +702,7 @@ function _cache_action_blocked(ui_state)
 end
 
 function _source_scan_running(ui_state)
-    return get(ui_state, :source_scan_state, :idle) in (:counting, :scanning, :canceling)
+    return get(ui_state, :source_scan_state, :idle) in (:counting, :discovering, :scanning, :canceling)
 end
 
 function _request_cache_cancel!(ui_state)
@@ -892,7 +892,7 @@ function _launch_source_scan_job!(
     scan_id = ui_state[:source_scan_seq]
     ui_state[:active_source_scan_id] = scan_id
     ui_state[:source_scan_path] = norm_path
-    ui_state[:source_scan_state] = :scanning
+    ui_state[:source_scan_state] = :discovering
     ui_state[:source_scan_progress] = _new_scan_progress()
     ui_state[:source_scan_error] = ""
     _begin_scan!(ui_state, norm_path, proj, false)

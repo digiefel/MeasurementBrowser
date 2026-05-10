@@ -158,7 +158,7 @@ end
             :current_path => "",
         ),
     ))
-    @test finding_models[1].progress == "Finding source CSV files"
+    @test finding_models[1].progress == "Finding source CSV files: 12 found"
     @test finding_models[1].show_bar == false
     done_rescan_models = MeasurementBrowser._source_progress_models(Dict{Symbol,Any}(
         :source_scan_state => :done,
