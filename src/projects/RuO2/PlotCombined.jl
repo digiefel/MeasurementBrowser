@@ -284,7 +284,9 @@ function draw_plot_for_files(::RuO2Project, combined_kind::Symbol, analyzed; kwa
         for (i, site) in enumerate(sites)
             sub = sort(filter(row -> row.site == site, results), :temperature_K)
             plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
-            push!(data_lines, scatterlines!(ax, sub.temperature_K, plot_vals; color=colors[i], marker=:circle, markersize=10, linewidth=2, label=site))
+            line = lines!(ax, sub.temperature_K, plot_vals; color=colors[i], linewidth=2, label=site)
+            points = scatter!(ax, sub.temperature_K, plot_vals; color=colors[i], marker=:circle, markersize=10, label=site)
+            push!(data_lines, (line=line, points=points))
             summary_row = filter(row -> row.site == site, site_summary)
             nrow(summary_row) == 1 || continue
             rt_val = summary_row.rt_val[1]
@@ -302,7 +304,7 @@ function draw_plot_for_files(::RuO2Project, combined_kind::Symbol, analyzed; kwa
                 end
             end
         end
-        axislegend(ax, position=:rt)
+        axislegend(ax, position=:rt, merge=true)
         function update_o2_metric!()
             use_flow = toggle_flow.active[]
             field = use_flow ? :oxygen_flow_sccm : :oxygen_percent
@@ -314,7 +316,9 @@ function draw_plot_for_files(::RuO2Project, combined_kind::Symbol, analyzed; kwa
             for (i, site) in enumerate(sites)
                 vals = filter(isfinite, results[results.site .== site, field])
                 metric_val = isempty(vals) ? NaN : mean(vals)
-                data_lines[i].label[] = isfinite(metric_val) ? string(site, " (", round(metric_val, digits=2), suffix, ")") : site
+                label = isfinite(metric_val) ? string(site, " (", round(metric_val, digits=2), suffix, ")") : site
+                data_lines[i].line.label[] = label
+                data_lines[i].points.label[] = label
                 rt_x[i][] = [metric_val]
                 tcr_x[i][] = [metric_val]
             end

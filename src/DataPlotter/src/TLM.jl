@@ -455,11 +455,13 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
         idx = !isempty(sub.temperature_K) ? argmin(abs.(sub.temperature_K .- 298.0)) : 1
         rt_val_map[site] = !isempty(plot_vals) ? plot_vals[idx] : NaN
 
-        data_lines[i] = scatterlines!(ax, sub.temperature_K, plot_vals;
-            color=color, marker=:circle, markersize=10, linewidth=2, label=site)
+        line = lines!(ax, sub.temperature_K, plot_vals; color=color, linewidth=2, label=site)
+        points = scatter!(ax, sub.temperature_K, plot_vals;
+            color=color, marker=:circle, markersize=10, label=site)
+        data_lines[i] = (line=line, points=points)
     end
 
-    axislegend(ax, position=:rt)
+    axislegend(ax, position=:rt, merge=true)
 
     o2_field_from_toggle() = toggle_flow.active[] ? :oxygen_flow_sccm : :oxygen_percent
     suffix_from_toggle() = toggle_flow.active[] ? " sccm O2" : "% O2"
@@ -480,7 +482,8 @@ function plot_tlm_temperature(paths::Vector{String}; device_params_list::Vector{
             val = metric_vals[i]
             label = isfinite(val) ? string(site, " (", round(val, digits=2), suffix, ")") : site
 
-            data_lines[i].label[] = label
+            data_lines[i].line.label[] = label
+            data_lines[i].points.label[] = label
 
             rt_x[i][] = [val]
             tcr_x[i][] = [val]
