@@ -1,63 +1,92 @@
-export read_cv_sweep
+export read_cv_sweep, cv_sweep_has_schema
+
+const _CV_REQUIRED_BASE = ("Frequency_Hz", "Bias_V", "Cp (F)", "Time_sec")
 
 """
-Read a RuO2 CVSweep CSV file with an explicit `Frequency_Hz` column.
-Returns a NamedTuple with a normalized DataFrame and `secondary_kind`.
+Read the first non-comment line of `filepath` (skipping lines that start with '#').
+Returns the line, or nothing if the file is empty.
+"""
+function _cv_data_header_line(filepath::AbstractString)
+    open(filepath, "r") do io
+        while !eof(io)
+            line = chomp(readline(io))
+            startswith(line, '#') && continue
+            return line
+        end
+        return nothing
+    end
+end
+
+"""
+True if `filepath` looks like a supported CVSweep CSV: it has the required base
+columns plus Cp (F) and at least one of Z (Ohm), G (S), or Rp (Ohm).
+"""
+function cv_sweep_has_schema(filepath::AbstractString)
+    header = _cv_data_header_line(filepath)
+    header === nothing && return false
+    columns = split(header, ',')
+    all(col -> col in columns, _CV_REQUIRED_BASE) || return false
+    return ("Z (Ohm)" in columns) || ("G (S)" in columns) || ("Rp (Ohm)" in columns)
+end
+
+"""
+Read a RuO2 CVSweep CSV file. Skips '#'-prefixed comment lines, then expects a
+header containing `Frequency_Hz, Bias_V, Cp (F), Time_sec` and at least one of
+`Z (Ohm)`, `G (S)`, `Rp (Ohm)`. Returns a DataFrame with columns
+`frequency_Hz, bias_V, Cp_F, Z_Ohm, time_s` (and `status_cp`, `status_combined`
+if present, zero-filled otherwise). Z is computed from G or Rp when not
+provided directly.
 """
 function read_cv_sweep(filename, workdir=".")
     filepath = joinpath(workdir, filename)
-    header = open(filepath, "r") do io
-        eof(io) && error("Empty CVSweep file: $filepath")
-        return chomp(readline(io))
-    end
-
+    header = _cv_data_header_line(filepath)
+    header === nothing && error("Empty CVSweep file: $filepath")
     columns = split(header, ',')
-    columns[1] == "Frequency_Hz" || error("Unsupported CVSweep without Frequency_Hz header: $filepath")
+    all(col -> col in columns, _CV_REQUIRED_BASE) ||
+        error("Unsupported CVSweep schema: $filepath")
 
-    required = ("Frequency_Hz", "Bias_V", "Cp (F)", "Time_sec")
-    all(col -> col in columns, required) || error("Unsupported CVSweep schema: $filepath")
+    skipto = _cv_data_skipto(filepath)
+    df = CSV.read(filepath, DataFrame; skipto=skipto, header=skipto - 1)
 
-    secondary_kind = if "G (S)" in columns
-        :conductance
+    f = df[!, "Frequency_Hz"]
+    bias = df[!, "Bias_V"]
+    cp = df[!, "Cp (F)"]
+    t = df[!, "Time_sec"]
+    z = if "Z (Ohm)" in columns
+        Float64.(df[!, "Z (Ohm)"])
+    elseif "G (S)" in columns
+        _z_from_admittance(f, cp, Float64.(df[!, "G (S)"]))
     elseif "Rp (Ohm)" in columns
-        :parallel_resistance
+        _z_from_admittance(f, cp, 1.0 ./ Float64.(df[!, "Rp (Ohm)"]))
     else
-        error("Unsupported CVSweep secondary column in $filepath")
+        error("CVSweep $filepath has no Z, G, or Rp column")
     end
 
-    df = CSV.read(filepath, DataFrame)
-    rename_map = Dict(
-        "Frequency_Hz" => :frequency_Hz,
-        "Bias_V" => :bias_V,
-        "Cp (F)" => :cp_F,
-        "Time_sec" => :time_s,
-    )
-    "Status_Cp" in columns && (rename_map["Status_Cp"] = :status_cp)
-    "Status_Combined" in columns && (rename_map["Status_Combined"] = :status_combined)
-    if secondary_kind === :conductance
-        rename_map["G (S)"] = :secondary_value
-        "Status_G" in columns && (rename_map["Status_G"] = :status_secondary)
-    else
-        rename_map["Rp (Ohm)"] = :secondary_value
-        "Status_Rp" in columns && (rename_map["Status_Rp"] = :status_secondary)
-    end
-    rename!(df, rename_map)
-    for status_column in (:status_cp, :status_secondary, :status_combined)
-        hasproperty(df, status_column) || (df[!, status_column] = zeros(Int, nrow(df)))
-    end
+    n = nrow(df)
+    status_cp = "Status_Cp" in columns ? df[!, "Status_Cp"] : zeros(Int, n)
+    status_combined = "Status_Combined" in columns ? df[!, "Status_Combined"] : zeros(Int, n)
 
-    return (
-        df=select(
-            df,
-            :frequency_Hz,
-            :bias_V,
-            :cp_F,
-            :secondary_value,
-            :time_s,
-            :status_cp,
-            :status_secondary,
-            :status_combined,
-        ),
-        secondary_kind=secondary_kind,
+    return DataFrame(
+        frequency_Hz=Float64.(f),
+        bias_V=Float64.(bias),
+        Cp_F=Float64.(cp),
+        Z_Ohm=z,
+        time_s=Float64.(t),
+        status_cp=Int.(status_cp),
+        status_combined=Int.(status_combined),
     )
+end
+
+_z_from_admittance(f, cp, g) = 1.0 ./ sqrt.(g .^ 2 .+ (2π .* f .* cp) .^ 2)
+
+function _cv_data_skipto(filepath::AbstractString)
+    open(filepath, "r") do io
+        line_no = 0
+        while !eof(io)
+            line_no += 1
+            line = readline(io)
+            startswith(line, '#') || return line_no + 1
+        end
+        return line_no + 1
+    end
 end

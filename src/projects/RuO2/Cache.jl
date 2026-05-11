@@ -171,8 +171,6 @@ function _ruo2_read_cached_analyzed_plot(plot_group, kind::Symbol, cache_path::A
             df=df,
             title=title,
             frequencies_Hz=get(arrays, :frequencies_Hz, Float64[]),
-            secondary_kind=Symbol(get(scalars, :secondary_kind, :unknown)),
-            secondary_label=String(get(scalars, :secondary_label, "")),
         )
     end
     return (df=df, title=title)

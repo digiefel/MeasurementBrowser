@@ -34,8 +34,8 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
         df = read_tlm_4p(basename(path), dirname(path))
         return (df=df, title=_plot_title(path), device_params=device_params isa Dict ? device_params : Dict{Symbol,Any}())
     elseif kind === :cvsweep
-        loaded = read_cv_sweep(basename(path), dirname(path))
-        return (df=loaded.df, title=_plot_title(path), secondary_kind=loaded.secondary_kind)
+        df = read_cv_sweep(basename(path), dirname(path))
+        return (df=df, title=_plot_title(path))
     end
     @warn "Unsupported RuO2 single-file plot kind" kind path
     return nothing
@@ -217,14 +217,10 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
     elseif kind === :cvsweep
         df = loaded.df
         isempty(df) && return nothing
-        secondary_kind = loaded.secondary_kind
-        secondary_label = secondary_kind === :conductance ? "G (nS)" : "Rp (MΩ)"
         return (
             df=df,
             title=loaded.title,
             frequencies_Hz=sort(unique(df.frequency_Hz)),
-            secondary_kind=secondary_kind,
-            secondary_label=secondary_label,
         )
     end
 
@@ -324,25 +320,20 @@ function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed
         nrow(df) == 0 && return nothing
 
         fig = Figure(size=(1100, 500))
-        ax_cp = Axis(fig[1, 1], xlabel="Bias (V)", ylabel="Cp (pF)", title="Capacitance")
-        ax_secondary = Axis(fig[1, 2], xlabel="Bias (V)", ylabel=analyzed.secondary_label, title="Secondary Channel")
+        ax_c = Axis(fig[1, 1], xlabel="Bias (V)", ylabel="C (pF)", title="Capacitance")
+        ax_z = Axis(fig[1, 2], xlabel="Bias (V)", ylabel="|Z| (MΩ)", title="Impedance")
 
         colors = cgrad(:viridis, length(analyzed.frequencies_Hz); categorical=true)
         for (idx, freq_Hz) in enumerate(analyzed.frequencies_Hz)
             mask = df.frequency_Hz .== freq_Hz
             color = colors[idx]
             label = _format_frequency_label(freq_Hz)
-            lines!(ax_cp, df.bias_V[mask], df.cp_F[mask] .* 1e12, color=color, linewidth=2, label=label)
-
-            if analyzed.secondary_kind === :conductance
-                lines!(ax_secondary, df.bias_V[mask], df.secondary_value[mask] .* 1e9, color=color, linewidth=2)
-            else
-                lines!(ax_secondary, df.bias_V[mask], df.secondary_value[mask] ./ 1e6, color=color, linewidth=2)
-            end
+            lines!(ax_c, df.bias_V[mask], df.Cp_F[mask] .* 1e12, color=color, linewidth=2, label=label)
+            lines!(ax_z, df.bias_V[mask], df.Z_Ohm[mask] ./ 1e6, color=color, linewidth=2)
         end
 
         Label(fig[0, :], analyzed.title, fontsize=20, font=:bold)
-        axislegend(ax_cp, position=:lt)
+        axislegend(ax_c, position=:lt)
         return fig
     end
 
