@@ -215,29 +215,27 @@ end
     pund_1 = MeasurementInfo(
         "pund_1",
         "pund_1.csv", "/tmp/pund_1.csv", "pund_1", :pund, DateTime(2025, 1, 1, 10),
-        DeviceInfo(["Device"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["Device"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
-    wakeup = MeasurementInfo(
-        "wakeup",
-        "wakeup.csv", "/tmp/wakeup.csv", "wakeup", :wakeup, DateTime(2025, 1, 1, 10, 30),
+    wakeup_pund = MeasurementInfo(
+        "wakeup_pund",
+        "wakeup.csv", "/tmp/wakeup.csv", "wakeup_pund", :wakeup_pund, DateTime(2025, 1, 1, 10, 30),
         DeviceInfo(["Device"], Dict{Symbol,Any}()),
-        Dict{Symbol,Any}(:wakeup_pulse_count => 100),
-        100,
+        Dict{Symbol,Any}(:amplitude_V => 1.5),
     )
     fatigue_5 = MeasurementInfo(
         "fatigue_5",
         "fatigue_5.csv", "/tmp/fatigue_5.csv", "fatigue_5", :pund, DateTime(2025, 1, 1, 11),
         DeviceInfo(["Device"], Dict{Symbol,Any}()),
         Dict{Symbol,Any}(:fatigue_cycle => 5),
-        nothing,
     )
     pund_2 = MeasurementInfo(
         "pund_2",
         "pund_2.csv", "/tmp/pund_2.csv", "pund_2", :pund, DateTime(2025, 1, 1, 12),
-        DeviceInfo(["Device"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["Device"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
     pund_hierarchy = MeasurementHierarchy(
-        [pund_2, wakeup, fatigue_5, pund_1],
+        [pund_2, wakeup_pund, fatigue_5, pund_1],
         "/tmp",
         false,
         MeasurementBrowser.RUO2_PROJECT,
@@ -246,13 +244,12 @@ end
     @test pund_1.parameters[:global_pund_pulse_count] == 1
     @test fatigue_5.parameters[:global_pund_pulse_count] == 5
     @test pund_2.parameters[:global_pund_pulse_count] == 6
-    @test !haskey(wakeup.parameters, :global_pund_pulse_count)
+    @test !haskey(wakeup_pund.parameters, :global_pund_pulse_count)
     pund_stats = MeasurementBrowser.get_measurements_stats(
         pund_hierarchy.index[("Device",)].measurements,
         MeasurementBrowser.RUO2_PROJECT,
     )
     @test pund_stats[:global_pund_pulse_count] == 6
-    @test pund_stats[:wakeup_pulse_count] == 100
 
     items = [1, 2, 3, 4]
     selected = Int[]
@@ -268,12 +265,12 @@ end
     m1 = MeasurementInfo(
         "m1",
         "m1.csv", "/tmp/m1.csv", "m1", :kind_a, nothing,
-        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
     m2 = MeasurementInfo(
         "m2",
         "m2.csv", "/tmp/m2.csv", "m2", :kind_b, nothing,
-        DeviceInfo(["B"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["B"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
     leaf_a = HierarchyNode("A", :leaf, HierarchyNode[], MeasurementInfo[m1])
     leaf_b = HierarchyNode("B", :leaf, HierarchyNode[], MeasurementInfo[m2])
@@ -318,12 +315,12 @@ end
     late_a = MeasurementInfo(
         "late_a",
         "late_a.csv", "/tmp/late_a.csv", "late_a", :kind_a, DateTime(2025, 1, 1, 11),
-        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
     early_b = MeasurementInfo(
         "early_b",
         "early_b.csv", "/tmp/early_b.csv", "early_b", :kind_b, DateTime(2025, 1, 1, 10),
-        DeviceInfo(["B"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["B"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
     interleaved_hierarchy = MeasurementHierarchy(
         [late_a, early_b],
@@ -443,7 +440,7 @@ end
     m3 = MeasurementInfo(
         "m3",
         "m3.csv", "/tmp/m3.csv", "m3", :kind_c, nothing,
-        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}(), nothing
+        DeviceInfo(["A"], Dict{Symbol,Any}()), Dict{Symbol,Any}()
     )
     device_leaf = HierarchyNode("A", :leaf, HierarchyNode[], MeasurementInfo[m1, m2, m3])
     ui6 = Dict{Symbol,Any}(

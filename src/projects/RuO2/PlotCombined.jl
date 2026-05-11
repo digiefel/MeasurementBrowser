@@ -37,13 +37,9 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
             _check_plot_cancel(should_cancel)
             path = paths[i]
             params = params_list[i]
-            fname = lowercase(basename(path))
             dirpath = dirname(path)
             ts = stat(path).mtime
-            if occursin("wakeup", fname)
-                df_w = read_wakeup(basename(path), dirpath)
-                push!(entries, (kind=:wakeup, df=df_w, params=params, timestamp=ts))
-            elseif haskey(params, :fatigue_cycle)
+            if haskey(params, :fatigue_cycle)
                 df_p = read_pund_fatigue_cycle(basename(path), dirpath, Int(params[:fatigue_cycle]))
                 push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
             else

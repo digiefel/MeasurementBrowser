@@ -5,15 +5,15 @@ using DataLoader
 using MeasurementBrowser
 
 @testset "PUND fatigue regression" begin
-    fixture = joinpath(@__DIR__, "3V PUND Fatigue [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
+    fixture = joinpath(@__DIR__, "fixtures", "RuO2", "3V PUND Fatigue [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
 
     @test isfile(fixture)
 
     @testset "DataLoader cycle readers" begin
-        cycles = read_pund_fatigue_cycles(basename(fixture), @__DIR__)
+        cycles = read_pund_fatigue_cycles(basename(fixture), dirname(fixture))
         @test cycles == [1, 2]
 
-        cycle_df = read_pund_fatigue_cycle(basename(fixture), @__DIR__, 2)
+        cycle_df = read_pund_fatigue_cycle(basename(fixture), dirname(fixture), 2)
         @test cycle_df isa DataFrame
         @test names(cycle_df) == ["time", "current", "voltage"]
         @test nrow(cycle_df) == 3
@@ -82,7 +82,7 @@ using MeasurementBrowser
         meas = MeasurementInfo(fixture, RUO2_PROJECT)
         @test meas.measurement_kind == :pund_fatigue
 
-        expanded = expand_measurement(RUO2_PROJECT, meas)
+        expanded = measurements_for_file(RUO2_PROJECT, fixture)
         @test length(expanded) == 2
         @test all(m -> m.measurement_kind == :pund, expanded)
         @test [m.parameters[:fatigue_cycle] for m in expanded] == [1, 2]

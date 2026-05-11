@@ -1,8 +1,8 @@
 using MeasurementBrowser
 using Test
 
-function _copy_fixture(dst::String, filename::String)
-    src = joinpath(@__DIR__, filename)
+function _copy_fixture(dst::String, filename::String; subdir::String="RuO2")
+    src = joinpath(@__DIR__, "fixtures", subdir, filename)
     cp(src, joinpath(dst, filename); force=true)
 end
 
@@ -13,7 +13,7 @@ end
 
 @testset "scan_source progress and cancel" begin
     mktempdir() do dir
-        _copy_fixture(dir, "Wakeup 3V [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_10_48].csv")
+        _copy_fixture(dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
         _copy_fixture(dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
         write(joinpath(dir, "not_a_measurement.csv"), "header\n1,2,3\n")
 

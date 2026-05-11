@@ -5,15 +5,15 @@ using DataFrames
 using Statistics
 
 using DataAnalysis: analyze_breakdown, analyze_pund, extract_tlm_geometry_from_params, analyze_tlm_combined, calculate_sheet_resistance, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup, read_pund_fatigue_cycle
+using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_pund_fatigue_cycle
 
 include("PUND.jl")
 include("TLM.jl")
 
-export plot_fe_pund, plot_wakeup, plot_pund_fatigue
+export plot_fe_pund, plot_pund_fatigue
 export plot_tlm_4p, plot_tlm_combined, plot_tlm_temperature
 export plot_iv_sweep_single
-export load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single, load_wakeup_single
+export load_fe_pund_single, load_iv_sweep_single, load_tlm_4p_single
 export load_tase_four_terminal_iv
 export load_tlm_analysis_combined, draw_tlm_analysis_combined
 
@@ -139,12 +139,6 @@ end
 function load_tlm_4p_single(path::AbstractString)
     isfile(path) || return nothing
     df = read_tlm_4p(basename(path), dirname(path))
-    return (df=df, title=_plot_title(path))
-end
-
-function load_wakeup_single(path::AbstractString)
-    isfile(path) || return nothing
-    df = read_wakeup(basename(path), dirname(path))
     return (df=df, title=_plot_title(path))
 end
 

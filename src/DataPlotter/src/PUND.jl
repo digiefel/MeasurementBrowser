@@ -1,4 +1,4 @@
-export plot_fe_pund, plot_pund_fatigue, plot_wakeup
+export plot_fe_pund, plot_pund_fatigue
 
 """
 Plot FE PUND data with comprehensive visualization
@@ -165,37 +165,6 @@ function debug_fe_pund(df, title_str="FE PUND"; area_um2=nothing, DEBUG::Bool=fa
     return fig
 end
 
-
-
-"""
-Plot wakeup data showing pulse count and amplitude as text
-"""
-function plot_wakeup(df, title_str="Wakeup"; kwargs...)
-    if nrow(df) == 0
-        return nothing
-    end
-
-    pulse_count = df.pulse_count[1]
-    amplitude = df.amplitude[1]
-
-    fig = Figure(size=(600, 400))
-    ax = Axis(fig[1, 1], title=title_str)
-
-    # Hide axis elements since we only want to show text
-    hidedecorations!(ax)
-    hidespines!(ax)
-
-    # Display the pulse count and amplitude as text
-    text_content = "$(pulse_count)× wakeup pulses\namplitude = $(amplitude) V"
-    text!(ax, 0.5, 0.5, text=text_content, align=(:center, :center),
-        fontsize=24, color=:black)
-
-    # Set axis limits to center the text
-    xlims!(ax, 0, 1)
-    ylims!(ax, 0, 1)
-
-    return fig
-end
 """
 Plot PUND fatigue analysis with:
 - Top: overlapped P–E (or Q–V) curves color-coded by cumulative fatigue cycles (log-scaled colorbar)
@@ -212,13 +181,9 @@ function plot_pund_fatigue(paths::Vector{String}; device_params_list::Vector{Dic
     for i in 1:n
         path = paths[i]
         params = device_params_list[i]
-        fname = lowercase(basename(path))
         dirpath = dirname(path)
         ts = stat(path).mtime
-        if occursin("wakeup", fname)
-            df_w = read_wakeup(basename(path), dirpath)
-            push!(entries, (kind=:wakeup, df=df_w, params=params, timestamp=ts))
-        elseif haskey(params, :fatigue_cycle)
+        if haskey(params, :fatigue_cycle)
             df_p = read_pund_fatigue_cycle(basename(path), dirpath, Int(params[:fatigue_cycle]))
             push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
         else

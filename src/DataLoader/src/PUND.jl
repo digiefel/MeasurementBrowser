@@ -1,4 +1,4 @@
-export read_fe_pund, read_wakeup, read_pund_fatigue_cycles, read_pund_fatigue_cycle
+export read_fe_pund, read_pund_wakeup_amplitude, read_pund_wakeup_reps, read_pund_fatigue_cycles, read_pund_fatigue_cycle
 
 """
 Read FE PUND data from CSV file
@@ -75,60 +75,74 @@ function read_fe_pund(filename, workdir=".")
 end
 
 """
-Read wakeup data from CSV file - counts lines and extracts amplitude from filename
-Returns DataFrame with pulse_count and amplitude
+Read a single amplitude's data from a PUND_Wakeup CSV file.
+Columns: Vmax_V, Time_s, Voltage_V, Current_A (header rows prefixed with #).
+Returns DataFrame with :time, :current, :voltage matching analyze_pund_and_pn expectations.
+rep selects which repetition group to return (1-based). Groups are separated by time gaps
+larger than REP_GAP_S (default 1 ms), which distinguishes consecutive read events separated
+by fatigue cycling from individual sample points within one read.
 """
-function read_wakeup(filename, workdir=".")
+const _WAKEUP_REP_GAP_S = 1e-3
+
+function read_pund_wakeup_amplitude(filename, workdir, amplitude_V::Float64, rep::Int=1)
     filepath = joinpath(workdir, filename)
-    lines = readlines(filepath)
-
-    # Find the header line that contains "Time,MeasResult1_value,MeasResult2_value"
-    data_start = 1
-    for (i, line) in enumerate(lines)
-        if occursin("Time,MeasResult1_value,MeasResult2_value", line)
-            data_start = i + 1
-            break
-        end
-    end
-
-    # Count actual data lines (non-empty lines with commas after the header)
-    data_lines = 0
-    for line in lines[data_start:end]
-        if !isempty(strip(line)) && occursin(',', line)
-            data_lines += 1
-        end
-    end
-
-    # Extract amplitude from filename (pattern like "3V", "10V", etc.)
-    amplitude_match = match(r"(\d+(?:\.\d+)?)V", filename)
-    amplitude = amplitude_match !== nothing ? parse(Float64, amplitude_match.captures[1]) : 0.0
-
-    return DataFrame(pulse_count=data_lines, amplitude=amplitude)
-end
-
-function read_wakeup_summary(filename, workdir=".")
-    filepath = joinpath(workdir, filename)
-    data_start = false
-    pulse_count = 0
-
+    groups = Vector{NTuple{3,Float64}}[]
+    current_group = NTuple{3,Float64}[]
+    last_t = -Inf
     open(filepath, "r") do io
         for line in eachline(io)
-            if !data_start
-                if occursin("Time,MeasResult1_value,MeasResult2_value", line)
-                    data_start = true
-                end
-                continue
+            startswith(line, '#') && continue
+            isempty(strip(line)) && continue
+            parts = split(line, ',')
+            length(parts) >= 4 || continue
+            v = tryparse(Float64, parts[1])
+            (v === nothing || v != amplitude_V) && continue
+            t   = tryparse(Float64, parts[2])
+            vol = tryparse(Float64, parts[3])
+            c   = tryparse(Float64, parts[4])
+            (t === nothing || vol === nothing || c === nothing) && continue
+            if last_t != -Inf && t - last_t > _WAKEUP_REP_GAP_S
+                push!(groups, current_group)
+                current_group = NTuple{3,Float64}[]
             end
-            if !isempty(strip(line)) && occursin(',', line)
-                pulse_count += 1
-            end
+            push!(current_group, (t, vol, c))
+            last_t = t
         end
     end
+    isempty(current_group) || push!(groups, current_group)
+    isempty(groups) && return DataFrame(time=Float64[], current=Float64[], voltage=Float64[])
+    grp = groups[clamp(rep, 1, length(groups))]
+    return DataFrame(time=[x[1] for x in grp], voltage=[x[2] for x in grp], current=[x[3] for x in grp])
+end
 
-    amplitude_match = match(r"(\d+(?:\.\d+)?)V", filename)
-    amplitude = amplitude_match !== nothing ? parse(Float64, amplitude_match.captures[1]) : 0.0
-
-    return (pulse_count=pulse_count, amplitude=amplitude)
+"""
+Count repetition groups per amplitude in a PUND_Wakeup CSV.
+Returns Dict{Float64,Int} mapping each amplitude to its rep count.
+"""
+function read_pund_wakeup_reps(filename, workdir=".")
+    filepath = joinpath(workdir, filename)
+    amp_last_t = Dict{Float64,Float64}()
+    amp_reps   = Dict{Float64,Int}()
+    open(filepath, "r") do io
+        for line in eachline(io)
+            startswith(line, '#') && continue
+            isempty(strip(line)) && continue
+            parts = split(line, ',')
+            length(parts) >= 4 || continue
+            v = tryparse(Float64, parts[1])
+            v === nothing && continue
+            t = tryparse(Float64, parts[2])
+            t === nothing && continue
+            last_t = get(amp_last_t, v, -Inf)
+            if last_t == -Inf
+                amp_reps[v] = 1
+            elseif t - last_t > _WAKEUP_REP_GAP_S
+                amp_reps[v] = get(amp_reps, v, 1) + 1
+            end
+            amp_last_t[v] = t
+        end
+    end
+    return amp_reps
 end
 
 """

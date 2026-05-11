@@ -22,7 +22,6 @@ const REGEX_TASE = r"^([^_]+)_([^_]+)_([^_]+)_(\d+)_\d{8}_\d{6}_\d+K_FourTermina
 
 project_name(::TASEProject) = "TASE"
 project_description(::TASEProject) = "GaN TASE four-terminal IV"
-expand_measurement(::TASEProject, meas::MeasurementInfo) = [meas]
 
 combined_plot_types(::TASEProject) = [(nothing, "None", "No combined plot")]
 

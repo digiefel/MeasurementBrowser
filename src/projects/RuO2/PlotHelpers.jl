@@ -2,10 +2,10 @@ using GLMakie
 using DataFrames
 using Statistics
 
-using DataAnalysis: analyze_pund, analyze_tlm_combined, calculate_sheet_resistance,
+using DataAnalysis: analyze_pund, analyze_pund_and_pn, analyze_tlm_combined, calculate_sheet_resistance,
                     extract_tlm_geometry_from_params, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p, read_wakeup,
-                  read_pund_fatigue_cycle, read_cv_sweep
+using DataLoader: read_iv_sweep, read_fe_pund, read_tlm_4p,
+                  read_pund_fatigue_cycle, read_pund_wakeup_amplitude, read_cv_sweep
 
 function _plot_title(path::AbstractString)
     return strip(replace(basename(String(path)), r"\.csv$" => ""))

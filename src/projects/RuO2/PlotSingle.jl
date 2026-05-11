@@ -1,17 +1,29 @@
 function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing};
                             device_params=Dict{Symbol,Any}(), should_cancel::Union{Nothing,Function}=nothing, kwargs...)
     _check_plot_cancel(should_cancel)
-    if kind === :pund
+    if kind === :pund || kind === :pn
         params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
         area_um2 = get(params, :area_um2, nothing)
         title = _plot_title(path)
         fatigue_cycle = get(params, :fatigue_cycle, nothing)
+        segment = get(params, :pund_wakeup_segment, kind === :pn ? :pn : nothing)
         if fatigue_cycle !== nothing
             df = read_pund_fatigue_cycle(basename(path), dirname(path), Int(fatigue_cycle))
-            return (df=df, title=title * " cycle $fatigue_cycle (fatigue)", area_um2=area_um2, debug=get(kwargs, :DEBUG, false))
+            return (df=df, title=title * " cycle $fatigue_cycle (fatigue)", area_um2=area_um2,
+                    debug=get(kwargs, :DEBUG, false), segment=segment)
         end
         df = read_fe_pund(basename(path), dirname(path))
-        return (df=df, title=title, area_um2=area_um2, debug=get(kwargs, :DEBUG, false))
+        title_suffix = segment === :pn ? " PN" : segment === :pund ? " PUND" : ""
+        return (df=df, title=title * title_suffix, area_um2=area_um2,
+                debug=get(kwargs, :DEBUG, false), segment=segment)
+    elseif kind === :wakeup_pn || kind === :wakeup_pund
+        params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
+        amplitude_V = Float64(get(params, :amplitude_V, 0.0))
+        wakeup_rep  = Int(get(params, :wakeup_rep, 1))
+        df = read_pund_wakeup_amplitude(basename(path), dirname(path), amplitude_V, wakeup_rep)
+        seg = kind === :wakeup_pn ? :pn : :pund
+        return (df=df, title=_plot_title(path), area_um2=get(params, :area_um2, nothing),
+                debug=get(kwargs, :DEBUG, false), segment=seg)
     elseif kind === :iv
         df = read_iv_sweep(basename(path), dirname(path))
         return (df=df, title=_plot_title(path))
@@ -21,9 +33,6 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
     elseif kind === :tlm4p
         df = read_tlm_4p(basename(path), dirname(path))
         return (df=df, title=_plot_title(path), device_params=device_params isa Dict ? device_params : Dict{Symbol,Any}())
-    elseif kind === :wakeup
-        df = read_wakeup(basename(path), dirname(path))
-        return (df=df, title=_plot_title(path))
     elseif kind === :cvsweep
         loaded = read_cv_sweep(basename(path), dirname(path))
         return (df=loaded.df, title=_plot_title(path), secondary_kind=loaded.secondary_kind)
@@ -32,14 +41,62 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
     return nothing
 end
 
+function _ruo2_pulse_groups(df::DataFrame, group_size::Int)
+    pulse_groups = Tuple{Int,BitVector}[]
+    hasproperty(df, :pulse_idx) || return pulse_groups
+    isempty(df.pulse_idx) && return pulse_groups
+    max_pulse = maximum(df.pulse_idx)
+    for rep in 1:(max_pulse ÷ group_size)
+        pulse_range = (rep - 1) * group_size + 1:rep * group_size
+        mask = BitVector([pulse in pulse_range for pulse in df.pulse_idx])
+        any(mask) && push!(pulse_groups, (rep, mask))
+    end
+    return pulse_groups
+end
+
+function _ruo2_pulse_label(pulse_idx::Int, group_size::Int)
+    r = pulse_idx % group_size
+    if group_size == 1
+        return "PN"
+    elseif group_size == 2
+        r == 1 && return "P"
+        r == 0 && return "N"
+    elseif group_size == 4
+        r == 1 && return "P"
+        r == 2 && return "U"
+        r == 3 && return "N"
+        r == 0 && return "D"
+    else
+        r == 1 && return "Poling"
+        r == 2 && return "P"
+        r == 3 && return "U"
+        r == 4 && return "N"
+        r == 0 && return "D"
+    end
+    return ""
+end
+
 function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loaded; kwargs...)
     loaded === nothing && return nothing
     should_cancel = get(kwargs, :should_cancel, nothing)
     _check_plot_cancel(should_cancel)
 
-    if kind === :pund
+    if kind === :pund || kind === :pn || kind === :wakeup_pund || kind === :wakeup_pn
         debug_mode = get(kwargs, :DEBUG, getproperty(loaded, :debug))
-        df = debug_mode ? analyze_pund(loaded.df; DEBUG=true) : analyze_pund(loaded.df)
+        segment = hasproperty(loaded, :segment) ? loaded.segment : (kind === :pn ? :pn : nothing)
+        group_size = 5
+        if segment === :pn
+            result = analyze_pund_and_pn(loaded.df; DEBUG=debug_mode)
+            df = result.pn
+            group_size = result.pn_group_size
+        elseif segment === :pund
+            result = analyze_pund_and_pn(loaded.df; DEBUG=debug_mode)
+            df = result.pund
+            group_size = result.pund_group_size
+        else
+            df = debug_mode ? analyze_pund(loaded.df; DEBUG=true) : analyze_pund(loaded.df)
+        end
+        df === nothing && return nothing
         analyzed_df = DataFrame(df)
         analyzed_df.time_us = analyzed_df.time .* 1e6
         analyzed_df.current_uA = analyzed_df.current .* 1e6
@@ -57,13 +114,7 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
             y_label = "Remnant Polarization (μC/cm²)"
         end
 
-        pulse_groups = Tuple{Int,BitVector}[]
-        max_pulse = maximum(analyzed_df.pulse_idx)
-        for rep in 1:(max_pulse ÷ 5)
-            pulse_range = (rep - 1) * 5 + 1:rep * 5
-            mask = BitVector([pulse in pulse_range for pulse in analyzed_df.pulse_idx])
-            any(mask) && push!(pulse_groups, (rep, mask))
-        end
+        pulse_groups = _ruo2_pulse_groups(analyzed_df, group_size)
 
         debug_labels = NamedTuple[]
         if debug_mode
@@ -74,21 +125,11 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
                 pid[i] != pid[i - 1] && push!(boundaries, time_us[i])
             end
 
-            function pulse_label(p::Int)
-                r = p % 5
-                r == 1 && return "Poling"
-                r == 2 && return "P"
-                r == 3 && return "U"
-                r == 4 && return "N"
-                r == 0 && return "D"
-                return ""
-            end
-
             seg_start = 1
             for i in 2:length(pid)
                 if pid[i] != pid[i - 1]
                     if pid[seg_start] > 0
-                        label = pulse_label(pid[seg_start])
+                        label = _ruo2_pulse_label(pid[seg_start], group_size)
                         if !isempty(label)
                             tmid = (time_us[seg_start] + time_us[i - 1]) / 2
                             push!(debug_labels, (time_us=tmid, label=label))
@@ -98,18 +139,19 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
                 end
             end
             if !isempty(pid) && pid[seg_start] > 0
-                label = pulse_label(pid[seg_start])
+                label = _ruo2_pulse_label(pid[seg_start], group_size)
                 if !isempty(label)
                     tmid = (time_us[seg_start] + time_us[end]) / 2
                     push!(debug_labels, (time_us=tmid, label=label))
                 end
             end
             return (df=analyzed_df, title=loaded.title, area_um2=loaded.area_um2, pulse_groups=pulse_groups,
-                    remnant_y_label=y_label, debug=true, debug_boundaries=boundaries, debug_labels=debug_labels)
+                    pulse_group_size=group_size, remnant_y_label=y_label, debug=true,
+                    debug_boundaries=boundaries, debug_labels=debug_labels)
         end
 
         return (df=analyzed_df, title=loaded.title, area_um2=loaded.area_um2, pulse_groups=pulse_groups,
-                remnant_y_label=y_label, debug=false)
+                pulse_group_size=group_size, remnant_y_label=y_label, debug=false)
     elseif kind === :iv || kind === :breakdown || kind === :unknown || kind === nothing
         df = DataFrame(v=loaded.df.v, i_abs=abs.(loaded.df.i), i_positive=loaded.df.i .> 0)
         return (df=df, title=loaded.title)
@@ -172,11 +214,6 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
             fit_voltage_mV=v_fit_mV,
             rho_sheet=rho_sheet,
         )
-    elseif kind === :wakeup
-        pulse_count = loaded.df.pulse_count[1]
-        amplitude = loaded.df.amplitude[1]
-        return (df=loaded.df, title=loaded.title, pulse_count=pulse_count, amplitude=amplitude,
-                text_content="$(pulse_count)× wakeup pulses\namplitude = $(amplitude) V")
     elseif kind === :cvsweep
         df = loaded.df
         isempty(df) && return nothing
@@ -197,10 +234,10 @@ end
 function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
-    if kind === :pund
+    if kind === :pund || kind === :pn || kind === :wakeup_pund || kind === :wakeup_pn
         df = analyzed.df
         nrow(df) == 0 && return nothing
-        if analyzed.debug
+        if hasproperty(analyzed, :debug) && analyzed.debug
             fig = Figure(size=(1200, 800))
             ax1 = Axis(fig[1, 1:2], xlabel="Time (μs)", ylabel="Current (μA)",
                 yticklabelcolor=:blue, title="$(analyzed.title) - DEBUG (time domain)")
@@ -215,14 +252,14 @@ function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed
                 vlines!(ax1, t, color=:black, linestyle=:dot, linewidth=1, alpha=0.5)
                 vlines!(ax2, t, color=:black, linestyle=:dot, linewidth=1, alpha=0.5)
             end
-            yI = df.current_uA
-            yImaxabs = isempty(yI) ? 1.0 : maximum(abs.(filter(isfinite, yI)))
+            yI_finite = filter(isfinite, df.current_uA)
+            yImaxabs = isempty(yI_finite) ? 1.0 : maximum(abs.(yI_finite))
             yImaxabs = isfinite(yImaxabs) && yImaxabs > 0 ? yImaxabs : 1.0
-            yImaxv = isempty(yI) ? yImaxabs : maximum(filter(isfinite, yI))
-            yQ = df.q_fe_pC
-            yQmaxabs = isempty(yQ) ? 1.0 : maximum(abs.(filter(isfinite, yQ)))
+            yImaxv = isempty(yI_finite) ? yImaxabs : maximum(yI_finite)
+            yQ_finite = filter(isfinite, df.q_fe_pC)
+            yQmaxabs = isempty(yQ_finite) ? 1.0 : maximum(abs.(yQ_finite))
             yQmaxabs = isfinite(yQmaxabs) && yQmaxabs > 0 ? yQmaxabs : 1.0
-            yQmaxv = isempty(yQ) ? yQmaxabs : maximum(filter(isfinite, yQ))
+            yQmaxv = isempty(yQ_finite) ? yQmaxabs : maximum(yQ_finite)
             for entry in analyzed.debug_labels
                 text!(ax1, entry.time_us, yImaxv + 0.25 * yImaxabs; text=entry.label, align=(:center, :baseline), color=:black)
                 text!(ax2, entry.time_us, yQmaxv + 0.25 * yQmaxabs; text=entry.label, align=(:center, :baseline), color=:black)
@@ -281,16 +318,6 @@ function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed
         hlines!(ax2, [analyzed.fit_resistance_kohm], color=:red, linestyle=:dash, linewidth=2, label="Fitted R")
         axislegend(ax2)
         Label(fig[0, :], analyzed.title, fontsize=20, font=:bold)
-        return fig
-    elseif kind === :wakeup
-        nrow(analyzed.df) == 0 && return nothing
-        fig = Figure(size=(600, 400))
-        ax = Axis(fig[1, 1], title=analyzed.title)
-        hidedecorations!(ax)
-        hidespines!(ax)
-        text!(ax, 0.5, 0.5, text=analyzed.text_content, align=(:center, :center), fontsize=24, color=:black)
-        xlims!(ax, 0, 1)
-        ylims!(ax, 0, 1)
         return fig
     elseif kind === :cvsweep
         df = analyzed.df

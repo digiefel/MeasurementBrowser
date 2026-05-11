@@ -75,7 +75,7 @@ function render_info_window(ui_state)
             end
 
             # ---- data-derived statistics (PUND measurements only) ---------
-            if m.measurement_kind == :pund
+            if m.measurement_kind === :pund || m.measurement_kind === :wakeup_pund
                 ig.Separator()
                 ig.Text("Statistics")
                 cache = get(ui_state, :computed_stats_cache, Dict{Tuple{String,Int},Dict{Symbol,Any}}())

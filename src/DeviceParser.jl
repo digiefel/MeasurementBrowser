@@ -27,7 +27,6 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   interpret_file(::P, source) → Vector{MeasurementItem}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
-#   expand_measurement(::P, meas) → Vector{MeasurementInfo}
 #   load_plot_for_file(::P, path, kind; kwargs...) → Any
 #   analyze_plot_for_file(::P, kind, loaded; kwargs...) → Any
 #   draw_plot_for_file(::P, kind, analyzed; kwargs...) → Union{Figure,Nothing}
@@ -108,7 +107,6 @@ struct MeasurementInfo
     timestamp::Union{DateTime,Nothing}
     device_info::DeviceInfo
     parameters::Dict{Symbol,Any}
-    wakeup_pulse_count::Union{Int,Nothing}
 end
 
 struct HierarchyNode
@@ -184,31 +182,7 @@ function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
     parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label, date_str))
     clean_title = isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
 
-    # Cache wakeup pulse count once (avoid per-frame I/O later)
-    wakeup_count = nothing
-    if measurement_kind == :wakeup
-        try
-            lines = readlines(filepath)
-            data_start = 1
-            for (i, line) in enumerate(lines)
-                if occursin("Time,MeasResult1_value,MeasResult2_value", line)
-                    data_start = i + 1
-                    break
-                end
-            end
-            cnt = 0
-            for line in lines[data_start:end]
-                if !isempty(strip(line)) && occursin(',', line)
-                    cnt += 1
-                end
-            end
-            wakeup_count = cnt
-        catch
-            # ignore, leave as nothing
-        end
-    end
-
-    return MeasurementInfo(indexed.id, filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters, wakeup_count)
+    return MeasurementInfo(indexed.id, filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters)
 end
 
 """
@@ -594,8 +568,6 @@ function build_clean_title(
 end
 
 function _measurement_info_from_item(item::MeasurementItem)
-    wakeup_count = get(item.parameters, :wakeup_pulse_count, nothing)
-    wakeup_count isa Int || (wakeup_count = nothing)
     return MeasurementInfo(
         item.id,
         basename(item.filepath),
@@ -605,7 +577,6 @@ function _measurement_info_from_item(item::MeasurementItem)
         item.timestamp,
         DeviceInfo(copy(item.device_path), deepcopy(item.device_parameters)),
         deepcopy(item.parameters),
-        wakeup_count,
     )
 end
 
@@ -635,6 +606,20 @@ function _is_scan_cancel_error(err)
     err isa ScanCancelled && return true
     err isa CompositeException || return false
     return any(_is_scan_cancel_error, err.exceptions)
+end
+
+"""
+Interpret a single source file into all its expanded `MeasurementInfo` entries.
+Equivalent to the scan pipeline for one file; useful in tests and single-file code paths.
+"""
+function measurements_for_file(
+    project::AbstractProject,
+    filepath::AbstractString;
+    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
+)
+    source = index_source_file(filepath)
+    items = interpret_measurements(project, source, meta)
+    return [_measurement_info_from_item(item) for item in items]
 end
 
 """

@@ -10,7 +10,7 @@ function _test_plot_job(;
     cache_version=nothing,
     debug=false,
 )
-    fixture = joinpath(@__DIR__, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
+    fixture = joinpath(@__DIR__, "fixtures", "RuO2", "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
     measurement = MeasurementInfo(fixture, MeasurementBrowser.RUO2_PROJECT)
     params = merge(measurement.device_info.parameters, measurement.parameters)
     identity = MeasurementBrowser.project_cache_identity(
@@ -130,17 +130,15 @@ end
 @testset "extra plot windows preserve logical measurement identity" begin
     fixture = joinpath(
         @__DIR__,
-        "3V PUND Fatigue [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv",
+        "fixtures", "RuO2",
+        "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv",
     )
-    meas = MeasurementInfo(fixture, MeasurementBrowser.RUO2_PROJECT)
-    expanded = expand_measurement(MeasurementBrowser.RUO2_PROJECT, meas)
-    cycle_two = only(filter(m -> m.parameters[:fatigue_cycle] == 2, expanded))
+    expanded = measurements_for_file(MeasurementBrowser.RUO2_PROJECT, fixture)
+    pund = only(expanded)
 
-    entry = MeasurementBrowser._measurement_plot_window_entry(cycle_two)
-    @test entry[:target_id] == cycle_two.id
+    entry = MeasurementBrowser._measurement_plot_window_entry(pund)
+    @test entry[:target_id] == pund.id
     @test entry[:measurement_kind] == :pund
-    @test entry[:params][:fatigue_cycle] == 2
-    @test entry[:params][:voltage_V] == 3.0
 
     cache_id = "20260430_120007"
     ui = Dict{Symbol,Any}(
@@ -154,17 +152,15 @@ end
     job = MeasurementBrowser._plot_job(
         ui,
         MeasurementBrowser.RUO2_PROJECT,
-        [cycle_two],
+        [pund],
         :pund,
         :extra;
-        target_id=cycle_two.id,
+        target_id=pund.id,
     )
 
     @test job.target == :extra
-    @test job.target_id == cycle_two.id
-    @test only(job.measurements) == cycle_two
+    @test job.target_id == pund.id
+    @test only(job.measurements) == pund
     @test job.cache_identity.cache_id == cache_id
     @test job.plot_kind == :pund
-    @test only(job.device_params)[:fatigue_cycle] == 2
-    @test only(job.device_params)[:voltage_V] == 3.0
 end

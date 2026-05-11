@@ -16,6 +16,7 @@ include("RuO2/PlotCombined.jl")
 const REGEX_RUO2_CHIP_DIR = r"^RuO2[^/]*_[^/]*$"
 const REGEX_RUO2_IDENTIFIER = r"^((?:RuO2)[^()\[\];\s]+)$"
 const REGEX_RUO2_BRACKET_IDENTIFIER = r"\[((?:RuO2)[^()\[\];\s]+)"
+const REGEX_RUO2_TIMESTAMP_FILENAME = r"^(RuO2.+?)_\d{8}_\d{6}_"
 
 # ---------------------------------------------------------------------------
 # Interface implementations
@@ -24,15 +25,62 @@ const REGEX_RUO2_BRACKET_IDENTIFIER = r"\[((?:RuO2)[^()\[\];\s]+)"
 project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 
-function expand_measurement(::RuO2Project, meas::MeasurementInfo)::Vector{MeasurementInfo}
-    expanded = _ruo2_expand_multi_device(meas)
-    return vcat([_ruo2_expand_pund_fatigue(m) for m in expanded]...)
+"""
+Attach global pulse-count metadata after RuO2 measurements have been expanded.
+Counts are scoped per physical device so plots and information-panel stats read the same history.
+"""
+function annotate_measurements!(::RuO2Project, measurements::Vector{MeasurementInfo})
+    by_device = Dict{String,Vector{MeasurementInfo}}()
+    for measurement in measurements
+        delete!(measurement.parameters, :global_pund_pulse_count)
+        device_key = device_path_key(measurement.device_info)
+        push!(get!(by_device, device_key, MeasurementInfo[]), measurement)
+    end
+
+    for device_measurements in values(by_device)
+        sort!(device_measurements, by=measurement_timestamp_key)
+        pulse_count = 0
+        for measurement in device_measurements
+            measurement.measurement_kind === :pund || continue
+            fatigue_cycle = get(measurement.parameters, :fatigue_cycle, nothing)
+            pulse_count = fatigue_cycle === nothing ? pulse_count + 1 : Int(fatigue_cycle)
+            measurement.parameters[:global_pund_pulse_count] = pulse_count
+        end
+    end
+    return nothing
+end
+
+"""
+Add RuO2 summary values that depend on the selected device's full measurement set.
+This covers pulse-history totals that are not meaningful for a single measurement row.
+"""
+function augment_measurements_stats!(
+    ::RuO2Project,
+    stats::Dict{Symbol,Any},
+    measurements::Vector{MeasurementInfo},
+)
+    global_counts = Int[
+        Int(measurement.parameters[:global_pund_pulse_count])
+        for measurement in measurements
+        if haskey(measurement.parameters, :global_pund_pulse_count)
+    ]
+    if !isempty(global_counts)
+        stats[:global_pund_pulse_count] = maximum(global_counts)
+    end
+
+    return stats
 end
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 
+"""
+Split paired-device breakdown files into per-device measurement entries.
+
+Some RuO2 breakdown runs encode two adjacent devices in one filename; expanding them
+preserves device-level navigation and stats without duplicating the source file.
+"""
 function _ruo2_expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
     meas.measurement_kind == :breakdown || return [meas]
     dev = last(meas.device_info.location)
@@ -50,7 +98,6 @@ function _ruo2_expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInf
         meas.timestamp,
         DeviceInfo(vcat(loc[1:end-1], [p]), copy(meas.device_info.parameters)),
         copy(meas.parameters),
-        meas.wakeup_pulse_count,
     ) for p in parts]
 end
 
@@ -154,31 +201,12 @@ function _ruo2_fatigue_columns(filepath::AbstractString, header::AbstractString)
     )
 end
 
-function _ruo2_expand_pund_fatigue(meas::MeasurementInfo)::Vector{MeasurementInfo}
-    meas.measurement_kind == :pund_fatigue || return [meas]
-    cycles, voltage_V = _ruo2_scan_fatigue_file(meas.filepath)
-    isempty(cycles) && return MeasurementInfo[]
-    expanded = MeasurementInfo[]
-    sizehint!(expanded, length(cycles))
-    for cycle in cycles
-        parameters = copy(meas.parameters)
-        parameters[:fatigue_cycle] = cycle
-        voltage_V !== nothing && (parameters[:voltage_V] = voltage_V)
-        push!(expanded, MeasurementInfo(
-            item_id(file_id(meas.filepath); cycle=cycle),
-            meas.filename,
-            meas.filepath,
-            meas.clean_title * " cycle $cycle",
-            :pund,
-            meas.timestamp,
-            DeviceInfo(copy(meas.device_info.location), copy(meas.device_info.parameters)),
-            parameters,
-            nothing,
-        ))
-    end
-    return expanded
-end
+"""
+List RuO2 combined-plot modes exposed by the project selector.
 
+The returned metadata drives UI labels and constrains downstream combined plotting to
+analyses that make sense for RuO2 measurement families.
+"""
 function combined_plot_types(::RuO2Project)
     return [
         (nothing, "None", "No combined plot selected"),
@@ -192,7 +220,7 @@ function compatible_kinds(::RuO2Project, combined_kind::Symbol)
     if combined_kind === :tlm_analysis || combined_kind === :tlm_temperature
         return [:tlm4p]
     elseif combined_kind === :pund_fatigue
-        return [:pund, :wakeup]
+        return [:pund]
     end
     return Symbol[]
 end

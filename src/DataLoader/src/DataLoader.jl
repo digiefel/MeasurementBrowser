@@ -5,7 +5,7 @@ using DataFrames
 using Dates
 
 export find_files, get_file_patterns, read_iv_sweep, read_fe_pund, read_tlm_4p,
-       read_pund_fatigue_cycles, read_pund_fatigue_cycle, read_wakeup_summary,
+       read_pund_fatigue_cycles, read_pund_fatigue_cycle, read_pund_wakeup_amplitude, read_pund_wakeup_reps,
        read_cv_sweep
 
 include("PUND.jl")
@@ -25,7 +25,8 @@ function read_iv_sweep(filename, workdir=".")
         # and is NOT a data line (doesn't start with a number)
         if (occursin("Voltage", line) || occursin("V", line)) &&
            (occursin("Current", line) || occursin("I", line)) &&
-           !occursin(r"^-?\d", line)
+           !occursin(r"^-?\d", line) &&
+           !occursin(' ', line)
             header_line = i
             break
         end
@@ -188,7 +189,6 @@ function get_file_patterns()
         fe_pund=r"FE PUND",
         tlm_4p=r"TLM_4P",
         breakdown=r"Break.*oxide",
-        wakeup=r"Wakeup",
         cv_sweep=r"CVSweep",
     )
 end

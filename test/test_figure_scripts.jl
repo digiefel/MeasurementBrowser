@@ -1,12 +1,6 @@
 using MeasurementBrowser
 using Test
 
-function _copy_fixture(temp_root::AbstractString, fixture_name::AbstractString)
-    source = joinpath(@__DIR__, String(fixture_name))
-    target = joinpath(temp_root, String(fixture_name))
-    cp(source, target; force=true)
-    return target
-end
 
 function _test_measurement(
     id::AbstractString,
@@ -25,7 +19,6 @@ function _test_measurement(
         nothing,
         DeviceInfo(copy(device_path), deepcopy(device_parameters)),
         deepcopy(parameters),
-        nothing,
     )
 end
 
@@ -54,7 +47,7 @@ end
     wakeup_1000 = _test_measurement(
         "wakeup_1000",
         "/tmp/f3.csv",
-        :wakeup,
+        :wakeup_pund,
         ["RuO2test", "A11", "VI", "D3"];
         parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
     )
@@ -112,7 +105,7 @@ end
     wakeup_1000 = _test_measurement(
         "wakeup_1000",
         "/tmp/f3.csv",
-        :wakeup,
+        :wakeup_pund,
         ["RuO2test", "A11", "VI", "D3"];
         parameters=Dict{Symbol,Any}(:fatigue_cycle => 1000),
     )
@@ -214,7 +207,8 @@ end
     mktempdir() do temp_root
         fixture_path = _copy_fixture(
             temp_root,
-            "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv",
+            "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv";
+            subdir="TASE",
         )
         measurement = MeasurementInfo(fixture_path, MeasurementBrowser.TASE_PROJECT)
         group = NamedMeasurementGroup(
@@ -281,7 +275,8 @@ end
     mktempdir() do temp_root
         _copy_fixture(
             temp_root,
-            "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv",
+            "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv";
+            subdir="TASE",
         )
         hierarchy = scan_source(temp_root; project=MeasurementBrowser.TASE_PROJECT).hierarchy
         measurement = only(hierarchy.all_measurements)

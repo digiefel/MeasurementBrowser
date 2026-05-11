@@ -300,8 +300,6 @@ function _write_measurement_metadata!(group, measurement::MeasurementInfo)
     _write_string_vector!(group, "device_path", measurement.device_info.location)
     _write_parameters!(group, "device_parameters", measurement.device_info.parameters)
     _write_parameters!(group, "measurement_parameters", measurement.parameters)
-    wakeup = measurement.wakeup_pulse_count === nothing ? Int64[-1] : Int64[Int64(measurement.wakeup_pulse_count)]
-    _write_dataset!(group, "wakeup_pulse_count", wakeup)
     return nothing
 end
 
@@ -317,10 +315,6 @@ function _read_measurement_metadata(group, cache_path::AbstractString)
     device_path = String.(_read_required(group, "device_path", cache_path))
     device_parameters = _read_parameters(group, "device_parameters", cache_path)
     measurement_parameters = _read_parameters(group, "measurement_parameters", cache_path)
-    wakeup_values = _read_required(group, "wakeup_pulse_count", cache_path)
-    length(wakeup_values) == 1 ||
-        throw(ProjectCacheInvalidError(cache_path, "invalid wakeup_pulse_count dataset for '$id'"))
-    wakeup = wakeup_values[1] < 0 ? nothing : Int(wakeup_values[1])
     return MeasurementInfo(
         id,
         filename,
@@ -330,7 +324,6 @@ function _read_measurement_metadata(group, cache_path::AbstractString)
         timestamp,
         DeviceInfo(device_path, device_parameters),
         measurement_parameters,
-        wakeup,
     )
 end
 
@@ -623,27 +616,6 @@ function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy)
     return hierarchy
 end
 
-"""
-Refresh cached measurement metadata from the in-memory source scan.
-This keeps reused cache entries consistent without rereading every measurement from HDF5.
-"""
-function _refresh_cached_measurement_metadata!(h5, source::SourceScan)
-    files_group = _ensure_group(h5, "files")
-    for source_file in source.files
-        file_key = _file_group_key(source_file.fingerprint.path)
-        haskey(files_group, file_key) || continue
-        file_group = files_group[file_key]
-        haskey(file_group, "measurements") || continue
-        measurements_group = file_group["measurements"]
-        for measurement in source_file.measurements
-            measurement_key = _measurement_group_key(measurement.id)
-            haskey(measurements_group, measurement_key) || continue
-            _write_measurement_metadata!(measurements_group[measurement_key], measurement)
-        end
-    end
-    return nothing
-end
-
 function _write_file_error_group!(
     files_group,
     fingerprint::FileFingerprint,
@@ -765,7 +737,6 @@ function write_project_cache!(
         ))
         _write_meta!(h5, identity)
         _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
-        _refresh_cached_measurement_metadata!(h5, source)
         hierarchy = _hierarchy_from_cache_statuses(source, statuses)
         _rebuild_indexes!(h5, hierarchy)
         on_progress !== nothing && on_progress((

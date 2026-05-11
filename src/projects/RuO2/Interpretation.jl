@@ -1,4 +1,4 @@
-using DataLoader: read_wakeup_summary
+using DataLoader: read_pund_wakeup_reps
 
 function _ruo2_cvsweep_schema(path::AbstractString)
     header = open(path, "r") do io
@@ -87,9 +87,12 @@ function _ruo2_header_identifier(indexed::SourceFile)
 end
 
 function _ruo2_filename_identifier(filename::AbstractString)
-    match_obj = match(REGEX_RUO2_BRACKET_IDENTIFIER, String(filename))
-    match_obj === nothing && return nothing
-    return String(match_obj.captures[1])
+    s = String(filename)
+    m = match(REGEX_RUO2_BRACKET_IDENTIFIER, s)
+    m !== nothing && return String(m.captures[1])
+    m = match(REGEX_RUO2_TIMESTAMP_FILENAME, s)
+    m !== nothing && return String(m.captures[1])
+    return nothing
 end
 
 function _ruo2_resolve_location(indexed::SourceFile)
@@ -126,8 +129,6 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
         return :pund_fatigue
     elseif occursin("pund", lower) && occursin("wakeup", lower)
         return :pund_wakeup
-    elseif occursin(r"(^|[\s_\-])pn($|[\s_\-\[])", lower)
-        return :pn
     elseif occursin("fe pund", lower) || occursin("fepund", lower) || occursin("_pund", lower)
         return :pund
     elseif occursin("cvsweep", lower)
@@ -138,8 +139,6 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
         return :iv
     elseif occursin("break", lower) || occursin("breakdown", lower)
         return :breakdown
-    elseif occursin("wakeup", lower)
-        return :wakeup
     else
         return :unknown
     end
@@ -155,11 +154,6 @@ function interpret_file(::RuO2Project, indexed::SourceFile; should_cancel::Union
     device_info = parse_device_info(RUO2_PROJECT, indexed)
 
     params = parse_parameters(indexed.filename)
-    if kind == :wakeup
-        summary = read_wakeup_summary(indexed.filename, dirname(indexed.filepath))
-        params[:wakeup_pulse_count] = summary.pulse_count
-        params[:amplitude_V] = summary.amplitude
-    end
 
     title = build_clean_title(RUO2_PROJECT, indexed.filename, kind, device_info, indexed.header_summary)
     base = MeasurementItem(
@@ -221,34 +215,61 @@ function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Un
     ) for c in cycles]
 end
 
+function _ruo2_scan_pund_wakeup(filepath::AbstractString)
+    amplitudes = Float64[]
+    pulse_type = :both
+    open(filepath, "r") do io
+        for line in eachline(io)
+            if startswith(line, '#')
+                m = match(r"read_pulse_type:\s*(\w+)", line)
+                m !== nothing && (pulse_type = Symbol(m.captures[1]))
+                continue
+            end
+            parts = split(line, ',')
+            length(parts) >= 4 || continue
+            v = tryparse(Float64, parts[1])
+            v === nothing && continue
+            v in amplitudes || push!(amplitudes, v)
+        end
+    end
+    reps_per_amplitude = read_pund_wakeup_reps(basename(filepath), dirname(filepath))
+    return (amplitudes=amplitudes, reps_per_amplitude=reps_per_amplitude, pulse_type=pulse_type)
+end
+
 function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{MeasurementItem}
     item.kind == :pund_wakeup || return [item]
-    pn_params = deepcopy(item.parameters)
-    pn_params[:pund_wakeup_segment] = :pn
-    pund_params = deepcopy(item.parameters)
-    pund_params[:pund_wakeup_segment] = :pund
-    return [
-        MeasurementItem(
-            item_id(item.source_file_id; split="pn"),
-            item.source_file_id,
-            item.filepath,
-            :pn,
-            copy(item.device_path),
-            item.timestamp,
-            deepcopy(item.device_parameters),
-            pn_params,
-            item.title * " PN",
-        ),
-        MeasurementItem(
-            item_id(item.source_file_id; split="pund"),
-            item.source_file_id,
-            item.filepath,
-            :pund,
-            copy(item.device_path),
-            item.timestamp,
-            deepcopy(item.device_parameters),
-            pund_params,
-            item.title * " PUND",
-        ),
-    ]
+    info = _ruo2_scan_pund_wakeup(item.filepath)
+    isempty(info.amplitudes) && return MeasurementItem[]
+
+    segments = info.pulse_type === :pund ? [(:wakeup_pund, "PUND")] :
+               info.pulse_type === :pn   ? [(:wakeup_pn,   "PN")]   :
+                                           [(:wakeup_pn, "PN"), (:wakeup_pund, "PUND")]
+
+    device_label = join(item.device_path[2:end], "_")
+    date_str = item.timestamp === nothing ? "" : Dates.format(item.timestamp, "yyyy-mm-dd")
+
+    result = MeasurementItem[]
+    for amp in info.amplitudes
+        amp_str = "$(amp)V"
+        n_reps = get(info.reps_per_amplitude, amp, 1)
+        for rep in 1:n_reps
+            rep_suffix = n_reps > 1 ? " rep $rep" : ""
+            for (kind, seg_label) in segments
+                params = merge(deepcopy(item.parameters), Dict{Symbol,Any}(:amplitude_V => amp, :wakeup_rep => rep))
+                title = join(filter(!isempty, ["Wakeup", device_label, date_str, amp_str, seg_label * rep_suffix]), " ")
+                push!(result, MeasurementItem(
+                    item_id(item.source_file_id; split="$(amp_str)_rep$(rep)_$(kind)"),
+                    item.source_file_id,
+                    item.filepath,
+                    kind,
+                    copy(item.device_path),
+                    item.timestamp,
+                    deepcopy(item.device_parameters),
+                    params,
+                    title,
+                ))
+            end
+        end
+    end
+    return result
 end

@@ -5,8 +5,8 @@ function project_cache_semantic_fields(::RuO2Project)
         :measurement => [:measurement_id, :measurement_kind, :timestamp, :source_file],
         :device => [:device_key, :device_path, :area_um2, :x, :y],
         :signal => [:time, :voltage, :current, :cycle, :frequency],
-        :summary => [:voltage_V, :temperature_K, :fatigue_cycle, :wakeup_pulse_count,
-                     :global_pund_pulse_count, :pund_wakeup_segment],
+        :summary => [:voltage_V, :temperature_K, :fatigue_cycle, :amplitude_V,
+                     :global_pund_pulse_count],
     )
 end
 
@@ -66,6 +66,10 @@ function project_cache_read_plot_payload(
     file_group,
     measurement_group,
 )
+    if haskey(file_group, "status") && read(file_group["status"]) == "error"
+        msg = haskey(file_group, "error_message") ? read(file_group["error_message"]) : "unknown cache error"
+        error("Cached file failed during cache build: $msg")
+    end
     haskey(measurement_group, "plot") ||
         throw(ProjectCacheInvalidError("", "cached measurement '$(measurement.id)' is missing plot payload"))
     plot_group = measurement_group["plot"]
@@ -138,8 +142,9 @@ function _ruo2_read_cached_analyzed_plot(plot_group, kind::Symbol, cache_path::A
     end
 
     title = String(get(scalars, :title, ""))
-    if kind === :pund || kind === :pn
-        group_size = Int(get(scalars, :pulse_group_size, kind === :pn ? 1 : 5))
+    if kind === :pund || kind === :pn || kind === :wakeup_pn || kind === :wakeup_pund
+        default_group_size = (kind === :pn || kind === :wakeup_pn) ? 1 : 5
+        group_size = Int(get(scalars, :pulse_group_size, default_group_size))
         return (
             df=df,
             title=title,
@@ -160,14 +165,6 @@ function _ruo2_read_cached_analyzed_plot(plot_group, kind::Symbol, cache_path::A
             fit_current_uA=get(arrays, :fit_current_uA, Float64[]),
             fit_voltage_mV=get(arrays, :fit_voltage_mV, Float64[]),
             rho_sheet=Float64(get(scalars, :rho_sheet, NaN)),
-        )
-    elseif kind === :wakeup
-        return (
-            df=df,
-            title=title,
-            pulse_count=Int(get(scalars, :pulse_count, 0)),
-            amplitude=Float64(get(scalars, :amplitude, 0.0)),
-            text_content=String(get(scalars, :text_content, "")),
         )
     elseif kind === :cvsweep
         return (

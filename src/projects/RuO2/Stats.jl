@@ -1,5 +1,5 @@
-using DataLoader: read_fe_pund, read_pund_fatigue_cycle
-using DataAnalysis: detect_pund_pulses, analyze_pund
+using DataLoader: read_fe_pund, read_pund_fatigue_cycle, read_pund_wakeup_amplitude, read_pund_wakeup_reps
+using DataAnalysis: detect_pund_pulses, analyze_pund, analyze_pund_and_pn
 using DataFrames: nrow
 using Statistics: mean
 
@@ -26,11 +26,10 @@ function _pund_stats_from_analysis_df(df, device_params::Dict{Symbol,Any})::Dict
 
     n_pre = min(9, length(V))
     V_baseline = mean(V[1:n_pre])
-    Vc = V .- V_baseline
 
-    result[:voltage_baseline_V] = round(V_baseline; digits=3)
-    result[:voltage_max_V] = round(maximum(Vc); digits=3)
-    result[:voltage_min_V] = round(minimum(Vc); digits=3)
+    result[:voltage_baseline_V] = round(V_baseline; digits=1)
+    result[:voltage_max_V] = round(maximum(V); digits=1)
+    result[:voltage_min_V] = round(minimum(V); digits=1)
 
     det = detect_pund_pulses(t, V, I)
     if !isempty(det.pulses)
@@ -39,7 +38,7 @@ function _pund_stats_from_analysis_df(df, device_params::Dict{Symbol,Any})::Dict
         total_span = t_end - t_start
         if total_span > 0
             pulse_period = total_span / length(det.pulses)
-            result[:frequency_kHz] = round(1.0 / (pulse_period * 1e3); digits=2)
+            result[:frequency_kHz] = round(1.0 / (pulse_period * 1e3); digits=1)
         end
     end
 
@@ -50,14 +49,20 @@ function _pund_stats_from_analysis_df(df, device_params::Dict{Symbol,Any})::Dict
     if isfinite(area_um2) && area_um2 > 0
         pid = df_an.pulse_idx
         maxpid = maximum(pid)
-        n_groups = maxpid ÷ 5
+        group_size = maxpid == 1 ? 1 : maxpid % 5 == 0 ? 5 : maxpid % 4 == 0 ? 4 : 2
+        n_groups = maxpid ÷ group_size
         area_cm2 = area_um2 / 1e8
 
         pr_vals = Float64[]
         for rep in 1:n_groups
-            P_code = rep * 5 - 3
-            N_code = rep * 5 - 1
-            rep_mask = (pid .== P_code) .| (pid .== N_code)
+            base = (rep - 1) * group_size
+            rep_mask = if group_size == 1
+                pid .== base + 1
+            else
+                P_code = group_size == 5 ? base + 2 : base + 1
+                N_code = group_size == 5 ? base + 4 : group_size == 4 ? base + 3 : base + 2
+                (pid .== P_code) .| (pid .== N_code)
+            end
 
             Q_FE = df_an.Q_FE
             valid = rep_mask .& isfinite.(Q_FE) .& .!isnan.(Q_FE)
@@ -106,12 +111,20 @@ function compute_pund_stats(filepath::AbstractString,
         if haskey(measurement_params, :fatigue_cycle)
             cycle = Int(measurement_params[:fatigue_cycle])
             df = read_pund_fatigue_cycle(fname, dir, cycle)
+            nrow(df) == 0 && return result
+            merge!(result, _pund_stats_from_analysis_df(df, device_params))
+        elseif haskey(measurement_params, :amplitude_V)
+            amp = Float64(measurement_params[:amplitude_V])
+            rep = Int(get(measurement_params, :wakeup_rep, 1))
+            df = read_pund_wakeup_amplitude(fname, dir, amp, rep)
+            nrow(df) == 0 && return result
+            analyzed = analyze_pund_and_pn(df).pund
+            merge!(result, _pund_stats_from_analysis_df(analyzed, device_params))
         else
             df = read_fe_pund(fname, dir)
+            nrow(df) == 0 && return result
+            merge!(result, _pund_stats_from_analysis_df(df, device_params))
         end
-
-        nrow(df) == 0 && return result
-        merge!(result, _pund_stats_from_analysis_df(df, device_params))
     catch
         # Return whatever we managed to compute (or empty on total failure)
     end

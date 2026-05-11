@@ -108,9 +108,7 @@ function _cached_loaded_plot_for_files(job::PlotJob, should_cancel)
         cached = _measurement_group_for_cached_plot(job.cache_identity, measurement)
         hasproperty(cached, :df) || return nothing
         timestamp = measurement.timestamp === nothing ? 0.0 : datetime2unix(measurement.timestamp)
-        if measurement.measurement_kind === :wakeup
-            push!(entries, (kind=:wakeup, df=cached.df, params=params, timestamp=timestamp))
-        elseif measurement.measurement_kind === :pund
+        if measurement.measurement_kind === :pund
             df = DataFrame(
                 time=cached.df.time,
                 current=cached.df.current,

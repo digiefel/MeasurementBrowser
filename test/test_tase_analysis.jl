@@ -2,8 +2,8 @@ using MeasurementBrowser
 using Test
 
 @testset "TASE Analysis" begin
-    fixture1 = joinpath(@__DIR__, "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv")
-    fixture2 = joinpath(@__DIR__, "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv")
+    fixture1 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv")
+    fixture2 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv")
     source1 = index_source_file(fixture1)
     measurements = [
         MeasurementInfo(fixture1, TASE_PROJECT),
