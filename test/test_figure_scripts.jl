@@ -1,5 +1,6 @@
 using MeasurementBrowser
 using Test
+using Dates
 
 
 function _test_measurement(
@@ -9,6 +10,7 @@ function _test_measurement(
     device_path::Vector{String};
     device_parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
+    timestamp::Union{Nothing,DateTime}=nothing,
 )
     return MeasurementInfo(
         String(id),
@@ -16,7 +18,7 @@ function _test_measurement(
         String(filepath),
         String(id),
         kind,
-        nothing,
+        timestamp,
         DeviceInfo(copy(device_path), deepcopy(device_parameters)),
         deepcopy(parameters),
     )
@@ -181,9 +183,10 @@ end
     @test profile.selected_count == 2
     @test profile.measurement_count == 3
     @test profile.total_ms >= 0.0
-    @test any(section -> section.key == :collect_candidates, profile.sections)
-    @test any(section -> section.key == :candidate_match_mask, profile.sections)
-    @test get(profile.counters, :candidate_count, 0) >= 1
+    @test any(section -> section.key == :infer_clauses, profile.sections)
+    @test any(section -> section.key == :stage_device, profile.sections)
+    @test get(profile.counters, :recursive_subsets, 0) >= 1
+    @test get(profile.counters, :full_mask_checks, 0) >= 1
     @test get(profile.counters, :final_clause_count, 0) >= 1
 end
 
@@ -307,7 +310,7 @@ end
         docs_path = abspath(joinpath(@__DIR__, "..", "docs", "figure_scripts.md"))
         @test occursin(docs_path, contents)
         @test occursin("MeasurementBrowser.MeasurementFilterClause", contents)
-        @test occursin("source_files = [", contents)
+        @test occursin("source_files = joinpath.(root_path, [", contents)
         @test occursin("prepare_figure_script_data", contents)
         @test !occursin("#cycle=", contents)
         @test !occursin("#split=", contents)
@@ -330,5 +333,159 @@ end
 
         @test data isa MeasurementBrowser.FigureScriptData
         @test [entry.measurement.id for entry in data["reference"]] == [measurement.id]
+    end
+end
+
+@testset "staged inference: device stage describes shared prefix" begin
+    sel_a = _test_measurement("a", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"])
+    sel_b = _test_measurement("b", "/tmp/b.csv", :iv, ["chip", "A", "FE", "D2"])
+    outside = _test_measurement("c", "/tmp/c.csv", :iv, ["chip", "B", "VI", "D3"])
+
+    group = infer_measurement_group("site_a", [sel_a, sel_b], [sel_a, sel_b, outside])
+    @test length(group.filter.clauses) == 1
+    clause = only(group.filter.clauses)
+    @test clause.device_path == ["chip", "A"]
+    @test clause.source_file === nothing
+    @test clause.measurement_kind === nothing
+    @test isempty(clause.parameter_conditions)
+    @test clause.timestamp_range === nothing
+end
+
+@testset "staged inference: device-level split, not timestamp" begin
+    sel_a = _test_measurement("a", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"];
+        timestamp=DateTime(2026, 1, 1))
+    sel_b = _test_measurement("b", "/tmp/b.csv", :iv, ["chip", "A", "FE", "D2"];
+        timestamp=DateTime(2026, 1, 10))
+    outside = _test_measurement("c", "/tmp/c.csv", :iv, ["chip", "A", "VI", "D9"];
+        timestamp=DateTime(2026, 1, 5))
+
+    group = infer_measurement_group("split_sub", [sel_a, sel_b], [sel_a, sel_b, outside])
+    @test length(group.filter.clauses) == 2
+    for clause in group.filter.clauses
+        @test clause.timestamp_range === nothing
+        @test clause.source_file === nothing
+        @test !isempty(clause.device_path)
+    end
+    matched = MeasurementBrowser._matching_measurements([sel_a, sel_b, outside], group)
+    @test Set(m.id for m in matched) == Set(["a", "b"])
+end
+
+@testset "staged inference: shared device parameter avoids split" begin
+    sel_a = _test_measurement("a", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"];
+        device_parameters=Dict{Symbol,Any}(:cooldown => 300))
+    sel_b = _test_measurement("b", "/tmp/b.csv", :iv, ["chip", "A", "FE", "D2"];
+        device_parameters=Dict{Symbol,Any}(:cooldown => 300))
+    sib_a = _test_measurement("c", "/tmp/c.csv", :iv, ["chip", "A", "VI", "D3"];
+        device_parameters=Dict{Symbol,Any}(:cooldown => 350))
+    sib_b = _test_measurement("d", "/tmp/d.csv", :iv, ["chip", "A", "FE", "D4"];
+        device_parameters=Dict{Symbol,Any}(:cooldown => 350))
+
+    group = infer_measurement_group("cool_300", [sel_a, sel_b], [sel_a, sel_b, sib_a, sib_b])
+    @test length(group.filter.clauses) == 1
+    clause = only(group.filter.clauses)
+    @test clause.parameter_conditions == Pair{Symbol,Any}[:cooldown => 300]
+    matched = MeasurementBrowser._matching_measurements([sel_a, sel_b, sib_a, sib_b], group)
+    @test Set(m.id for m in matched) == Set(["a", "b"])
+end
+
+@testset "staged inference: measurement kind reached when device cannot separate" begin
+    sel_a = _test_measurement("a", "/tmp/a.csv", :pund, ["chip", "A", "VI", "D1"])
+    other_a = _test_measurement("oa", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"])
+    sel_b = _test_measurement("b", "/tmp/b.csv", :pund, ["chip", "A", "VI", "D2"])
+    other_b = _test_measurement("ob", "/tmp/b.csv", :iv, ["chip", "A", "VI", "D2"])
+
+    group = infer_measurement_group("pund_only", [sel_a, sel_b], [sel_a, other_a, sel_b, other_b])
+    @test length(group.filter.clauses) == 1
+    clause = only(group.filter.clauses)
+    @test clause.measurement_kind == :pund
+    @test clause.source_file === nothing
+    @test clause.timestamp_range === nothing
+    matched = MeasurementBrowser._matching_measurements([sel_a, other_a, sel_b, other_b], group)
+    @test Set(m.id for m in matched) == Set(["a", "b"])
+end
+
+@testset "staged inference: measurement-kind split" begin
+    sel_a = _test_measurement("a", "/tmp/a.csv", :pund, ["chip", "A", "VI", "D1"])
+    sel_b = _test_measurement("b", "/tmp/b.csv", :iv, ["chip", "A", "VI", "D1"])
+    other = _test_measurement("c", "/tmp/c.csv", :wakeup_pund, ["chip", "A", "VI", "D1"])
+
+    group = infer_measurement_group("two_kinds", [sel_a, sel_b], [sel_a, sel_b, other])
+    @test length(group.filter.clauses) == 2
+    kinds = Set(clause.measurement_kind for clause in group.filter.clauses)
+    @test kinds == Set([:pund, :iv])
+    matched = MeasurementBrowser._matching_measurements([sel_a, sel_b, other], group)
+    @test Set(m.id for m in matched) == Set(["a", "b"])
+end
+
+@testset "staged inference: timestamp range" begin
+    sel_a = _test_measurement("a", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"];
+        timestamp=DateTime(2026, 2, 10))
+    sel_b = _test_measurement("b", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"];
+        timestamp=DateTime(2026, 2, 15))
+    older = _test_measurement("c", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"];
+        timestamp=DateTime(2025, 1, 1))
+    newer = _test_measurement("d", "/tmp/a.csv", :iv, ["chip", "A", "VI", "D1"];
+        timestamp=DateTime(2027, 1, 1))
+
+    group = infer_measurement_group("feb_2026", [sel_a, sel_b], [sel_a, sel_b, older, newer])
+    @test length(group.filter.clauses) == 1
+    clause = only(group.filter.clauses)
+    @test clause.timestamp_range == (DateTime(2026, 2, 10), DateTime(2026, 2, 15))
+    matched = MeasurementBrowser._matching_measurements([sel_a, sel_b, older, newer], group)
+    @test Set(m.id for m in matched) == Set(["a", "b"])
+end
+
+@testset "staged inference: fallback exact selectors" begin
+    sel_a = _test_measurement("a", "/tmp/shared.csv", :pund, ["chip", "A", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:cycle => 1))
+    sel_b = _test_measurement("b", "/tmp/shared.csv", :pund, ["chip", "A", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:cycle => 2))
+    other = _test_measurement("c", "/tmp/shared.csv", :pund, ["chip", "A", "VI", "D1"];
+        parameters=Dict{Symbol,Any}(:cycle => 3))
+
+    group = infer_measurement_group("two", [sel_a, sel_b], [sel_a, sel_b, other])
+    @test length(group.filter.clauses) == 2
+    for clause in group.filter.clauses
+        @test clause.source_file == "/tmp/shared.csv"
+    end
+    matched = MeasurementBrowser._matching_measurements([sel_a, sel_b, other], group)
+    @test Set(m.id for m in matched) == Set(["a", "b"])
+end
+
+@testset "staged inference: relative source-file rendering" begin
+    mktempdir() do temp_root
+        _copy_fixture(
+            temp_root,
+            "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv";
+            subdir="TASE",
+        )
+        hierarchy = scan_source(temp_root; project=MeasurementBrowser.TASE_PROJECT).hierarchy
+        measurement = only(hierarchy.all_measurements)
+        group = NamedMeasurementGroup(
+            "reference",
+            MeasurementGroupFilter([
+                MeasurementFilterClause(
+                    source_file=measurement.filepath,
+                    measurement_kind=measurement.measurement_kind,
+                    device_path=measurement.device_info.location,
+                ),
+            ]),
+        )
+        output_dir = joinpath(temp_root, "scripts_out")
+        script_path = MeasurementBrowser.write_figure_script(
+            output_dir,
+            temp_root,
+            MeasurementBrowser.TASE_PROJECT,
+            "figure_rel",
+            [group],
+            hierarchy.all_measurements,
+        )
+        contents = read(script_path, String)
+        # The source_files block should use joinpath.(root_path, [...]) so the
+        # script remains relocatable.
+        source_files_lines = match(r"source_files = joinpath\.\(root_path, \[\n(.*?)\n\]\)"s, contents)
+        @test source_files_lines !== nothing
+        block = source_files_lines.captures[1]
+        @test !occursin(measurement.filepath, block)
     end
 end

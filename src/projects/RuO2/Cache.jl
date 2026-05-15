@@ -195,7 +195,7 @@ function _ruo2_write_cached_pund_fatigue_file!(
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    df = _ruo2_read_pund_fatigue_signal_table(indexed.filepath; should_cancel)
+    df = _load_ruo2_pund_fatigue_file(indexed.filepath; should_cancel=should_cancel)
     signals_group = _ensure_group(file_group, "signals")
     _write_dataframe!(signals_group, "pund_fatigue", df)
 
@@ -215,13 +215,7 @@ function _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement::Measureme
     full_df = _read_dataframe(file_group["signals"], "pund_fatigue", "")
     cycle = get(measurement.parameters, :fatigue_cycle, nothing)
     cycle isa Integer || error("Cached fatigue measurement $(measurement.id) is missing fatigue_cycle")
-    mask = full_df.cycle .== Int(cycle)
-    any(mask) || error("Cached fatigue file has no rows for cycle $cycle in $(measurement.filepath)")
-    df = DataFrame(
-        time=full_df.time[mask],
-        current=full_df.current[mask],
-        voltage=full_df.voltage[mask],
-    )
+    df = _select_pund_fatigue_cycle(full_df, cycle)
     params = _measurement_parameters(measurement)
     loaded = (
         df=df,
@@ -230,40 +224,4 @@ function _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement::Measureme
         debug=false,
     )
     return analyze_plot_for_file(RUO2_PROJECT, :pund, loaded; device_params=params)
-end
-
-function _ruo2_read_pund_fatigue_signal_table(
-    filepath::AbstractString;
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    cycle = Int[]
-    time = Float64[]
-    voltage = Float64[]
-    current = Float64[]
-    columns = nothing
-    open(filepath, "r") do io
-        for raw_line in eachline(io)
-            _check_cancel(should_cancel)
-            line = strip(raw_line)
-            isempty(line) && continue
-            if columns === nothing
-                if startswith(line, "Cycle,")
-                    columns = _ruo2_fatigue_columns(filepath, line)
-                end
-                continue
-            end
-            parts = split(line, ',')
-            length(parts) == columns.count || error(
-                "Malformed fatigue row in '$filepath': expected $(columns.count) columns, got $(length(parts))",
-            )
-            push!(cycle, parse(Int, parts[columns.cycle]))
-            push!(time, parse(Float64, parts[columns.time]))
-            push!(voltage, parse(Float64, parts[columns.voltage]))
-            push!(current, parse(Float64, parts[columns.current]))
-        end
-    end
-    columns !== nothing || error(
-        "Fatigue file '$filepath' is missing a data header with columns Cycle, Time_s, Voltage_V, Current_A",
-    )
-    return DataFrame(cycle=cycle, time=time, voltage=voltage, current=current)
 end

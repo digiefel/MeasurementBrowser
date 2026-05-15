@@ -1,4 +1,4 @@
-using DataLoader: read_fe_pund, read_pund_fatigue_cycle, read_pund_wakeup_amplitude, read_pund_wakeup_reps
+using DataLoader: read_fe_pund, read_pund_wakeup_amplitude, read_pund_wakeup_reps
 using DataAnalysis: detect_pund_pulses, analyze_pund, analyze_pund_and_pn
 using DataFrames: nrow
 using Statistics: mean
@@ -110,7 +110,8 @@ function compute_pund_stats(filepath::AbstractString,
 
         if haskey(measurement_params, :fatigue_cycle)
             cycle = Int(measurement_params[:fatigue_cycle])
-            df = read_pund_fatigue_cycle(fname, dir, cycle)
+            fatigue_df = _load_ruo2_pund_fatigue_file(filepath)
+            df = _select_pund_fatigue_cycle(fatigue_df, cycle)
             nrow(df) == 0 && return result
             merge!(result, _pund_stats_from_analysis_df(df, device_params))
         elseif haskey(measurement_params, :amplitude_V)

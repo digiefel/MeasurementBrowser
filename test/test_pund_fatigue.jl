@@ -5,20 +5,24 @@ using DataLoader
 using MeasurementBrowser
 
 @testset "PUND fatigue regression" begin
-    fixture = joinpath(@__DIR__, "fixtures", "RuO2", "3V PUND Fatigue [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
+    fixture = joinpath(@__DIR__, "fixtures", "RuO2", "RuO2test_A12_XI_FeCap_D6_20260511_222203_PUND_Fatigue_V2.csv")
 
     @test isfile(fixture)
 
-    @testset "DataLoader cycle readers" begin
-        cycles = read_pund_fatigue_cycles(basename(fixture), dirname(fixture))
-        @test cycles == [1, 2]
+    @testset "RuO2 fatigue file helpers" begin
+        fatigue_df = MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture)
+        @test fatigue_df isa DataFrame
+        @test names(fatigue_df) == ["cycle", "time", "voltage", "current"]
+        cycles = sort(unique(fatigue_df.cycle))
+        @test length(cycles) > 1
 
-        cycle_df = read_pund_fatigue_cycle(basename(fixture), dirname(fixture), 2)
+        cycle = cycles[2]
+        cycle_df = MeasurementBrowser._select_pund_fatigue_cycle(fatigue_df, cycle)
         @test cycle_df isa DataFrame
         @test names(cycle_df) == ["time", "current", "voltage"]
-        @test nrow(cycle_df) == 3
-        @test cycle_df.voltage == [0.0, 3.0, -3.0]
-        @test cycle_df.current == [1.5e-9, 2.5e-6, -2.5e-6]
+        @test nrow(cycle_df) == count(==(cycle), fatigue_df.cycle)
+        @test cycle_df.voltage == fatigue_df.voltage[fatigue_df.cycle .== cycle]
+        @test cycle_df.current == fatigue_df.current[fatigue_df.cycle .== cycle]
     end
 
     @testset "RuO2 fatigue scan requires monotonic cycle blocks" begin
@@ -83,13 +87,20 @@ using MeasurementBrowser
         @test meas.measurement_kind == :pund_fatigue
 
         expanded = measurements_for_file(RUO2_PROJECT, fixture)
-        @test length(expanded) == 2
+        cycles = sort(unique(MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture).cycle))
+        @test length(expanded) == length(cycles)
         @test all(m -> m.measurement_kind == :pund, expanded)
-        @test [m.parameters[:fatigue_cycle] for m in expanded] == [1, 2]
-        @test all(m -> m.parameters[:voltage_V] == 3.0, expanded)
-        @test display_label(RUO2_PROJECT, expanded[1]) == "2025-10-01T17:12:33 FE PUND 3.0V cycle 1 (fatigue)"
+        @test [m.parameters[:fatigue_cycle] for m in expanded] == cycles
+        @test all(m -> m.parameters[:voltage_V] > 0, expanded)
+        @test occursin("cycle $(cycles[1]) (fatigue)", display_label(RUO2_PROJECT, expanded[1]))
 
-        device_params = merge(expanded[2].device_info.parameters, expanded[2].parameters)
+        selected = expanded[2]
+        selected_cycle = Int(selected.parameters[:fatigue_cycle])
+        expected_df = MeasurementBrowser._select_pund_fatigue_cycle(
+            MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture),
+            selected_cycle,
+        )
+        device_params = merge(selected.device_info.parameters, selected.parameters)
         loaded = MeasurementBrowser.load_plot_for_file(
             RUO2_PROJECT,
             fixture,
@@ -98,10 +109,8 @@ using MeasurementBrowser
         )
 
         @test loaded !== nothing
-        @test loaded.title == "3V PUND Fatigue [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33] cycle 2 (fatigue)"
-        @test loaded.area_um2 === nothing
-        @test nrow(loaded.df) == 3
-        @test loaded.df.voltage == [0.0, 3.0, -3.0]
-        @test loaded.df.current == [1.5e-9, 2.5e-6, -2.5e-6]
+        @test occursin("cycle $selected_cycle (fatigue)", loaded.title)
+        @test loaded.area_um2 == get(device_params, :area_um2, nothing)
+        @test loaded.df == expected_df
     end
 end

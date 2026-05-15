@@ -470,7 +470,7 @@ end
     _drain_figure_script_job!(ui6)
     @test length(ui6[:figure_script_job_profiles]) == 1
     @test ui6[:figure_script_job_profiles][1].profile.group_name == "primary"
-    @test any(section -> section.key == :collect_candidates, ui6[:figure_script_job_profiles][1].profile.sections)
+    @test any(section -> section.key == :infer_clauses, ui6[:figure_script_job_profiles][1].profile.sections)
     @test length(MeasurementBrowser._figure_script_groups(ui6)) == 1
     @test MeasurementBrowser._figure_script_groups(ui6)[1].name == "primary"
     @test ui6[:figure_script_group_matches_valid] == false

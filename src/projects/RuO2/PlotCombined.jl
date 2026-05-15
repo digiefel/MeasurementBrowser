@@ -33,6 +33,7 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
         entries = NamedTuple[]
         n = length(paths)
         params_list = length(device_params_list) == n ? device_params_list : [Dict{Symbol,Any}() for _ in 1:n]
+        fatigue_files = Dict{String,DataFrame}()
         for i in 1:n
             _check_plot_cancel(should_cancel)
             path = paths[i]
@@ -40,7 +41,10 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
             dirpath = dirname(path)
             ts = stat(path).mtime
             if haskey(params, :fatigue_cycle)
-                df_p = read_pund_fatigue_cycle(basename(path), dirpath, Int(params[:fatigue_cycle]))
+                fatigue_df = get!(fatigue_files, path) do
+                    _load_ruo2_pund_fatigue_file(path; should_cancel=should_cancel)
+                end
+                df_p = _select_pund_fatigue_cycle(fatigue_df, Int(params[:fatigue_cycle]))
                 push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
             else
                 df_p = read_fe_pund(basename(path), dirpath)

@@ -5,6 +5,7 @@ RuO2Project.jl - Project dispatch methods for RuO2test ferroelectric measurement
 using Dates
 include("RuO2/Display.jl")
 include("RuO2/Interpretation.jl")
+include("RuO2/PUNDFatigueIO.jl")
 include("RuO2/Stats.jl")
 include("RuO2/PlotHelpers.jl")
 include("RuO2/PlotSingle.jl")
@@ -150,6 +151,23 @@ function _ruo2_scan_fatigue_file(filepath::AbstractString; should_cancel::Union{
     return cycles, voltage
 end
 
+function _ruo2_fatigue_columns(filepath::AbstractString, header::AbstractString)
+    columns = strip.(split(header, ','))
+    indices = Dict(column => index for (index, column) in pairs(columns))
+    required = ("Cycle", "Time_s", "Voltage_V", "Current_A")
+    missing = [column for column in required if !haskey(indices, column)]
+    isempty(missing) || error(
+        "Fatigue file '$filepath' data header is missing required columns: $(join(missing, ", "))",
+    )
+    return (
+        cycle=indices["Cycle"],
+        time=indices["Time_s"],
+        voltage=indices["Voltage_V"],
+        current=indices["Current_A"],
+        count=length(columns),
+    )
+end
+
 function _ruo2_parse_fatigue_scan_row(
     filepath::AbstractString,
     line::AbstractString,
@@ -182,23 +200,6 @@ function _ruo2_parse_fatigue_scan_row(
     cycle !== nothing || error("Fatigue row in '$filepath' is missing Cycle")
     voltage !== nothing || error("Fatigue row in '$filepath' is missing Voltage_V")
     return cycle, voltage
-end
-
-function _ruo2_fatigue_columns(filepath::AbstractString, header::AbstractString)
-    columns = strip.(split(header, ','))
-    indices = Dict(column => index for (index, column) in pairs(columns))
-    required = ("Cycle", "Time_s", "Voltage_V", "Current_A")
-    missing = [column for column in required if !haskey(indices, column)]
-    isempty(missing) || error(
-        "Fatigue file '$filepath' data header is missing required columns: $(join(missing, ", "))",
-    )
-    return (
-        cycle=indices["Cycle"],
-        time=indices["Time_s"],
-        voltage=indices["Voltage_V"],
-        current=indices["Current_A"],
-        count=length(columns),
-    )
 end
 
 """
