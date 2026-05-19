@@ -2,6 +2,11 @@ using Annotations
 using Test
 
 const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
+const ANNOT_MEASUREMENT_KEY = joinpath(
+    @__DIR__,
+    "fixtures", "RuO2",
+    "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv",
+)
 
 @testset "Annotations" begin
 
@@ -102,7 +107,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
 
         @testset "generated measurement keys keep suffix fragments" begin
             mktempdir() do dir
-                key = "/abs/path/to/meas.csv#cycle=10000000"
+                key = ANNOT_MEASUREMENT_KEY * "#cycle=10000000"
                 write(joinpath(dir, "tags.txt"),
                     """
                     # sample generated tags file
@@ -144,13 +149,13 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                     # comment
                     device RuO2test/A9/VI/D1
                     device RuO2test/A9/VI/D2
-                    measurement /abs/path/to/3V FE PUND.csv#cycle=1
+                    measurement $(ANNOT_MEASUREMENT_KEY)#cycle=1
                     """)
                 state = Annotations.Tags.load(dir)
                 # Both device and measurement keys land in the same assignments map
                 @test state.assignments["RuO2test/A9/VI/D1"] == Set(["bad"])
                 @test state.assignments["RuO2test/A9/VI/D2"] == Set(["bad"])
-                @test state.assignments["/abs/path/to/3V FE PUND.csv#cycle=1"] == Set(["bad"])
+                @test state.assignments[ANNOT_MEASUREMENT_KEY * "#cycle=1"] == Set(["bad"])
                 @test length(state.catalog) == 1
                 @test state.catalog[1].name == "bad"
                 @test !isfile(Annotations.Tags.tags_path(dir))
@@ -162,7 +167,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 write(joinpath(dir, "tags.txt"),
                     "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\nRuO2test/A10/VI\ttodo\n")
                 write(joinpath(dir, "bad_measurements"),
-                    "device RuO2test/A9/VI/D1\nmeasurement /abs/path/meas.csv\n")
+                    "device RuO2test/A9/VI/D1\nmeasurement $(ANNOT_MEASUREMENT_KEY)\n")
                 state = Annotations.Tags.load(dir)
 
                 names = Set(t.name for t in state.catalog)
@@ -172,7 +177,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 # All three keys in a single assignments map
                 @test "todo" in state.assignments["RuO2test/A10/VI"]
                 @test "bad" in state.assignments["RuO2test/A9/VI/D1"]
-                @test "bad" in state.assignments["/abs/path/meas.csv"]
+                @test "bad" in state.assignments[ANNOT_MEASUREMENT_KEY]
             end
         end
 
@@ -183,7 +188,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                      Annotations.Tags.TagDef("todo", (0x30, 0xc0, 0xff), 50)],
                     Dict{String,Set{String}}(
                         "RuO2test/A9/VI/D1" => Set(["bad"]),
-                        "/abs/path/to/meas.csv#cycle=1" => Set(["bad"]),
+                        ANNOT_MEASUREMENT_KEY * "#cycle=1" => Set(["bad"]),
                         "RuO2test/A10/VI" => Set(["todo"]),
                     ),
                 )
@@ -192,7 +197,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 bad_path = joinpath(dir, "bad_measurements")
                 @test isfile(bad_path)
                 bad_content = read(bad_path, String)
-                @test occursin("measurement /abs/path/to/meas.csv#cycle=1", bad_content)
+                @test occursin("measurement $(ANNOT_MEASUREMENT_KEY)#cycle=1", bad_content)
                 @test occursin("device RuO2test/A9/VI/D1", bad_content)
                 @test !occursin("todo", bad_content)
             end
@@ -225,7 +230,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 write(joinpath(dir, "tags.txt"),
                     "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\nRuO2test/A10/VI\ttodo\n")
                 write(joinpath(dir, "bad_measurements"),
-                    "device RuO2test/A9/VI/D1\nmeasurement /abs/path/meas.csv\n")
+                    "device RuO2test/A9/VI/D1\nmeasurement $(ANNOT_MEASUREMENT_KEY)\n")
 
                 state1 = Annotations.Tags.load(dir)
                 Annotations.Tags.save(dir, state1)
@@ -244,11 +249,11 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
             # Pass measurement ID as the key, device path + ancestors as ancestor_paths.
             mktempdir() do dir
                 write(joinpath(dir, "bad_measurements"),
-                    "measurement /abs/path/meas.csv\ndevice RuO2test/A9/VI/D1\n")
+                    "measurement $(ANNOT_MEASUREMENT_KEY)\ndevice RuO2test/A9/VI/D1\n")
                 state = Annotations.Tags.load(dir)
 
                 # measurement key is found directly
-                eff_meas = Annotations.Tags.effective(state, "/abs/path/meas.csv", String[])
+                eff_meas = Annotations.Tags.effective(state, ANNOT_MEASUREMENT_KEY, String[])
                 @test "bad" in eff_meas
 
                 # device ancestor inheritance also works via effective
@@ -257,7 +262,7 @@ const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")
                 @test "bad" in eff_dev
 
                 # compose: measurement key + device-path ancestors in one call
-                eff_combined = Annotations.Tags.effective(state, "/abs/path/meas.csv",
+                eff_combined = Annotations.Tags.effective(state, ANNOT_MEASUREMENT_KEY,
                     ["RuO2test/A9", "RuO2test/A9/VI/D1"])
                 @test "bad" in eff_combined
             end
