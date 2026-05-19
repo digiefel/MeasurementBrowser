@@ -65,7 +65,7 @@ function interpret_file(project::RuO2Project, file::SourceFile; should_cancel::U
     device_info = parse_device_info(project, file)
 
     params = kind === :pund ? pund_measurement_parameters() : Dict{Symbol,Any}()
-    stats = kind === :pund ? compute_pund_voltage_stats(file.filepath, params) : Dict{Symbol,Any}()
+    stats = kind === :pund ? compute_pund_stats(file.filepath, params) : Dict{Symbol,Any}()
 
     title = build_clean_title(project, file.filename, kind, device_info, file.header_summary)
     base = MeasurementInfo(
@@ -226,7 +226,7 @@ function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo; should_can
             fatigue_f=fatigue_f,
             fatigue_V=fatigue_V,
         ),
-        stats=pund_voltage_stats(_select_pund_fatigue_cycle(fatigue_df, c)),
+        stats=pund_stats_from_waveform(_select_pund_fatigue_cycle(fatigue_df, c)),
         clean_title=measurement.clean_title * " cycle $c",
     ) for c in cycles]
 end
@@ -307,7 +307,7 @@ function _ruo2_expand_pund_wakeup_item(measurement::MeasurementInfo)::Vector{Mea
                     unique_id="$(measurement.filepath)#wakeup_V=$(amp),rep=$(rep),kind=$(kind)",
                     measurement_kind=kind,
                     parameters=params,
-                    stats=pund_voltage_stats(df),
+                    stats=pund_stats_from_waveform(df),
                     clean_title=title,
                 ))
             end

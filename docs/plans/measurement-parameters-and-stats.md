@@ -138,6 +138,9 @@ are treated as out of date so the normal rebuild path can replace them.
 The info panel now renders `MeasurementInfo.parameters` and `MeasurementInfo.stats` directly instead
 of hardcoding PUND-specific stat computation in the UI.
 
+RuO2 PUND stats now have one file/dataframe entry point. It computes `V_base`, `V_min`, `V_max`,
+`V_amp`, `frequency_kHz`, and `Pr_max_uCcm2` when the required device area is available.
+
 ## Open Question
 
 How much of this should align now with the future project/procedure API rewrite?
