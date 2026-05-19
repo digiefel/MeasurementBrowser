@@ -77,7 +77,7 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
         @test length(fatigue) == length(cycles)
         @test all(m -> m.measurement_kind === :pund, fatigue)
         @test Set(m.unique_id for m in fatigue) == Set(
-            [_ruo2_fixture_path(_RUO2_FATIGUE_FIXTURE) * "#cycle=$cycle" for cycle in cycles],
+            [_ruo2_fixture_path(_RUO2_FATIGUE_FIXTURE) * "#fatigue_count=$cycle" for cycle in cycles],
         )
 
         wakeup = measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_WAKEUP_FIXTURE))

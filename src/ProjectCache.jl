@@ -781,11 +781,17 @@ function _load_project_cache_contents(
             append!(measurements, file_measurements)
         end,
     )
+    project = _project_by_name(identity.project_name)
+    expected_semantics = project_cache_semantic_fields(project)
+    metadata.semantic_fields == expected_semantics || throw(ProjectCacheInvalidError(
+        identity.cache_path,
+        "cache metadata fields are out of date",
+    ))
     hierarchy = MeasurementHierarchy(
         measurements,
         metadata.identity.root_path,
         metadata.has_device_metadata,
-        _project_by_name(identity.project_name),
+        project,
         metadata.skipped_count,
     )
     return ProjectCacheSnapshot(

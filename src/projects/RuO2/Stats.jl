@@ -9,27 +9,35 @@ using Statistics: mean
 
 Compute data-derived statistics for a PUND measurement by reading the CSV.
 Returns a Dict with keys:
-  :voltage_max_V      — peak positive voltage relative to baseline
-  :voltage_baseline_V — DC voltage level (mean of first 9 points)
-  :voltage_min_V      — peak negative voltage relative to baseline
-  :frequency_kHz      — inverse period of a single triangular pulse
-  :Pr_max_uCcm2       — maximum remnant polarization across repetitions (µC/cm², if area_um2 available)
-Returns an empty Dict on failure (missing file, unreadable data, etc.).
+  :V_base        — DC voltage level, from the first 9 points
+  :V_min         — minimum applied voltage
+  :V_max         — maximum applied voltage
+  :V_amp         — largest excursion away from V_base
+  :frequency_kHz — inverse period of a single triangular pulse
+  :Pr_max_uCcm2  — maximum remnant polarization across repetitions (µC/cm², if area_um2 available)
 """
+function pund_voltage_stats(df)::Dict{Symbol,Any}
+    nrow(df) > 0 || error("Cannot compute PUND voltage stats from an empty dataframe")
+    V = df.voltage
+    n_pre = min(9, length(V))
+    one_digit(x) = (y = round(x; digits=1); iszero(y) ? 0.0 : y)
+    V_base = one_digit(mean(V[1:n_pre]))
+    V_min = one_digit(minimum(V))
+    V_max = one_digit(maximum(V))
+    return Dict{Symbol,Any}(
+        :V_base => V_base,
+        :V_min => V_min,
+        :V_max => V_max,
+        :V_amp => one_digit(max(abs(V_max - V_base), abs(V_min - V_base))),
+    )
+end
+
 function _pund_stats_from_analysis_df(df, device_params::Dict{Symbol,Any})::Dict{Symbol,Any}
-    result = Dict{Symbol,Any}()
-    nrow(df) == 0 && return result
+    result = pund_voltage_stats(df)
 
     t = df.time
     V = df.voltage
     I = df.current
-
-    n_pre = min(9, length(V))
-    V_baseline = mean(V[1:n_pre])
-
-    result[:voltage_baseline_V] = round(V_baseline; digits=1)
-    result[:voltage_max_V] = round(maximum(V); digits=1)
-    result[:voltage_min_V] = round(minimum(V); digits=1)
 
     det = detect_pund_pulses(t, V, I)
     if !isempty(det.pulses)
@@ -89,46 +97,49 @@ function compute_pund_stats_from_analyzed_plot(
     analyzed,
     device_params::Dict{Symbol,Any},
 )::Dict{Symbol,Any}
-    try
-        hasproperty(analyzed, :df) || return Dict{Symbol,Any}()
-        return _pund_stats_from_analysis_df(analyzed.df, device_params)
-    catch
-        return Dict{Symbol,Any}()
-    end
+    hasproperty(analyzed, :df) || error("Analyzed PUND plot is missing df")
+    return _pund_stats_from_analysis_df(analyzed.df, device_params)
 end
 
-function compute_pund_stats(filepath::AbstractString,
+function compute_pund_voltage_stats(
+    filepath::AbstractString,
     measurement_params::Dict{Symbol,Any},
-    device_params::Dict{Symbol,Any})::Dict{Symbol,Any}
+)::Dict{Symbol,Any}
+    fname = basename(filepath)
+    dir = dirname(filepath)
+    fatigue_count = measurement_params[:fatigue_count]
+    wakeup_V = measurement_params[:wakeup_V]
 
-    isfile(filepath) || return Dict{Symbol,Any}()
-    result = Dict{Symbol,Any}()
-
-    try
-        fname = basename(filepath)
-        dir = dirname(filepath)
-
-        if haskey(measurement_params, :fatigue_cycle)
-            cycle = Int(measurement_params[:fatigue_cycle])
-            fatigue_df = _load_ruo2_pund_fatigue_file(filepath)
-            df = _select_pund_fatigue_cycle(fatigue_df, cycle)
-            nrow(df) == 0 && return result
-            merge!(result, _pund_stats_from_analysis_df(df, device_params))
-        elseif haskey(measurement_params, :amplitude_V)
-            amp = Float64(measurement_params[:amplitude_V])
-            rep = Int(get(measurement_params, :wakeup_rep, 1))
-            df = read_pund_wakeup_amplitude(fname, dir, amp, rep)
-            nrow(df) == 0 && return result
-            analyzed = analyze_pund_and_pn(df).pund
-            merge!(result, _pund_stats_from_analysis_df(analyzed, device_params))
-        else
-            df = read_fe_pund(fname, dir)
-            nrow(df) == 0 && return result
-            merge!(result, _pund_stats_from_analysis_df(df, device_params))
-        end
-    catch
-        # Return whatever we managed to compute (or empty on total failure)
+    if fatigue_count > 0
+        fatigue_df = _load_ruo2_pund_fatigue_file(filepath)
+        return pund_voltage_stats(_select_pund_fatigue_cycle(fatigue_df, Int(fatigue_count)))
+    elseif isfinite(Float64(wakeup_V))
+        df = read_pund_wakeup_amplitude(fname, dir, Float64(wakeup_V), 1)
+        return pund_voltage_stats(df)
     end
 
-    return result
+    return pund_voltage_stats(read_fe_pund(fname, dir))
+end
+
+function compute_pund_stats(
+    filepath::AbstractString,
+    measurement_params::Dict{Symbol,Any},
+    device_params::Dict{Symbol,Any},
+)::Dict{Symbol,Any}
+    fname = basename(filepath)
+    dir = dirname(filepath)
+    fatigue_count = measurement_params[:fatigue_count]
+    wakeup_V = measurement_params[:wakeup_V]
+
+    if fatigue_count > 0
+        fatigue_df = _load_ruo2_pund_fatigue_file(filepath)
+        df = _select_pund_fatigue_cycle(fatigue_df, Int(fatigue_count))
+        return _pund_stats_from_analysis_df(df, device_params)
+    elseif isfinite(Float64(wakeup_V))
+        df = read_pund_wakeup_amplitude(fname, dir, Float64(wakeup_V), 1)
+        analyzed = analyze_pund_and_pn(df).pund
+        return _pund_stats_from_analysis_df(analyzed, device_params)
+    end
+
+    return _pund_stats_from_analysis_df(read_fe_pund(fname, dir), device_params)
 end

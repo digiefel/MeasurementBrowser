@@ -1,4 +1,4 @@
-using DataLoader: read_pund_wakeup_reps, cv_sweep_has_schema
+using DataLoader: read_pund_wakeup_amplitude, read_pund_wakeup_reps, cv_sweep_has_schema
 
 # function device_path_label(::RuO2Project, device_info::DeviceInfo)
 #     length(device_info.location) <= 1 && return join(device_info.location, "_")
@@ -35,19 +35,23 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
     end
 end
 
-"""Create the initial measurement parameters for a RuO2 file before expansion or history annotation."""
-function parse_measurement_parameters(file::SourceFile, kind::Symbol)
-    if kind === :pund || kind === :pund_wakeup || kind === :pund_fatigue
-        return Dict{Symbol,Any}(
-            :wakeup_count => 0,
-            :wakeup_f => NaN,
-            :wakeup_V => NaN,
-            :fatigue_count => 0,
-            :fatigue_f => NaN,
-            :fatigue_V => NaN,
-        )
-    end
-    return Dict{Symbol,Any}()
+"""Create the six PUND measurement parameters for one logical measurement."""
+function pund_measurement_parameters(;
+    wakeup_count=0,
+    wakeup_f=NaN,
+    wakeup_V=NaN,
+    fatigue_count=0,
+    fatigue_f=NaN,
+    fatigue_V=NaN,
+)
+    return Dict{Symbol,Any}(
+        :wakeup_count => wakeup_count,
+        :wakeup_f => wakeup_f,
+        :wakeup_V => wakeup_V,
+        :fatigue_count => fatigue_count,
+        :fatigue_f => fatigue_f,
+        :fatigue_V => fatigue_V,
+    )
 end
 
 """Interpret one RuO2 CSV file into the logical measurements shown by the browser."""
@@ -60,9 +64,8 @@ function interpret_file(project::RuO2Project, file::SourceFile; should_cancel::U
     end
     device_info = parse_device_info(project, file)
 
-    # assign measurement parameters (not stats)
-    # that are ~directly stored in the file
-    params = parse_measurement_parameters(file, kind)
+    params = kind === :pund ? pund_measurement_parameters() : Dict{Symbol,Any}()
+    stats = kind === :pund ? compute_pund_voltage_stats(file.filepath, params) : Dict{Symbol,Any}()
 
     title = build_clean_title(project, file.filename, kind, device_info, file.header_summary)
     base = MeasurementInfo(
@@ -71,6 +74,7 @@ function interpret_file(project::RuO2Project, file::SourceFile; should_cancel::U
         device_info=DeviceInfo(copy(device_info.location)),
         timestamp=file.timestamp,
         parameters=params,
+        stats=stats,
         clean_title=title,
     )
 
@@ -207,19 +211,22 @@ function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo; should_can
     cycles, _ = _ruo2_scan_fatigue_file(measurement.filepath; should_cancel=should_cancel)
     isempty(cycles) && return MeasurementInfo[]
     header = _ruo2_read_pund_header(measurement.filepath)
-    fatigue_f = parse(Float64, first(split(header[:fatigue_freq], ',')))
-    fatigue_V = parse(Float64, first(split(header[:vmax], ',')))
+    fatigue_f = haskey(header, :fatigue_freq) ?
+        parse(Float64, first(split(header[:fatigue_freq], ','))) :
+        NaN
+    fatigue_V = haskey(header, :vmax) ?
+        parse(Float64, first(split(header[:vmax], ','))) :
+        NaN
+    fatigue_df = _load_ruo2_pund_fatigue_file(measurement.filepath; should_cancel=should_cancel)
     return [MeasurementInfo(measurement;
         unique_id="$(measurement.filepath)#fatigue_count=$(Int(c))",
         measurement_kind=:pund,
-        parameters=Dict{Symbol,Any}(
-            :wakeup_count => 0,
-            :wakeup_f => NaN,
-            :wakeup_V => NaN,
-            :fatigue_count => c,
-            :fatigue_f => fatigue_f,
-            :fatigue_V => fatigue_V,
+        parameters=pund_measurement_parameters(
+            fatigue_count=c,
+            fatigue_f=fatigue_f,
+            fatigue_V=fatigue_V,
         ),
+        stats=pund_voltage_stats(_select_pund_fatigue_cycle(fatigue_df, c)),
         clean_title=measurement.clean_title * " cycle $c",
     ) for c in cycles]
 end
@@ -284,19 +291,23 @@ function _ruo2_expand_pund_wakeup_item(measurement::MeasurementInfo)::Vector{Mea
         for rep in 1:n_reps
             rep_suffix = n_reps > 1 ? " rep $rep" : ""
             for (kind, seg_label) in segments
-                params = Dict{Symbol,Any}(
-                    :wakeup_count => wakeup_count,
-                    :wakeup_f => wakeup_f,
-                    :wakeup_V => amp,
-                    :fatigue_count => 0,
-                    :fatigue_f => NaN,
-                    :fatigue_V => NaN,
+                params = pund_measurement_parameters(
+                    wakeup_count=wakeup_count,
+                    wakeup_f=wakeup_f,
+                    wakeup_V=amp,
+                )
+                df = read_pund_wakeup_amplitude(
+                    basename(measurement.filepath),
+                    dirname(measurement.filepath),
+                    amp,
+                    rep,
                 )
                 title = join(filter(!isempty, ["Wakeup", device_label, date_str, amp_str, seg_label * rep_suffix]), " ")
                 push!(result, MeasurementInfo(measurement;
                     unique_id="$(measurement.filepath)#wakeup_V=$(amp),rep=$(rep),kind=$(kind)",
                     measurement_kind=kind,
                     parameters=params,
+                    stats=pund_voltage_stats(df),
                     clean_title=title,
                 ))
             end

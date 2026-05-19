@@ -5,8 +5,9 @@ function project_cache_semantic_fields(::RuO2Project)
         :measurement => [:measurement_id, :measurement_kind, :timestamp, :source_file],
         :device => [:device_key, :device_path, :area_um2, :x, :y],
         :signal => [:time, :voltage, :current, :cycle, :frequency],
-        :summary => [:voltage_V, :temperature_K, :fatigue_cycle, :amplitude_V,
-                     :global_pund_pulse_count],
+        :summary => [:wakeup_count, :wakeup_f, :wakeup_V,
+                     :fatigue_count, :fatigue_f, :fatigue_V,
+                     :V_base, :V_min, :V_max, :V_amp],
     )
 end
 
@@ -18,7 +19,7 @@ function project_cache_write_file_payload!(
     should_cancel::Union{Nothing,Function}=nothing,
 )
     if !isempty(measurements) &&
-       all(measurement -> haskey(measurement.parameters, :fatigue_cycle), measurements)
+       all(measurement -> get(measurement.parameters, :fatigue_count, 0) > 0, measurements)
         _ruo2_write_cached_pund_fatigue_file!(file_group, file, measurements; should_cancel)
         return nothing
     end
@@ -213,8 +214,8 @@ function _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement::Measureme
     haskey(file_group, "signals") && haskey(file_group["signals"], "pund_fatigue") ||
         throw(ProjectCacheInvalidError("", "cached fatigue file is missing pund_fatigue signals"))
     full_df = _read_dataframe(file_group["signals"], "pund_fatigue", "")
-    cycle = get(measurement.parameters, :fatigue_cycle, nothing)
-    cycle isa Integer || error("Cached fatigue measurement $(measurement.unique_id) is missing fatigue_cycle")
+    cycle = get(measurement.parameters, :fatigue_count, nothing)
+    cycle isa Integer || error("Cached fatigue measurement $(measurement.unique_id) is missing fatigue_count")
     df = _select_pund_fatigue_cycle(full_df, cycle)
     params = _measurement_parameters(measurement)
     loaded = (
