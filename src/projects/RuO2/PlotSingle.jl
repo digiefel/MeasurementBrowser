@@ -5,12 +5,12 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
         params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
         area_um2 = get(params, :area_um2, nothing)
         title = _plot_title(path)
-        fatigue_cycle = get(params, :fatigue_cycle, nothing)
+        fatigue_count = get(params, :fatigue_count, 0)
         segment = get(params, :pund_wakeup_segment, kind === :pn ? :pn : nothing)
-        if fatigue_cycle !== nothing
+        if fatigue_count > 0 && isfinite(get(params, :fatigue_f, NaN))
             fatigue_df = _load_ruo2_pund_fatigue_file(path; should_cancel=should_cancel)
-            df = _select_pund_fatigue_cycle(fatigue_df, Int(fatigue_cycle))
-            return (df=df, title=title * " cycle $fatigue_cycle (fatigue)", area_um2=area_um2,
+            df = _select_pund_fatigue_cycle(fatigue_df, Int(fatigue_count))
+            return (df=df, title=title * " cycle $fatigue_count (fatigue)", area_um2=area_um2,
                     debug=get(kwargs, :DEBUG, false), segment=segment)
         end
         df = read_fe_pund(basename(path), dirname(path))
@@ -19,9 +19,8 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
                 debug=get(kwargs, :DEBUG, false), segment=segment)
     elseif kind === :wakeup_pn || kind === :wakeup_pund
         params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
-        amplitude_V = Float64(get(params, :amplitude_V, 0.0))
-        wakeup_rep  = Int(get(params, :wakeup_rep, 1))
-        df = read_pund_wakeup_amplitude(basename(path), dirname(path), amplitude_V, wakeup_rep)
+        wakeup_V = Float64(get(params, :wakeup_V, 0.0))
+        df = read_pund_wakeup_amplitude(basename(path), dirname(path), wakeup_V, 1)
         seg = kind === :wakeup_pn ? :pn : :pund
         return (df=df, title=_plot_title(path), area_um2=get(params, :area_um2, nothing),
                 debug=get(kwargs, :DEBUG, false), segment=seg)

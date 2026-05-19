@@ -12,23 +12,19 @@ end
 detect_kind(::TASEProject, filename::String)::Symbol =
     match(REGEX_TASE, filename) !== nothing ? :four_terminal_iv : :unknown
 
-function interpret_file(::TASEProject, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
+function interpret_file(project::TASEProject, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
     match(REGEX_TASE, indexed.filename) === nothing && return MeasurementItem[]
-    device_info = parse_device_info(TASE_PROJECT, indexed)
-    kind = detect_kind(TASE_PROJECT, indexed.filename)
+    device_info = parse_device_info(project, indexed)
+    kind = detect_kind(project, indexed.filename)
     kind == :unknown && return MeasurementItem[]
-    params = parse_parameters(indexed.filename)
-    title = build_clean_title(TASE_PROJECT, indexed.filename, kind, device_info, indexed.header_summary)
+    params = Dict{Symbol,Any}()
+    title = build_clean_title(project, indexed.filename, kind, device_info, indexed.header_summary)
     return [MeasurementItem(
-        item_id(indexed.id),
-        indexed.id,
-        indexed.filepath,
-        kind,
-        copy(device_info.location),
-        indexed.timestamp,
-        Dict{Symbol,Any}(),
-        params,
-        Dict{Symbol,Any}(),
-        title,
+        filepath=indexed.filepath,
+        kind=kind,
+        device_path=copy(device_info.location),
+        timestamp=indexed.timestamp,
+        parameters=params,
+        title=title,
     )]
 end

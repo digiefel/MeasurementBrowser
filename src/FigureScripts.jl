@@ -607,7 +607,7 @@ function _local_cover(mask::BitVector, selected_indices::Vector{Int})
 end
 
 function _selected_measurement_ids(selected_measurements::Vector{MeasurementInfo})
-    selected_ids = Set(measurement.id for measurement in selected_measurements)
+    selected_ids = Set(measurement.unique_id for measurement in selected_measurements)
     length(selected_ids) == length(selected_measurements) || throw(FigureScriptValidationError(
         "Figure-script group selection contains duplicate logical measurements",
     ))
@@ -615,7 +615,7 @@ function _selected_measurement_ids(selected_measurements::Vector{MeasurementInfo
 end
 
 function _selected_measurement_indices(selected_ids::Set{String}, all_measurements::Vector{MeasurementInfo})
-    selected_indices = findall(measurement -> measurement.id in selected_ids, all_measurements)
+    selected_indices = findall(measurement -> measurement.unique_id in selected_ids, all_measurements)
     length(selected_indices) == length(selected_ids) || throw(FigureScriptResolutionError(
         "Figure-script group selection references measurements that are not present in the current scan",
     ))
@@ -914,7 +914,7 @@ function _finalize_group_inference(
     _profile_counter!(profiler, :final_clause_count, length(filter.clauses))
     group = NamedMeasurementGroup(name, filter)
     matched_ids = _profile_section!(profiler, :verify) do
-        Set(measurement.id for measurement in _matching_measurements(measurements, parameter_maps, group))
+        Set(measurement.unique_id for measurement in _matching_measurements(measurements, parameter_maps, group))
     end
     matched_ids == selected_ids || throw(FigureScriptResolutionError(
         "Inferred figure-script group '$(group.name)' does not reproduce the selected logical measurements exactly",

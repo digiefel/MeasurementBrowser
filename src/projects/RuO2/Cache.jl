@@ -55,7 +55,7 @@ function project_cache_write_measurement_payload!(
         device_params=params,
         should_cancel,
     )
-    analyzed === nothing && error("RuO2 cache transform produced no plot payload for $(measurement.id)")
+    analyzed === nothing && error("RuO2 cache transform produced no plot payload for $(measurement.unique_id)")
     _ruo2_write_cached_analyzed_plot!(measurement_group, measurement.measurement_kind, analyzed)
     return nothing
 end
@@ -71,7 +71,7 @@ function project_cache_read_plot_payload(
         error("Cached file failed during cache build: $msg")
     end
     haskey(measurement_group, "plot") ||
-        throw(ProjectCacheInvalidError("", "cached measurement '$(measurement.id)' is missing plot payload"))
+        throw(ProjectCacheInvalidError("", "cached measurement '$(measurement.unique_id)' is missing plot payload"))
     plot_group = measurement_group["plot"]
     source = read(plot_group["source"])
     if source == "analyzed"
@@ -79,7 +79,7 @@ function project_cache_read_plot_payload(
     elseif source == "file_pund_fatigue"
         return _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement)
     end
-    error("Unsupported RuO2 cached plot source '$source' for $(measurement.id)")
+    error("Unsupported RuO2 cached plot source '$source' for $(measurement.unique_id)")
 end
 
 function _ruo2_write_cached_analyzed_plot!(measurement_group, kind::Symbol, analyzed)
@@ -201,7 +201,7 @@ function _ruo2_write_cached_pund_fatigue_file!(
 
     measurements_group = file_group["measurements"]
     for measurement in measurements
-        measurement_group = measurements_group[_measurement_group_key(measurement.id)]
+        measurement_group = measurements_group[_measurement_group_key(measurement.unique_id)]
         plot_group = _replace_group(measurement_group, "plot")
         _write_dataset!(plot_group, "source", "file_pund_fatigue"; compress=false)
         _write_dataset!(plot_group, "measurement_kind", String(:pund); compress=false)
@@ -214,7 +214,7 @@ function _ruo2_read_cached_pund_fatigue_cycle(file_group, measurement::Measureme
         throw(ProjectCacheInvalidError("", "cached fatigue file is missing pund_fatigue signals"))
     full_df = _read_dataframe(file_group["signals"], "pund_fatigue", "")
     cycle = get(measurement.parameters, :fatigue_cycle, nothing)
-    cycle isa Integer || error("Cached fatigue measurement $(measurement.id) is missing fatigue_cycle")
+    cycle isa Integer || error("Cached fatigue measurement $(measurement.unique_id) is missing fatigue_cycle")
     df = _select_pund_fatigue_cycle(full_df, cycle)
     params = _measurement_parameters(measurement)
     loaded = (

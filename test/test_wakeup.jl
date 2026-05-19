@@ -18,13 +18,12 @@ const _WAKEUP_ACCUM_SECOND = joinpath(
     "RuO2test_A11_XI_FeCap_A2_20260509_223508_PUND_Wakeup.csv",
 )
 
-@testset "pund_wakeup detection and single MeasurementInfo" begin
+@testset "pund_wakeup detection and device parsing" begin
     @test isfile(_WAKEUP_FIXTURE)
     @test detect_kind(RUO2_PROJECT, basename(_WAKEUP_FIXTURE)) == :pund_wakeup
 
-    meas = MeasurementInfo(_WAKEUP_FIXTURE, RUO2_PROJECT)
-    @test meas.measurement_kind == :pund_wakeup
-    @test meas.device_info.location == ["RuO2test_A11", "XI", "FeCap", "A9"]
+    source = index_source_file(_WAKEUP_FIXTURE)
+    @test parse_device_info(RUO2_PROJECT, source).location == ["RuO2test_A11", "XI", "FeCap", "A9"]
 end
 
 @testset "pund_wakeup expansion" begin
@@ -98,8 +97,8 @@ end
 @testset "pund_wakeup expanded IDs and parameters" begin
     expanded = measurements_for_file(RUO2_PROJECT, _WAKEUP_FIXTURE)
 
-    @test all(m -> startswith(m.id, _WAKEUP_FIXTURE * "#split="), expanded)
-    @test length(unique(m.id for m in expanded)) == length(expanded)
+    @test all(m -> startswith(m.unique_id, _WAKEUP_FIXTURE * "#wakeup_V="), expanded)
+    @test length(unique(m.unique_id for m in expanded)) == length(expanded)
     @test all(m -> m.device_info.location == ["RuO2test_A11", "XI", "FeCap", "A9"], expanded)
 end
 

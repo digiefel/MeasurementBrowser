@@ -83,7 +83,7 @@ function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
     tag_state = _tag_state_or_error(ui_state)
     dev_key = device_path_key(measurement.device_info)
     ancestor_keys = _ancestor_keys_for_path(dev_key)
-    return _has_bad_tag(tag_state, measurement.id, [dev_key; ancestor_keys])
+    return _has_bad_tag(tag_state, measurement.unique_id, [dev_key; ancestor_keys])
 end
 
 function _assert_tag_state_visibility_available(ui_state)

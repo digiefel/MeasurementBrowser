@@ -99,7 +99,7 @@ end
 # Measurement related structs
 # ---------------------------------------------------------------------------
 struct MeasurementInfo
-    id::String
+    unique_id::String
     filename::String
     filepath::String
     clean_title::String
@@ -141,62 +141,6 @@ end
 # ---------------------------------------------------------------------------
 
 """
-Construct `MeasurementInfo` directly from one source file.
-This is mainly for single-file code paths; full scans use `interpret_measurements` first.
-"""
-function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
-    indexed = index_source_file(filepath)
-    filename = indexed.filename
-    device_info = parse_device_info(project, indexed)
-    measurement_kind = detect_kind(project, filename)
-    timestamp = indexed.timestamp
-    parameters = parse_parameters(filename)
-    exp_label = kind_label(project, measurement_kind)
-
-    device_label = device_path_label(project, device_info)
-
-    date_str = ""
-    d = get(indexed.header_summary, :test_date, "")
-    if !isempty(d)
-        date_str = try
-            parts = split(d)
-            if length(parts) >= 3
-                month = parts[2]
-                day = try
-                    parse(Int, parts[3])
-                catch
-                    nothing
-                end
-                if day !== nothing
-                    "$(month)$(day)"
-                else
-                    d
-                end
-            else
-                d
-            end
-        catch
-            d
-        end
-    end
-
-    parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label, date_str))
-    clean_title = isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
-
-    return MeasurementInfo(
-        indexed.id,
-        filename,
-        filepath,
-        clean_title,
-        measurement_kind,
-        timestamp,
-        device_info,
-        parameters,
-        Dict{Symbol,Any}(),
-    )
-end
-
-"""
 Extract a measurement timestamp from supported filename conventions.
 Returns `nothing` when the filename does not carry a parseable timestamp.
 """
@@ -217,29 +161,6 @@ function parse_timestamp(filename::String)
         end
     end
     return nothing
-end
-
-"""
-Extract lightweight measurement parameters encoded in the filename.
-These are generic hints used before project-specific parsing or device metadata is applied.
-"""
-function parse_parameters(filename::String)
-    params = Dict{Symbol,Any}()
-    if (m = match(r"(\d+(?:\.\d+)?)V", filename)) !== nothing
-        params[:voltage_V] = parse(Float64, m.captures[1])
-    end
-    if (m = match(r"(\d+(?:\.\d+)?)(khz|hz)", lowercase(filename))) !== nothing
-        val = parse(Float64, m.captures[1])
-        unit = m.captures[2]
-        params[:frequency_Hz] = unit == "khz" ? val * 1e3 : val
-    end
-    if (m = match(r"\((\d+)\)", filename)) !== nothing
-        params[:count] = parse(Int, m.captures[1])
-    end
-    if (m = match(r"(\d+)K", filename)) !== nothing
-        params[:temperature_K] = parse(Int, m.captures[1])
-    end
-    return params
 end
 
 # ---------------------------------------------------------------------------
@@ -543,7 +464,7 @@ end
 
 """
 Create the short title shown for a measurement in panels and plots.
-The title combines project label, device label, and header date when available, with the filename as fallback.
+The title combines project label and device label, with the filename as fallback.
 """
 function build_clean_title(
     project::AbstractProject,
@@ -554,33 +475,13 @@ function build_clean_title(
 )
     exp_label = kind_label(project, measurement_kind)
     device_label = device_path_label(project, device_info)
-    date_str = ""
-    d = get(header_summary, :test_date, "")
-    if d isa AbstractString && !isempty(d)
-        date_str = try
-            parts = split(d)
-            if length(parts) >= 3
-                month = parts[2]
-                day = try
-                    parse(Int, parts[3])
-                catch
-                    nothing
-                end
-                day !== nothing ? "$(month)$(day)" : d
-            else
-                d
-            end
-        catch
-            d
-        end
-    end
-    parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label, date_str))
+    parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label))
     return isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
 end
 
 function _measurement_info_from_item(item::MeasurementItem)
     return MeasurementInfo(
-        item.id,
+        item.unique_id,
         basename(item.filepath),
         item.filepath,
         item.title,
@@ -631,7 +532,9 @@ function measurements_for_file(
 )
     source = index_source_file(filepath)
     items = interpret_measurements(project, source, meta)
-    return [_measurement_info_from_item(item) for item in items]
+    measurements = [_measurement_info_from_item(item) for item in items]
+    annotate_measurements!(project, measurements)
+    return measurements
 end
 
 """
@@ -658,7 +561,7 @@ function _interpret_source_files(
             try
                 items = interpret_measurements(project, source, meta; should_cancel=should_cancel)
                 measurements = [_measurement_info_from_item(item) for item in items]
-                scanned = source_file_with_measurements(source, measurements)
+                scanned = SourceFile(source, measurements)
                 on_result(index, scanned)
                 isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)
                 isempty(measurements) || Base.Threads.atomic_add!(loaded_measurements, length(measurements))
@@ -702,7 +605,7 @@ function scan_source(
     count_first::Bool=false,
 )::SourceScan
     proj = _resolve_scan_project(project)
-    root = source_path(root_path)
+    root = normpath(abspath(expanduser(String(root_path))))
     meta = _load_scan_metadata(root)
     count_first && _count_csv(root; should_cancel, on_progress)
     _emit_progress(on_progress;

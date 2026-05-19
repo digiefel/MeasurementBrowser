@@ -29,44 +29,34 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
                 kind=:pund,
                 location=["RuO2test", "A9", "VI", "D1"],
                 timestamp=DateTime(2025, 10, 1, 17, 12, 33),
-                parameters=Dict(:count => 2),
             ),
             (
                 file=_RUO2_TLM_FIXTURE,
                 kind=:tlm4p,
                 location=["RuO2test", "A9", "VI", "TLML100W2"],
                 timestamp=DateTime(2025, 10, 1, 16, 21, 45),
-                parameters=Dict(:count => 12),
             ),
             (
                 file=_RUO2_IV_FIXTURE,
                 kind=:iv,
                 location=["RuO2test_A11", "XI", "FeCapBD", "A1A2"],
                 timestamp=DateTime(2026, 5, 9, 18, 40, 21),
-                parameters=Dict{Symbol,Any}(),
             ),
             (
                 file=_RUO2_CV_FIXTURE,
                 kind=:cvsweep,
                 location=["RuO2test_A9", "VI", "FeCap", "A4"],
                 timestamp=DateTime(2026, 3, 20, 18, 17, 44),
-                parameters=Dict(:temperature_K => 298),
             ),
         ]
 
         for case in cases
             path = _ruo2_fixture_path(case.file)
             source = index_source_file(path)
-            measurement = MeasurementInfo(path, RUO2_PROJECT)
-            @test source.id == path
-            @test measurement.id == path
-            @test measurement.filepath == path
-            @test measurement.measurement_kind === case.kind
-            @test measurement.device_info.location == case.location
-            @test measurement.timestamp == case.timestamp
-            for (key, value) in case.parameters
-                @test measurement.parameters[key] == value
-            end
+            @test source.unique_id == path
+            @test detect_kind(RUO2_PROJECT, basename(path)) === case.kind
+            @test parse_device_info(RUO2_PROJECT, source).location == case.location
+            @test source.timestamp == case.timestamp
         end
     end
 
@@ -76,8 +66,8 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
         @test Set(last(m.device_info.location) for m in breakdown) == Set(["D1", "D2"])
         @test all(m -> m.measurement_kind === :breakdown, breakdown)
         @test all(m -> m.filepath == _ruo2_fixture_path(_RUO2_BREAKDOWN_FIXTURE), breakdown)
-        @test Set(m.id for m in breakdown) == Set(
-            _ruo2_fixture_path(_RUO2_BREAKDOWN_FIXTURE) .* ["#split=D1", "#split=D2"],
+        @test Set(m.unique_id for m in breakdown) == Set(
+            _ruo2_fixture_path(_RUO2_BREAKDOWN_FIXTURE) .* ["#device=D1", "#device=D2"],
         )
 
         fatigue = measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_FATIGUE_FIXTURE))
@@ -86,14 +76,14 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
         )
         @test length(fatigue) == length(cycles)
         @test all(m -> m.measurement_kind === :pund, fatigue)
-        @test Set(m.id for m in fatigue) == Set(
+        @test Set(m.unique_id for m in fatigue) == Set(
             [_ruo2_fixture_path(_RUO2_FATIGUE_FIXTURE) * "#cycle=$cycle" for cycle in cycles],
         )
 
         wakeup = measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_WAKEUP_FIXTURE))
         @test Set(m.measurement_kind for m in wakeup) == Set([:wakeup_pn, :wakeup_pund])
-        @test length(unique(m.id for m in wakeup)) == length(wakeup)
-        @test all(m -> startswith(m.id, _ruo2_fixture_path(_RUO2_WAKEUP_FIXTURE) * "#split="), wakeup)
+        @test length(unique(m.unique_id for m in wakeup)) == length(wakeup)
+        @test all(m -> startswith(m.unique_id, _ruo2_fixture_path(_RUO2_WAKEUP_FIXTURE) * "#wakeup_V="), wakeup)
         @test all(m -> m.filepath == _ruo2_fixture_path(_RUO2_WAKEUP_FIXTURE), wakeup)
 
         pund = only(measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_PUND_FIXTURE)))

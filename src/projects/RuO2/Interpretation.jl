@@ -126,29 +126,41 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
     end
 end
 
-function interpret_file(::RuO2Project, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
-    kind = detect_kind(RUO2_PROJECT, indexed.filename)
+function parse_measurement_parameters(indexed::SourceFile, kind::Symbol)
+    if kind === :pund || kind === :pund_wakeup || kind === :pund_fatigue
+        return Dict{Symbol,Any}(
+            :wakeup_count => 0,
+            :wakeup_f => NaN,
+            :wakeup_V => NaN,
+            :fatigue_count => 0,
+            :fatigue_f => NaN,
+            :fatigue_V => NaN,
+        )
+    end
+    return Dict{Symbol,Any}()
+end
+
+function interpret_file(project::RuO2Project, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
+    kind = detect_kind(project, indexed.filename)
     kind == :unknown && return MeasurementItem[]
     if kind == :cvsweep && !cv_sweep_has_schema(indexed.filepath)
         @warn "Ignoring unsupported RuO2 CVSweep file" path = indexed.filepath
         return MeasurementItem[]
     end
-    device_info = parse_device_info(RUO2_PROJECT, indexed)
+    device_info = parse_device_info(project, indexed)
 
-    params = parse_parameters(indexed.filename)
+    # assign measurement parameters (not stats)
+    # that are ~directly stored in the file
+    params = parse_measurement_parameters(indexed, kind)
 
-    title = build_clean_title(RUO2_PROJECT, indexed.filename, kind, device_info, indexed.header_summary)
+    title = build_clean_title(project, indexed.filename, kind, device_info, indexed.header_summary)
     base = MeasurementItem(
-        item_id(indexed.id),
-        indexed.id,
-        indexed.filepath,
-        kind,
-        copy(device_info.location),
-        indexed.timestamp,
-        Dict{Symbol,Any}(),
-        params,
-        Dict{Symbol,Any}(),
-        title,
+        filepath=indexed.filepath,
+        kind=kind,
+        device_path=copy(device_info.location),
+        timestamp=indexed.timestamp,
+        parameters=params,
+        title=title,
     )
 
     expanded = _ruo2_expand_multi_device_item(base)
@@ -168,35 +180,32 @@ function _ruo2_expand_multi_device_item(item::MeasurementItem)::Vector{Measureme
     end
     parts = m.captures
     loc = copy(item.device_path)
-    return [MeasurementItem(
-        item_id(item.source_file_id; split=p),
-        item.source_file_id,
-        item.filepath,
-        item.kind,
-        vcat(loc[1:end-1], [p]),
-        item.timestamp,
-        deepcopy(item.device_parameters),
-        deepcopy(item.parameters),
-        deepcopy(item.stats),
-        replace(item.title, dev => p),
+    return [MeasurementItem(item;
+        unique_id="$(item.filepath)#device=$p",
+        device_path=vcat(loc[1:end-1], [p]),
+        title=replace(item.title, dev => p),
     ) for p in parts]
 end
 
 function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
     item.kind == :pund_fatigue || return [item]
-    cycles, voltage_V = _ruo2_scan_fatigue_file(item.filepath; should_cancel=should_cancel)
+    cycles, _ = _ruo2_scan_fatigue_file(item.filepath; should_cancel=should_cancel)
     isempty(cycles) && return MeasurementItem[]
-    return [MeasurementItem(
-        item_id(item.source_file_id; cycle=c),
-        item.source_file_id,
-        item.filepath,
-        :pund,
-        copy(item.device_path),
-        item.timestamp,
-        deepcopy(item.device_parameters),
-        merge(deepcopy(item.parameters), Dict{Symbol,Any}(:fatigue_cycle => c, :voltage_V => voltage_V)),
-        deepcopy(item.stats),
-        item.title * " cycle $c",
+    header = _ruo2_read_pund_header(item.filepath)
+    fatigue_f = parse(Float64, first(split(header[:fatigue_freq], ',')))
+    fatigue_V = parse(Float64, first(split(header[:vmax], ',')))
+    return [MeasurementItem(item;
+        unique_id="$(item.filepath)#fatigue_count=$(Int(c))",
+        kind=:pund,
+        parameters=Dict{Symbol,Any}(
+            :wakeup_count => 0,
+            :wakeup_f => NaN,
+            :wakeup_V => NaN,
+            :fatigue_count => c,
+            :fatigue_f => fatigue_f,
+            :fatigue_V => fatigue_V,
+        ),
+        title=item.title * " cycle $c",
     ) for c in cycles]
 end
 
@@ -221,10 +230,28 @@ function _ruo2_scan_pund_wakeup(filepath::AbstractString)
     return (amplitudes=amplitudes, reps_per_amplitude=reps_per_amplitude, pulse_type=pulse_type)
 end
 
+"""Read the `#   key: value` parameter lines from a RuO2 PUND procedure file."""
+function _ruo2_read_pund_header(filepath::AbstractString)
+    header = Dict{Symbol,String}()
+    open(filepath, "r") do io
+        for raw_line in eachline(io)
+            line = strip(raw_line)
+            startswith(line, '#') || break
+            m = match(r"^#\s+([^:]+):\s*(.*)$", line)
+            m === nothing && continue
+            header[Symbol(strip(m.captures[1]))] = strip(m.captures[2])
+        end
+    end
+    return header
+end
+
 function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{MeasurementItem}
     item.kind == :pund_wakeup || return [item]
     info = _ruo2_scan_pund_wakeup(item.filepath)
     isempty(info.amplitudes) && return MeasurementItem[]
+    header = _ruo2_read_pund_header(item.filepath)
+    wakeup_count = parse(Float64, first(split(header[:fatigue_count], ',')))
+    wakeup_f = parse(Float64, first(split(header[:fatigue_freq], ',')))
 
     segments = info.pulse_type === :pund ? [(:wakeup_pund, "PUND")] :
                info.pulse_type === :pn   ? [(:wakeup_pn,   "PN")]   :
@@ -240,19 +267,20 @@ function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{Measuremen
         for rep in 1:n_reps
             rep_suffix = n_reps > 1 ? " rep $rep" : ""
             for (kind, seg_label) in segments
-                params = merge(deepcopy(item.parameters), Dict{Symbol,Any}(:amplitude_V => amp, :wakeup_rep => rep))
+                params = Dict{Symbol,Any}(
+                    :wakeup_count => wakeup_count,
+                    :wakeup_f => wakeup_f,
+                    :wakeup_V => amp,
+                    :fatigue_count => 0,
+                    :fatigue_f => NaN,
+                    :fatigue_V => NaN,
+                )
                 title = join(filter(!isempty, ["Wakeup", device_label, date_str, amp_str, seg_label * rep_suffix]), " ")
-                push!(result, MeasurementItem(
-                    item_id(item.source_file_id; split="$(amp_str)_rep$(rep)_$(kind)"),
-                    item.source_file_id,
-                    item.filepath,
-                    kind,
-                    copy(item.device_path),
-                    item.timestamp,
-                    deepcopy(item.device_parameters),
-                    params,
-                    deepcopy(item.stats),
-                    title,
+                push!(result, MeasurementItem(item;
+                    unique_id="$(item.filepath)#wakeup_V=$(amp),rep=$(rep),kind=$(kind)",
+                    kind=kind,
+                    parameters=params,
+                    title=title,
                 ))
             end
         end

@@ -24,16 +24,16 @@ function _read_csv_header_summary(path::AbstractString; max_lines::Int=50)
 end
 
 function file_fingerprint(path::AbstractString)
-    normalized = source_path(path)
+    normalized = normpath(abspath(expanduser(String(path))))
     stat_info = stat(normalized)
     return FileFingerprint(normalized, Int64(stat_info.size), Int64(stat_info.mtime * 1_000_000_000))
 end
 
 function index_source_file(path::AbstractString)
-    normalized = source_path(path)
+    normalized = normpath(abspath(expanduser(String(path))))
     filename = basename(normalized)
     return SourceFile(
-        file_id(normalized),
+        normalized,
         normalized,
         filename,
         parse_timestamp(filename),

@@ -33,7 +33,7 @@ function _plot_job_key(
         project_name(project),
         target,
         target_id,
-        sort([measurement.id for measurement in measurements]),
+        sort([measurement.unique_id for measurement in measurements]),
         plot_kind,
         _plot_parameters_key(device_params),
         cache_version,

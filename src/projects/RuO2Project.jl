@@ -27,81 +27,64 @@ project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 
 """
-Attach global pulse-count metadata after RuO2 measurements have been expanded.
-Counts are scoped per physical device so plots and information-panel stats read the same history.
+Assign the PUND measurement parameters from each file and from prior device history.
 """
 function annotate_measurements!(::RuO2Project, measurements::Vector{MeasurementInfo})
     by_device = Dict{String,Vector{MeasurementInfo}}()
+
     for measurement in measurements
-        delete!(measurement.parameters, :global_pund_pulse_count)
         device_key = device_path_key(measurement.device_info)
         push!(get!(by_device, device_key, MeasurementInfo[]), measurement)
     end
 
     for device_measurements in values(by_device)
         sort!(device_measurements, by=measurement_timestamp_key)
-        pulse_count = 0
+        wakeup_counts = Dict{Tuple{Float64,Float64},Float64}()
+        seen_wakeup_events = Set{Tuple{String,Float64,Float64}}()
+        latest_wakeup = nothing
+
         for measurement in device_measurements
-            measurement.measurement_kind === :pund || continue
-            fatigue_cycle = get(measurement.parameters, :fatigue_cycle, nothing)
-            pulse_count = fatigue_cycle === nothing ? pulse_count + 1 : Int(fatigue_cycle)
-            measurement.parameters[:global_pund_pulse_count] = pulse_count
+            kind = measurement.measurement_kind
+            (kind === :pund || kind === :pn || kind === :wakeup_pn || kind === :wakeup_pund) || continue
+
+            params = measurement.parameters
+            if kind === :wakeup_pn || kind === :wakeup_pund
+                wakeup_V = Float64(params[:wakeup_V])
+                wakeup_f = Float64(params[:wakeup_f])
+                local_count = Float64(params[:wakeup_count])
+
+                condition_key = (wakeup_V, wakeup_f)
+                event_key = (measurement.filepath, wakeup_V, wakeup_f)
+                if !(event_key in seen_wakeup_events)
+                    wakeup_counts[condition_key] = get(wakeup_counts, condition_key, 0.0) + local_count
+                    push!(seen_wakeup_events, event_key)
+                end
+
+                params[:wakeup_count] = wakeup_counts[condition_key]
+                latest_wakeup = (count=params[:wakeup_count], f=wakeup_f, V=wakeup_V)
+            elseif kind === :pund && params[:fatigue_count] > 0
+                if latest_wakeup !== nothing
+                    params[:wakeup_count] = latest_wakeup.count
+                    params[:wakeup_f] = latest_wakeup.f
+                    params[:wakeup_V] = latest_wakeup.V
+                end
+            end
         end
     end
     return nothing
 end
 
-"""
-Add RuO2 summary values that depend on the selected device's full measurement set.
-This covers pulse-history totals that are not meaningful for a single measurement row.
-"""
 function augment_measurements_stats!(
     ::RuO2Project,
     stats::Dict{Symbol,Any},
     measurements::Vector{MeasurementInfo},
 )
-    global_counts = Int[
-        Int(measurement.parameters[:global_pund_pulse_count])
-        for measurement in measurements
-        if haskey(measurement.parameters, :global_pund_pulse_count)
-    ]
-    if !isempty(global_counts)
-        stats[:global_pund_pulse_count] = maximum(global_counts)
-    end
-
     return stats
 end
 
 # ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
-
-"""
-Split paired-device breakdown files into per-device measurement entries.
-
-Some RuO2 breakdown runs encode two adjacent devices in one filename; expanding them
-preserves device-level navigation and stats without duplicating the source file.
-"""
-function _ruo2_expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInfo}
-    meas.measurement_kind == :breakdown || return [meas]
-    dev = last(meas.device_info.location)
-    if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
-        return [meas]
-    end
-    parts = m.captures
-    loc = copy(meas.device_info.location)
-    return [MeasurementInfo(
-        item_id(file_id(meas.filepath); split=p),
-        meas.filename,
-        meas.filepath,
-        replace(meas.clean_title, dev => p),
-        meas.measurement_kind,
-        meas.timestamp,
-        DeviceInfo(vcat(loc[1:end-1], [p]), copy(meas.device_info.parameters)),
-        copy(meas.parameters),
-        copy(meas.stats),
-    ) for p in parts]
-end
 
 """
 Scan a PUND fatigue CSV to extract unique cycle numbers and peak voltage amplitude.

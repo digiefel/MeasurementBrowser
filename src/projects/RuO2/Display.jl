@@ -18,21 +18,19 @@ function display_label(proj::RuO2Project, meas::MeasurementInfo)
     parts = Any[meas.timestamp, label]
 
     if meas.measurement_kind === :wakeup_pn || meas.measurement_kind === :wakeup_pund
-        amp = get(meas.parameters, :amplitude_V, nothing)
-        amp !== nothing && push!(parts, "$(amp)V")
+        push!(parts, "$(meas.stats[:V_base]) ± $(meas.stats[:V_amp]) V")
         temp !== nothing && push!(parts, "$(temp)K")
         return join(parts, " ")
     end
 
     if meas.measurement_kind === :pund || meas.measurement_kind === :pn
-        m = match(r"(\d+(?:\.\d+)?)V", meas.filename)
-        voltage = m !== nothing ? tryparse(Float64, m.captures[1]) : get(meas.parameters, :voltage_V, nothing)
-        voltage !== nothing && push!(parts, "$(voltage)V")
-        freq = get(meas.parameters, :frequency_Hz, nothing)
-        if freq !== nothing
+        push!(parts, "$(meas.stats[:V_base]) ± $(meas.stats[:V_amp]) V")
+        freq = get(meas.parameters, :fatigue_f, NaN)
+        if isfinite(freq)
             push!(parts, freq >= 1000 ? "$(round(freq/1000, digits=1)) kHz" : "$(round(freq, digits=1)) Hz")
         end
-        haskey(meas.parameters, :fatigue_cycle) && push!(parts, "cycle $(meas.parameters[:fatigue_cycle]) (fatigue)")
+        fatigue_count = get(meas.parameters, :fatigue_count, 0)
+        fatigue_count > 0 && push!(parts, "cycle $fatigue_count (fatigue)")
     end
 
     temp !== nothing && push!(parts, "$(temp)K")

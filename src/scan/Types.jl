@@ -7,7 +7,7 @@ struct FileFingerprint
 end
 
 struct SourceFile
-    id::String
+    unique_id::String
     filepath::String
     filename::String
     timestamp::Union{DateTime,Nothing}
@@ -16,9 +16,20 @@ struct SourceFile
     measurements::Vector
 end
 
+function SourceFile(source::SourceFile, measurements::Vector)
+    return SourceFile(
+        source.unique_id,
+        source.filepath,
+        source.filename,
+        source.timestamp,
+        source.header_summary,
+        source.fingerprint,
+        measurements,
+    )
+end
+
 struct MeasurementItem
-    id::String
-    source_file_id::String
+    unique_id::String
     filepath::String
     kind::Symbol
     device_path::Vector{String}
@@ -29,31 +40,32 @@ struct MeasurementItem
     title::String
 end
 
-source_path(path::AbstractString) = normpath(abspath(expanduser(String(path))))
-file_id(path::AbstractString) = source_path(path)
-
-function source_file_with_measurements(source::SourceFile, measurements::Vector)
-    return SourceFile(
-        source.id,
-        source.filepath,
-        source.filename,
-        source.timestamp,
-        source.header_summary,
-        source.fingerprint,
-        measurements,
-    )
-end
-
-function item_id(
-    source_file_id::AbstractString;
-    cycle::Union{Nothing,Integer}=nothing,
-    split::Union{Nothing,AbstractString}=nothing,
+function MeasurementItem(
+    item::Union{Nothing,MeasurementItem}=nothing;
+    filepath=item === nothing ? nothing : item.filepath,
+    kind=item === nothing ? nothing : item.kind,
+    device_path=item === nothing ? nothing : deepcopy(item.device_path),
+    timestamp=item === nothing ? nothing : item.timestamp,
+    title=item === nothing ? nothing : item.title,
+    unique_id=item === nothing ? filepath : item.unique_id,
+    device_parameters=item === nothing ? Dict{Symbol,Any}() : deepcopy(item.device_parameters),
+    parameters=item === nothing ? Dict{Symbol,Any}() : deepcopy(item.parameters),
+    stats=item === nothing ? Dict{Symbol,Any}() : deepcopy(item.stats),
 )
-    base = String(source_file_id)
-    if cycle !== nothing
-        return base * "#cycle=$(Int(cycle))"
-    elseif split !== nothing
-        return base * "#split=$(String(split))"
-    end
-    return base
+    filepath === nothing && error("MeasurementItem requires filepath")
+    kind === nothing && error("MeasurementItem requires kind")
+    device_path === nothing && error("MeasurementItem requires device_path")
+    title === nothing && error("MeasurementItem requires title")
+    unique_id === nothing && error("MeasurementItem requires unique_id")
+    return MeasurementItem(
+        String(unique_id),
+        String(filepath),
+        kind,
+        device_path,
+        timestamp,
+        device_parameters,
+        parameters,
+        stats,
+        title,
+    )
 end

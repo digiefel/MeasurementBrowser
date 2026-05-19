@@ -63,8 +63,8 @@ end
             @test last(filter(event -> event.phase == :cache_update, progress_events)).processed_csv == 2
 
             loaded = load_project_cache(identity)
-            @test sort([m.id for m in loaded.hierarchy.all_measurements]) ==
-                sort([m.id for m in snapshot.hierarchy.all_measurements])
+            @test sort([m.unique_id for m in loaded.hierarchy.all_measurements]) ==
+                sort([m.unique_id for m in snapshot.hierarchy.all_measurements])
             @test loaded.semantic_fields[:measurement] == [
                 :measurement_id,
                 :measurement_kind,

@@ -94,7 +94,7 @@ function project_cache_write_file_payload!(
 )
     measurements_group = file_group["measurements"]
     for measurement in measurements
-        measurement_group = measurements_group[_measurement_group_key(measurement.id)]
+        measurement_group = measurements_group[_measurement_group_key(measurement.unique_id)]
         project_cache_write_measurement_payload!(measurement_group, project, measurement; should_cancel)
     end
     return nothing
@@ -129,7 +129,7 @@ function _cache_slug(value::AbstractString)
 end
 
 function _cache_normalize_path(path::AbstractString)
-    return source_path(path)
+    return normpath(abspath(expanduser(String(path))))
 end
 
 function project_cache_id(root_path::AbstractString)
@@ -289,7 +289,7 @@ function _read_parameters(group, name::AbstractString, cache_path::AbstractStrin
 end
 
 function _write_measurement_metadata!(group, measurement::MeasurementInfo)
-    _write_dataset!(group, "id", measurement.id; compress=false)
+    _write_dataset!(group, "id", measurement.unique_id; compress=false)
     _write_dataset!(group, "filename", measurement.filename; compress=false)
     _write_dataset!(group, "filepath", measurement.filepath; compress=false)
     _write_dataset!(group, "clean_title", measurement.clean_title; compress=false)
@@ -437,13 +437,13 @@ function _write_file_group!(
 )
     file_group = _replace_group(files_group, _file_group_key(source.fingerprint.path))
     _write_fingerprint!(file_group, source.fingerprint)
-    _write_dataset!(file_group, "source_file_id", source.id; compress=false)
+    _write_dataset!(file_group, "source_file_unique_id", source.unique_id; compress=false)
     measurements = MeasurementInfo[source.measurements...]
 
     measurement_keys = String[]
     measurements_group = _ensure_group(file_group, "measurements")
     for measurement in measurements
-        measurement_key = _measurement_group_key(measurement.id)
+        measurement_key = _measurement_group_key(measurement.unique_id)
         push!(measurement_keys, measurement_key)
         measurement_group = _replace_group(measurements_group, measurement_key)
         _write_measurement_metadata!(measurement_group, measurement)
@@ -607,8 +607,8 @@ end
 
 function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy)
     index_group = _replace_group(h5, "indexes")
-    _write_string_vector!(index_group, "measurement_ids", [m.id for m in hierarchy.all_measurements])
-    _write_string_vector!(index_group, "measurement_keys", [_measurement_group_key(m.id) for m in hierarchy.all_measurements])
+    _write_string_vector!(index_group, "measurement_ids", [m.unique_id for m in hierarchy.all_measurements])
+    _write_string_vector!(index_group, "measurement_keys", [_measurement_group_key(m.unique_id) for m in hierarchy.all_measurements])
     _write_string_vector!(index_group, "device_keys", [device_path_key(m.device_info) for m in hierarchy.all_measurements])
     _write_string_vector!(index_group, "measurement_kinds", [String(m.measurement_kind) for m in hierarchy.all_measurements])
     _write_string_vector!(index_group, "timestamps", [
@@ -627,11 +627,11 @@ function _write_file_error_group!(
 )
     file_group = _replace_group(files_group, _file_group_key(fingerprint.path))
     _write_fingerprint!(file_group, fingerprint)
-    _write_dataset!(file_group, "source_file_id", source.id; compress=false)
+    _write_dataset!(file_group, "source_file_unique_id", source.unique_id; compress=false)
     measurement_keys = String[]
     measurements_group = _ensure_group(file_group, "measurements")
     for measurement in source.measurements
-        measurement_key = _measurement_group_key(measurement.id)
+        measurement_key = _measurement_group_key(measurement.unique_id)
         push!(measurement_keys, measurement_key)
         measurement_group = _replace_group(measurements_group, measurement_key)
         _write_measurement_metadata!(measurement_group, measurement)
@@ -885,13 +885,13 @@ function _measurement_group_for_cached_plot(
     return h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
         file_key = _file_group_key(measurement.filepath)
-        measurement_key = _measurement_group_key(measurement.id)
+        measurement_key = _measurement_group_key(measurement.unique_id)
         files_group = h5["files"]
         haskey(files_group, file_key) ||
             throw(ProjectCacheInvalidError(identity.cache_path, "missing cached file group for $(measurement.filepath)"))
         measurements_group = files_group[file_key]["measurements"]
         haskey(measurements_group, measurement_key) ||
-            throw(ProjectCacheInvalidError(identity.cache_path, "missing cached measurement group for $(measurement.id)"))
+            throw(ProjectCacheInvalidError(identity.cache_path, "missing cached measurement group for $(measurement.unique_id)"))
         return project_cache_read_plot_payload(
             _project_by_name(identity.project_name),
             measurement,

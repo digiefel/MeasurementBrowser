@@ -26,8 +26,7 @@ using MeasurementBrowser
     end
 
     @testset "RuO2 expansion and staged plot loading" begin
-        meas = MeasurementInfo(fixture, RUO2_PROJECT)
-        @test meas.measurement_kind == :pund_fatigue
+        @test detect_kind(RUO2_PROJECT, basename(fixture)) == :pund_fatigue
 
         expanded = measurements_for_file(RUO2_PROJECT, fixture)
         cycles = sort(unique(MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture).cycle))

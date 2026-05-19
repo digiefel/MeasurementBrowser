@@ -587,7 +587,7 @@ function _selected_measurements_in_panel_order(ui_state)
         _visible_measurements(ui_state, proj, all_measurements, filter_meas)
     end
     selected_ids = Set(get(ui_state, :selected_measurement_ids, String[]))
-    return [measurement for measurement in visible_measurements if measurement.id in selected_ids]
+    return [measurement for measurement in visible_measurements if measurement.unique_id in selected_ids]
 end
 
 function _group_measurements_in_current_scan(ui_state, group::NamedMeasurementGroup)
@@ -622,9 +622,9 @@ function _add_selection_to_figure_script_group!(ui_state)
     isempty(selected_measurements) && throw(FigureScriptValidationError("Select one or more measurements before adding them"))
 
     all_measurements = _current_scan_measurements(ui_state)
-    merged_ids = Set(measurement.id for measurement in _group_measurements_in_current_scan(ui_state, group))
-    foreach(measurement -> push!(merged_ids, measurement.id), selected_measurements)
-    merged_measurements = [measurement for measurement in all_measurements if measurement.id in merged_ids]
+    merged_ids = Set(measurement.unique_id for measurement in _group_measurements_in_current_scan(ui_state, group))
+    foreach(measurement -> push!(merged_ids, measurement.unique_id), selected_measurements)
+    merged_measurements = [measurement for measurement in all_measurements if measurement.unique_id in merged_ids]
     request = _figure_script_job_request(
         ui_state,
         :replace,
@@ -646,11 +646,11 @@ function _remove_selection_from_figure_script_group!(ui_state)
     selected_measurements = _selected_measurements_in_panel_order(ui_state)
     isempty(selected_measurements) && throw(FigureScriptValidationError("Select one or more measurements before removing them"))
 
-    remaining_ids = Set(measurement.id for measurement in _group_measurements_in_current_scan(ui_state, group))
-    foreach(measurement -> delete!(remaining_ids, measurement.id), selected_measurements)
+    remaining_ids = Set(measurement.unique_id for measurement in _group_measurements_in_current_scan(ui_state, group))
+    foreach(measurement -> delete!(remaining_ids, measurement.unique_id), selected_measurements)
     isempty(remaining_ids) && throw(FigureScriptValidationError("Measurement groups cannot be empty"))
     all_measurements = _current_scan_measurements(ui_state)
-    remaining_measurements = [measurement for measurement in all_measurements if measurement.id in remaining_ids]
+    remaining_measurements = [measurement for measurement in all_measurements if measurement.unique_id in remaining_ids]
     request = _figure_script_job_request(
         ui_state,
         :replace,
@@ -747,10 +747,10 @@ function _build_measurement_index(measurements::Vector{MeasurementInfo})
     measurement_index = Dict{String,MeasurementInfo}()
     sizehint!(measurement_index, length(measurements))
     for measurement in measurements
-        haskey(measurement_index, measurement.id) && error(
-            "Duplicate measurement id generated during scan: $(measurement.id)",
+        haskey(measurement_index, measurement.unique_id) && error(
+            "Duplicate measurement id generated during scan: $(measurement.unique_id)",
         )
-        measurement_index[measurement.id] = measurement
+        measurement_index[measurement.unique_id] = measurement
     end
     return measurement_index
 end
@@ -850,9 +850,9 @@ function _append_cache_measurements!(ui_state, measurements::Vector{MeasurementI
     metadata_keys = Set(get(ui_state, :device_metadata_keys, Symbol[]))
     appended = false
     for measurement in measurements
-        haskey(measurement_index, measurement.id) && continue
+        haskey(measurement_index, measurement.unique_id) && continue
         insert_measurement!(hierarchy, measurement)
-        measurement_index[measurement.id] = measurement
+        measurement_index[measurement.unique_id] = measurement
         foreach(key -> push!(metadata_keys, key), keys(measurement.device_info.parameters))
         appended = true
     end

@@ -407,7 +407,7 @@ function _render_measurements_panel(ui_state, filter_meas)
         length(all_measurements),
         filter_meas,
         () -> begin
-            ui_state[:selected_measurement_ids] = [measurement.id for measurement in visible_measurements]
+            ui_state[:selected_measurement_ids] = [measurement.unique_id for measurement in visible_measurements]
             _apply_visible_selection!(ui_state)
         end;
         item_label="measurements", filter_id="##measurements_filter"
@@ -450,29 +450,29 @@ function _render_measurements_panel(ui_state, filter_meas)
                     end_idx = Int(unsafe_load(clipper.DisplayEnd))
                     for idx in start_idx:end_idx
                         measurement = visible_measurements[idx]
-                        ig.PushID(measurement.id)
+                        ig.PushID(measurement.unique_id)
                         ig.TableNextRow()
                         ig.TableSetColumnIndex(0)
                         rows_rendered += 1
 
-                        is_selected = measurement.id in selected_measurement_id_set
+                        is_selected = measurement.unique_id in selected_measurement_id_set
                         bad_text_pushed = false
                         if registry_ready
                             tag_state = _tag_state_or_error(ui_state)
                             dev_key = device_path_key(measurement.device_info)
                             ancestor_keys = _ancestor_keys_for_path(dev_key)
                             bad_text_pushed = _push_tag_text_style!(
-                                tag_state, measurement.id, [dev_key; ancestor_keys])
+                                tag_state, measurement.unique_id, [dev_key; ancestor_keys])
                         end
                         if ig.Selectable(display_label(proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
                             io = ig.GetIO()
                             shift_held = unsafe_load(io.KeyShift)
                             ctrl_held = unsafe_load(io.KeyCtrl)
                             selected_measurement_ids = copy(get(ui_state, :selected_measurement_ids, String[]))
-                            visible_measurement_ids = [visible.id for visible in visible_measurements]
+                            visible_measurement_ids = [visible.unique_id for visible in visible_measurements]
                             _update_multi_selection!(
                                 selected_measurement_ids,
-                                measurement.id,
+                                measurement.unique_id,
                                 visible_measurement_ids,
                                 shift_held,
                                 ctrl_held,
@@ -484,7 +484,7 @@ function _render_measurements_panel(ui_state, filter_meas)
 
                         if ig.BeginPopupContextItem()
                             target_measurements = _selection_targets(get(ui_state, :selected_measurements, MeasurementInfo[]), measurement)
-                            target_ids = [target.id for target in target_measurements]
+                            target_ids = [target.unique_id for target in target_measurements]
                             selected_count = length(target_ids)
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count measurements")
 
