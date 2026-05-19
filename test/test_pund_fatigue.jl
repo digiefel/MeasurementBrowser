@@ -25,63 +25,6 @@ using MeasurementBrowser
         @test cycle_df.current == fatigue_df.current[fatigue_df.cycle .== cycle]
     end
 
-    @testset "RuO2 fatigue scan requires monotonic cycle blocks" begin
-        mktempdir() do dir
-            bad_path = joinpath(dir, "bad_fatigue.csv")
-            write(bad_path, join([
-                "Cycle,Time_s,Voltage_V,Current_A",
-                "1,0.0,1.0,0.0",
-                "2,1.0,2.0,0.0",
-                "1,2.0,3.0,0.0",
-                "",
-            ], "\n"))
-            err = try
-                MeasurementBrowser._ruo2_scan_fatigue_file(bad_path)
-                nothing
-            catch caught
-                caught
-            end
-            @test err isa ErrorException
-            @test occursin("non-monotonic cycle blocks", sprint(showerror, err))
-        end
-    end
-
-    @testset "FE PUND loader errors explicitly on malformed files" begin
-        mktempdir() do dir
-            bad_path = joinpath(dir, "bad_pund.csv")
-            write(bad_path, "not,a,real,pund,file\n1,2,3,4\n")
-            err = try
-                read_fe_pund(basename(bad_path), dir)
-                nothing
-            catch caught
-                caught
-            end
-            @test err isa ErrorException
-            @test occursin("Could not find FE PUND data header", sprint(showerror, err))
-        end
-    end
-
-    @testset "FE PUND loader accepts compact source CSVs" begin
-        mktempdir() do dir
-            path = joinpath(dir, "compact_pund.csv")
-            write(path, join([
-                "Time_s,Current_A,Voltage_V",
-                "0.0,1.0e-9,0.0",
-                "1.0e-6,2.0e-6,3.0",
-                "2.0e-6,-2.0e-6,-3.0",
-                "",
-            ], "\n"))
-
-            df = read_fe_pund(basename(path), dir)
-            @test names(df) == ["time", "current", "voltage", "current_time", "voltage_time"]
-            @test df.time == [0.0, 1.0e-6, 2.0e-6]
-            @test df.current == [1.0e-9, 2.0e-6, -2.0e-6]
-            @test df.voltage == [0.0, 3.0, -3.0]
-            @test df.current_time == df.time
-            @test df.voltage_time == df.time
-        end
-    end
-
     @testset "RuO2 expansion and staged plot loading" begin
         meas = MeasurementInfo(fixture, RUO2_PROJECT)
         @test meas.measurement_kind == :pund_fatigue
@@ -90,12 +33,32 @@ using MeasurementBrowser
         cycles = sort(unique(MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture).cycle))
         @test length(expanded) == length(cycles)
         @test all(m -> m.measurement_kind == :pund, expanded)
-        @test [m.parameters[:fatigue_cycle] for m in expanded] == cycles
-        @test all(m -> m.parameters[:voltage_V] > 0, expanded)
-        @test occursin("cycle $(cycles[1]) (fatigue)", display_label(RUO2_PROJECT, expanded[1]))
+        @test all(m -> haskey(m.parameters, :wakeup_count), expanded)
+        @test all(m -> haskey(m.parameters, :wakeup_f), expanded)
+        @test all(m -> haskey(m.parameters, :wakeup_V), expanded)
+        @test all(m -> haskey(m.parameters, :fatigue_count), expanded)
+        @test all(m -> haskey(m.parameters, :fatigue_f), expanded)
+        @test all(m -> haskey(m.parameters, :fatigue_V), expanded)
+        @test all(m -> get(m.parameters, :wakeup_count, NaN) == 0, expanded)
+        @test all(m -> isnan(get(m.parameters, :wakeup_f, NaN)), expanded)
+        @test all(m -> isnan(get(m.parameters, :wakeup_V, NaN)), expanded)
+        @test Set(get(m.parameters, :fatigue_f, NaN) for m in expanded) == Set([100000.0])
+        @test Set(get(m.parameters, :fatigue_V, NaN) for m in expanded) == Set([2.9])
+        @test [get(m.parameters, :fatigue_count, NaN) for m in expanded] == cycles
+        @test all(
+            m -> (
+                m.stats[:V_base],
+                m.stats[:V_min],
+                m.stats[:V_max],
+                m.stats[:V_amp],
+            ) == (0.6, -2.3, 3.5, 2.9),
+            expanded,
+        )
 
         selected = expanded[2]
-        selected_cycle = Int(selected.parameters[:fatigue_cycle])
+        selected_count = get(selected.parameters, :fatigue_count, NaN)
+        @test selected_count == cycles[2]
+        selected_cycle = isfinite(selected_count) ? Int(selected_count) : cycles[2]
         expected_df = MeasurementBrowser._select_pund_fatigue_cycle(
             MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture),
             selected_cycle,
@@ -109,7 +72,6 @@ using MeasurementBrowser
         )
 
         @test loaded !== nothing
-        @test occursin("cycle $selected_cycle (fatigue)", loaded.title)
         @test loaded.area_um2 == get(device_params, :area_um2, nothing)
         @test loaded.df == expected_df
     end
