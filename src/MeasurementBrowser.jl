@@ -18,7 +18,7 @@ include("PlotJobs.jl")
 include("Gui.jl")
 
 export start_browser, scan_source
-export SourceFile, SourceScan, FileFingerprint, MeasurementItem, index_source_file
+export SourceFile, SourceScan, FileFingerprint, index_source_file
 export AnalysisResult
 export MeasurementHierarchy, HierarchyNode, MeasurementInfo, DeviceInfo
 export AbstractProject, RuO2Project, TASEProject, RUO2_PROJECT, TASE_PROJECT

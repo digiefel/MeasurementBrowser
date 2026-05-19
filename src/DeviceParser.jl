@@ -24,7 +24,7 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 # Interface (implemented by each project via multiple dispatch):
 #   parse_device_info(::P, source::SourceFile) → DeviceInfo
 #   detect_kind(::P, filename) → Symbol
-#   interpret_file(::P, source) → Vector{MeasurementItem}
+#   interpret_file(::P, source) → Vector{MeasurementInfo}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   load_plot_for_file(::P, path, kind; kwargs...) → Any
@@ -50,7 +50,7 @@ draw_plot_for_files(::AbstractProject, combined_kind, analyzed; kwargs...) = not
 available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
-interpret_file(::AbstractProject, source::SourceFile; kwargs...) = MeasurementItem[]
+interpret_file(::AbstractProject, source::SourceFile; kwargs...) = MeasurementInfo[]
 
 """
 Attach project-specific derived metadata to measurements after the complete measurement list is known.
@@ -108,6 +108,64 @@ struct MeasurementInfo
     device_info::DeviceInfo
     parameters::Dict{Symbol,Any}
     stats::Dict{Symbol,Any}
+end
+
+function MeasurementInfo(;
+    filepath,
+    measurement_kind,
+    device_info,
+    clean_title,
+    filename=basename(String(filepath)),
+    unique_id=filepath,
+    timestamp=nothing,
+    parameters=Dict{Symbol,Any}(),
+    stats=Dict{Symbol,Any}(),
+)
+    filepath === nothing && error("MeasurementInfo requires filepath")
+    filename === nothing && error("MeasurementInfo requires filename")
+    unique_id === nothing && error("MeasurementInfo requires unique_id")
+    clean_title === nothing && error("MeasurementInfo requires clean_title")
+    measurement_kind === nothing && error("MeasurementInfo requires measurement_kind")
+    device_info === nothing && error("MeasurementInfo requires device_info")
+    return MeasurementInfo(
+        String(unique_id),
+        String(filename),
+        String(filepath),
+        String(clean_title),
+        measurement_kind,
+        timestamp,
+        device_info,
+        parameters,
+        stats,
+    )
+end
+
+function MeasurementInfo(
+    measurement::MeasurementInfo;
+    filepath=measurement.filepath,
+    filename=measurement.filename,
+    unique_id=measurement.unique_id,
+    clean_title=measurement.clean_title,
+    measurement_kind=measurement.measurement_kind,
+    timestamp=measurement.timestamp,
+    device_info=DeviceInfo(
+        copy(measurement.device_info.location),
+        deepcopy(measurement.device_info.parameters),
+    ),
+    parameters=deepcopy(measurement.parameters),
+    stats=deepcopy(measurement.stats),
+)
+    return MeasurementInfo(;
+        filepath,
+        filename,
+        unique_id,
+        clean_title,
+        measurement_kind,
+        timestamp,
+        device_info,
+        parameters,
+        stats,
+    )
 end
 
 struct HierarchyNode
@@ -479,25 +537,10 @@ function build_clean_title(
     return isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
 end
 
-function _measurement_info_from_item(item::MeasurementItem)
-    return MeasurementInfo(
-        item.unique_id,
-        basename(item.filepath),
-        item.filepath,
-        item.title,
-        item.kind,
-        item.timestamp,
-        DeviceInfo(copy(item.device_path), deepcopy(item.device_parameters)),
-        deepcopy(item.parameters),
-        deepcopy(item.stats),
-    )
-end
-
 """
-Interpret a source CSV into project measurement items.
+Interpret a source CSV into project measurements.
 The project parser handles filename/header semantics; this wrapper overlays device metadata loaded
-from `device_info.txt` when present. Source scans and cache builds both use this path before
-constructing `MeasurementInfo`.
+from `device_info.txt` when present.
 """
 function interpret_measurements(
     project::AbstractProject,
@@ -505,14 +548,14 @@ function interpret_measurements(
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    items = interpret_file(project, source; should_cancel=should_cancel)
+    measurements = interpret_file(project, source; should_cancel=should_cancel)
     if meta !== nothing
-        for item in items
-            dev_params = _lookup_device_params(meta, item.device_path)
-            dev_params !== nothing && merge!(item.device_parameters, dev_params)
+        for measurement in measurements
+            dev_params = _lookup_device_params(meta, measurement.device_info.location)
+            dev_params !== nothing && merge!(measurement.device_info.parameters, dev_params)
         end
     end
-    return items
+    return measurements
 end
 
 function _is_scan_cancel_error(err)
@@ -531,8 +574,7 @@ function measurements_for_file(
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
 )
     source = index_source_file(filepath)
-    items = interpret_measurements(project, source, meta)
-    measurements = [_measurement_info_from_item(item) for item in items]
+    measurements = interpret_measurements(project, source, meta)
     annotate_measurements!(project, measurements)
     return measurements
 end
@@ -559,8 +601,7 @@ function _interpret_source_files(
         Base.acquire(worker_limit)
         Base.Threads.@spawn begin
             try
-                items = interpret_measurements(project, source, meta; should_cancel=should_cancel)
-                measurements = [_measurement_info_from_item(item) for item in items]
+                measurements = interpret_measurements(project, source, meta; should_cancel=should_cancel)
                 scanned = SourceFile(source, measurements)
                 on_result(index, scanned)
                 isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)

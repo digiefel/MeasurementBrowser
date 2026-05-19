@@ -140,12 +140,12 @@ function parse_measurement_parameters(indexed::SourceFile, kind::Symbol)
     return Dict{Symbol,Any}()
 end
 
-function interpret_file(project::RuO2Project, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
+function interpret_file(project::RuO2Project, indexed::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementInfo}
     kind = detect_kind(project, indexed.filename)
-    kind == :unknown && return MeasurementItem[]
+    kind == :unknown && return MeasurementInfo[]
     if kind == :cvsweep && !cv_sweep_has_schema(indexed.filepath)
         @warn "Ignoring unsupported RuO2 CVSweep file" path = indexed.filepath
-        return MeasurementItem[]
+        return MeasurementInfo[]
     end
     device_info = parse_device_info(project, indexed)
 
@@ -154,13 +154,13 @@ function interpret_file(project::RuO2Project, indexed::SourceFile; should_cancel
     params = parse_measurement_parameters(indexed, kind)
 
     title = build_clean_title(project, indexed.filename, kind, device_info, indexed.header_summary)
-    base = MeasurementItem(
+    base = MeasurementInfo(
         filepath=indexed.filepath,
-        kind=kind,
-        device_path=copy(device_info.location),
+        measurement_kind=kind,
+        device_info=DeviceInfo(copy(device_info.location)),
         timestamp=indexed.timestamp,
         parameters=params,
-        title=title,
+        clean_title=title,
     )
 
     expanded = _ruo2_expand_multi_device_item(base)
@@ -172,31 +172,34 @@ function interpret_file(project::RuO2Project, indexed::SourceFile; should_cancel
     return expanded
 end
 
-function _ruo2_expand_multi_device_item(item::MeasurementItem)::Vector{MeasurementItem}
-    item.kind == :breakdown || return [item]
-    dev = last(item.device_path)
+function _ruo2_expand_multi_device_item(measurement::MeasurementInfo)::Vector{MeasurementInfo}
+    measurement.measurement_kind == :breakdown || return [measurement]
+    dev = last(measurement.device_info.location)
     if (m = match(r"^([A-Z][0-9]+)([A-Z][0-9]+)$", dev)) === nothing
-        return [item]
+        return [measurement]
     end
     parts = m.captures
-    loc = copy(item.device_path)
-    return [MeasurementItem(item;
-        unique_id="$(item.filepath)#device=$p",
-        device_path=vcat(loc[1:end-1], [p]),
-        title=replace(item.title, dev => p),
+    loc = copy(measurement.device_info.location)
+    return [MeasurementInfo(measurement;
+        unique_id="$(measurement.filepath)#device=$p",
+        device_info=DeviceInfo(
+            vcat(loc[1:end-1], [p]),
+            deepcopy(measurement.device_info.parameters),
+        ),
+        clean_title=replace(measurement.clean_title, dev => p),
     ) for p in parts]
 end
 
-function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementItem}
-    item.kind == :pund_fatigue || return [item]
-    cycles, _ = _ruo2_scan_fatigue_file(item.filepath; should_cancel=should_cancel)
-    isempty(cycles) && return MeasurementItem[]
-    header = _ruo2_read_pund_header(item.filepath)
+function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementInfo}
+    measurement.measurement_kind == :pund_fatigue || return [measurement]
+    cycles, _ = _ruo2_scan_fatigue_file(measurement.filepath; should_cancel=should_cancel)
+    isempty(cycles) && return MeasurementInfo[]
+    header = _ruo2_read_pund_header(measurement.filepath)
     fatigue_f = parse(Float64, first(split(header[:fatigue_freq], ',')))
     fatigue_V = parse(Float64, first(split(header[:vmax], ',')))
-    return [MeasurementItem(item;
-        unique_id="$(item.filepath)#fatigue_count=$(Int(c))",
-        kind=:pund,
+    return [MeasurementInfo(measurement;
+        unique_id="$(measurement.filepath)#fatigue_count=$(Int(c))",
+        measurement_kind=:pund,
         parameters=Dict{Symbol,Any}(
             :wakeup_count => 0,
             :wakeup_f => NaN,
@@ -205,7 +208,7 @@ function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Un
             :fatigue_f => fatigue_f,
             :fatigue_V => fatigue_V,
         ),
-        title=item.title * " cycle $c",
+        clean_title=measurement.clean_title * " cycle $c",
     ) for c in cycles]
 end
 
@@ -245,11 +248,11 @@ function _ruo2_read_pund_header(filepath::AbstractString)
     return header
 end
 
-function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{MeasurementItem}
-    item.kind == :pund_wakeup || return [item]
-    info = _ruo2_scan_pund_wakeup(item.filepath)
-    isempty(info.amplitudes) && return MeasurementItem[]
-    header = _ruo2_read_pund_header(item.filepath)
+function _ruo2_expand_pund_wakeup_item(measurement::MeasurementInfo)::Vector{MeasurementInfo}
+    measurement.measurement_kind == :pund_wakeup || return [measurement]
+    info = _ruo2_scan_pund_wakeup(measurement.filepath)
+    isempty(info.amplitudes) && return MeasurementInfo[]
+    header = _ruo2_read_pund_header(measurement.filepath)
     wakeup_count = parse(Float64, first(split(header[:fatigue_count], ',')))
     wakeup_f = parse(Float64, first(split(header[:fatigue_freq], ',')))
 
@@ -257,10 +260,10 @@ function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{Measuremen
                info.pulse_type === :pn   ? [(:wakeup_pn,   "PN")]   :
                                            [(:wakeup_pn, "PN"), (:wakeup_pund, "PUND")]
 
-    device_label = join(item.device_path[2:end], "_")
-    date_str = item.timestamp === nothing ? "" : Dates.format(item.timestamp, "yyyy-mm-dd")
+    device_label = join(measurement.device_info.location[2:end], "_")
+    date_str = measurement.timestamp === nothing ? "" : Dates.format(measurement.timestamp, "yyyy-mm-dd")
 
-    result = MeasurementItem[]
+    result = MeasurementInfo[]
     for amp in info.amplitudes
         amp_str = "$(amp)V"
         n_reps = get(info.reps_per_amplitude, amp, 1)
@@ -276,11 +279,11 @@ function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{Measuremen
                     :fatigue_V => NaN,
                 )
                 title = join(filter(!isempty, ["Wakeup", device_label, date_str, amp_str, seg_label * rep_suffix]), " ")
-                push!(result, MeasurementItem(item;
-                    unique_id="$(item.filepath)#wakeup_V=$(amp),rep=$(rep),kind=$(kind)",
-                    kind=kind,
+                push!(result, MeasurementInfo(measurement;
+                    unique_id="$(measurement.filepath)#wakeup_V=$(amp),rep=$(rep),kind=$(kind)",
+                    measurement_kind=kind,
                     parameters=params,
-                    title=title,
+                    clean_title=title,
                 ))
             end
         end
