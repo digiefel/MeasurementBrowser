@@ -111,8 +111,8 @@ The existing fixture tests are the contract for the first migration.
 1. Add contract tests for the target metadata shape using real fixture files. Done.
 2. Add the metadata storage fields to the data model. Done.
 3. Simplify the scan path so project parsers create `MeasurementInfo` directly. Done.
-4. Move cheap local extraction into measurement procedure parameters.
-5. Move waveform/history-derived values into analyzed stats.
+4. Move cheap local extraction into measurement procedure parameters. In progress for RuO2 PUND.
+5. Move waveform/history-derived values into analyzed stats. In progress for RuO2 PUND voltage stats.
 6. Migrate PUND/wakeup/fatigue first and delete old mixed keys.
 7. Use the same pattern for other procedure families later.
 
@@ -121,9 +121,22 @@ The existing fixture tests are the contract for the first migration.
 Project parsers now return `MeasurementInfo` records directly. `MeasurementItem` was removed, and
 measurement identity is exposed as `unique_id`.
 
-The next step is to make the RuO2 PUND-family parameter extraction real: defaults should only remain
-where they are the agreed final value, and wakeup/fatigue fields should be assigned by the file paths
-that actually know them.
+RuO2 PUND-family logical measurements now use one shared constructor for the six measurement
+parameters. Standalone PUND gets the agreed no-history defaults. Wakeup and fatigue expansion assign
+their fields where those file structures are actually read.
+
+RuO2 PUND-family logical measurements also attach the first voltage stats directly from the selected
+waveform: `V_base`, `V_min`, `V_max`, and `V_amp`. These stats are rounded to one decimal place.
+This removes the old voltage-stat names from the PUND stats path.
+
+The next step is to tighten the remaining PUND-adjacent loading paths so they all consume
+`wakeup_*` and `fatigue_*` directly, without old key names or UI-side reconstruction.
+
+The cache metadata field list now uses the new PUND fields. Caches written with old PUND field names
+are treated as out of date so the normal rebuild path can replace them.
+
+The info panel now renders `MeasurementInfo.parameters` and `MeasurementInfo.stats` directly instead
+of hardcoding PUND-specific stat computation in the UI.
 
 ## Open Question
 

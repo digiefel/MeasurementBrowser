@@ -240,7 +240,6 @@ function _init_tag_state!(ui_state)
     ui_state[:selected_measurement_id_set] = Set{String}()
     ui_state[:selected_path] = String[]
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
-    ui_state[:computed_stats_cache] = Dict{Tuple{String,Int},Dict{Symbol,Any}}()
 end
 
 function _init_plot_state!(ui_state)
