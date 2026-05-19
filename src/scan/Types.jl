@@ -16,14 +16,14 @@ struct SourceFile
     measurements::Vector
 end
 
-function SourceFile(source::SourceFile, measurements::Vector)
+function SourceFile(file::SourceFile, measurements::Vector)
     return SourceFile(
-        source.unique_id,
-        source.filepath,
-        source.filename,
-        source.timestamp,
-        source.header_summary,
-        source.fingerprint,
+        file.unique_id,
+        file.filepath,
+        file.filename,
+        file.timestamp,
+        file.header_summary,
+        file.fingerprint,
         measurements,
     )
 end

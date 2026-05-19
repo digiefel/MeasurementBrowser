@@ -13,13 +13,13 @@ end
 function project_cache_write_file_payload!(
     file_group,
     ::RuO2Project,
-    indexed::SourceFile,
+    file::SourceFile,
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )
     if !isempty(measurements) &&
        all(measurement -> haskey(measurement.parameters, :fatigue_cycle), measurements)
-        _ruo2_write_cached_pund_fatigue_file!(file_group, indexed, measurements; should_cancel)
+        _ruo2_write_cached_pund_fatigue_file!(file_group, file, measurements; should_cancel)
         return nothing
     end
     invoke(
@@ -27,7 +27,7 @@ function project_cache_write_file_payload!(
         Tuple{Any,AbstractProject,SourceFile,Vector{MeasurementInfo}},
         file_group,
         RUO2_PROJECT,
-        indexed,
+        file,
         measurements;
         should_cancel,
     )
@@ -191,11 +191,11 @@ end
 
 function _ruo2_write_cached_pund_fatigue_file!(
     file_group,
-    indexed::SourceFile,
+    file::SourceFile,
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    df = _load_ruo2_pund_fatigue_file(indexed.filepath; should_cancel=should_cancel)
+    df = _load_ruo2_pund_fatigue_file(file.filepath; should_cancel=should_cancel)
     signals_group = _ensure_group(file_group, "signals")
     _write_dataframe!(signals_group, "pund_fatigue", df)
 

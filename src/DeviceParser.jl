@@ -22,9 +22,9 @@ const KNOWN_PROJECTS = AbstractProject[]
 const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
 # Interface (implemented by each project via multiple dispatch):
-#   parse_device_info(::P, source::SourceFile) → DeviceInfo
+#   parse_device_info(::P, file::SourceFile) → DeviceInfo
 #   detect_kind(::P, filename) → Symbol
-#   interpret_file(::P, source) → Vector{MeasurementInfo}
+#   interpret_file(::P, file) → Vector{MeasurementInfo}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   load_plot_for_file(::P, path, kind; kwargs...) → Any
@@ -50,7 +50,7 @@ draw_plot_for_files(::AbstractProject, combined_kind, analyzed; kwargs...) = not
 available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
-interpret_file(::AbstractProject, source::SourceFile; kwargs...) = MeasurementInfo[]
+interpret_file(::AbstractProject, file::SourceFile; kwargs...) = MeasurementInfo[]
 
 """
 Attach project-specific derived metadata to measurements after the complete measurement list is known.
@@ -538,17 +538,17 @@ function build_clean_title(
 end
 
 """
-Interpret a source CSV into project measurements.
+Interpret a file into project measurements.
 The project parser handles filename/header semantics; this wrapper overlays device metadata loaded
 from `device_info.txt` when present.
 """
 function interpret_measurements(
     project::AbstractProject,
-    source::SourceFile,
+    file::SourceFile,
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    measurements = interpret_file(project, source; should_cancel=should_cancel)
+    measurements = interpret_file(project, file; should_cancel=should_cancel)
     if meta !== nothing
         for measurement in measurements
             dev_params = _lookup_device_params(meta, measurement.device_info.location)
@@ -565,7 +565,7 @@ function _is_scan_cancel_error(err)
 end
 
 """
-Interpret a single source file into all its expanded `MeasurementInfo` entries.
+Interpret a single file into all its expanded `MeasurementInfo` entries.
 Equivalent to the scan pipeline for one file; useful in tests and single-file code paths.
 """
 function measurements_for_file(
@@ -573,19 +573,19 @@ function measurements_for_file(
     filepath::AbstractString;
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
 )
-    source = index_source_file(filepath)
-    measurements = interpret_measurements(project, source, meta)
+    file = index_source_file(filepath)
+    measurements = interpret_measurements(project, file, meta)
     annotate_measurements!(project, measurements)
     return measurements
 end
 
 """
-Interpret source CSV files concurrently while preserving the original file order in callbacks.
+Interpret files concurrently while preserving the original file order in callbacks.
 Progress counts files attempted, measurements loaded, and files that produced no visible measurements.
 """
 function _interpret_source_files(
     project::AbstractProject,
-    source_files::Vector{SourceFile},
+    files::Vector{SourceFile},
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
     should_cancel::Union{Nothing,Function}=nothing,
     on_result::Function,
@@ -597,12 +597,12 @@ function _interpret_source_files(
     progress_lock = ReentrantLock()
     worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
 
-    @sync for (index, source) in pairs(source_files)
+    @sync for (index, file) in pairs(files)
         Base.acquire(worker_limit)
         Base.Threads.@spawn begin
             try
-                measurements = interpret_measurements(project, source, meta; should_cancel=should_cancel)
-                scanned = SourceFile(source, measurements)
+                measurements = interpret_measurements(project, file, meta; should_cancel=should_cancel)
+                scanned = SourceFile(file, measurements)
                 on_result(index, scanned)
                 isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)
                 isempty(measurements) || Base.Threads.atomic_add!(loaded_measurements, length(measurements))
@@ -610,11 +610,11 @@ function _interpret_source_files(
 
                 if on_progress !== nothing
                     progress = (
-                        total_csv=length(source_files),
+                        total_csv=length(files),
                         processed_csv=processed_now,
                         loaded_measurements=loaded_measurements[],
                         skipped_csv=skipped_csv[],
-                        current_path=source.filepath,
+                        current_path=file.filepath,
                     )
                     lock(progress_lock) do
                         on_progress(progress)
@@ -630,7 +630,7 @@ function _interpret_source_files(
         processed_csv=processed_csv[],
         loaded_measurements=loaded_measurements[],
         skipped_csv=skipped_csv[],
-        total_csv=length(source_files),
+        total_csv=length(files),
     )
 end
 
@@ -656,7 +656,7 @@ function scan_source(
         loaded_measurements=0,
         skipped_csv=0,
     )
-    source_files = collect_source_files(
+    files = collect_source_files(
         root;
         should_cancel=should_cancel,
         on_file=(file, count) -> _emit_progress(
@@ -669,10 +669,10 @@ function scan_source(
             current_path=file.filepath,
         ),
     )
-    scanned_files = Vector{SourceFile}(undef, length(source_files))
+    scanned_files = Vector{SourceFile}(undef, length(files))
     _emit_progress(on_progress;
         phase=:scanning,
-        total_csv=length(source_files),
+        total_csv=length(files),
         processed_csv=0,
         loaded_measurements=0,
         skipped_csv=0,
@@ -680,10 +680,10 @@ function scan_source(
 
     summary = _interpret_source_files(
         proj,
-        source_files,
+        files,
         meta;
         should_cancel=should_cancel,
-        on_result=(index, source) -> (scanned_files[index] = source),
+        on_result=(index, file) -> (scanned_files[index] = file),
         on_progress=(progress) -> _emit_progress(
             on_progress;
             phase=:scanning,
@@ -697,8 +697,8 @@ function scan_source(
 
     measurements = MeasurementInfo[]
     sizehint!(measurements, summary.loaded_measurements)
-    for source in scanned_files
-        append!(measurements, source.measurements)
+    for file in scanned_files
+        append!(measurements, file.measurements)
     end
 
     hierarchy = MeasurementHierarchy(measurements, root, meta !== nothing, proj, summary.skipped_csv)
