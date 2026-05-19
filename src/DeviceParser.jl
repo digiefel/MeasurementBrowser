@@ -107,6 +107,7 @@ struct MeasurementInfo
     timestamp::Union{DateTime,Nothing}
     device_info::DeviceInfo
     parameters::Dict{Symbol,Any}
+    stats::Dict{Symbol,Any}
 end
 
 struct HierarchyNode
@@ -182,7 +183,17 @@ function MeasurementInfo(filepath::AbstractString, project::AbstractProject)
     parts = filter(!isempty, (exp_label == "Unknown" ? "" : exp_label, device_label, date_str))
     clean_title = isempty(parts) ? strip(replace(filename, r"\.csv$" => "")) : join(parts, " ")
 
-    return MeasurementInfo(indexed.id, filename, filepath, clean_title, measurement_kind, timestamp, device_info, parameters)
+    return MeasurementInfo(
+        indexed.id,
+        filename,
+        filepath,
+        clean_title,
+        measurement_kind,
+        timestamp,
+        device_info,
+        parameters,
+        Dict{Symbol,Any}(),
+    )
 end
 
 """
@@ -577,6 +588,7 @@ function _measurement_info_from_item(item::MeasurementItem)
         item.timestamp,
         DeviceInfo(copy(item.device_path), deepcopy(item.device_parameters)),
         deepcopy(item.parameters),
+        deepcopy(item.stats),
     )
 end
 

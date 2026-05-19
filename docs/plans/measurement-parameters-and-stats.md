@@ -108,8 +108,8 @@ The existing fixture tests are the contract for the first migration.
 
 ## Rollout
 
-1. Add contract tests for the target metadata shape using real fixture files.
-2. Add the metadata storage fields to the data model.
+1. Add contract tests for the target metadata shape using real fixture files. Done.
+2. Add the metadata storage fields to the data model. Done.
 3. Move cheap local extraction into measurement procedure parameters.
 4. Move waveform/history-derived values into analyzed stats.
 5. Migrate PUND/wakeup/fatigue first and delete old mixed keys.

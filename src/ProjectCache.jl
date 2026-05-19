@@ -300,6 +300,7 @@ function _write_measurement_metadata!(group, measurement::MeasurementInfo)
     _write_string_vector!(group, "device_path", measurement.device_info.location)
     _write_parameters!(group, "device_parameters", measurement.device_info.parameters)
     _write_parameters!(group, "measurement_parameters", measurement.parameters)
+    _write_parameters!(group, "measurement_stats", measurement.stats)
     return nothing
 end
 
@@ -315,6 +316,7 @@ function _read_measurement_metadata(group, cache_path::AbstractString)
     device_path = String.(_read_required(group, "device_path", cache_path))
     device_parameters = _read_parameters(group, "device_parameters", cache_path)
     measurement_parameters = _read_parameters(group, "measurement_parameters", cache_path)
+    measurement_stats = _read_parameters(group, "measurement_stats", cache_path)
     return MeasurementInfo(
         id,
         filename,
@@ -324,6 +326,7 @@ function _read_measurement_metadata(group, cache_path::AbstractString)
         timestamp,
         DeviceInfo(device_path, device_parameters),
         measurement_parameters,
+        measurement_stats,
     )
 end
 

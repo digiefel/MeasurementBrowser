@@ -147,6 +147,7 @@ function interpret_file(::RuO2Project, indexed::SourceFile; should_cancel::Union
         indexed.timestamp,
         Dict{Symbol,Any}(),
         params,
+        Dict{Symbol,Any}(),
         title,
     )
 
@@ -176,6 +177,7 @@ function _ruo2_expand_multi_device_item(item::MeasurementItem)::Vector{Measureme
         item.timestamp,
         deepcopy(item.device_parameters),
         deepcopy(item.parameters),
+        deepcopy(item.stats),
         replace(item.title, dev => p),
     ) for p in parts]
 end
@@ -193,6 +195,7 @@ function _ruo2_expand_pund_fatigue_item(item::MeasurementItem; should_cancel::Un
         item.timestamp,
         deepcopy(item.device_parameters),
         merge(deepcopy(item.parameters), Dict{Symbol,Any}(:fatigue_cycle => c, :voltage_V => voltage_V)),
+        deepcopy(item.stats),
         item.title * " cycle $c",
     ) for c in cycles]
 end
@@ -248,6 +251,7 @@ function _ruo2_expand_pund_wakeup_item(item::MeasurementItem)::Vector{Measuremen
                     item.timestamp,
                     deepcopy(item.device_parameters),
                     params,
+                    deepcopy(item.stats),
                     title,
                 ))
             end

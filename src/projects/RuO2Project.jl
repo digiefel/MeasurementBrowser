@@ -99,6 +99,7 @@ function _ruo2_expand_multi_device(meas::MeasurementInfo)::Vector{MeasurementInf
         meas.timestamp,
         DeviceInfo(vcat(loc[1:end-1], [p]), copy(meas.device_info.parameters)),
         copy(meas.parameters),
+        copy(meas.stats),
     ) for p in parts]
 end
 

@@ -25,6 +25,7 @@ struct MeasurementItem
     timestamp::Union{DateTime,Nothing}
     device_parameters::Dict{Symbol,Any}
     parameters::Dict{Symbol,Any}
+    stats::Dict{Symbol,Any}
     title::String
 end
 

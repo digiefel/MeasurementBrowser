@@ -28,6 +28,7 @@ function interpret_file(::TASEProject, indexed::SourceFile; should_cancel::Union
         indexed.timestamp,
         Dict{Symbol,Any}(),
         params,
+        Dict{Symbol,Any}(),
         title,
     )]
 end
