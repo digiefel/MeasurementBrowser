@@ -41,6 +41,109 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
     return nothing
 end
 
+# this should be moved to PUNDAnalysis or similar once PlotKind is in
+function debug_plot(::RuO2Project, measurements::Vector{MeasurementInfo}, loaded; kwargs...)
+    measurement = only(measurements)
+    measurement.measurement_kind in (:pund, :wakeup_pund) ||
+        error("RuO2 debug plots are currently only implemented for PUND measurements")
+
+    df = loaded.df
+    time_us = df.time .* 1e6
+    current_uA = df.current .* 1e6
+    voltage = df.voltage
+
+    fig = Figure(size=(1250, 900))
+    controls = GridLayout(fig[0, 1:2], tellwidth=false)
+    ax_wave = Axis(fig[1, 1:2], xlabel="Time (μs)", ylabel="Current (μA)",
+        title="$(loaded.title) - PUND detector debug")
+    ax_voltage = Axis(fig[1, 1:2], yaxisposition=:right, ylabel="Voltage (V)")
+    ax_dv = Axis(fig[2, 1:2], xlabel="Time (μs)", ylabel="dV", title="Smoothed derivative and pulse boundaries")
+    ax_iv = Axis(fig[3, 1], xlabel="Voltage (V)", ylabel="Current (μA)", title="I-V")
+    ax_qv = Axis(fig[3, 2], xlabel="Voltage (V)", ylabel="Q_FE (pC)", title="Q-V")
+    linkxaxes!(ax_wave, ax_voltage)
+
+    lines!(ax_wave, time_us, current_uA; color=:blue, linewidth=1)
+    lines!(ax_voltage, time_us, voltage; color=:red, linewidth=1)
+
+    smooth = Slider(controls[1, 1], range=3:2:51, startvalue=9)
+    dV_fraction = Slider(controls[1, 3], range=0.05:0.05:0.95, startvalue=0.5)
+    min_len = Slider(controls[2, 1], range=5:5:100, startvalue=20)
+    min_V = Slider(controls[2, 3], range=0.05:0.05:0.8, startvalue=0.25)
+    Label(controls[1, 2], lift(v -> "smooth window: $(Int(v))", smooth.value))
+    Label(controls[1, 4], lift(v -> "dV threshold: $(round(v, digits=2))", dV_fraction.value))
+    Label(controls[2, 2], lift(v -> "min pulse len: $(Int(v))", min_len.value))
+    Label(controls[2, 4], lift(v -> "min V amp: $(round(v, digits=2))", min_V.value))
+
+    debug_state = lift(smooth.value, dV_fraction.value, min_len.value, min_V.value) do sw, dvf, ml, mv
+        detector_kwargs = (
+            smooth_window=Int(sw),
+            min_pulse_len=Int(ml),
+            dV_threshold_fraction=Float64(dvf),
+            min_V_amp_fraction=Float64(mv),
+        )
+        result = analyze_pund_and_pn(DataFrame(df); DEBUG=true, detector_kwargs...)
+
+        detector = result.pund_df === nothing ? nothing :
+            detect_pund_pulses(result.pund_df.time, result.pund_df.voltage, result.pund_df.current; detector_kwargs...)
+        return (result=result, detector=detector)
+    end
+
+    dV_points = lift(debug_state) do state
+        state.detector === nothing && return Point2f[]
+        return Point2f.(state.result.pund_df.time .* 1e6, state.detector.dV)
+    end
+    dV_pos_points = lift(debug_state) do state
+        state.detector === nothing && return Point2f[]
+        t = state.result.pund_df.time
+        isempty(t) && return Point2f[]
+        return [
+            Point2f(first(t) * 1e6, state.detector.dV_threshold),
+            Point2f(last(t) * 1e6, state.detector.dV_threshold),
+        ]
+    end
+    dV_neg_points = lift(debug_state) do state
+        state.detector === nothing && return Point2f[]
+        t = state.result.pund_df.time
+        isempty(t) && return Point2f[]
+        return [
+            Point2f(first(t) * 1e6, -state.detector.dV_threshold),
+            Point2f(last(t) * 1e6, -state.detector.dV_threshold),
+        ]
+    end
+    boundaries = lift(debug_state) do state
+        state.detector === nothing && return Float64[]
+        t = state.result.pund_df.time .* 1e6
+        return sort!([t[i] for pulse in state.detector.pulses for i in (first(pulse), last(pulse))])
+    end
+    iv_points = lift(debug_state) do state
+        analyzed = state.result.pund
+        analyzed === nothing && return Point2f.(voltage, current_uA)
+        return Point2f.(analyzed.voltage, analyzed.current .* 1e6)
+    end
+    qv_points = lift(debug_state) do state
+        analyzed = state.result.pund
+        analyzed === nothing && return Point2f[]
+        return Point2f.(analyzed.voltage, analyzed.Q_FE .* 1e12)
+    end
+    status = lift(debug_state) do state
+        state.detector === nothing && return "No PUND segment detected"
+        n_pulses = length(state.detector.pulses)
+        group_size = state.result.pund_group_size
+        threshold = round(state.detector.dV_threshold, sigdigits=4)
+        return "$n_pulses pulses, group size $group_size, threshold $threshold"
+    end
+
+    lines!(ax_dv, dV_points; color=:black, linewidth=1)
+    lines!(ax_dv, dV_pos_points; color=:orange, linestyle=:dash)
+    lines!(ax_dv, dV_neg_points; color=:orange, linestyle=:dash)
+    vlines!(ax_dv, boundaries; color=:black, linestyle=:dot, linewidth=1)
+    lines!(ax_iv, iv_points; color=:green, linewidth=1)
+    lines!(ax_qv, qv_points; color=:purple, linewidth=1)
+    Label(controls[3, 1:4], status)
+
+    return fig
+end
+
 function _ruo2_pulse_groups(df::DataFrame, group_size::Int)
     pulse_groups = Tuple{Int,BitVector}[]
     hasproperty(df, :pulse_idx) || return pulse_groups

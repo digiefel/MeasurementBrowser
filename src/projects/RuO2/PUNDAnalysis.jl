@@ -8,9 +8,7 @@ Route a raw waveform to PN, PUND, or PN+PUND analysis.
 The first pass uses rough voltage regions only. PUND pulse detection runs later,
 after any PN prefix has been removed.
 """
-function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
-    @assert all(["time", "voltage", "current"] .∈ Ref(names(df))) "columns :time, :voltage, :current must exist"
-    
+function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false, detector_kwargs...)
     # infer number of pulses
     regions = NamedTuple[]
     Vc = df.voltage .- mean(df.voltage[1:10]) # assumes it's longer than 10, which is of course true
@@ -29,7 +27,9 @@ function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
         return (
             kind=:pn_pund,
             pn=analyze_pn(pn_df; DEBUG=DEBUG),
-            pund=analyze_pund(pund_df; has_initial_poling=has_poling, DEBUG=DEBUG),
+            pund=analyze_pund(pund_df; has_initial_poling=has_poling, DEBUG=DEBUG, detector_kwargs...),
+            pund_df=pund_df,
+            has_initial_poling=has_poling,
             pn_group_size=1,
             pund_group_size=has_poling ? 5 : 4,
             regions=regions,
@@ -38,7 +38,9 @@ function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
         return (
             kind=:pund,
             pn=nothing,
-            pund=analyze_pund(df; DEBUG=DEBUG),
+            pund=analyze_pund(df; DEBUG=DEBUG, detector_kwargs...),
+            pund_df=df,
+            has_initial_poling=true,
             pn_group_size=2,
             pund_group_size=5,
             regions=regions,
@@ -47,7 +49,9 @@ function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
         return (
             kind=:pund,
             pn=nothing,
-            pund=analyze_pund(df; has_initial_poling=false, DEBUG=DEBUG),
+            pund=analyze_pund(df; has_initial_poling=false, DEBUG=DEBUG, detector_kwargs...),
+            pund_df=df,
+            has_initial_poling=false,
             pn_group_size=2,
             pund_group_size=4,
             regions=regions,
@@ -57,6 +61,8 @@ function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
             kind=:pn,
             pn=analyze_pn(df; DEBUG=DEBUG),
             pund=nothing,
+            pund_df=nothing,
+            has_initial_poling=false,
             pn_group_size=1,
             pund_group_size=4,
             regions=regions,
@@ -68,6 +74,8 @@ function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
             kind=:unknown,
             pn=nothing,
             pund=nothing,
+            pund_df=nothing,
+            has_initial_poling=false,
             pn_group_size=2,
             pund_group_size=5,
             regions=regions,
@@ -93,32 +101,28 @@ function analyze_pund(
     pulses::Union{Nothing,Vector{UnitRange{Int}}}=nothing,
     has_initial_poling::Bool=true,
     DEBUG::Bool=false,
+    baseline_points::Int=10,
+    detector_kwargs...,
 )
     t, V, I = df[!, :time], df[!, :voltage], df[!, :current]
     N = length(t)
 
     if pulses === nothing
         # ---- full pulse detection & polarity check ---------------------------------
-        det = detect_pund_pulses(t, V, I)
+        det = detect_pund_pulses(t, V, I; baseline_points, detector_kwargs...)
         pulses = det.pulses
         I = det.I  # baseline-shifted
         I = -I # invert current to match expected polarity (positive for positive voltage pulses)
-
-        if DEBUG
-            n0 = min(10, N)
-            baseline_I = mean(skipmissing(filter(!isnan, df[!, :current][1:n0])))
-            @info "analyze_pund: baseline current offset" n0 baseline = baseline_I
-        end
 
         if !DEBUG
             @assert !isempty(pulses) "no valid pulses found; adjust derivative threshold or filtering parameters"
         end
     else
         # ---- pulse boundaries provided, skip detection -----------------------------
-        I, baseline_I = _center_current(I)
+        I, baseline_I = _center_current(I, baseline_points)
 
         # Quick polarity check on first pulse (use centered voltage)
-        n_vbl2 = min(9, N)
+        n_vbl2 = min(baseline_points, N)
         V_baseline2 = mean(V[1:n_vbl2])
         Vc2 = V .- V_baseline2
         half = pulses[1][1:end÷2]
@@ -207,18 +211,19 @@ Detect precise pulse boundaries in a PUND-only waveform.
 Mixed PN+PUND waveforms are split before this function is called.
 """
 function detect_pund_pulses(t, V, I;
-    smooth_window::Int=9,
+    smooth_window::Int=21,
     min_pulse_len::Int=20,
     dV_threshold_fraction::Float64=0.5,
-    min_V_amp_fraction::Float64=0.25)
+    min_V_amp_fraction::Float64=0.25,
+    baseline_points::Int=10)
 
-    I_shifted, baseline_I = _center_current(I)
+    I_shifted, baseline_I = _center_current(I, baseline_points)
 
     dV = smoothdata([0.0; diff(V)], :movmedian, smooth_window)
     dV_max = maximum(abs.(dV))
     dV_threshold = dV_max * dV_threshold_fraction
 
-    n_pre = min(9, length(V))
+    n_pre = min(baseline_points, length(V))
     V_baseline = mean(V[1:n_pre])
     Vc = V .- V_baseline
     min_V_amp = maximum(abs.(Vc)) * min_V_amp_fraction

@@ -337,7 +337,11 @@ function render_plot_window(ui_state)
         measurement = only(selected_measurements)
         plot_measurements = selected_measurements
         plot_kind = measurement.measurement_kind
-        plot_key = (measurement.unique_id, _cache_plot_version(ui_state), measurement.parameters)
+        plot_key = (
+            measurement.unique_id,
+            _cache_plot_version(ui_state),
+            _plot_parameters_key([measurement.parameters]),
+        )
         plot_status = :ready
     elseif length(selected_measurements) > 1
         if combined_type === nothing
