@@ -4,8 +4,7 @@ using Statistics
 
 using DataAnalysis: analyze_pund, analyze_pund_and_pn, analyze_tlm_combined, calculate_sheet_resistance,
                     extract_tlm_geometry_from_params, analyze_pund_fatigue_combined
-using DataLoader: read_iv_sweep, read_tlm_4p,
-                  read_cv_sweep
+using DataLoader: read_iv_sweep, read_tlm_4p
 
 function _plot_title(path::AbstractString)
     return strip(replace(basename(String(path)), r"\.csv$" => ""))

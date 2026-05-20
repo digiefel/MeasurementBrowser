@@ -1,5 +1,4 @@
 using MeasurementBrowser
-using DataLoader
 using DataFrames: nrow
 using Test
 
@@ -15,8 +14,8 @@ const _CV_FIXTURES = (
 
     # Fixture with '#'-prefixed comment header and a direct Z (Ohm) column.
     z_path = joinpath(fixtures_dir, _CV_FIXTURES.z_comment)
-    @test cv_sweep_has_schema(z_path)
-    z_df = read_cv_sweep(basename(z_path), dirname(z_path))
+    @test MeasurementBrowser.cv_sweep_has_schema(z_path)
+    z_df = MeasurementBrowser.read_cv_sweep(basename(z_path), dirname(z_path))
     @test names(z_df) == ["frequency_Hz", "bias_V", "Cp_F", "Z_Ohm", "time_s", "status_cp", "status_combined"]
     @test nrow(z_df) > 0
     @test all(z_df.Z_Ohm .> 0)
@@ -24,8 +23,8 @@ const _CV_FIXTURES = (
 
     # Fixture without comments, has G (S) — Z must be computed from G + Cp.
     g_path = joinpath(fixtures_dir, _CV_FIXTURES.g_plain)
-    @test cv_sweep_has_schema(g_path)
-    g_df = read_cv_sweep(basename(g_path), dirname(g_path))
+    @test MeasurementBrowser.cv_sweep_has_schema(g_path)
+    g_df = MeasurementBrowser.read_cv_sweep(basename(g_path), dirname(g_path))
     @test names(g_df) == ["frequency_Hz", "bias_V", "Cp_F", "Z_Ohm", "time_s", "status_cp", "status_combined"]
     @test nrow(g_df) > 0
     @test all(isfinite, g_df.Z_Ohm)

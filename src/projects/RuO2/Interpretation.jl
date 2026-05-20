@@ -1,5 +1,3 @@
-using DataLoader: cv_sweep_has_schema
-
 # function device_path_label(::RuO2Project, device_info::DeviceInfo)
 #     length(device_info.location) <= 1 && return join(device_info.location, "_")
 #     return join(device_info.location[2:end], "_")
