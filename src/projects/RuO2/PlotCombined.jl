@@ -48,7 +48,7 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
                 end
                 df_p = _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
             else
-                df_p = read_fe_pund(basename(path), dirname(path))
+                df_p = read_pund_file(basename(path), dirname(path))
             end
             push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
         end

@@ -1,146 +1,73 @@
-export read_fe_pund, read_pund_wakeup_amplitude, read_pund_wakeup_reps
+export read_pund_file, read_pund_wakeup_file
 
-"""
-Read FE PUND data from CSV file
-"""
-function read_fe_pund(filename, workdir=".")
-    filepath = joinpath(workdir, filename)
-    lines = readlines(filepath)
-    data_start = 0
-    column_map = nothing
+const _PUND_COLUMNS_V1 = ("Time", "MeasResult1_value", "MeasResult2_value")
+const _PUND_COLUMNS_V2 = ("Time_s", "Current_A", "Voltage_V")
+const _PUND_WAKEUP_COLUMNS = ("Vmax_V", "Time_s", "Voltage_V", "Current_A")
 
-    for (i, line) in enumerate(lines)
-        columns = strip.(split(line, ','))
-        if "Time" in columns &&
-           "MeasResult1_value" in columns &&
-           "MeasResult2_value" in columns
-            indices = Dict(column => index for (index, column) in pairs(columns))
-            column_map = (
-                time=indices["Time"],
-                current=indices["MeasResult1_value"],
-                voltage=indices["MeasResult2_value"],
-                current_time=get(indices, "MeasResult1_time", indices["Time"]),
-                voltage_time=get(indices, "MeasResult2_time", indices["Time"]),
-            )
-            data_start = i + 1
-            break
-        elseif "Time_s" in columns &&
-               "Current_A" in columns &&
-               "Voltage_V" in columns
-            indices = Dict(column => index for (index, column) in pairs(columns))
-            column_map = (
-                time=indices["Time_s"],
-                current=indices["Current_A"],
-                voltage=indices["Voltage_V"],
-                current_time=indices["Time_s"],
-                voltage_time=indices["Time_s"],
-            )
-            data_start = i + 1
-            break
-        end
-    end
-
-    if data_start == 0 || column_map === nothing
-        error("Could not find FE PUND data header in $filepath")
-    end
-
-    data_lines = lines[data_start:end]
-    time = Float64[]
-    current = Float64[]
-    voltage = Float64[]
-    current_time = Float64[]
-    voltage_time = Float64[]
-
-    for line in data_lines
-        if !isempty(strip(line))
-            parts = split(line, ',')
-            if length(parts) >= maximum(column_map)
-                try
-                    push!(time, parse(Float64, parts[column_map.time]))
-                    push!(current, parse(Float64, parts[column_map.current]))
-                    push!(voltage, parse(Float64, parts[column_map.voltage]))
-                    push!(current_time, parse(Float64, parts[column_map.current_time]))
-                    push!(voltage_time, parse(Float64, parts[column_map.voltage_time]))
-                catch
-                    continue
-                end
+function _find_data_header(filepath::AbstractString, schemas)
+    row = open(filepath, "r") do io
+        for (row, line) in enumerate(eachline(io))
+            columns = Set(String.(strip.(split(line, ','))))
+            for schema in schemas
+                issubset(schema, columns) && return row
             end
         end
+        return nothing
     end
-
-    isempty(time) && error("No numeric FE PUND rows could be parsed from $filepath")
-
-    return DataFrame(time=time, current=current, voltage=voltage,
-        current_time=current_time, voltage_time=voltage_time)
+    row !== nothing && return row
+    error("Could not find a supported PUND data header in $filepath")
 end
 
 """
-Read a single amplitude's data from a PUND_Wakeup CSV file.
-Columns: Vmax_V, Time_s, Voltage_V, Current_A (header rows prefixed with #).
-Returns DataFrame with :time, :current, :voltage matching analyze_pund_and_pn expectations.
-rep selects which repetition group to return (1-based). Groups are separated by time gaps
-larger than REP_GAP_S (default 1 ms), which distinguishes consecutive read events separated
-by fatigue cycling from individual sample points within one read.
+Old and new PUND exports use different column names, but downstream analysis expects the
+same four time/current/voltage columns.
 """
-const _WAKEUP_REP_GAP_S = 1e-3
-
-function read_pund_wakeup_amplitude(filename, workdir, amplitude_V::Float64, rep::Int=1)
+function read_pund_file(filename, workdir=".")
     filepath = joinpath(workdir, filename)
-    groups = Vector{NTuple{3,Float64}}[]
-    current_group = NTuple{3,Float64}[]
-    last_t = -Inf
-    open(filepath, "r") do io
-        for line in eachline(io)
-            startswith(line, '#') && continue
-            isempty(strip(line)) && continue
-            parts = split(line, ',')
-            length(parts) >= 4 || continue
-            v = tryparse(Float64, parts[1])
-            (v === nothing || v != amplitude_V) && continue
-            t   = tryparse(Float64, parts[2])
-            vol = tryparse(Float64, parts[3])
-            c   = tryparse(Float64, parts[4])
-            (t === nothing || vol === nothing || c === nothing) && continue
-            if last_t != -Inf && t - last_t > _WAKEUP_REP_GAP_S
-                push!(groups, current_group)
-                current_group = NTuple{3,Float64}[]
-            end
-            push!(current_group, (t, vol, c))
-            last_t = t
-        end
+    header_row = _find_data_header(filepath, (_PUND_COLUMNS_V1, _PUND_COLUMNS_V2))
+    source = CSV.read(filepath, DataFrame; header=header_row)
+    if all(column -> column in names(source), _PUND_COLUMNS_V1)
+        current_time = "MeasResult1_time" in names(source) ? source.MeasResult1_time : source.Time
+        voltage_time = "MeasResult2_time" in names(source) ? source.MeasResult2_time : source.Time
+        return DataFrame(
+            time=source.Time,
+            current=source.MeasResult1_value,
+            voltage=source.MeasResult2_value,
+            current_time=current_time,
+            voltage_time=voltage_time,
+        )
     end
-    isempty(current_group) || push!(groups, current_group)
-    isempty(groups) && return DataFrame(time=Float64[], current=Float64[], voltage=Float64[])
-    grp = groups[clamp(rep, 1, length(groups))]
-    return DataFrame(time=[x[1] for x in grp], voltage=[x[2] for x in grp], current=[x[3] for x in grp])
+
+    return DataFrame(
+        time=source.Time_s,
+        current=source.Current_A,
+        voltage=source.Voltage_V,
+        current_time=source.Time_s,
+        voltage_time=source.Time_s,
+    )
 end
 
 """
-Count repetition groups per amplitude in a PUND_Wakeup CSV.
-Returns Dict{Float64,Int} mapping each amplitude to its rep count.
+Wakeup files contain one readout table with one block per configured wakeup amplitude.
 """
-function read_pund_wakeup_reps(filename, workdir=".")
-    filepath = joinpath(workdir, filename)
-    amp_last_t = Dict{Float64,Float64}()
-    amp_reps   = Dict{Float64,Int}()
-    open(filepath, "r") do io
-        for line in eachline(io)
-            startswith(line, '#') && continue
-            isempty(strip(line)) && continue
-            parts = split(line, ',')
-            length(parts) >= 4 || continue
-            v = tryparse(Float64, parts[1])
-            v === nothing && continue
-            t = tryparse(Float64, parts[2])
-            t === nothing && continue
-            last_t = get(amp_last_t, v, -Inf)
-            if last_t == -Inf
-                amp_reps[v] = 1
-            elseif t - last_t > _WAKEUP_REP_GAP_S
-                amp_reps[v] = get(amp_reps, v, 1) + 1
-            end
-            amp_last_t[v] = t
-        end
-    end
-    return amp_reps
+function read_pund_wakeup_file(filepath::AbstractString)
+    header_row = _find_data_header(filepath, (_PUND_WAKEUP_COLUMNS,))
+    source = CSV.read(
+        filepath,
+        DataFrame;
+        header=header_row,
+        select=collect(Symbol.(_PUND_WAKEUP_COLUMNS)),
+        types=Dict(
+            :Vmax_V => Float64,
+            :Time_s => Float64,
+            :Voltage_V => Float64,
+            :Current_A => Float64,
+        ),
+    )
+    return DataFrame(
+        wakeup_V=source.Vmax_V,
+        time=source.Time_s,
+        voltage=source.Voltage_V,
+        current=source.Current_A,
+    )
 end

@@ -1,4 +1,4 @@
-using DataLoader: read_fe_pund, read_pund_wakeup_amplitude
+using DataLoader: read_pund_file, read_pund_wakeup_file
 using DataAnalysis: detect_pund_pulses, analyze_pund
 using DataFrames: nrow
 using Statistics: mean
@@ -109,16 +109,18 @@ function compute_pund_stats(
             device_params,
         )
     elseif measurement.measurement_kind === :wakeup_pn || measurement.measurement_kind === :wakeup_pund
-        df = read_pund_wakeup_amplitude(
-            fname,
-            dir,
-            Float64(params[:wakeup_V]),
-            Int(params[:wakeup_rep]),
-        )
+        df = _select_pund_wakeup_readout(filepath, Float64(params[:wakeup_V]))
         return pund_stats_from_waveform(df, device_params)
     end
 
-    return pund_stats_from_waveform(read_fe_pund(fname, dir), device_params)
+    return pund_stats_from_waveform(read_pund_file(fname, dir), device_params)
+end
+
+function _select_pund_wakeup_readout(filepath::AbstractString, wakeup_V::Float64)
+    wakeup_df = read_pund_wakeup_file(filepath)
+    readout_df = wakeup_df[wakeup_df.wakeup_V .== wakeup_V, [:time, :voltage, :current]]
+    nrow(readout_df) > 0 || error("No wakeup readout for wakeup_V=$wakeup_V in $filepath")
+    return readout_df
 end
 
 """

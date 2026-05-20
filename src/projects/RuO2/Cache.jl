@@ -5,7 +5,7 @@ function project_cache_semantic_fields(::RuO2Project)
         :measurement => [:measurement_id, :measurement_kind, :timestamp, :source_file],
         :device => [:device_key, :device_path, :area_um2, :x, :y],
         :signal => [:time, :voltage, :current, :cycle, :frequency],
-        :selection => [:wakeup_V, :wakeup_rep, :fatigue_idx],
+        :selection => [:wakeup_V, :fatigue_idx],
         :summary => [:wakeup_count, :wakeup_f, :wakeup_V,
                      :fatigue_count, :fatigue_f, :fatigue_V,
                      :V_base, :V_min, :V_max, :V_amp],

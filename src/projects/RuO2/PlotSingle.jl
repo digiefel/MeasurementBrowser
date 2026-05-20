@@ -13,15 +13,14 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
             return (df=df, title=title * " cycle $fatigue_count (fatigue)", area_um2=area_um2,
                     debug=get(kwargs, :DEBUG, false), segment=segment)
         end
-        df = read_fe_pund(basename(path), dirname(path))
+        df = read_pund_file(basename(path), dirname(path))
         title_suffix = segment === :pn ? " PN" : segment === :pund ? " PUND" : ""
         return (df=df, title=title * title_suffix, area_um2=area_um2,
                 debug=get(kwargs, :DEBUG, false), segment=segment)
     elseif kind === :wakeup_pn || kind === :wakeup_pund
         params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
         wakeup_V = Float64(params[:wakeup_V])
-        rep = Int(params[:wakeup_rep])
-        df = read_pund_wakeup_amplitude(basename(path), dirname(path), wakeup_V, rep)
+        df = _select_pund_wakeup_readout(path, wakeup_V)
         seg = kind === :wakeup_pn ? :pn : :pund
         return (df=df, title=_plot_title(path), area_um2=get(params, :area_um2, nothing),
                 debug=get(kwargs, :DEBUG, false), segment=seg)

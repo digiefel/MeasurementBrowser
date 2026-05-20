@@ -1,4 +1,4 @@
-using DataLoader: read_pund_wakeup_amplitude, read_pund_wakeup_reps, cv_sweep_has_schema
+using DataLoader: cv_sweep_has_schema
 
 # function device_path_label(::RuO2Project, device_info::DeviceInfo)
 #     length(device_info.location) <= 1 && return join(device_info.location, "_")
@@ -132,31 +132,14 @@ function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo; should_can
     ) for c in cycles]
 end
 
-"""Scan a PUND wakeup file for readout amplitudes and repetitions."""
-function _ruo2_scan_pund_wakeup(filepath::AbstractString)
-    amplitudes = Float64[]
-    open(filepath, "r") do io
-        for line in eachline(io)
-            startswith(line, '#') && continue
-            parts = split(line, ',')
-            length(parts) >= 4 || continue
-            v = tryparse(Float64, parts[1])
-            v === nothing && continue
-            v in amplitudes || push!(amplitudes, v)
-        end
-    end
-    reps_per_amplitude = read_pund_wakeup_reps(basename(filepath), dirname(filepath))
-    return (amplitudes=amplitudes, reps_per_amplitude=reps_per_amplitude)
-end
-
 """Expand a PUND wakeup file into PN/PUND readout measurements for each wakeup voltage."""
 function _ruo2_expand_pund_wakeup_item(
     measurement::MeasurementInfo,
     header::Dict{String,String},
 )::Vector{MeasurementInfo}
     measurement.measurement_kind == :pund_wakeup || return [measurement]
-    info = _ruo2_scan_pund_wakeup(measurement.filepath)
-    isempty(info.amplitudes) && return MeasurementInfo[]
+    amplitudes = parse.(Float64, strip.(split(header["vmax"], ',')))
+    isempty(amplitudes) && return MeasurementInfo[]
 
     pulse_type = Symbol(header["read_pulse_type"])
     segments = pulse_type === :pund ? [(:wakeup_pund, "PUND")] :
@@ -167,24 +150,20 @@ function _ruo2_expand_pund_wakeup_item(
     date_str = measurement.timestamp === nothing ? "" : Dates.format(measurement.timestamp, "yyyy-mm-dd")
 
     result = MeasurementInfo[]
-    for amp in info.amplitudes
+    for amp in amplitudes
         amp_str = "$(amp)V"
-        n_reps = get(info.reps_per_amplitude, amp, 1)
-        for rep in 1:n_reps
-            rep_suffix = n_reps > 1 ? " rep $rep" : ""
-            for (kind, seg_label) in segments
-                params = merge(
-                    deepcopy(measurement.parameters),
-                    Dict{Symbol,Any}(:wakeup_V => amp, :wakeup_rep => rep),
-                )
-                title = join(filter(!isempty, ["Wakeup", device_label, date_str, amp_str, seg_label * rep_suffix]), " ")
-                push!(result, MeasurementInfo(measurement;
-                    unique_id="$(measurement.filepath)#wakeup_V=$(amp),rep=$(rep),kind=$(kind)",
-                    measurement_kind=kind,
-                    parameters=params,
-                    clean_title=title,
-                ))
-            end
+        for (kind, seg_label) in segments
+            params = merge(deepcopy(measurement.parameters), Dict{Symbol,Any}(:wakeup_V => amp))
+            title = join(
+                filter(!isempty, ["Wakeup", device_label, date_str, amp_str, seg_label]),
+                " ",
+            )
+            push!(result, MeasurementInfo(measurement;
+                unique_id="$(measurement.filepath)#wakeup_V=$(amp),kind=$(kind)",
+                measurement_kind=kind,
+                parameters=params,
+                clean_title=title,
+            ))
         end
     end
     return result
