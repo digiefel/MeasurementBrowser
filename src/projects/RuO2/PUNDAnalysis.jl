@@ -3,203 +3,79 @@ using SmoothData: smoothdata
 using Statistics: mean
 
 """
-    find_zero_crossing(x, y) -> Union{Float64, Nothing}
+Route a raw waveform to PN, PUND, or PN+PUND analysis.
 
-Find the x-value where y crosses zero using linear interpolation.
-Returns the first zero crossing found, or nothing if no crossing exists.
+The first pass uses rough voltage regions only. PUND pulse detection runs later,
+after any PN prefix has been removed.
 """
-function find_zero_crossing(x::AbstractVector, y::AbstractVector)
-    for i in 1:(length(y)-1)
-        y1, y2 = y[i], y[i+1]
-        (isnan(y1) || isnan(y2)) && continue
-        if y1 * y2 < 0  # sign change
-            # Linear interpolation: y = y1 + (y2-y1)/(x2-x1) * (x - x1) = 0
-            # x = x1 - y1 * (x2-x1) / (y2-y1)
-            x_cross = x[i] - y1 * (x[i+1] - x[i]) / (y2 - y1)
-            return x_cross
-        elseif y1 == 0.0
-            return x[i]
-        end
+function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
+    @assert all(["time", "voltage", "current"] .∈ Ref(names(df))) "columns :time, :voltage, :current must exist"
+    
+    # infer number of pulses
+    regions = NamedTuple[]
+    Vc = df.voltage .- mean(df.voltage[1:10]) # assumes it's longer than 10, which is of course true
+    Vmin, Vmax = extrema(Vc)
+    for region in _true_runs((Vc .< 0.5*Vmin) .| (Vc .> 0.5*Vmax))
+        push!(regions, (range=region, polarity=sign(Vc[region[1]])))
     end
-    return nothing
-end
+    n = length(regions)
 
-"""
-    detect_pund_pulses(t, V, I; smooth_window=9, dV_thresh_mult=5.0,
-        expand_win=5, min_pulse_len=20, min_V_amp_mult=5.0,
-        trough_thresh=0.05) -> NamedTuple
-
-Detect triangular voltage pulses in a PUND waveform and check polarity
-consistency. Returns a diagnostic NamedTuple with all intermediate results;
-never errors on inconsistent polarity.
-
-Detection has two stages (fallback chain):
-  1. Derivative-based: finds pulses via smoothed dV/dt threshold + expansion.
-  2. Trough-based (fallback): splits at near-zero |V| regions.
-"""
-function detect_pund_pulses(t, V, I;
-    smooth_window::Int=9,
-    dV_thresh_mult::Float64=5.0,
-    expand_win::Int=5,
-    min_pulse_len::Int=20,
-    min_V_amp_mult::Float64=5.0,
-    trough_thresh::Float64=0.05)
-
-    N = length(t)
-
-    # Baseline current offset
-    n0 = min(10, N)
-    baseline_I = mean(skipmissing(filter(!isnan, I[1:n0])))
-    I_shifted = I .- baseline_I
-
-    # Smoothed derivative and threshold (1/2 of max |dV|)
-    dV = smoothdata([0.0; diff(V)], :movmedian, smooth_window)
-    dV_max = maximum(abs.(dV))
-    dV_threshold = dV_max / 2
-
-    # Voltage baseline: mean of first few points (may be non-zero, e.g. 1 V DC offset)
-    n_pre = min(9, length(V))
-    V_baseline = mean(V[1:n_pre])
-    Vc = V .- V_baseline
-    V_noise = mean(abs.(Vc[1:n_pre]))
-    min_V_amp = V_noise * min_V_amp_mult
-
-    # Stage 1: derivative-based detection
-    pulses = UnitRange{Int}[]
-    detection_method = :none
-    pulse_mask = abs.(dV) .> dV_threshold
-    expanded_mask = copy(pulse_mask)
-
-    # TODO disable this for now. Probably not needed and overengineered.
-    # if dV_max > 1e-12
-    #     detection_method = :derivative
-    #     for i in (expand_win+1):(length(pulse_mask)-expand_win)
-    #         if any(pulse_mask[(i-expand_win):(i+expand_win)])
-    #             expanded_mask[i] = true
-    #         end
-    #     end
-    #     all_pulses = _true_runs(expanded_mask)
-
-    #     for pulse in all_pulses
-    #         if length(pulse) >= min_pulse_len
-    #             pulse_V_range = maximum(abs.(Vc[pulse]))
-    #             if pulse_V_range >= min_V_amp
-    #                 push!(pulses, pulse)
-    #             end
-    #         end
-    #     end
-    # end
-
-    # Stage 2: trough-based fallback (only if stage 1 found nothing)
-    if isempty(pulses)
-        detection_method = :trough_fallback
-        absVc = abs.(Vc)
-        V_peak = maximum(absVc)
-        trough_threshold = V_peak * trough_thresh
-        in_trough = absVc .< trough_threshold
-        i = 1
-        while i <= N
-            while i <= N && in_trough[i]
-                i += 1
-            end
-            i > N && break
-            pstart = i
-            while i <= N && !in_trough[i]
-                i += 1
-            end
-            pend = i > N ? N : i - 1
-            seg = pstart:pend
-            if length(seg) >= min_pulse_len
-                push!(pulses, seg)
-            end
-        end
+    # classify based on the number of pulses
+    if n == 7 || n == 6
+        split_row = (last(regions[2].range) + first(regions[3].range)) ÷ 2
+        pn_df = _slice_rows(df, 1:split_row)
+        pund_df = _slice_rows(df, split_row + 1:nrow(df))
+        has_poling = n == 7
+        return (
+            kind=:pn_pund,
+            pn=analyze_pn(pn_df; DEBUG=DEBUG),
+            pund=analyze_pund(pund_df; has_initial_poling=has_poling, DEBUG=DEBUG),
+            pn_group_size=1,
+            pund_group_size=has_poling ? 5 : 4,
+            regions=regions,
+        )
+    elseif n % 5 == 0
+        return (
+            kind=:pund,
+            pn=nothing,
+            pund=analyze_pund(df; DEBUG=DEBUG),
+            pn_group_size=2,
+            pund_group_size=5,
+            regions=regions,
+        )
+    elseif n % 4 == 0
+        return (
+            kind=:pund,
+            pn=nothing,
+            pund=analyze_pund(df; has_initial_poling=false, DEBUG=DEBUG),
+            pn_group_size=2,
+            pund_group_size=4,
+            regions=regions,
+        )
+    elseif n == 2
+        return (
+            kind=:pn,
+            pn=analyze_pn(df; DEBUG=DEBUG),
+            pund=nothing,
+            pn_group_size=1,
+            pund_group_size=4,
+            regions=regions,
+        )
     end
 
-    # Per-pulse polarity check
-    polarity_info = NamedTuple{(:pulse_idx, :V_avg, :V_sign),
-        Tuple{Int,Float64,Int}}[]
-    total = 0
-    for (pi, pulse) in enumerate(pulses)
-        half = pulse[1:end÷2]
-        V_avg = mean(Vc[half])
-        if abs(V_avg) > 0
-            total += 1
-            sv = Int(sign(V_avg))
-            push!(polarity_info, (pulse_idx=pi, V_avg=V_avg, V_sign=sv))
-        else
-            push!(polarity_info, (pulse_idx=pi, V_avg=V_avg, V_sign=0))
-        end
+    if DEBUG
+        return (
+            kind=:unknown,
+            pn=nothing,
+            pund=nothing,
+            pn_group_size=2,
+            pund_group_size=5,
+            regions=regions,
+        )
     end
-
-    n_groups = length(pulses) ÷ 5
-    remainder = length(pulses) % 5
-
-    return (;
-        t, V, I=I_shifted, dV, dV_threshold, dV_max,
-        pulse_mask, expanded_mask,
-        pulses, detection_method,
-        polarity_info, total, n_groups, remainder,
-        min_V_amp, baseline_V=V_baseline,
-    )
+    error("Unsupported PUND/PN waveform: found $n rough voltage regions")
 end
 
-"Contiguous runs of `true` in a BitVector."
-function _true_runs(mask)
-    runs = UnitRange{Int}[]
-    start = nothing
-    for i in eachindex(mask)
-        if mask[i]
-            start === nothing && (start = i)
-        elseif start !== nothing
-            push!(runs, start:i-1)
-            start = nothing
-        end
-    end
-    start !== nothing && push!(runs, start:lastindex(mask))
-    return runs
-end
-
-function _pund_group_size(has_initial_poling::Bool)
-    return has_initial_poling ? 5 : 4
-end
-
-function _pund_switch_codes(group_idx::Int, has_initial_poling::Bool)
-    group_size = _pund_group_size(has_initial_poling)
-    base = (group_idx - 1) * group_size
-    if has_initial_poling
-        return (P=base + 2, U=base + 3, N=base + 4, D=base + 5)
-    end
-    return (P=base + 1, U=base + 2, N=base + 3, D=base + 4)
-end
-
-function _center_current(I, N::Int)
-    n0 = min(10, N)
-    baseline_I = mean(skipmissing(filter(!isnan, I[1:n0])))
-    return I .- baseline_I, baseline_I
-end
-
-function _slice_signal_dataframe(df::DataFrame, pulses::Vector{UnitRange{Int}}; from::Union{Nothing,Int}=nothing)
-    isempty(pulses) && return DataFrame(df), UnitRange{Int}[]
-    start_idx = from === nothing ? first(first(pulses)) : from
-    stop_idx = last(last(pulses))
-    row_range = start_idx:stop_idx
-    sliced = DataFrame(df[row_range, :])
-    offset = start_idx - 1
-    shifted = [first(pulse)-offset:last(pulse)-offset for pulse in pulses]
-    if hasproperty(sliced, :time) && !isempty(sliced.time)
-        t0 = sliced.time[1]
-        sliced.time = sliced.time .- t0
-        hasproperty(sliced, :current_time) && (sliced.current_time = sliced.current_time .- t0)
-        hasproperty(sliced, :voltage_time) && (sliced.voltage_time = sliced.voltage_time .- t0)
-    end
-    return sliced, shifted
-end
-
-function _pulse_voltage_sign(Vc::AbstractVector, pulse::UnitRange{Int})
-    values = @view Vc[pulse]
-    isempty(values) && return 0
-    return sign(values[argmax(abs.(values))])
-end
 
 """
 Perform PUND analysis on the DataFrame
@@ -218,7 +94,6 @@ function analyze_pund(
     has_initial_poling::Bool=true,
     DEBUG::Bool=false,
 )
-    @assert all(["time", "voltage", "current"] .∈ Ref(names(df))) "columns :time, :voltage, :current must exist"
     t, V, I = df[!, :time], df[!, :voltage], df[!, :current]
     N = length(t)
 
@@ -233,7 +108,6 @@ function analyze_pund(
             n0 = min(10, N)
             baseline_I = mean(skipmissing(filter(!isnan, df[!, :current][1:n0])))
             @info "analyze_pund: baseline current offset" n0 baseline = baseline_I
-            # @info "analyze_pund: detection" method = det.detection_method n_pulses = length(pulses) verdict = det.verdict
         end
 
         if !DEBUG
@@ -241,7 +115,7 @@ function analyze_pund(
         end
     else
         # ---- pulse boundaries provided, skip detection -----------------------------
-        I, baseline_I = _center_current(I, N)
+        I, baseline_I = _center_current(I)
 
         # Quick polarity check on first pulse (use centered voltage)
         n_vbl2 = min(9, N)
@@ -255,39 +129,9 @@ function analyze_pund(
         end
     end
 
-    # ---- voltage baseline for sign checks (may be non-zero, e.g. 1 V DC offset) --------
-    n_vbl = min(9, N)
-    V_baseline = mean(V[1:n_vbl])
-    Vc = V .- V_baseline
-
-    # ---- consistency check and grouping ------------------------------------------------
-    group_size = _pund_group_size(has_initial_poling)
-    grouped_pulses = Vector{UnitRange{Int}}[]
-    for i in 1:group_size:length(pulses)-group_size+1
-        group = pulses[i:i+group_size-1]
-        push!(grouped_pulses, group)
-    end
-
-    for group in grouped_pulses
-        if has_initial_poling
-            poling, P, U, Np, D = Tuple(group)
-            sP, sPol = _pulse_voltage_sign(Vc, P), _pulse_voltage_sign(Vc, poling)
-            # if !DEBUG
-            #     @assert sPol == -sP &&
-            #             _pulse_voltage_sign(Vc, U) == sP &&
-            #             _pulse_voltage_sign(Vc, Np) == -sP &&
-            #             _pulse_voltage_sign(Vc, D) == -sP "unexpected pulse ordering"
-            # end
-        else
-            P, U, Np, D = Tuple(group)
-            sP = _pulse_voltage_sign(Vc, P)
-            # if !DEBUG
-            #     @assert _pulse_voltage_sign(Vc, U) == sP &&
-            #             _pulse_voltage_sign(Vc, Np) == -sP &&
-            #             _pulse_voltage_sign(Vc, D) == -sP "unexpected pulse ordering"
-            # end
-        end
-    end
+    # Group the detected pulses into groups of PUND cycles
+    group_size = has_initial_poling ? 5 : 4
+    grouped_pulses = eachcol(reshape(pulses, group_size, :))
 
     # ---- allocate result columns -------------------------------------------------------
     polarity = zeros(Int8, N)
@@ -358,6 +202,71 @@ function analyze_pund(
 end
 
 """
+Detect precise pulse boundaries in a PUND-only waveform.
+
+Mixed PN+PUND waveforms are split before this function is called.
+"""
+function detect_pund_pulses(t, V, I;
+    smooth_window::Int=9,
+    min_pulse_len::Int=20,
+    dV_threshold_fraction::Float64=0.5,
+    min_V_amp_fraction::Float64=0.25)
+
+    I_shifted, baseline_I = _center_current(I)
+
+    dV = smoothdata([0.0; diff(V)], :movmedian, smooth_window)
+    dV_max = maximum(abs.(dV))
+    dV_threshold = dV_max * dV_threshold_fraction
+
+    n_pre = min(9, length(V))
+    V_baseline = mean(V[1:n_pre])
+    Vc = V .- V_baseline
+    min_V_amp = maximum(abs.(Vc)) * min_V_amp_fraction
+    ramps = _signed_derivative_ramps(dV, dV_threshold)
+    pulses = UnitRange{Int}[]
+    i = 1
+    while i < length(ramps)
+        first_ramp = ramps[i]
+        second_ramp = ramps[i + 1]
+        if first_ramp.sign != second_ramp.sign
+            pulse = first(first_ramp.range):last(second_ramp.range)
+            if length(pulse) >= min_pulse_len && maximum(abs.(Vc[pulse])) >= min_V_amp
+                push!(pulses, pulse)
+                i += 2
+                continue
+            end
+        end
+        i += 1
+    end
+
+    polarity_info = NamedTuple{(:pulse_idx, :V_avg, :V_sign),
+        Tuple{Int,Float64,Int}}[]
+    total = 0
+    for (pidx, pulse) in enumerate(pulses)
+        half = pulse[1:end÷2]
+        V_avg = mean(Vc[half])
+        if abs(V_avg) > 0
+            total += 1
+            sv = Int(sign(V_avg))
+            push!(polarity_info, (pulse_idx=pidx, V_avg=V_avg, V_sign=sv))
+        else
+            push!(polarity_info, (pulse_idx=pidx, V_avg=V_avg, V_sign=0))
+        end
+    end
+
+    n_groups = length(pulses) ÷ 5
+    remainder = length(pulses) % 5
+
+    return (;
+        t, V, I=I_shifted, dV, dV_threshold, dV_max,
+        ramps, pulses, detection_method=:derivative,
+        polarity_info, total, n_groups, remainder,
+        min_V_amp, baseline_V=V_baseline,
+    )
+end
+
+
+"""
 Analyze a PN segment by integrating the measured current directly over the cycle.
 """
 function analyze_pn(df::DataFrame; DEBUG::Bool=false)
@@ -391,83 +300,6 @@ function analyze_pn(df::DataFrame; DEBUG::Bool=false)
 
     df[!, :current] .= I
     return hcat(df, DataFrame(polarity=polarity, pulse_idx=pulse_idx, I_FE=I_FE, Q_FE=Q_FE))
-end
-
-"""
-Analyze a waveform that may contain ordinary PUND, PN, or PN followed by PUND.
-"""
-function analyze_pund_and_pn(df::DataFrame; DEBUG::Bool=false)
-    @assert all(["time", "voltage", "current"] .∈ Ref(names(df))) "columns :time, :voltage, :current must exist"
-    det = detect_pund_pulses(df.time, df.voltage, df.current)
-    pulses = det.pulses
-    n = length(pulses)
-
-    if n == 7
-        split_row = last(pulses[2])
-        pn_df = DataFrame(df[1:split_row, :])
-        pund_df, pund_pulses = _slice_signal_dataframe(df, pulses[3:7]; from=split_row + 1)
-        return (
-            kind=:pn_pund,
-            pn=analyze_pn(pn_df; DEBUG=DEBUG),
-            pund=analyze_pund(pund_df; pulses=pund_pulses, DEBUG=DEBUG),
-            pn_group_size=1,
-            pund_group_size=5,
-            detection=det,
-        )
-    elseif n == 6
-        # Split the waveform between PN and PUND but keep the pre-pulse baseline
-        # at the start of each segment so baseline subtraction works downstream.
-        split_row = last(pulses[2])
-        pn_df = DataFrame(df[1:split_row, :])
-        pund_df, pund_pulses = _slice_signal_dataframe(df, pulses[3:6]; from=split_row + 1)
-        return (
-            kind=:pn_pund,
-            pn=analyze_pn(pn_df; DEBUG=DEBUG),
-            pund=analyze_pund(pund_df; pulses=pund_pulses, has_initial_poling=false, DEBUG=DEBUG),
-            pn_group_size=1,
-            pund_group_size=4,
-            detection=det,
-        )
-    elseif n == 5
-        return (
-            kind=:pund,
-            pn=nothing,
-            pund=analyze_pund(df; pulses=pulses, DEBUG=DEBUG),
-            pn_group_size=2,
-            pund_group_size=5,
-            detection=det,
-        )
-    elseif n == 4
-        return (
-            kind=:pund,
-            pn=nothing,
-            pund=analyze_pund(df; pulses=pulses, has_initial_poling=false, DEBUG=DEBUG),
-            pn_group_size=2,
-            pund_group_size=4,
-            detection=det,
-        )
-    elseif n == 2
-        return (
-            kind=:pn,
-            pn=analyze_pn(df; DEBUG=DEBUG),
-            pund=nothing,
-            pn_group_size=1,
-            pund_group_size=4,
-            detection=det,
-        )
-    end
-
-    if DEBUG
-        return (
-            kind=:unknown,
-            pn=nothing,
-            pund=analyze_pund(df; pulses=pulses, DEBUG=true),
-            pn_group_size=2,
-            pund_group_size=5,
-            detection=det,
-        )
-    end
-    error("Unsupported PUND/PN waveform: detected $n pulses")
 end
 
 """
@@ -587,8 +419,8 @@ function analyze_pund_fatigue_combined(entries::Vector)
                 x_P, y_P = collect(x_all[P_valid]), collect(y_all[P_valid])
                 x_N, y_N = collect(x_all[N_valid]), collect(y_all[N_valid])
 
-                Ec_plus = find_zero_crossing(x_P, y_P)
-                Ec_minus = find_zero_crossing(x_N, y_N)
+                Ec_plus = _find_zero_crossing(x_P, y_P)
+                Ec_minus = _find_zero_crossing(x_N, y_N)
 
                 # Bottom panel: Pr = (max(P) - min(P)) / 2 (only if area was provided)
                 if isfinite(area_um2) && area_um2 > 0
@@ -617,4 +449,98 @@ function analyze_pund_fatigue_combined(entries::Vector)
         :y_label => y_label,
         :pr_points => pr_points,
     )
+end
+
+"Signed dV/dt runs; two opposite-sign runs make one triangular pulse."
+function _signed_derivative_ramps(dV, threshold::Float64)
+    ramp_sign(i) = dV[i] > threshold ? 1 : dV[i] < -threshold ? -1 : 0
+    ramps = NamedTuple[]
+    i = firstindex(dV)
+    while i <= lastindex(dV)
+        sign_value = ramp_sign(i)
+        sign_value == 0 && (i += 1; continue)
+
+        start = i
+        while i <= lastindex(dV) && ramp_sign(i) == sign_value
+            i += 1
+        end
+        push!(ramps, (range=start:(i - 1), sign=sign_value))
+    end
+    return ramps
+end
+
+function _pund_switch_codes(group_idx::Int, has_initial_poling::Bool)
+    group_size = has_initial_poling ? 5 : 4
+    base = has_initial_poling ? 1 : 0
+    base = base + (group_idx - 1) * group_size
+    return (P=base + 1, U=base + 2, N=base + 3, D=base + 4)
+end
+
+function _center_current(I, N0::Int = 10)
+    baseline_I = mean(skipmissing(filter(!isnan, I[1:N0])))
+    return I .- baseline_I, baseline_I
+end
+
+"""
+Find the x-value where y crosses zero using linear interpolation.
+Returns the first zero crossing found, or nothing if no crossing exists.
+"""
+function _find_zero_crossing(x::AbstractVector, y::AbstractVector)
+    for i in 1:(length(y)-1)
+        y1, y2 = y[i], y[i+1]
+        (isnan(y1) || isnan(y2)) && continue
+        if y1 * y2 < 0  # sign change
+            # Linear interpolation: y = y1 + (y2-y1)/(x2-x1) * (x - x1) = 0
+            # x = x1 - y1 * (x2-x1) / (y2-y1)
+            x_cross = x[i] - y1 * (x[i+1] - x[i]) / (y2 - y1)
+            return x_cross
+        elseif y1 == 0.0
+            return x[i]
+        end
+    end
+    return nothing
+end
+
+function _slice_signal_dataframe(df::DataFrame, pulses::Vector{UnitRange{Int}}; from::Union{Nothing,Int}=nothing)
+    isempty(pulses) && return DataFrame(df), UnitRange{Int}[]
+    start_idx = from === nothing ? first(first(pulses)) : from
+    stop_idx = last(last(pulses))
+    row_range = start_idx:stop_idx
+    sliced = DataFrame(df[row_range, :])
+    offset = start_idx - 1
+    shifted = [first(pulse)-offset:last(pulse)-offset for pulse in pulses]
+    if hasproperty(sliced, :time) && !isempty(sliced.time)
+        t0 = sliced.time[1]
+        sliced.time = sliced.time .- t0
+        hasproperty(sliced, :current_time) && (sliced.current_time = sliced.current_time .- t0)
+        hasproperty(sliced, :voltage_time) && (sliced.voltage_time = sliced.voltage_time .- t0)
+    end
+    return sliced, shifted
+end
+
+"Contiguous runs of `true` in a BitVector."
+function _true_runs(mask)
+    runs = UnitRange{Int}[]
+    start = nothing
+    for i in eachindex(mask)
+        if mask[i]
+            start === nothing && (start = i)
+        elseif start !== nothing
+            push!(runs, start:i-1)
+            start = nothing
+        end
+    end
+    start !== nothing && push!(runs, start:lastindex(mask))
+    return runs
+end
+
+function _slice_rows(df::DataFrame, rows::UnitRange{Int})
+    sliced = DataFrame(df[rows, :])
+    if hasproperty(sliced, :time) && !isempty(sliced.time)
+        t0 = sliced.time[1]
+        sliced.time = sliced.time .- t0
+        hasproperty(sliced, :current_time) && (sliced.current_time = sliced.current_time .- t0)
+        hasproperty(sliced, :voltage_time) && (sliced.voltage_time = sliced.voltage_time .- t0)
+    end
+    return sliced
 end

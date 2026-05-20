@@ -62,9 +62,9 @@ end
         (:wakeup_pn, 1.5, 0.0, -1.5, 1.5, 1.5),
         (:wakeup_pn, 2.5, 0.0, -2.5, 2.5, 2.5),
         (:wakeup_pn, 3.5, 0.0, -3.5, 3.5, 3.5),
-        (:wakeup_pund, 1.5, -0.1, -1.5, 1.5, 1.6),
-        (:wakeup_pund, 2.5, -0.1, -2.5, 2.5, 2.6),
-        (:wakeup_pund, 3.5, -0.1, -3.5, 3.5, 3.6),
+        (:wakeup_pund, 1.5, 0.0, -1.5, 1.5, 1.5),
+        (:wakeup_pund, 2.5, 0.0, -2.5, 2.5, 2.5),
+        (:wakeup_pund, 3.5, 0.0, -3.5, 3.5, 3.5),
     ])
 
     # Every expanded item shares the same source file

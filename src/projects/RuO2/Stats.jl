@@ -143,13 +143,15 @@ function pund_stats_from_waveform(df, device_params::Dict{Symbol,Any}=Dict{Symbo
         :V_amp => round_one(max(abs(V_max - V_base), abs(V_min - V_base))),
     )
 
-    det = detect_pund_pulses(df.time, df.voltage, df.current)
-    if !isempty(det.pulses)
-        t_start = df.time[first(det.pulses[1])]
-        t_end = df.time[last(det.pulses[end])]
+    pulses = hasproperty(df, :pulse_idx) ?
+        _pulse_ranges_from_indices(df.pulse_idx) :
+        detect_pund_pulses(df.time, df.voltage, df.current).pulses
+    if !isempty(pulses)
+        t_start = df.time[first(pulses[1])]
+        t_end = df.time[last(pulses[end])]
         total_span = t_end - t_start
         if total_span > 0
-            pulse_period = total_span / length(det.pulses)
+            pulse_period = total_span / length(pulses)
             stats[:frequency_kHz] = round_one(1.0 / (pulse_period * 1e3))
         end
     end
@@ -158,12 +160,32 @@ function pund_stats_from_waveform(df, device_params::Dict{Symbol,Any}=Dict{Symbo
         area_um2 = Float64(device_params[:area_um2])
         if isfinite(area_um2) && area_um2 > 0
             df_an = hasproperty(df, :Q_FE) && hasproperty(df, :pulse_idx) ?
-                df : analyze_pund(df; pulses=det.pulses)
+                df : analyze_pund(df; pulses=pulses)
             stats[:Pr_uCcm2] = round(pund_pr_value(df_an, area_um2); digits=3)
         end
     end
 
     return stats
+end
+
+function _pulse_ranges_from_indices(pulse_idx)
+    ranges = UnitRange{Int}[]
+    start = nothing
+    current = 0
+    for i in eachindex(pulse_idx)
+        pulse = pulse_idx[i]
+        if pulse > 0 && pulse != current
+            start !== nothing && push!(ranges, start:(i - 1))
+            start = i
+            current = pulse
+        elseif pulse == 0 && start !== nothing
+            push!(ranges, start:(i - 1))
+            start = nothing
+            current = 0
+        end
+    end
+    start !== nothing && push!(ranges, start:lastindex(pulse_idx))
+    return ranges
 end
 
 """
