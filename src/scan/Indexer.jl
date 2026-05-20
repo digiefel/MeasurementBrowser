@@ -1,21 +1,22 @@
 function _read_csv_header_summary(path::AbstractString; max_lines::Int=50)
-    summary = Dict{Symbol,Any}()
+    summary = Dict{String,String}()
     open(path, "r") do io
         line_count = 0
         for line in eachline(io)
             line_count += 1
-            if startswith(line, "Setup title,")
-                parts = split(line, ',')
-                length(parts) > 1 && (summary[:setup_title] = strip(parts[2], '"'))
+            stripped = strip(line)
+            if startswith(stripped, "#")
+                m = match(r"^#\s*([^:]+):\s*(.*)$", stripped)
+                m !== nothing && (summary[strip(m.captures[1])] = strip(m.captures[2]))
+            elseif startswith(line, "Setup title,")
+                parts = split(line, ','; limit=2)
+                length(parts) > 1 && (summary["Setup title"] = strip(parts[2], '"'))
             elseif startswith(line, "Test date,")
-                parts = split(line, ',')
-                length(parts) > 1 && (summary[:test_date] = strip(parts[2]))
+                parts = split(line, ','; limit=2)
+                length(parts) > 1 && (summary["Test date"] = strip(parts[2]))
             elseif startswith(line, "Test time,")
-                parts = split(line, ',')
-                length(parts) > 1 && (summary[:test_time] = strip(parts[2]))
-            elseif startswith(line, "Device ID,")
-                parts = split(line, ',')
-                length(parts) > 1 && (summary[:device_id] = strip(parts[2]))
+                parts = split(line, ','; limit=2)
+                length(parts) > 1 && (summary["Test time"] = strip(parts[2]))
             end
             line_count >= max_lines && break
         end

@@ -88,12 +88,12 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
 
         pund = only(measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_PUND_FIXTURE)))
         @test isequal((
-            pund.parameters[:wakeup_count],
-            pund.parameters[:fatigue_count],
-            pund.parameters[:wakeup_f],
-            pund.parameters[:wakeup_V],
-            pund.parameters[:fatigue_f],
-            pund.parameters[:fatigue_V],
+            pund.stats[:wakeup_count],
+            pund.stats[:fatigue_count],
+            pund.stats[:wakeup_f],
+            pund.stats[:wakeup_V],
+            pund.stats[:fatigue_f],
+            pund.stats[:fatigue_V],
         ), (0, 0, NaN, NaN, NaN, NaN))
         @test (
             pund.stats[:V_base],
@@ -101,6 +101,9 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
             pund.stats[:V_max],
             pund.stats[:V_amp],
         ) == (0.0, -3.0, 3.0, 3.0)
+
+        cv = only(measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_CV_FIXTURE)))
+        @test cv.parameters[:temperature_K] == 298.0
     end
 
     @testset "scan over copied fixtures" begin

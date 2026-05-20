@@ -38,18 +38,19 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
             _check_plot_cancel(should_cancel)
             path = paths[i]
             params = params_list[i]
-            dirpath = dirname(path)
             ts = stat(path).mtime
-            if haskey(params, :fatigue_cycle)
+
+            if is_pund_fatigue_file(path)
+                fatigue_count = Int(params[:fatigue_idx])
+                # A fatigue source contains several logical PUND measurements, including count 0.
                 fatigue_df = get!(fatigue_files, path) do
                     _load_ruo2_pund_fatigue_file(path; should_cancel=should_cancel)
                 end
-                df_p = _select_pund_fatigue_cycle(fatigue_df, Int(params[:fatigue_cycle]))
-                push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
+                df_p = _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
             else
-                df_p = read_fe_pund(basename(path), dirpath)
-                push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
+                df_p = read_fe_pund(basename(path), dirname(path))
             end
+            push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
         end
         return (entries=entries,)
     end

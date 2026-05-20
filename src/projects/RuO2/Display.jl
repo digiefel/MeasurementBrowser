@@ -25,11 +25,11 @@ function display_label(proj::RuO2Project, meas::MeasurementInfo)
 
     if meas.measurement_kind === :pund || meas.measurement_kind === :pn
         push!(parts, "$(meas.stats[:V_base]) ± $(meas.stats[:V_amp]) V")
-        freq = get(meas.parameters, :fatigue_f, NaN)
+        freq = get(meas.stats, :fatigue_f, NaN)
         if isfinite(freq)
             push!(parts, freq >= 1000 ? "$(round(freq/1000, digits=1)) kHz" : "$(round(freq, digits=1)) Hz")
         end
-        fatigue_count = get(meas.parameters, :fatigue_count, 0)
+        fatigue_count = get(meas.stats, :fatigue_count, 0)
         fatigue_count > 0 && push!(parts, "cycle $fatigue_count (fatigue)")
     end
 

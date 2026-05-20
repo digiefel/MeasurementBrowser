@@ -32,18 +32,12 @@ using MeasurementBrowser
         cycles = sort(unique(MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture).cycle))
         @test length(expanded) == length(cycles)
         @test all(m -> m.measurement_kind == :pund, expanded)
-        @test all(m -> haskey(m.parameters, :wakeup_count), expanded)
-        @test all(m -> haskey(m.parameters, :wakeup_f), expanded)
-        @test all(m -> haskey(m.parameters, :wakeup_V), expanded)
-        @test all(m -> haskey(m.parameters, :fatigue_count), expanded)
-        @test all(m -> haskey(m.parameters, :fatigue_f), expanded)
-        @test all(m -> haskey(m.parameters, :fatigue_V), expanded)
-        @test all(m -> get(m.parameters, :wakeup_count, NaN) == 0, expanded)
-        @test all(m -> isnan(get(m.parameters, :wakeup_f, NaN)), expanded)
-        @test all(m -> isnan(get(m.parameters, :wakeup_V, NaN)), expanded)
-        @test Set(get(m.parameters, :fatigue_f, NaN) for m in expanded) == Set([100000.0])
-        @test Set(get(m.parameters, :fatigue_V, NaN) for m in expanded) == Set([2.9])
-        @test [get(m.parameters, :fatigue_count, NaN) for m in expanded] == cycles
+        @test all(m -> m.stats[:wakeup_count] == 0, expanded)
+        @test all(m -> isnan(m.stats[:wakeup_f]), expanded)
+        @test all(m -> isnan(m.stats[:wakeup_V]), expanded)
+        @test Set(m.stats[:fatigue_f] for m in expanded) == Set([100000.0])
+        @test Set(m.stats[:fatigue_V] for m in expanded) == Set([2.9])
+        @test [m.stats[:fatigue_count] for m in expanded] == cycles
         @test all(
             m -> (
                 m.stats[:V_base],
@@ -55,12 +49,11 @@ using MeasurementBrowser
         )
 
         selected = expanded[2]
-        selected_count = get(selected.parameters, :fatigue_count, NaN)
+        selected_count = selected.parameters[:fatigue_idx]
         @test selected_count == cycles[2]
-        selected_cycle = isfinite(selected_count) ? Int(selected_count) : cycles[2]
         expected_df = MeasurementBrowser._select_pund_fatigue_cycle(
             MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture),
-            selected_cycle,
+            Int(selected_count),
         )
         device_params = merge(selected.device_info.parameters, selected.parameters)
         loaded = MeasurementBrowser.load_plot_for_file(

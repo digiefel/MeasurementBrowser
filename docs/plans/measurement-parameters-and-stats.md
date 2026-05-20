@@ -59,14 +59,11 @@ headers, selected entries, and computed values.
 For this family, the browser must expose:
 
 ```text
-Measurement procedure parameters
-  pulse history and settings before the readout waveform
-
 Analyzed stats
-  actual values computed from the selected waveform or measurement history
+  pulse history and actual values computed from the selected waveform
 ```
 
-The first required procedure parameters for every PUND-family logical measurement are:
+The first required history stats for every PUND-family logical measurement are:
 
 ```text
 wakeup_count
@@ -83,7 +80,10 @@ history is absent. Frequency and voltage fields default to `NaN` when they are u
 
 Wakeup and fatigue files have different structures and must have separate extractors. They share
 the public field names, not a generic parsing path. Wakeup counts accumulate per device and wakeup
-condition across files. Fatigue measurements inherit prior wakeup history for the same device.
+condition across files. Fatigue files can contain a readout at fatigue count `0`; that is the first
+fatigue logical measurement, not "no fatigue file". Fatigue measurements inherit prior wakeup
+history for the same device, and later standalone PUND measurements inherit the latest fatigue
+history for that device.
 
 The first required analyzed voltage stats for every PUND-family logical measurement are:
 
@@ -111,9 +111,9 @@ The existing fixture tests are the contract for the first migration.
 1. Add contract tests for the target metadata shape using real fixture files. Done.
 2. Add the metadata storage fields to the data model. Done.
 3. Simplify the scan path so project parsers create `MeasurementInfo` directly. Done.
-4. Move cheap local extraction into measurement procedure parameters. In progress for RuO2 PUND.
-5. Move waveform/history-derived values into analyzed stats. In progress for RuO2 PUND voltage stats.
-6. Migrate PUND/wakeup/fatigue first and delete old mixed keys.
+4. Keep one full-list post-processing step for history-derived metadata. Done.
+5. Move waveform/history-derived values into analyzed stats. Done for RuO2 PUND.
+6. Migrate PUND/wakeup/fatigue first and delete old mixed keys. Done in source code.
 7. Use the same pattern for other procedure families later.
 
 ## Current State
@@ -121,16 +121,21 @@ The existing fixture tests are the contract for the first migration.
 Project parsers now return `MeasurementInfo` records directly. `MeasurementItem` was removed, and
 measurement identity is exposed as `unique_id`.
 
-RuO2 PUND-family logical measurements now use one shared constructor for the six measurement
-parameters. Standalone PUND gets the agreed no-history defaults. Wakeup and fatigue expansion assign
-their fields where those file structures are actually read.
+RuO2 PUND-family logical measurements use one full-list post-processing step for wakeup/fatigue
+history and waveform stats after all measurements for a device are known.
 
-RuO2 PUND-family logical measurements also attach the first voltage stats directly from the selected
-waveform: `V_base`, `V_min`, `V_max`, and `V_amp`. These stats are rounded to one decimal place.
-This removes the old voltage-stat names from the PUND stats path.
+RuO2 PUND-family history now lives in `MeasurementInfo.stats`: `wakeup_count`, `wakeup_f`,
+`wakeup_V`, `fatigue_count`, `fatigue_f`, and `fatigue_V`.
 
-The next step is to tighten the remaining PUND-adjacent loading paths so they all consume
-`wakeup_*` and `fatigue_*` directly, without old key names or UI-side reconstruction.
+RuO2 PUND-family waveform stats also live in `MeasurementInfo.stats`: `V_base`, `V_min`, `V_max`,
+`V_amp`, `frequency_kHz`, and `Pr_max_uCcm2`. Voltage stats are rounded to one decimal place.
+
+PUND-adjacent loading paths use local selection parameters only to find the selected waveform. They
+do not reconstruct public wakeup/fatigue history in UI or plotting code.
+
+PUND-adjacent loading paths use the source file kind to decide how to load the waveform. They do
+not use `fatigue_count > 0` as a proxy for fatigue files, because count `0` is valid inside a
+fatigue file and standalone PUND can still have positive fatigue history.
 
 The cache metadata field list now uses the new PUND fields. Caches written with old PUND field names
 are treated as out of date so the normal rebuild path can replace them.

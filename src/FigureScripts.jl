@@ -272,7 +272,10 @@ function _measurement_parameters(
 end
 
 function _measurement_parameters(measurement::MeasurementInfo)
-    return _measurement_parameters(measurement.device_info.parameters, measurement.parameters)
+    return merge(
+        _measurement_parameters(measurement.device_info.parameters, measurement.parameters),
+        measurement.stats,
+    )
 end
 
 function _measurement_parameter_conditions(parameters::Dict{Symbol,Any})

@@ -11,7 +11,7 @@ struct SourceFile
     filepath::String
     filename::String
     timestamp::Union{DateTime,Nothing}
-    header_summary::Dict{Symbol,Any}
+    header_summary::Dict{String,String}
     fingerprint::FileFingerprint
     measurements::Vector
 end

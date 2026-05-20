@@ -84,11 +84,12 @@ end
             @test hasproperty(cached_plot, :pulse_groups)
             @test cached_plot.debug == false
             @test nrow(cached_plot.df) > 0
-            cached_stats = MeasurementBrowser.compute_pund_stats_from_analyzed_plot(
-                cached_plot,
-                pund_measurement.device_info.parameters,
-            )
-            @test cached_stats isa Dict{Symbol,Any}
+            @test (
+                pund_measurement.stats[:V_base],
+                pund_measurement.stats[:V_min],
+                pund_measurement.stats[:V_max],
+                pund_measurement.stats[:V_amp],
+            ) == (0.0, -3.0, 3.0, 3.0)
 
             sleep(0.05)
             touch(pund_measurement.filepath)

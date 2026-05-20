@@ -38,8 +38,7 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   draw_analysis_view(result, view) → Union{Figure,Nothing}
 #   combined_plot_types(::P) → Vector{Tuple}
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
-#   annotate_measurements!(::P, measurements) → nothing
-#   augment_measurements_stats!(::P, stats, measurements) → stats
+#   compute_and_add_measurement_stats!(::P, measurements, files) → nothing
 
 load_plot_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
 analyze_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = loaded
@@ -52,17 +51,12 @@ run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
 interpret_file(::AbstractProject, file::SourceFile; kwargs...) = MeasurementInfo[]
 
-"""
-Attach project-specific derived metadata to measurements after the complete measurement list is known.
-Use this for values that depend on device-level measurement history and should reach plots or cache metadata.
-"""
-annotate_measurements!(::AbstractProject, measurements::Vector) = nothing
-
-"""
-Add project-specific aggregate values to the stats shown for a selected device.
-Use this for information-panel summaries computed from the selected device's measurements.
-"""
-augment_measurements_stats!(::AbstractProject, stats::Dict{Symbol,Any}, measurements::Vector) = stats
+"""Compute per-measurement stats after the complete measurement list and source headers are known."""
+compute_and_add_measurement_stats!(
+    ::AbstractProject,
+    measurements::Vector,
+    files::Vector{SourceFile},
+) = nothing
 
 struct PlotCancelled <: Exception end
 
@@ -294,10 +288,8 @@ end
 # ---------------------------------------------------------------------------
 """
 Build the device tree and lookup index from a flat measurement list.
-The constructor also runs the project annotation hook, so measurement parameters may be finalized here.
 """
 function MeasurementHierarchy(measurements::Vector{MeasurementInfo}, root_path::String, has_dev_metadata::Bool, project::AbstractProject, skipped_count::Int=0)
-    annotate_measurements!(project, measurements)
     root = HierarchyNode("/", :root)
     index = Dict{Tuple{Vararg{String}},HierarchyNode}()
     function ensure_child(parent::HierarchyNode, name::String, kind::Symbol, path_tuple::Tuple{Vararg{String}})
@@ -529,7 +521,7 @@ function build_clean_title(
     filename::String,
     measurement_kind::Symbol,
     device_info::DeviceInfo,
-    header_summary::Dict{Symbol,Any},
+    header_summary::Dict{String,String},
 )
     exp_label = kind_label(project, measurement_kind)
     device_label = device_path_label(project, device_info)
@@ -575,7 +567,7 @@ function measurements_for_file(
 )
     file = index_source_file(filepath)
     measurements = interpret_measurements(project, file, meta)
-    annotate_measurements!(project, measurements)
+    compute_and_add_measurement_stats!(project, measurements, [file])
     return measurements
 end
 
@@ -701,14 +693,12 @@ function scan_source(
         append!(measurements, file.measurements)
     end
 
+    compute_and_add_measurement_stats!(proj, measurements, scanned_files)
     hierarchy = MeasurementHierarchy(measurements, root, meta !== nothing, proj, summary.skipped_csv)
     return SourceScan(root, proj, scanned_files, hierarchy)
 end
 
-"""
-Collect generic device-summary fields for the information panel.
-Projects can extend the returned dictionary with measurements-derived stats.
-"""
+"""Collect generic device-summary fields for the information panel."""
 function get_measurements_stats(measurements::Vector{MeasurementInfo}, project::AbstractProject)
     stats = Dict{Symbol,Any}()
     stats[:total_measurements] = length(measurements)
@@ -733,5 +723,5 @@ function get_measurements_stats(measurements::Vector{MeasurementInfo}, project::
             stats[:parameter_ranges][param] = (minimum(values), maximum(values))
         end
     end
-    return augment_measurements_stats!(project, stats, measurements)
+    return stats
 end

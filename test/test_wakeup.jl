@@ -37,23 +37,17 @@ end
     @test length(pn_items)   == 3
     @test length(pund_items) == 3
 
-    @test all(m -> haskey(m.parameters, :wakeup_count), expanded)
-    @test all(m -> haskey(m.parameters, :wakeup_f), expanded)
-    @test all(m -> haskey(m.parameters, :wakeup_V), expanded)
-    @test all(m -> haskey(m.parameters, :fatigue_count), expanded)
-    @test all(m -> haskey(m.parameters, :fatigue_f), expanded)
-    @test all(m -> haskey(m.parameters, :fatigue_V), expanded)
-    @test Set(get(m.parameters, :wakeup_count, NaN) for m in expanded) == Set([1000.0])
-    @test Set(get(m.parameters, :wakeup_f, NaN) for m in expanded) == Set([1000.0])
-    @test all(m -> get(m.parameters, :fatigue_count, NaN) == 0, expanded)
-    @test all(m -> isnan(get(m.parameters, :fatigue_f, NaN)), expanded)
-    @test all(m -> isnan(get(m.parameters, :fatigue_V, NaN)), expanded)
+    @test Set(m.stats[:wakeup_count] for m in expanded) == Set([1000.0])
+    @test Set(m.stats[:wakeup_f] for m in expanded) == Set([1000.0])
+    @test all(m -> m.stats[:fatigue_count] == 0, expanded)
+    @test all(m -> isnan(m.stats[:fatigue_f]), expanded)
+    @test all(m -> isnan(m.stats[:fatigue_V]), expanded)
 
-    wakeup_voltages = Set(get(m.parameters, :wakeup_V, NaN) for m in expanded)
+    wakeup_voltages = Set(m.stats[:wakeup_V] for m in expanded)
     @test wakeup_voltages == Set([1.5, 2.5, 3.5])
     @test Set(
         (
-            m.parameters[:wakeup_V],
+            m.stats[:wakeup_V],
             m.stats[:V_base],
             m.stats[:V_min],
             m.stats[:V_max],
@@ -80,18 +74,18 @@ end
     first = only(filter(
         m -> m.filepath == _WAKEUP_ACCUM_FIRST &&
              m.measurement_kind === :wakeup_pund &&
-             m.parameters[:wakeup_V] == 3.5,
+             m.stats[:wakeup_V] == 3.5,
         measurements,
     ))
     second = only(filter(
         m -> m.filepath == _WAKEUP_ACCUM_SECOND &&
              m.measurement_kind === :wakeup_pund &&
-             m.parameters[:wakeup_V] == 3.5,
+             m.stats[:wakeup_V] == 3.5,
         measurements,
     ))
 
-    @test first.parameters[:wakeup_count] == 1000.0
-    @test second.parameters[:wakeup_count] == 2000.0
+    @test first.stats[:wakeup_count] == 1000.0
+    @test second.stats[:wakeup_count] == 2000.0
 end
 
 @testset "pund_wakeup expanded IDs and parameters" begin

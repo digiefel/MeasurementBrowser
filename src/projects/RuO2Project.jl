@@ -14,8 +14,6 @@ include("RuO2/PlotCombined.jl")
 # ---------------------------------------------------------------------------
 # Regex patterns (RuO2-specific)
 # ---------------------------------------------------------------------------
-const REGEX_RUO2_CHIP_DIR = r"^RuO2[^/]*_[^/]*$"
-const REGEX_RUO2_IDENTIFIER = r"^((?:RuO2)[^()\[\];\s]+)$"
 const REGEX_RUO2_BRACKET_IDENTIFIER = r"\[((?:RuO2)[^()\[\];\s]+)"
 const REGEX_RUO2_TIMESTAMP_FILENAME = r"^(RuO2.+?)_\d{8}_\d{6}_"
 
@@ -25,62 +23,6 @@ const REGEX_RUO2_TIMESTAMP_FILENAME = r"^(RuO2.+?)_\d{8}_\d{6}_"
 
 project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
-
-"""
-Assign the PUND measurement parameters from each file and from prior device history.
-"""
-function annotate_measurements!(::RuO2Project, measurements::Vector{MeasurementInfo})
-    by_device = Dict{String,Vector{MeasurementInfo}}()
-
-    for measurement in measurements
-        device_key = device_path_key(measurement.device_info)
-        push!(get!(by_device, device_key, MeasurementInfo[]), measurement)
-    end
-
-    for device_measurements in values(by_device)
-        sort!(device_measurements, by=measurement_timestamp_key)
-        wakeup_counts = Dict{Tuple{Float64,Float64},Float64}()
-        seen_wakeup_events = Set{Tuple{String,Float64,Float64}}()
-        latest_wakeup = nothing
-
-        for measurement in device_measurements
-            kind = measurement.measurement_kind
-            (kind === :pund || kind === :pn || kind === :wakeup_pn || kind === :wakeup_pund) || continue
-
-            params = measurement.parameters
-            if kind === :wakeup_pn || kind === :wakeup_pund
-                wakeup_V = Float64(params[:wakeup_V])
-                wakeup_f = Float64(params[:wakeup_f])
-                local_count = Float64(params[:wakeup_count])
-
-                condition_key = (wakeup_V, wakeup_f)
-                event_key = (measurement.filepath, wakeup_V, wakeup_f)
-                if !(event_key in seen_wakeup_events)
-                    wakeup_counts[condition_key] = get(wakeup_counts, condition_key, 0.0) + local_count
-                    push!(seen_wakeup_events, event_key)
-                end
-
-                params[:wakeup_count] = wakeup_counts[condition_key]
-                latest_wakeup = (count=params[:wakeup_count], f=wakeup_f, V=wakeup_V)
-            elseif kind === :pund && params[:fatigue_count] > 0
-                if latest_wakeup !== nothing
-                    params[:wakeup_count] = latest_wakeup.count
-                    params[:wakeup_f] = latest_wakeup.f
-                    params[:wakeup_V] = latest_wakeup.V
-                end
-            end
-        end
-    end
-    return nothing
-end
-
-function augment_measurements_stats!(
-    ::RuO2Project,
-    stats::Dict{Symbol,Any},
-    measurements::Vector{MeasurementInfo},
-)
-    return stats
-end
 
 # ---------------------------------------------------------------------------
 # Private helpers

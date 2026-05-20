@@ -695,8 +695,8 @@ Input:
 entries :: Vector of NamedTuples with fields:
     kind::Symbol              # :pund
     df::DataFrame             # raw data frame for the entry
-    params::Dict{Symbol,Any}  # device-level params (expects :area_um2, :t_HZO_nm)
-    timestamp::Any            # optional; used for chronological sorting
+    params::Dict{Symbol,Any}  # merged device and measurement params; requires :fatigue_count
+    timestamp::Any            # used for chronological sorting
 
 Output pr_points fields:
 - cycles: fatigue cycle number
@@ -708,7 +708,7 @@ Output pr_points fields:
 
 Notes:
 - Only the exact parameter names are considered for geometry: area_um2 (μm²) and t_HZO_nm (nm).
-- Each PUND entry is analyzed and each repetition (quintuple) is treated as one fatigue cycle.
+- Each PUND entry must already identify its fatigue count; zero is the unfatigued baseline.
 - Remnant polarization is computed as Pr = (max(P) - min(P)) / 2 from each repetition's P–E trace (only if area_um2 is present).
 - Coercive field: Ec_plus/Ec_minus are the x-values (V or MV/cm) where P-E crosses zero during positive/negative switching.
 - RC parameters are extracted from U/D (non-switching) pulses by fitting I(t) = I_ss * (1 - exp(-t/τ)) during voltage ramps.
@@ -728,145 +728,127 @@ function analyze_pund_fatigue_combined(entries::Vector)
     any_area = false
     all_area = true
 
-    # Running counters
-    cycles_accum = 0
     file_counter = 0
 
     # Cached pulse boundaries — reused across fatigue cycles with identical waveforms
     cached_pulses::Union{Nothing,Vector{UnitRange{Int}}} = nothing
 
-    # Sort chronologically when possible (by :timestamp or params[:timestamp]); fallback to given order
-    sorted_entries = sort(entries; by=e -> begin
-        if hasproperty(e, :timestamp)
-            return e.timestamp
-        elseif hasproperty(e, :params) && haskey(e.params, :timestamp)
-            return e.params[:timestamp]
-        else
-            return 0
-        end
-    end)
+    sorted_entries = sort(entries; by=e -> e.timestamp)
 
     for entry in sorted_entries
-        kind = hasproperty(entry, :kind) ? entry.kind : :pund
-        df = hasproperty(entry, :df) ? entry.df : DataFrame()
-        params = hasproperty(entry, :params) ? entry.params : Dict{Symbol,Any}()
+        kind = entry.kind
+        df = entry.df
+        params = entry.params
 
-        if kind === :pund
-            nrows = nrow(df)
-            nrows == 0 && continue
+        kind === :pund || error("PUND fatigue analysis only supports :pund entries")
+        nrow(df) > 0 || error("PUND fatigue analysis received an empty dataframe")
 
-            # Device parameters (exact keys expected)
-            area_um2 = haskey(params, :area_um2) ? Float64(params[:area_um2]) : NaN
-            thickness_nm = haskey(params, :t_HZO_nm) ? Float64(params[:t_HZO_nm]) : NaN
+        # Device parameters (exact keys expected)
+        area_um2 = haskey(params, :area_um2) ? Float64(params[:area_um2]) : NaN
+        thickness_nm = haskey(params, :t_HZO_nm) ? Float64(params[:t_HZO_nm]) : NaN
 
-            # Track availability for axis labels
-            if isfinite(thickness_nm) && thickness_nm > 0
-                any_thickness = true
-            else
-                all_thickness = false
-            end
-            if isfinite(area_um2) && area_um2 > 0
-                any_area = true
-            else
-                all_area = false
-            end
+        # Track availability for axis labels
+        if isfinite(thickness_nm) && thickness_nm > 0
+            any_thickness = true
+        else
+            all_thickness = false
+        end
+        if isfinite(area_um2) && area_um2 > 0
+            any_area = true
+        else
+            all_area = false
+        end
 
-            # Analyze single PUND to get FE charge, pulse indices, etc.
-            # Detect pulses on first cycle, reuse for subsequent cycles
-            if cached_pulses === nothing
-                det = detect_pund_pulses(df.time, df.voltage, df.current)
-                cached_pulses = det.pulses
-            end
-            df_an = analyze_pund(df; pulses=cached_pulses)
+        # Analyze single PUND to get FE charge, pulse indices, etc.
+        # Detect pulses on first cycle, reuse for subsequent cycles
+        if cached_pulses === nothing
+            det = detect_pund_pulses(df.time, df.voltage, df.current)
+            cached_pulses = det.pulses
+        end
+        df_an = analyze_pund(df; pulses=cached_pulses)
 
-            # Y-axis base (centered) and unit handling
-            Q_FE = df_an.Q_FE
-            finite_Q = filter(!isnan, Q_FE)
-            q_center = isempty(finite_Q) ? 0.0 : mean(finite_Q)
-            Qc = Q_FE .- q_center
+        # Y-axis base (centered) and unit handling
+        Q_FE = df_an.Q_FE
+        finite_Q = filter(!isnan, Q_FE)
+        q_center = isempty(finite_Q) ? 0.0 : mean(finite_Q)
+        Qc = Q_FE .- q_center
 
-            y_all = if isfinite(area_um2) && area_um2 > 0
-                area_cm2 = area_um2 / 1e8      # μm² -> cm²
-                (Qc ./ area_cm2) .* 1e6        # μC/cm²
-            else
-                Qc .* 1e12                     # pC
-            end
+        y_all = if isfinite(area_um2) && area_um2 > 0
+            area_cm2 = area_um2 / 1e8      # μm² -> cm²
+            (Qc ./ area_cm2) .* 1e6        # μC/cm²
+        else
+            Qc .* 1e12                     # pC
+        end
 
-            # X-axis base (E if thickness given, else V)
-            V = df_an.voltage
-            x_all = if isfinite(thickness_nm) && thickness_nm > 0
-                (V ./ (thickness_nm * 1e-7)) ./ 1e6   # V/(nm->cm) => V/cm => MV/cm
-            else
-                V
-            end
+        # X-axis base (E if thickness given, else V)
+        V = df_an.voltage
+        x_all = if isfinite(thickness_nm) && thickness_nm > 0
+            (V ./ (thickness_nm * 1e-7)) ./ 1e6   # V/(nm->cm) => V/cm => MV/cm
+        else
+            V
+        end
 
-            # Per-PUND repetition handling: each quintuple (poling,P,U,N,D) is one cycle increment
-            pid = df_an.pulse_idx
-            maxpid = maximum(pid)
-            n_groups = maxpid ÷ 5
-            file_counter += 1
+        pid = df_an.pulse_idx
+        maxpid = maximum(pid)
+        n_groups = maxpid ÷ 5
+        file_counter += 1
 
-            # Analyze U/D pulses for RC parameters
-            ud_analysis = analyze_ud_pulses(df_an.time, df_an.voltage, df_an.current, cached_pulses, n_groups)
+        # Analyze U/D pulses for RC parameters
+        ud_analysis = analyze_ud_pulses(df_an.time, df_an.voltage, df_an.current, cached_pulses, n_groups)
 
-            # If this entry has an explicit fatigue_cycle, use it directly
-            explicit_cycle = haskey(params, :fatigue_cycle) ? Int(params[:fatigue_cycle]) : nothing
+        fatigue_count = Int(params[:fatigue_count])
 
-            for rep in 1:n_groups
-                # Use only P and N pulses within this repetition
-                P_code = rep * 5 - 3
-                N_code = rep * 5 - 1
-                rep_mask = (pid .== P_code) .| (pid .== N_code)
+        for rep in 1:n_groups
+            # Use only P and N pulses within this repetition
+            P_code = rep * 5 - 3
+            N_code = rep * 5 - 1
+            rep_mask = (pid .== P_code) .| (pid .== N_code)
 
-                valid = rep_mask .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
-                if any(valid)
-                    cyc = explicit_cycle !== nothing ? explicit_cycle : cycles_accum + 1
+            valid = rep_mask .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
+            if any(valid)
+                cyc = fatigue_count
 
-                    xv = collect(x_all[valid])
-                    yv = collect(y_all[valid])
+                xv = collect(x_all[valid])
+                yv = collect(y_all[valid])
 
-                    # Top panel trace
-                    push!(traces, (cycles=cyc, x=xv, y=yv, label=string(cyc),
-                        file_index=file_counter, rep_index=rep, rep_count=n_groups))
+                # Top panel trace
+                push!(traces, (cycles=cyc, x=xv, y=yv, label=string(cyc),
+                    file_index=file_counter, rep_index=rep, rep_count=n_groups))
 
-                    # Extract P and N pulse data separately for coercive field
-                    P_valid = (pid .== P_code) .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
-                    N_valid = (pid .== N_code) .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
-                    x_P, y_P = collect(x_all[P_valid]), collect(y_all[P_valid])
-                    x_N, y_N = collect(x_all[N_valid]), collect(y_all[N_valid])
+                # Extract P and N pulse data separately for coercive field
+                P_valid = (pid .== P_code) .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
+                N_valid = (pid .== N_code) .& isfinite.(x_all) .& isfinite.(y_all) .& .!isnan.(y_all)
+                x_P, y_P = collect(x_all[P_valid]), collect(y_all[P_valid])
+                x_N, y_N = collect(x_all[N_valid]), collect(y_all[N_valid])
 
-                    Ec_plus = find_zero_crossing(x_P, y_P)
-                    Ec_minus = find_zero_crossing(x_N, y_N)
+                Ec_plus = find_zero_crossing(x_P, y_P)
+                Ec_minus = find_zero_crossing(x_N, y_N)
 
-                    # Bottom panel: Pr = (max(P) - min(P)) / 2 (only if area was provided)
-                    if isfinite(area_um2) && area_um2 > 0
-                        ymin = minimum(yv)
-                        ymax = maximum(yv)
-                        if isfinite(ymin) && isfinite(ymax)
-                            Pr = 0.5 * (ymax - ymin)
-                            if isfinite(Pr)
-                                # Get RC parameters for this repetition (average U and D fits)
-                                C_F, tau_s, R_Ohm = nothing, nothing, nothing
-                                if rep <= length(ud_analysis.groups)
-                                    grp = ud_analysis.groups[rep]
-                                    C_vals = filter(!isnothing, [grp.C_U, grp.C_D])
-                                    tau_vals = filter(!isnothing, [grp.tau_U, grp.tau_D])
-                                    R_vals = filter(!isnothing, [grp.R_U, grp.R_D])
-                                    C_F = isempty(C_vals) ? nothing : mean(C_vals)
-                                    tau_s = isempty(tau_vals) ? nothing : mean(tau_vals)
-                                    R_Ohm = isempty(R_vals) ? nothing : mean(R_vals)
-                                end
-
-                                push!(pr_points, (cycles=float(cyc), Pr=Pr,
-                                    Ec_plus=Ec_plus, Ec_minus=Ec_minus,
-                                    C_F=C_F, tau_s=tau_s, R_Ohm=R_Ohm,
-                                    file_index=file_counter, rep_index=rep, rep_count=n_groups))
+                # Bottom panel: Pr = (max(P) - min(P)) / 2 (only if area was provided)
+                if isfinite(area_um2) && area_um2 > 0
+                    ymin = minimum(yv)
+                    ymax = maximum(yv)
+                    if isfinite(ymin) && isfinite(ymax)
+                        Pr = 0.5 * (ymax - ymin)
+                        if isfinite(Pr)
+                            # Get RC parameters for this repetition (average U and D fits)
+                            C_F, tau_s, R_Ohm = nothing, nothing, nothing
+                            if rep <= length(ud_analysis.groups)
+                                grp = ud_analysis.groups[rep]
+                                C_vals = filter(!isnothing, [grp.C_U, grp.C_D])
+                                tau_vals = filter(!isnothing, [grp.tau_U, grp.tau_D])
+                                R_vals = filter(!isnothing, [grp.R_U, grp.R_D])
+                                C_F = isempty(C_vals) ? nothing : mean(C_vals)
+                                tau_s = isempty(tau_vals) ? nothing : mean(tau_vals)
+                                R_Ohm = isempty(R_vals) ? nothing : mean(R_vals)
                             end
+
+                            push!(pr_points, (cycles=float(cyc), Pr=Pr,
+                                Ec_plus=Ec_plus, Ec_minus=Ec_minus,
+                                C_F=C_F, tau_s=tau_s, R_Ohm=R_Ohm,
+                                file_index=file_counter, rep_index=rep, rep_count=n_groups))
                         end
                     end
-
-                    # Update cumulative cycle counter
-                    cycles_accum = explicit_cycle !== nothing ? explicit_cycle : cycles_accum + 1
                 end
             end
         end
