@@ -33,6 +33,7 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   load_plot_for_files(::P, paths, combined_kind; kwargs...) → Any
 #   analyze_plot_for_files(::P, combined_kind, loaded; kwargs...) → Any
 #   draw_plot_for_files(::P, combined_kind, analyzed; kwargs...) → Union{Figure,Nothing}
+#   debug_plot(::P, measurements, loaded; kwargs...) → Union{Figure,Nothing}
 #   available_analyses(::P, measurements) → Vector{NamedTuple}
 #   run_analysis(::P, key, measurements; kwargs...) → Union{AnalysisResult,Nothing}
 #   draw_analysis_view(result, view) → Union{Figure,Nothing}
@@ -173,6 +174,13 @@ function MeasurementInfo(
         stats,
     )
 end
+
+debug_plot(
+    ::AbstractProject,
+    measurements::Vector{MeasurementInfo},
+    loaded;
+    kwargs...,
+) = error("Debug plots are not implemented for this project")
 
 struct HierarchyNode
     name::String

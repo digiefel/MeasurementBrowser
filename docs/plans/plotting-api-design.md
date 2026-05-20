@@ -95,6 +95,17 @@ plot_data(project, ::Type{SomePlotKind}, measurements, fig::Figure)
 `plot_data` adds the selected measurement data to that figure. It can handle one measurement or a
 group, depending on the plot kind.
 
+Projects may also define an interactive debug plot for cases where the user needs to tune analysis
+parameters rather than only view the finished result:
+
+```julia
+debug_plot(project, measurement, raw_data)::Figure
+```
+
+`debug_plot` is for project-specific diagnostic tools. For example, RuO2 PUND debugging needs raw
+waveform data, sliders for pulse-detection parameters, and plots that update when those sliders
+change.
+
 ## Package Responsibilities
 
 The package owns:
@@ -105,6 +116,7 @@ The package owns:
 - faceting and multi-panel layout
 - caching source-file and measurement data
 - calling `setup_plot` once and `plot_data` as many times as needed
+- calling `debug_plot` for explicit debug workflows
 
 Package-level composition should not require project-specific branching.
 
@@ -118,6 +130,38 @@ data_contents(project, measurement)::DataFrame
 
 `data_contents` returns the dataframe for one logical measurement. The package can cache it.
 
+Normal plots use analyzed or display-ready measurement data:
+
+```text
+MeasurementInfo
+  -> data_contents(project, measurement)
+  -> setup_plot(...)
+  -> plot_data(...)
+```
+
+Interactive debug plots use raw data because changing a slider can change the analysis itself:
+
+```text
+MeasurementInfo
+  -> raw source/measurement dataframe
+  -> debug_plot(project, measurement, raw_data)
+  -> Makie Observables update the figure in place
+```
+
+This keeps the two workflows distinct:
+
+```text
+normal plot:
+  show the result
+  static figure
+  cache-friendly
+
+debug plot:
+  explain and tune the analysis
+  live figure with sliders
+  recomputes inside the figure
+```
+
 Makie mutation stays on the UI thread:
 
 ```text
@@ -128,4 +172,32 @@ background/cache work:
 UI/render work:
   setup_plot
   plot_data
+  debug_plot
 ```
+
+## Interactive Debugging
+
+Debug plots are not a replacement for normal plotting. They are explicit tools for project-specific
+analysis debugging.
+
+The package should not know about RuO2 PUND smoothing windows, pulse thresholds, or similar
+parameters. It only loads the relevant raw data and embeds the returned Makie figure.
+
+Inside the debug figure, the project can use Makie `Observable`s:
+
+```text
+slider changes
+  -> Observable updates
+  -> project recomputes analysis from raw data
+  -> lines, markers, boundaries, and labels update in place
+```
+
+For RuO2 PUND, the first useful debug figure should show:
+
+- raw voltage/current samples and smoothed traces
+- derivative signal, threshold, ramp regions, and pulse boundaries
+- I-V loop
+- Q-V or P-V loop
+
+The normal plot cache should not store a debug figure as an analyzed plot payload. Debug figures are
+interactive workspaces built from raw data.

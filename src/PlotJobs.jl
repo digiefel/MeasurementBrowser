@@ -42,11 +42,11 @@ function _plot_job_key(
 end
 
 function _run_plot_job(job::PlotJob, should_cancel)
-    if length(job.measurements) == 1
-        measurement = only(job.measurements)
-        params = only(job.device_params)
-        if job.debug
-            loaded = load_plot_for_file(
+    if job.debug
+        if length(job.measurements) == 1
+            measurement = only(job.measurements)
+            params = only(job.device_params)
+            return load_plot_for_file(
                 job.project,
                 measurement.filepath,
                 measurement.measurement_kind;
@@ -54,15 +54,22 @@ function _run_plot_job(job::PlotJob, should_cancel)
                 DEBUG=job.debug,
                 should_cancel,
             )
-            return analyze_plot_for_file(
-                job.project,
-                measurement.measurement_kind,
-                loaded;
-                device_params=params,
-                DEBUG=job.debug,
-                should_cancel,
-            )
         end
+
+        paths = [measurement.filepath for measurement in job.measurements]
+        return load_plot_for_files(
+            job.project,
+            paths,
+            job.plot_kind;
+            device_params_list=job.device_params,
+            DEBUG=job.debug,
+            should_cancel,
+        )
+    end
+
+    if length(job.measurements) == 1
+        measurement = only(job.measurements)
+        params = only(job.device_params)
         job.cache_identity isa ProjectCacheIdentity ||
             error("Plot job for '$(measurement.filepath)' is missing cache identity")
         return _measurement_group_for_cached_plot(job.cache_identity, measurement)
@@ -123,6 +130,16 @@ function _cached_loaded_plot_for_files(job::PlotJob, should_cancel)
 end
 
 function _draw_plot_job(job::PlotJob, data)
+    if job.debug
+        return debug_plot(
+            job.project,
+            job.measurements,
+            data;
+            device_params=job.device_params,
+            plot_kind=job.plot_kind,
+        )
+    end
+
     if length(job.measurements) == 1
         return draw_plot_for_file(
             job.project,
