@@ -92,6 +92,18 @@ end
 # ---------------------------------------------------------------------------
 # Measurement related structs
 # ---------------------------------------------------------------------------
+"""
+MeasurementInfo is the core struct representing a single measurement in the browser. 
+It may be derived from one or more source files, and multiple MeasurementInfo entries 
+may be derived from the same file (e.g. one per device or cycle).
+
+`clean_title` is the short title shown in the GUI.
+`device_info` carries metadata about the device under test.
+
+`parameters` are measurement/acquisition "settings" parsed from filename/header.
+`stats` are computed from file contents or measurement history later on.
+The same key may appear in both; the container is part of the meaning.
+"""
 struct MeasurementInfo
     unique_id::String
     filename::String
