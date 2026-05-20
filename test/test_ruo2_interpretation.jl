@@ -12,6 +12,8 @@ const _RUO2_TLM_FIXTURE =
     "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv"
 const _RUO2_IV_FIXTURE =
     "RuO2test_A11_XI_FeCapBD_A1A2_20260509_184021_IVSweep.csv"
+const _RUO2_FECAP_BD_FIXTURE =
+    "RuO2test_A10_VI_FeCap_BD_A1A2_20251128_175954_OxideBreakdown.csv"
 const _RUO2_CV_FIXTURE =
     "RuO2test_A9_VI_FeCap_A4_20260320_181744_298K_CVSweep.csv"
 const _RUO2_WAKEUP_FIXTURE =
@@ -43,6 +45,12 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
                 timestamp=DateTime(2026, 5, 9, 18, 40, 21),
             ),
             (
+                file=_RUO2_FECAP_BD_FIXTURE,
+                kind=:breakdown,
+                location=["RuO2test_A10", "VI", "FeCapBD", "A1A2"],
+                timestamp=DateTime(2025, 11, 28, 17, 59, 54),
+            ),
+            (
                 file=_RUO2_CV_FIXTURE,
                 kind=:cvsweep,
                 location=["RuO2test_A9", "VI", "FeCap", "A4"],
@@ -58,6 +66,10 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
             @test parse_device_info(RUO2_PROJECT, source).location == case.location
             @test source.timestamp == case.timestamp
         end
+
+        @test MeasurementBrowser._ruo2_location_from_filename(
+            "RuO2testA10_VI_FeCap_BD_A1A2_20251128_175954_OxideBreakdown.csv",
+        ) == ["RuO2testA10", "VI", "FeCapBD", "A1A2"]
     end
 
     @testset "expanded measurement IDs and source paths" begin

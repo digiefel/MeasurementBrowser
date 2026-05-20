@@ -89,23 +89,22 @@ end
 """Extract the RuO2 device path from supported filename conventions."""
 function _ruo2_location_from_filename(filename::AbstractString)
     s = String(filename)
-    m = match(REGEX_RUO2_BRACKET_IDENTIFIER, s)
-    identifier = if m !== nothing
-        String(m.captures[1])
-    else
-        m = match(REGEX_RUO2_TIMESTAMP_FILENAME, s)
-        m === nothing && return nothing
-        String(m.captures[1])
+    # Match old (and probably unused) format
+    m = match(r"\[((?:RuO2)[^()\[\];\s]+)", s)
+    identifier = m === nothing ? nothing : m.captures[1]
+    if identifier === nothing
+        m = match(r"^(RuO2.+?)_\d{8}_\d{6}_", s)
+        identifier = m === nothing ? nothing : m.captures[1]
     end
+    identifier === nothing && return nothing
+
+    # match things like RuO2test_{A1}_{RomanNumeralSite}_{Subsite}_{Device}
+    m = match(r"^(RuO2test_?[A-Z0-9]+)_([XVI]+)_(.+)_([A-Z][0-9]+(?:[A-Z][0-9]+)*)$", identifier)
+    m !== nothing && return [String(m[1]), String(m[2]), replace(String(m[3]), "_" => ""), String(m[4])]
 
     parts = split(identifier, '_')
     length(parts) >= 4 || error("Invalid RuO2 filename identifier: $identifier")
-    chip = String(join(parts[1:end-3], "_"))
-    site = String(parts[end-2])
-    subsite = String(parts[end-1])
-    device = String(parts[end])
-    isempty(chip) && error("Invalid RuO2 filename identifier: $identifier")
-    return [chip, site, subsite, device]
+    return [String(join(parts[1:end-3], "_")), String(parts[end-2]), String(parts[end-1]), String(parts[end])]
 end
 
 """Split paired-device breakdown measurements into one browser measurement per device."""
