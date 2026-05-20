@@ -1,4 +1,3 @@
-using DataLoader: read_pund_file, read_pund_wakeup_file
 using DataAnalysis: detect_pund_pulses, analyze_pund
 using DataFrames: nrow
 using Statistics: mean
@@ -102,7 +101,7 @@ function compute_pund_stats(
     if is_pund_fatigue_file(filepath)
         fatigue_count = Int(params[:fatigue_idx])
         fatigue_df = get!(fatigue_files, filepath) do
-            _load_ruo2_pund_fatigue_file(filepath)
+            read_pund_fatigue_file(filepath)
         end
         return pund_stats_from_waveform(
             _select_pund_fatigue_cycle(fatigue_df, fatigue_count),

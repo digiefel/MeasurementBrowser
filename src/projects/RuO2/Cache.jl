@@ -196,7 +196,7 @@ function _ruo2_write_cached_pund_fatigue_file!(
     measurements::Vector{MeasurementInfo};
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    df = _load_ruo2_pund_fatigue_file(file.filepath; should_cancel=should_cancel)
+    df = read_pund_fatigue_file(file.filepath; should_cancel=should_cancel)
     signals_group = _ensure_group(file_group, "signals")
     _write_dataframe!(signals_group, "pund_fatigue", df)
 

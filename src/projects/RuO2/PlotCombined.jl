@@ -44,7 +44,7 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
                 fatigue_count = Int(params[:fatigue_idx])
                 # A fatigue source contains several logical PUND measurements, including count 0.
                 fatigue_df = get!(fatigue_files, path) do
-                    _load_ruo2_pund_fatigue_file(path; should_cancel=should_cancel)
+                    read_pund_fatigue_file(path; should_cancel=should_cancel)
                 end
                 df_p = _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
             else

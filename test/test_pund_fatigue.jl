@@ -10,7 +10,7 @@ using MeasurementBrowser
     @test isfile(fixture)
 
     @testset "RuO2 fatigue file helpers" begin
-        fatigue_df = MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture)
+        fatigue_df = MeasurementBrowser.read_pund_fatigue_file(fixture)
         @test fatigue_df isa DataFrame
         @test names(fatigue_df) == ["cycle", "time", "voltage", "current"]
         cycles = sort(unique(fatigue_df.cycle))
@@ -29,7 +29,7 @@ using MeasurementBrowser
         @test detect_kind(RUO2_PROJECT, basename(fixture)) == :pund_fatigue
 
         expanded = measurements_for_file(RUO2_PROJECT, fixture)
-        cycles = sort(unique(MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture).cycle))
+        cycles = sort(unique(MeasurementBrowser.read_pund_fatigue_file(fixture).cycle))
         @test length(expanded) == length(cycles)
         @test all(m -> m.measurement_kind == :pund, expanded)
         @test all(m -> m.stats[:wakeup_count] == 0, expanded)
@@ -52,7 +52,7 @@ using MeasurementBrowser
         selected_count = selected.parameters[:fatigue_idx]
         @test selected_count == cycles[2]
         expected_df = MeasurementBrowser._select_pund_fatigue_cycle(
-            MeasurementBrowser._load_ruo2_pund_fatigue_file(fixture),
+            MeasurementBrowser.read_pund_fatigue_file(fixture),
             Int(selected_count),
         )
         device_params = merge(selected.device_info.parameters, selected.parameters)

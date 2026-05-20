@@ -8,7 +8,7 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
         segment = kind === :pn ? :pn : nothing
         if is_pund_fatigue_file(path)
             fatigue_count = Int(params[:fatigue_idx])
-            fatigue_df = _load_ruo2_pund_fatigue_file(path; should_cancel=should_cancel)
+            fatigue_df = read_pund_fatigue_file(path; should_cancel=should_cancel)
             df = _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
             return (df=df, title=title * " cycle $fatigue_count (fatigue)", area_um2=area_um2,
                     debug=get(kwargs, :DEBUG, false), segment=segment)
