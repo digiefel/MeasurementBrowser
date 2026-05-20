@@ -6,8 +6,10 @@ using MeasurementBrowser
 
 @testset "PUND fatigue regression" begin
     fixture = joinpath(@__DIR__, "fixtures", "RuO2", "RuO2test_A12_XI_FeCap_D6_20260511_222203_PUND_Fatigue_V2.csv")
+    headerless_fixture = joinpath(@__DIR__, "fixtures", "RuO2", "RuO2test_A11_VII_FeCap_A2_20260130_155835_273K_PUND_Fatigue.csv")
 
     @test isfile(fixture)
+    @test isfile(headerless_fixture)
 
     @testset "RuO2 fatigue file helpers" begin
         fatigue_df = MeasurementBrowser.read_pund_fatigue_file(fixture)
@@ -35,7 +37,10 @@ using MeasurementBrowser
         @test all(m -> m.stats[:wakeup_count] == 0, expanded)
         @test all(m -> isnan(m.stats[:wakeup_f]), expanded)
         @test all(m -> isnan(m.stats[:wakeup_V]), expanded)
-        @test Set(m.stats[:fatigue_f] for m in expanded) == Set([100000.0])
+        @test Set(m.parameters[:fatigue_f] for m in expanded) == Set([100000.0])
+        @test Set(m.parameters[:fatigue_Vamp] for m in expanded) == Set([2.9])
+        @test Set(m.parameters[:fatigue_Vbase] for m in expanded) == Set([0.6])
+        @test all(m -> m.stats[:fatigue_f] == m.stats[:frequency_kHz] * 1000, expanded)
         @test Set(m.stats[:fatigue_V] for m in expanded) == Set([2.9])
         @test [m.stats[:fatigue_count] for m in expanded] == cycles
         @test all(
@@ -66,5 +71,20 @@ using MeasurementBrowser
         @test loaded !== nothing
         @test loaded.area_um2 == get(device_params, :area_um2, nothing)
         @test loaded.df == expected_df
+    end
+
+    @testset "RuO2 headerless fatigue file expansion" begin
+        expanded = measurements_for_file(RUO2_PROJECT, headerless_fixture)
+        cycles = sort(unique(MeasurementBrowser.read_pund_fatigue_file(headerless_fixture).cycle))
+        @test length(expanded) == length(cycles)
+        @test all(m -> m.measurement_kind == :pund, expanded)
+        @test [m.parameters[:fatigue_idx] for m in expanded] == cycles
+        @test all(m -> isnan(m.parameters[:fatigue_f]), expanded)
+        @test all(m -> isnan(m.parameters[:fatigue_Vamp]), expanded)
+        @test all(m -> isnan(m.parameters[:fatigue_Vbase]), expanded)
+        @test [m.stats[:fatigue_count] for m in expanded] == cycles
+        @test all(m -> m.stats[:wakeup_count] == 0, expanded)
+        @test all(m -> m.stats[:fatigue_f] == m.stats[:frequency_kHz] * 1000, expanded)
+        @test all(m -> m.stats[:fatigue_V] == m.stats[:V_amp], expanded)
     end
 end

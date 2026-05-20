@@ -39,12 +39,15 @@ end
 
     @test Set(m.stats[:wakeup_count] for m in expanded) == Set([1000.0])
     @test Set(m.stats[:wakeup_f] for m in expanded) == Set([1000.0])
+    @test Set(m.parameters[:wakeup_count] for m in expanded) == Set([1000.0])
+    @test Set(m.parameters[:wakeup_f] for m in expanded) == Set([1000.0])
     @test all(m -> m.stats[:fatigue_count] == 0, expanded)
     @test all(m -> isnan(m.stats[:fatigue_f]), expanded)
     @test all(m -> isnan(m.stats[:fatigue_V]), expanded)
 
     wakeup_voltages = Set(m.stats[:wakeup_V] for m in expanded)
     @test wakeup_voltages == Set([1.5, 2.5, 3.5])
+    @test Set(m.parameters[:wakeup_V] for m in expanded) == Set([1.5, 2.5, 3.5])
     @test Set(
         (
             m.stats[:wakeup_V],

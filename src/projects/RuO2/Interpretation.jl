@@ -38,11 +38,21 @@ function is_pund_fatigue_file(filepath::AbstractString)
     return detect_kind(RUO2_PROJECT, basename(String(filepath))) === :pund_fatigue
 end
 
-"""Parse filename-derived measurement parameters shared by RuO2 measurement kinds."""
-function parse_measurement_parameters(file::SourceFile)
+"""Parse filename/header settings before waveform data or device history are analyzed."""
+function parse_measurement_parameters(file::SourceFile, kind::Symbol)
     params = Dict{Symbol,Any}()
     if (m = match(r"(\d+(?:\.\d+)?)K", file.filename)) !== nothing
         params[:temperature_K] = parse(Float64, m.captures[1])
+    end
+    header = file.header_summary
+    if kind === :pund_fatigue
+        params[:fatigue_f] = parse(Float64, get(header, "fatigue_freq", "NaN"))
+        params[:fatigue_Vamp] = parse(Float64, get(header, "vmax", "NaN"))
+        params[:fatigue_Vbase] = parse(Float64, get(header, "base_voltage", "NaN"))
+    elseif kind === :pund_wakeup
+        # the keys in the wakeup headers are still called fatigue_* for historical reasons
+        params[:wakeup_f] = parse(Float64, get(header, "fatigue_freq", "NaN"))
+        params[:wakeup_count] = parse(Float64, get(header, "fatigue_count", "NaN"))
     end
     return params
 end
@@ -63,7 +73,7 @@ function interpret_file(project::RuO2Project, file::SourceFile; should_cancel::U
         measurement_kind=kind,
         device_info=DeviceInfo(copy(device_info.location)),
         timestamp=file.timestamp,
-        parameters=parse_measurement_parameters(file),
+        parameters=parse_measurement_parameters(file, kind),
         clean_title=title,
     )
 

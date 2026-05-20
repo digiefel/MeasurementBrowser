@@ -9,7 +9,6 @@ function compute_and_add_measurement_stats!(
     files::Vector{SourceFile},
 )
     by_device = Dict{String,Vector{MeasurementInfo}}()
-    headers = Dict(file.filepath => file.header_summary for file in files)
     fatigue_files = Dict{String,Any}()
 
     for measurement in measurements
@@ -35,11 +34,16 @@ function compute_and_add_measurement_stats!(
             params = measurement.parameters
             stats = measurement.stats
             empty!(stats)
+            waveform_stats = compute_pund_stats(
+                measurement,
+                measurement.device_info.parameters;
+                fatigue_files=fatigue_files,
+            )
+
             if kind === :wakeup_pn || kind === :wakeup_pund
-                header = headers[measurement.filepath]
                 wakeup_V = Float64(params[:wakeup_V])
-                wakeup_f = parse(Float64, first(split(header["fatigue_freq"], ',')))
-                local_count = parse(Float64, first(split(header["fatigue_count"], ',')))
+                wakeup_f = Float64(params[:wakeup_f])
+                local_count = Float64(params[:wakeup_count])
 
                 condition_key = (wakeup_V, wakeup_f)
                 event_key = (measurement.filepath, wakeup_V, wakeup_f)
@@ -60,10 +64,11 @@ function compute_and_add_measurement_stats!(
             elseif kind === :pund
                 source_is_fatigue = is_pund_fatigue_file(measurement.filepath)
                 if source_is_fatigue
-                    header = headers[measurement.filepath]
                     fatigue_count_so_far = Int(params[:fatigue_idx])
-                    fatigue_f_so_far = parse(Float64, first(split(header["fatigue_freq"], ',')))
-                    fatigue_V_so_far = parse(Float64, first(split(header["vmax"], ',')))
+                    # Current RuO2 fatigue files use the same frequency/amplitude
+                    # for fatigue pulses and the selected readout waveform.
+                    fatigue_f_so_far = waveform_stats[:frequency_kHz] * 1000
+                    fatigue_V_so_far = waveform_stats[:V_amp]
                 end
 
                 stats[:wakeup_count] = wakeup_count_so_far
@@ -74,11 +79,7 @@ function compute_and_add_measurement_stats!(
                 stats[:fatigue_V] = fatigue_V_so_far
             end
 
-            merge!(stats, compute_pund_stats(
-                measurement,
-                measurement.device_info.parameters;
-                fatigue_files=fatigue_files,
-            ))
+            merge!(stats, waveform_stats)
         end
     end
     return nothing
