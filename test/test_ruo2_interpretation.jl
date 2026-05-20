@@ -102,11 +102,11 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
         @test isequal((
             pund.stats[:wakeup_count],
             pund.stats[:fatigue_count],
-            pund.stats[:wakeup_f],
-            pund.stats[:wakeup_V],
-            pund.stats[:fatigue_f],
-            pund.stats[:fatigue_V],
-        ), (0, 0, NaN, NaN, NaN, NaN))
+        ), (0, 0))
+        @test !haskey(pund.stats, :wakeup_f)
+        @test !haskey(pund.stats, :wakeup_V)
+        @test !haskey(pund.stats, :fatigue_f)
+        @test !haskey(pund.stats, :fatigue_V)
         @test (
             pund.stats[:V_base],
             pund.stats[:V_min],

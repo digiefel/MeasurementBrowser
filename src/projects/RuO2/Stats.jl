@@ -1,4 +1,3 @@
-using DataAnalysis: detect_pund_pulses, analyze_pund
 using DataFrames: nrow
 using Statistics: mean
 
@@ -56,11 +55,11 @@ function compute_and_add_measurement_stats!(
                 wakeup_f_so_far = wakeup_f
                 wakeup_V_so_far = wakeup_V
                 stats[:wakeup_count] = wakeup_count_so_far
-                stats[:wakeup_f] = wakeup_f_so_far
-                stats[:wakeup_V] = wakeup_V_so_far
                 stats[:fatigue_count] = fatigue_count_so_far
-                stats[:fatigue_f] = fatigue_f_so_far
-                stats[:fatigue_V] = fatigue_V_so_far
+                isfinite(wakeup_f_so_far) && (stats[:wakeup_f] = wakeup_f_so_far)
+                isfinite(wakeup_V_so_far) && (stats[:wakeup_V] = wakeup_V_so_far)
+                isfinite(fatigue_f_so_far) && (stats[:fatigue_f] = fatigue_f_so_far)
+                isfinite(fatigue_V_so_far) && (stats[:fatigue_V] = fatigue_V_so_far)
             elseif kind === :pund
                 source_is_fatigue = is_pund_fatigue_file(measurement.filepath)
                 if source_is_fatigue
@@ -72,11 +71,11 @@ function compute_and_add_measurement_stats!(
                 end
 
                 stats[:wakeup_count] = wakeup_count_so_far
-                stats[:wakeup_f] = wakeup_f_so_far
-                stats[:wakeup_V] = wakeup_V_so_far
                 stats[:fatigue_count] = fatigue_count_so_far
-                stats[:fatigue_f] = fatigue_f_so_far
-                stats[:fatigue_V] = fatigue_V_so_far
+                isfinite(wakeup_f_so_far) && (stats[:wakeup_f] = wakeup_f_so_far)
+                isfinite(wakeup_V_so_far) && (stats[:wakeup_V] = wakeup_V_so_far)
+                isfinite(fatigue_f_so_far) && (stats[:fatigue_f] = fatigue_f_so_far)
+                isfinite(fatigue_V_so_far) && (stats[:fatigue_V] = fatigue_V_so_far)
             end
 
             merge!(stats, waveform_stats)
@@ -110,7 +109,9 @@ function compute_pund_stats(
         )
     elseif measurement.measurement_kind === :wakeup_pn || measurement.measurement_kind === :wakeup_pund
         df = _select_pund_wakeup_readout(filepath, Float64(params[:wakeup_V]))
-        return pund_stats_from_waveform(df, device_params)
+        split = analyze_pund_and_pn(df)
+        selected = measurement.measurement_kind === :wakeup_pn ? split.pn : split.pund
+        return pund_stats_from_waveform(selected, device_params)
     end
 
     return pund_stats_from_waveform(read_pund_file(fname, dir), device_params)
@@ -140,8 +141,6 @@ function pund_stats_from_waveform(df, device_params::Dict{Symbol,Any}=Dict{Symbo
         :V_min => V_min,
         :V_max => V_max,
         :V_amp => round_one(max(abs(V_max - V_base), abs(V_min - V_base))),
-        :frequency_kHz => NaN,
-        :Pr_max_uCcm2 => NaN,
     )
 
     det = detect_pund_pulses(df.time, df.voltage, df.current)
@@ -160,8 +159,7 @@ function pund_stats_from_waveform(df, device_params::Dict{Symbol,Any}=Dict{Symbo
         if isfinite(area_um2) && area_um2 > 0
             df_an = hasproperty(df, :Q_FE) && hasproperty(df, :pulse_idx) ?
                 df : analyze_pund(df; pulses=det.pulses)
-            pr_vals = pund_pr_values(df_an, area_um2)
-            isempty(pr_vals) || (stats[:Pr_max_uCcm2] = round(maximum(pr_vals); digits=3))
+            stats[:Pr_uCcm2] = round(pund_pr_value(df_an, area_um2); digits=3)
         end
     end
 
@@ -169,9 +167,9 @@ function pund_stats_from_waveform(df, device_params::Dict{Symbol,Any}=Dict{Symbo
 end
 
 """
-Convert analyzed switching charge into remnant polarization per repetition.
+Return Pr for the single loop represented by this logical measurement.
 """
-function pund_pr_values(df, area_um2::Float64)
+function pund_pr_value(df, area_um2::Float64)
     pid = df.pulse_idx
     maxpid = maximum(pid)
     group_size = maxpid == 1 ? 1 : maxpid % 5 == 0 ? 5 : maxpid % 4 == 0 ? 4 : 2
@@ -201,5 +199,6 @@ function pund_pr_values(df, area_um2::Float64)
             end
         end
     end
-    return pr_vals
+    length(pr_vals) == 1 || error("Expected one PUND loop, found $(length(pr_vals))")
+    return only(pr_vals)
 end

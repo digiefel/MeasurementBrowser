@@ -42,14 +42,15 @@ end
     @test Set(m.parameters[:wakeup_count] for m in expanded) == Set([1000.0])
     @test Set(m.parameters[:wakeup_f] for m in expanded) == Set([1000.0])
     @test all(m -> m.stats[:fatigue_count] == 0, expanded)
-    @test all(m -> isnan(m.stats[:fatigue_f]), expanded)
-    @test all(m -> isnan(m.stats[:fatigue_V]), expanded)
+    @test all(m -> !haskey(m.stats, :fatigue_f), expanded)
+    @test all(m -> !haskey(m.stats, :fatigue_V), expanded)
 
     wakeup_voltages = Set(m.stats[:wakeup_V] for m in expanded)
     @test wakeup_voltages == Set([1.5, 2.5, 3.5])
     @test Set(m.parameters[:wakeup_V] for m in expanded) == Set([1.5, 2.5, 3.5])
     @test Set(
         (
+            m.measurement_kind,
             m.stats[:wakeup_V],
             m.stats[:V_base],
             m.stats[:V_min],
@@ -58,9 +59,12 @@ end
         )
         for m in expanded
     ) == Set([
-        (1.5, 0.0, -1.5, 1.5, 1.5),
-        (2.5, 0.0, -2.5, 2.5, 2.5),
-        (3.5, 0.0, -3.5, 3.5, 3.5),
+        (:wakeup_pn, 1.5, 0.0, -1.5, 1.5, 1.5),
+        (:wakeup_pn, 2.5, 0.0, -2.5, 2.5, 2.5),
+        (:wakeup_pn, 3.5, 0.0, -3.5, 3.5, 3.5),
+        (:wakeup_pund, 1.5, -0.1, -1.5, 1.5, 1.6),
+        (:wakeup_pund, 2.5, -0.1, -2.5, 2.5, 2.6),
+        (:wakeup_pund, 3.5, -0.1, -3.5, 3.5, 3.6),
     ])
 
     # Every expanded item shares the same source file
