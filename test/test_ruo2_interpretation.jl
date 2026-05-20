@@ -71,9 +71,9 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
         )
 
         fatigue = measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_FATIGUE_FIXTURE))
-        cycles, _ = MeasurementBrowser._ruo2_scan_fatigue_file(
+        cycles = unique(MeasurementBrowser.read_pund_fatigue_file(
             _ruo2_fixture_path(_RUO2_FATIGUE_FIXTURE),
-        )
+        ).cycle)
         @test length(fatigue) == length(cycles)
         @test all(m -> m.measurement_kind === :pund, fatigue)
         @test Set(m.unique_id for m in fatigue) == Set(

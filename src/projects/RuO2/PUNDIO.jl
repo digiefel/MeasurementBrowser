@@ -4,6 +4,7 @@ using DataFrames
 const _PUND_COLUMNS_V1 = ("Time", "MeasResult1_value", "MeasResult2_value")
 const _PUND_COLUMNS_V2 = ("Time_s", "Current_A", "Voltage_V")
 const _PUND_WAKEUP_COLUMNS = ("Vmax_V", "Time_s", "Voltage_V", "Current_A")
+const _PUND_FATIGUE_COLUMNS = ("Cycle", "Time_s", "Voltage_V", "Current_A")
 
 # we need this right now because the old pund files have extra non-comment
 # and non-table-header lines at the top that we want to skip
@@ -81,25 +82,8 @@ function read_pund_fatigue_file(
     filepath::AbstractString;
     should_cancel::Union{Nothing,Function}=nothing,
 )
-    header_row = nothing
-    header = nothing
-    open(filepath, "r") do io
-        for (row, raw_line) in enumerate(eachline(io))
-            _check_cancel(should_cancel)
-            line = strip(raw_line)
-            isempty(line) && continue
-            if startswith(line, "Cycle,")
-                header_row = row
-                header = line
-                break
-            end
-        end
-    end
-    header_row !== nothing || error(
-        "Fatigue file '$filepath' is missing a data header with columns Cycle, Time_s, Voltage_V, Current_A",
-    )
-    _ruo2_fatigue_columns(filepath, header)
-
+    header_row = _find_table_header_row(filepath, (_PUND_FATIGUE_COLUMNS,))
+    _check_cancel(should_cancel)
     source = CSV.read(
         filepath,
         DataFrame;

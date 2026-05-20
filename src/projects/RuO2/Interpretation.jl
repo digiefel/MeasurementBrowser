@@ -120,7 +120,10 @@ end
 """Expand a PUND fatigue file into one PUND measurement per fatigue count."""
 function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementInfo}
     measurement.measurement_kind == :pund_fatigue || return [measurement]
-    cycles, _ = _ruo2_scan_fatigue_file(measurement.filepath; should_cancel=should_cancel)
+    cycles = unique(read_pund_fatigue_file(
+        measurement.filepath;
+        should_cancel=should_cancel,
+    ).cycle)
     isempty(cycles) && return MeasurementInfo[]
     return [MeasurementInfo(measurement;
         unique_id="$(measurement.filepath)#fatigue_count=$(Int(c))",
