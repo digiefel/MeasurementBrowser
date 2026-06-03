@@ -61,8 +61,6 @@ struct ProjectCacheSnapshot
     errors::Vector{ProjectCacheFileError}
 end
 
-project_cache_semantic_fields(::AbstractProject) = Dict{Symbol,Vector{Symbol}}()
-
 function project_cache_dir()
     depot = isempty(DEPOT_PATH) ? homedir() : DEPOT_PATH[1]
     return joinpath(depot, "measurementbrowser", "cache")
@@ -302,16 +300,6 @@ function _read_cache_has_device_metadata(h5, cache_path::AbstractString)
     length(values) == 1 ||
         throw(ProjectCacheInvalidError(cache_path, "invalid has_device_metadata value"))
     return Bool(values[1])
-end
-
-function _write_semantic_fields!(h5, semantic_fields::Dict{Symbol,Vector{Symbol}})
-    group = _replace_group(h5, "semantics")
-    names_sorted = sort!(collect(keys(semantic_fields)); by=String)
-    _write_symbol_vector!(group, "groups", names_sorted)
-    for name in names_sorted
-        _write_symbol_vector!(group, String(name), semantic_fields[name])
-    end
-    return nothing
 end
 
 function _read_semantic_fields(h5, cache_path::AbstractString)
@@ -585,7 +573,6 @@ function write_project_cache!(
             _validate_meta!(h5, identity)
         else
             _write_meta!(h5, identity)
-            _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
         end
         files_group = _ensure_group(h5, "files")
         cached = _cached_file_fingerprints(h5, identity.cache_path)
@@ -653,7 +640,6 @@ function write_project_cache!(
             current_path=identity.cache_path,
         ))
         _write_meta!(h5, identity)
-        _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
         hierarchy = _hierarchy_from_cache_statuses(source, statuses)
         _rebuild_indexes!(h5, hierarchy, statuses)
         on_progress !== nothing && on_progress((
@@ -673,7 +659,7 @@ function write_project_cache!(
         identity,
         hierarchy,
         status,
-        project_cache_semantic_fields(source.project),
+        Dict{Symbol,Vector{Symbol}}(),
         errors,
     )
 end

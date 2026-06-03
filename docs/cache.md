@@ -94,7 +94,7 @@ It returns a `ProjectCacheSnapshot`, containing:
 | `identity` | cache identity used for the read |
 | `hierarchy` | `MeasurementHierarchy` rebuilt from cached measurements |
 | `status` | cache status counts |
-| `semantic_fields` | project semantic fields stored in cache |
+| `semantic_fields` | legacy semantic fields if present in the cache |
 | `errors` | per-file cache transform errors |
 
 Startup cache load does not read dataframe plot payloads. Plot payloads are read later when plot jobs
@@ -118,9 +118,8 @@ Supported modes:
 During write, each source file is compared with cached fingerprints. Unchanged files are kept.
 Changed or new files are rewritten. Cached files missing from the source scan are deleted.
 
-After file updates, `/indexes`, `/meta`, and `/semantics` are rebuilt. The index is the cache
-startup path; per-file groups are for fingerprint checks, cache repair, and future measurement-data
-payloads.
+After file updates, `/indexes` and `/meta` are rebuilt. The index is the cache startup path;
+per-file groups are for fingerprint checks, cache repair, and future measurement-data payloads.
 
 ## Cache Status
 
