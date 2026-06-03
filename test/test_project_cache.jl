@@ -62,7 +62,12 @@ end
             @test any(event -> event.phase == :cache_update, progress_events)
             @test last(filter(event -> event.phase == :cache_update, progress_events)).processed_csv == 2
 
-            loaded = load_project_cache(identity)
+            load_progress = NamedTuple[]
+            loaded = load_project_cache(identity; on_progress=progress -> push!(load_progress, progress))
+            @test length(load_progress) == 1
+            @test only(load_progress).phase == :cache_load
+            @test only(load_progress).total_csv == 1
+            @test only(load_progress).loaded_measurements == 3
             @test sort([m.unique_id for m in loaded.hierarchy.all_measurements]) ==
                 sort([m.unique_id for m in snapshot.hierarchy.all_measurements])
             @test loaded.semantic_fields[:measurement] == [

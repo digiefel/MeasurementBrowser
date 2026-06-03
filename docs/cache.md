@@ -58,7 +58,7 @@ Top-level groups:
 | `/meta` | project name, cache id, root path, device metadata flag, update time |
 | `/semantics` | project-defined semantic field names |
 | `/files` | one group per cached source CSV |
-| `/indexes` | flattened lookup arrays rebuilt after cache writes |
+| `/indexes` | compact startup index rebuilt after cache writes |
 
 Each `/files/<file_key>` group stores:
 
@@ -71,21 +71,25 @@ Each `/files/<file_key>` group stores:
 | `status` | `ok`, `skipped`, or `error` |
 | project payloads | project-specific cached plot data |
 
-Measurement metadata includes `unique_id`, filename, filepath, clean title, kind, timestamp, device
-path, device parameters, measurement parameters, and measurement stats.
+Measurement groups still store metadata next to project payloads, but startup cache loading does not
+walk those groups.
+
+`/indexes` stores the browser metadata as compact arrays: source file statuses, file errors,
+measurement ids, filenames, filepaths, clean titles, kinds, timestamps, device paths, device
+parameters, measurement parameters, and measurement stats. This is the data used to rebuild the
+browser tree when a project opens.
 
 ## Loading the Cache
 
-`load_project_cache(identity)` reads cached browser metadata without walking the source CSV tree.
+`load_project_cache(identity)` reads cached browser metadata without walking the source CSV tree and
+without walking every cached file group.
 
 It currently reads:
 
 1. `/meta` for validation.
 2. `/semantics`.
 3. `/meta/has_device_metadata`.
-4. all file statuses under `/files`.
-5. every cached file group and every measurement metadata group.
-6. cache file errors in a second pass.
+4. `/indexes` compact arrays.
 
 It returns a `ProjectCacheSnapshot`, containing:
 
@@ -99,6 +103,8 @@ It returns a `ProjectCacheSnapshot`, containing:
 
 Startup cache load does not read dataframe plot payloads. Plot payloads are read later when plot jobs
 request them.
+
+Caches without the current compact index are considered out of date and must be updated or rebuilt.
 
 ## Writing and Updating the Cache
 
@@ -115,7 +121,8 @@ Supported modes:
 During write, each source file is compared with cached fingerprints. Unchanged files are kept.
 Changed or new files are rewritten. Cached files missing from the source scan are deleted.
 
-After file updates, `/indexes`, `/meta`, and `/semantics` are rebuilt.
+After file updates, `/indexes`, `/meta`, and `/semantics` are rebuilt. The index is the cache
+startup path; per-file groups are for payload lookup and cache repair.
 
 ## Cache Status
 

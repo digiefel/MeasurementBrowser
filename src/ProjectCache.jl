@@ -304,32 +304,6 @@ function _write_measurement_metadata!(group, measurement::MeasurementInfo)
     return nothing
 end
 
-function _read_measurement_metadata(group, cache_path::AbstractString)
-    id = _read_required(group, "id", cache_path)
-    filename = _read_required(group, "filename", cache_path)
-    filepath = _read_required(group, "filepath", cache_path)
-    clean_title = _read_required(group, "clean_title", cache_path)
-    kind = Symbol(_read_required(group, "measurement_kind", cache_path))
-    timestamp_text = _read_required(group, "timestamp", cache_path)
-    timestamp = isempty(timestamp_text) ? nothing :
-        DateTime(timestamp_text, dateformat"yyyy-mm-ddTHH:MM:SS.s")
-    device_path = String.(_read_required(group, "device_path", cache_path))
-    device_parameters = _read_parameters(group, "device_parameters", cache_path)
-    measurement_parameters = _read_parameters(group, "measurement_parameters", cache_path)
-    measurement_stats = _read_parameters(group, "measurement_stats", cache_path)
-    return MeasurementInfo(
-        id,
-        filename,
-        filepath,
-        clean_title,
-        kind,
-        timestamp,
-        DeviceInfo(device_path, device_parameters),
-        measurement_parameters,
-        measurement_stats,
-    )
-end
-
 function _write_fingerprint!(group, fingerprint::FileFingerprint)
     _write_dataset!(group, "path", fingerprint.path; compress=false)
     _write_dataset!(group, "size_bytes", Int64[fingerprint.size_bytes])
@@ -452,20 +426,6 @@ function _write_file_group!(
     project_cache_write_file_payload!(file_group, project, source, measurements; should_cancel)
     _write_dataset!(file_group, "status", isempty(measurements) ? "skipped" : "ok"; compress=false)
     return length(measurements)
-end
-
-function _read_file_measurements(file_group, cache_path::AbstractString)
-    haskey(file_group, "measurements") || return MeasurementInfo[]
-    measurement_keys = String.(_read_required(file_group, "measurement_keys", cache_path))
-    measurements_group = file_group["measurements"]
-    measurements = MeasurementInfo[]
-    sizehint!(measurements, length(measurement_keys))
-    for measurement_key in measurement_keys
-        haskey(measurements_group, measurement_key) ||
-            throw(ProjectCacheInvalidError(cache_path, "missing measurement group '$measurement_key'"))
-        push!(measurements, _read_measurement_metadata(measurements_group[measurement_key], cache_path))
-    end
-    return measurements
 end
 
 function _file_status(file_group)
@@ -605,17 +565,154 @@ function _hierarchy_from_cache_statuses(source::SourceScan, statuses::Dict{Strin
     )
 end
 
-function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy)
+const _CACHE_INDEX_VERSION = 2
+
+function _encode_string_list(values)::String
+    return join((escape_string(String(value)) for value in values), '\t')
+end
+
+function _decode_string_list(text::AbstractString)::Vector{String}
+    isempty(text) && return String[]
+    return unescape_string.(split(String(text), '\t'))
+end
+
+function _encode_parameters_index(parameters::Dict{Symbol,Any})::String
+    isempty(parameters) && return ""
+    entries = String[]
+    sizehint!(entries, length(parameters))
+    for key in sort!(collect(keys(parameters)); by=String)
+        type_name, encoded = _encode_cache_value(parameters[key])
+        push!(entries, string(escape_string(String(key)), '\t', type_name, '\t', escape_string(encoded)))
+    end
+    return join(entries, '\n')
+end
+
+function _decode_parameters_index(text::AbstractString)::Dict{Symbol,Any}
+    isempty(text) && return Dict{Symbol,Any}()
+    parameters = Dict{Symbol,Any}()
+    for line in split(String(text), '\n')
+        parts = split(line, '\t')
+        length(parts) == 3 || error("Invalid compact cache parameter entry")
+        parameters[Symbol(unescape_string(parts[1]))] = _decode_cache_value(parts[2], unescape_string(parts[3]))
+    end
+    return parameters
+end
+
+function _cache_index_group(h5, cache_path::AbstractString)
+    haskey(h5, "indexes") || throw(ProjectCacheInvalidError(cache_path, "missing /indexes group"))
+    index_group = h5["indexes"]
+    version_values = _read_required(index_group, "version", cache_path)
+    length(version_values) == 1 && Int(version_values[1]) == _CACHE_INDEX_VERSION ||
+        throw(ProjectCacheInvalidError(cache_path, "cache index is out of date"))
+    return index_group
+end
+
+function _read_cache_index_measurements(h5, cache_path::AbstractString)
+    index_group = _cache_index_group(h5, cache_path)
+    ids = String.(_read_required(index_group, "measurement_ids", cache_path))
+    filenames = String.(_read_required(index_group, "filenames", cache_path))
+    filepaths = String.(_read_required(index_group, "filepaths", cache_path))
+    clean_titles = String.(_read_required(index_group, "clean_titles", cache_path))
+    kinds = String.(_read_required(index_group, "measurement_kinds", cache_path))
+    timestamps = String.(_read_required(index_group, "timestamps", cache_path))
+    device_paths = String.(_read_required(index_group, "device_paths", cache_path))
+    device_parameters = String.(_read_required(index_group, "device_parameters", cache_path))
+    measurement_parameters = String.(_read_required(index_group, "measurement_parameters", cache_path))
+    measurement_stats = String.(_read_required(index_group, "measurement_stats", cache_path))
+
+    n = length(ids)
+    all(length(values) == n for values in (
+        filenames,
+        filepaths,
+        clean_titles,
+        kinds,
+        timestamps,
+        device_paths,
+        device_parameters,
+        measurement_parameters,
+        measurement_stats,
+    )) || throw(ProjectCacheInvalidError(cache_path, "compact measurement index has mismatched lengths"))
+
+    measurements = MeasurementInfo[]
+    sizehint!(measurements, n)
+    for i in 1:n
+        timestamp = isempty(timestamps[i]) ? nothing :
+            DateTime(timestamps[i], dateformat"yyyy-mm-ddTHH:MM:SS.s")
+        push!(measurements, MeasurementInfo(
+            ids[i],
+            filenames[i],
+            filepaths[i],
+            clean_titles[i],
+            Symbol(kinds[i]),
+            timestamp,
+            DeviceInfo(
+                _decode_string_list(device_paths[i]),
+                _decode_parameters_index(device_parameters[i]),
+            ),
+            _decode_parameters_index(measurement_parameters[i]),
+            _decode_parameters_index(measurement_stats[i]),
+        ))
+    end
+    return measurements
+end
+
+function _read_cache_index_statuses(h5, cache_path::AbstractString)
+    index_group = _cache_index_group(h5, cache_path)
+    paths = String.(_read_required(index_group, "file_paths", cache_path))
+    statuses = String.(_read_required(index_group, "file_statuses", cache_path))
+    length(paths) == length(statuses) ||
+        throw(ProjectCacheInvalidError(cache_path, "compact file status index has mismatched lengths"))
+    return Dict(path => status for (path, status) in zip(paths, statuses))
+end
+
+function _read_cache_index_errors(h5, cache_path::AbstractString)
+    index_group = _cache_index_group(h5, cache_path)
+    paths = String.(_read_required(index_group, "error_paths", cache_path))
+    messages = String.(_read_required(index_group, "error_messages", cache_path))
+    length(paths) == length(messages) ||
+        throw(ProjectCacheInvalidError(cache_path, "compact file error index has mismatched lengths"))
+    return ProjectCacheFileError[
+        ProjectCacheFileError(path, message)
+        for (path, message) in zip(paths, messages)
+    ]
+end
+
+function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy, statuses::Dict{String,String})
     index_group = _replace_group(h5, "indexes")
+    measurements = hierarchy.all_measurements
+    status_paths = sort!(collect(keys(statuses)))
+    _write_dataset!(index_group, "version", Int64[_CACHE_INDEX_VERSION])
+    _write_string_vector!(index_group, "file_paths", status_paths)
+    _write_string_vector!(index_group, "file_statuses", [statuses[path] for path in status_paths])
     _write_string_vector!(index_group, "measurement_ids", [m.unique_id for m in hierarchy.all_measurements])
     _write_string_vector!(index_group, "measurement_keys", [_measurement_group_key(m.unique_id) for m in hierarchy.all_measurements])
-    _write_string_vector!(index_group, "device_keys", [device_path_key(m.device_info) for m in hierarchy.all_measurements])
-    _write_string_vector!(index_group, "measurement_kinds", [String(m.measurement_kind) for m in hierarchy.all_measurements])
+    _write_string_vector!(index_group, "filenames", [m.filename for m in measurements])
+    _write_string_vector!(index_group, "filepaths", [m.filepath for m in measurements])
+    _write_string_vector!(index_group, "clean_titles", [m.clean_title for m in measurements])
+    _write_string_vector!(index_group, "device_paths", [_encode_string_list(m.device_info.location) for m in measurements])
+    _write_string_vector!(index_group, "device_keys", [device_path_key(m.device_info) for m in measurements])
+    _write_string_vector!(index_group, "device_parameters", [_encode_parameters_index(m.device_info.parameters) for m in measurements])
+    _write_string_vector!(index_group, "measurement_kinds", [String(m.measurement_kind) for m in measurements])
+    _write_string_vector!(index_group, "measurement_parameters", [_encode_parameters_index(m.parameters) for m in measurements])
+    _write_string_vector!(index_group, "measurement_stats", [_encode_parameters_index(m.stats) for m in measurements])
     _write_string_vector!(index_group, "timestamps", [
         m.timestamp === nothing ? "" : Dates.format(m.timestamp, dateformat"yyyy-mm-ddTHH:MM:SS.s")
-        for m in hierarchy.all_measurements
+        for m in measurements
     ])
     _write_dataset!(index_group, "skipped_count", Int64[hierarchy.skipped_count])
+
+    error_paths = String[]
+    error_messages = String[]
+    files_group = h5["files"]
+    for path in sort!([path for (path, status) in statuses if status == "error"])
+        file_key = _file_group_key(path)
+        haskey(files_group, file_key) || continue
+        file_group = files_group[file_key]
+        push!(error_paths, path)
+        push!(error_messages, haskey(file_group, "error_message") ? read(file_group["error_message"]) : "unknown cache error")
+    end
+    _write_string_vector!(index_group, "error_paths", error_paths)
+    _write_string_vector!(index_group, "error_messages", error_messages)
     return hierarchy
 end
 
@@ -741,7 +838,7 @@ function write_project_cache!(
         _write_meta!(h5, identity)
         _write_semantic_fields!(h5, project_cache_semantic_fields(source.project))
         hierarchy = _hierarchy_from_cache_statuses(source, statuses)
-        _rebuild_indexes!(h5, hierarchy)
+        _rebuild_indexes!(h5, hierarchy, statuses)
         on_progress !== nothing && on_progress((
             phase=:cache_finalize,
             total_csv=1,
@@ -769,104 +866,43 @@ function _load_project_cache_contents(
     ;
     should_cancel::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
-    on_file_loaded::Union{Nothing,Function}=nothing,
 )
-    measurements = MeasurementInfo[]
-    metadata = _stream_project_cache_contents(
-        identity;
-        should_cancel,
-        on_progress,
-        on_file_loaded=(file_measurements) -> begin
-            on_file_loaded !== nothing && on_file_loaded(file_measurements)
-            append!(measurements, file_measurements)
-        end,
-    )
     project = _project_by_name(identity.project_name)
-    expected_semantics = project_cache_semantic_fields(project)
-    metadata.semantic_fields == expected_semantics || throw(ProjectCacheInvalidError(
-        identity.cache_path,
-        "cache metadata fields are out of date",
-    ))
-    hierarchy = MeasurementHierarchy(
-        measurements,
-        metadata.identity.root_path,
-        metadata.has_device_metadata,
-        project,
-        metadata.skipped_count,
-    )
-    return ProjectCacheSnapshot(
-        metadata.identity,
-        hierarchy,
-        metadata.status,
-        metadata.semantic_fields,
-        metadata.errors,
-    )
-end
-
-"""
-    _stream_project_cache_contents(identity; should_cancel=nothing, on_progress=nothing, on_file_loaded=nothing)
-
-Read cached files incrementally so the UI can populate measurements and progress while avoiding CSV parsing.
-"""
-function _stream_project_cache_contents(
-    identity::ProjectCacheIdentity,
-    ;
-    should_cancel::Union{Nothing,Function}=nothing,
-    on_progress::Union{Nothing,Function}=nothing,
-    on_file_loaded::Union{Nothing,Function}=nothing,
-)
     isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
     _check_cancel(should_cancel)
-    metadata = h5open(identity.cache_path, "r") do h5
+    snapshot = h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
-        files_group = haskey(h5, "files") ? h5["files"] :
-            throw(ProjectCacheInvalidError(identity.cache_path, "missing /files group"))
-        file_keys = sort!(collect(keys(files_group)))
-        skipped_count = 0
-        loaded_measurements = 0
-        processed = 0
         semantic_fields = _read_semantic_fields(h5, identity.cache_path)
+        expected_semantics = project_cache_semantic_fields(project)
+        semantic_fields == expected_semantics || throw(ProjectCacheInvalidError(
+            identity.cache_path,
+            "cache metadata fields are out of date",
+        ))
         has_device_metadata = _read_cache_has_device_metadata(h5, identity.cache_path)
-        cached_status = _cache_status_from_cached_statuses(_cached_file_statuses(h5))
-        for file_key in file_keys
-            _check_cancel(should_cancel)
-            file_group = files_group[file_key]
-            status = _file_status(file_group)
-            status in ("skipped", "error") && (skipped_count += 1)
-            file_measurements = _read_file_measurements(file_group, identity.cache_path)
-            if on_file_loaded !== nothing && !isempty(file_measurements)
-                on_file_loaded(file_measurements)
-            end
-            loaded_measurements += length(file_measurements)
-            processed += 1
-            current_path = haskey(file_group, "path") ? read(file_group["path"]) : file_key
-            _emit_progress(on_progress;
-                phase=:cache_load,
-                total_csv=length(file_keys),
-                processed_csv=processed,
-                loaded_measurements,
-                skipped_csv=skipped_count,
-                current_path,
-            )
-        end
-        (
-            identity=identity,
-            status=cached_status,
-            semantic_fields=semantic_fields,
-            skipped_count=skipped_count,
-            has_device_metadata=has_device_metadata,
+        measurements = _read_cache_index_measurements(h5, identity.cache_path)
+        statuses = _read_cache_index_statuses(h5, identity.cache_path)
+        status = _cache_status_from_cached_statuses(statuses)
+        errors = _read_cache_index_errors(h5, identity.cache_path)
+        skipped_count = count(==("skipped"), values(statuses))
+        _emit_progress(on_progress;
+            phase=:cache_load,
+            total_csv=1,
+            processed_csv=1,
+            loaded_measurements=length(measurements),
+            skipped_csv=skipped_count,
+            current_path=identity.cache_path,
         )
+        hierarchy = MeasurementHierarchy(
+            measurements,
+            identity.root_path,
+            has_device_metadata,
+            project,
+            skipped_count,
+        )
+        return ProjectCacheSnapshot(identity, hierarchy, status, semantic_fields, errors)
     end
     _check_cancel(should_cancel)
-    errors = _cache_file_errors(identity)
-    return (
-        identity=metadata.identity,
-        status=metadata.status,
-        semantic_fields=metadata.semantic_fields,
-        errors=errors,
-        skipped_count=metadata.skipped_count,
-        has_device_metadata=metadata.has_device_metadata,
-    )
+    return snapshot
 end
 
 """
