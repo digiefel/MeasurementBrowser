@@ -57,7 +57,6 @@ struct ProjectCacheSnapshot
     identity::ProjectCacheIdentity
     hierarchy::MeasurementHierarchy
     status::ProjectCacheStatus
-    semantic_fields::Dict{Symbol,Vector{Symbol}}
     errors::Vector{ProjectCacheFileError}
 end
 
@@ -149,14 +148,6 @@ end
 
 function _write_string_vector!(group, name::AbstractString, values::AbstractVector{<:AbstractString})
     _write_dataset!(group, name, String.(values); compress=false)
-end
-
-function _write_symbol_vector!(group, name::AbstractString, values::AbstractVector{Symbol})
-    _write_string_vector!(group, name, String.(values))
-end
-
-function _read_symbol_vector(group, name::AbstractString, cache_path::AbstractString)
-    return Symbol.(_read_required(group, name, cache_path))
 end
 
 function _encode_cache_value(value)
@@ -300,17 +291,6 @@ function _read_cache_has_device_metadata(h5, cache_path::AbstractString)
     length(values) == 1 ||
         throw(ProjectCacheInvalidError(cache_path, "invalid has_device_metadata value"))
     return Bool(values[1])
-end
-
-function _read_semantic_fields(h5, cache_path::AbstractString)
-    haskey(h5, "semantics") || return Dict{Symbol,Vector{Symbol}}()
-    group = h5["semantics"]
-    names = _read_symbol_vector(group, "groups", cache_path)
-    fields = Dict{Symbol,Vector{Symbol}}()
-    for name in names
-        fields[name] = _read_symbol_vector(group, String(name), cache_path)
-    end
-    return fields
 end
 
 function _write_file_group!(
@@ -659,7 +639,6 @@ function write_project_cache!(
         identity,
         hierarchy,
         status,
-        Dict{Symbol,Vector{Symbol}}(),
         errors,
     )
 end
@@ -675,7 +654,6 @@ function _load_project_cache_contents(
     _check_cancel(should_cancel)
     snapshot = h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
-        semantic_fields = _read_semantic_fields(h5, identity.cache_path)
         has_device_metadata = _read_cache_has_device_metadata(h5, identity.cache_path)
         startup = _read_cache_startup_blob(h5, identity.cache_path)
         measurements = startup.measurements
@@ -698,7 +676,7 @@ function _load_project_cache_contents(
             project,
             skipped_count,
         )
-        return ProjectCacheSnapshot(identity, hierarchy, status, semantic_fields, errors)
+        return ProjectCacheSnapshot(identity, hierarchy, status, errors)
     end
     _check_cancel(should_cancel)
     return snapshot

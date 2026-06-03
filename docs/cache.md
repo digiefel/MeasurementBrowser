@@ -55,7 +55,6 @@ Top-level groups:
 | Path | Purpose |
 |---|---|
 | `/meta` | project name, cache id, root path, device metadata flag, update time |
-| `/semantics` | optional legacy semantic field names |
 | `/files` | one group per cached source CSV |
 | `/indexes` | compact startup index rebuilt after cache writes |
 
@@ -83,9 +82,8 @@ without walking every cached file group.
 It currently reads:
 
 1. `/meta` for validation.
-2. `/semantics`, if present.
-3. `/meta/has_device_metadata`.
-4. `/indexes/startup_blob`.
+2. `/meta/has_device_metadata`.
+3. `/indexes/startup_blob`.
 
 It returns a `ProjectCacheSnapshot`, containing:
 
@@ -94,7 +92,6 @@ It returns a `ProjectCacheSnapshot`, containing:
 | `identity` | cache identity used for the read |
 | `hierarchy` | `MeasurementHierarchy` rebuilt from cached measurements |
 | `status` | cache status counts |
-| `semantic_fields` | legacy semantic fields if present in the cache |
 | `errors` | per-file cache transform errors |
 
 Startup cache load does not read dataframe plot payloads. Plot payloads are read later when plot jobs

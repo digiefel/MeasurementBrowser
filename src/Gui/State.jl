@@ -220,7 +220,6 @@ function _init_cache_state!(ui_state)
     ui_state[:cache_identity] = nothing
     ui_state[:cache_status] = nothing
     ui_state[:cache_source_checked] = false
-    ui_state[:cache_semantic_fields] = Dict{Symbol,Vector{Symbol}}()
     ui_state[:cache_errors] = ProjectCacheFileError[]
     ui_state[:cache_seq] = 0
     ui_state[:active_cache_id] = 0
@@ -795,25 +794,8 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
         ui_state[:cache_status] = snapshot.status
         ui_state[:cache_source_checked] = false
     end
-    ui_state[:cache_semantic_fields] = snapshot.semantic_fields
     ui_state[:cache_errors] = snapshot.errors
     ui_state[:cache_state] = :ready
-    ui_state[:cache_error] = ""
-    return nothing
-end
-
-function _apply_cache_metadata!(ui_state, metadata)
-    identity = metadata.identity
-    ui_state[:root_path] = identity.root_path
-    ui_state[:project] = _project_by_name(identity.project_name)
-    ui_state[:cache_id] = identity.cache_id
-    ui_state[:cache_identity] = identity
-    ui_state[:cache_status] = metadata.status
-    ui_state[:cache_source_checked] = get(metadata, :source_checked, false)
-    ui_state[:cache_semantic_fields] = metadata.semantic_fields
-    ui_state[:cache_errors] = metadata.errors
-    ui_state[:skipped_count] = metadata.skipped_count
-    ui_state[:has_device_metadata] = metadata.has_device_metadata
     ui_state[:cache_error] = ""
     return nothing
 end

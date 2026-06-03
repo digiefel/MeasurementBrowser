@@ -69,7 +69,6 @@ end
             @test only(load_progress).loaded_measurements == 3
             @test sort([m.unique_id for m in loaded.hierarchy.all_measurements]) ==
                 sort([m.unique_id for m in snapshot.hierarchy.all_measurements])
-            @test isempty(loaded.semantic_fields)
 
             pund_measurement = only(filter(
                 m -> m.measurement_kind === :pund,
