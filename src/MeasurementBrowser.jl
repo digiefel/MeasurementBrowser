@@ -13,7 +13,6 @@ include("DataAccess.jl")
 include("projects/RuO2Project.jl")   # defines methods + registers RUO2_PROJECT
 include("projects/TASEProject.jl")   # defines methods + registers TASE_PROJECT
 include("ProjectCache.jl")
-include("projects/RuO2/Cache.jl")
 include("Precompile.jl")
 include("PlotJobs.jl")
 include("Gui.jl")
@@ -35,7 +34,7 @@ export available_analyses, run_analysis, draw_analysis_view
 export combined_plot_types, compatible_kinds
 export project_name, project_description
 export ProjectCacheIdentity, ProjectCacheSnapshot, ProjectCacheStatus, ProjectCacheFileError
-export ProjectCacheUnsupportedError, ProjectCacheMissingError, ProjectCacheInvalidError
+export ProjectCacheMissingError, ProjectCacheInvalidError
 export ProjectCacheBuildError
 export write_project_cache!, load_project_cache, cache_status
 export project_cache_identity, project_cache_path, project_cache_id, new_project_cache_id

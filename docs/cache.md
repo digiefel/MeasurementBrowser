@@ -5,9 +5,8 @@ to wait for every CSV to be discovered, parsed, interpreted, and analyzed before
 useful measurements.
 
 The cache is the fast path. It stores enough generated project data to repopulate the browser tree
-and serve normal plot jobs without reparsing every CSV on startup. The CSV files remain the source of
-truth. A cached file entry is usable only when its stored source fingerprint still matches the
-current file on disk.
+without reparsing every CSV on startup. The CSV files remain the source of truth. A cached file entry
+is usable only when its stored source fingerprint still matches the current file on disk.
 
 The intended user experience is: open a project, show cached measurements quickly when they exist,
 then check the filesystem in the background and repair stale cache entries. The current
@@ -16,8 +15,8 @@ scanning are still separate UI/code paths.
 
 The cache is not source-root metadata and it is not meant to be hand-edited.
 
-Current implementation lives mostly in [src/ProjectCache.jl](../src/ProjectCache.jl). RuO2-specific
-payload storage lives in [src/projects/RuO2/Cache.jl](../src/projects/RuO2/Cache.jl).
+Current implementation lives in [src/ProjectCache.jl](../src/ProjectCache.jl). Projects do not own
+cache storage files.
 
 ## Location and Identity
 
@@ -56,7 +55,7 @@ Top-level groups:
 | Path | Purpose |
 |---|---|
 | `/meta` | project name, cache id, root path, device metadata flag, update time |
-| `/semantics` | project-defined semantic field names |
+| `/semantics` | optional legacy semantic field names |
 | `/files` | one group per cached source CSV |
 | `/indexes` | compact startup index rebuilt after cache writes |
 
@@ -69,10 +68,8 @@ Each `/files/<file_key>` group stores:
 | `measurement_keys` | ordered keys for measurement groups |
 | `measurements/<measurement_key>` | serialized `MeasurementInfo` metadata |
 | `status` | `ok`, `skipped`, or `error` |
-| project payloads | project-specific cached plot data |
 
-Measurement groups still store metadata next to project payloads, but startup cache loading does not
-walk those groups.
+Startup cache loading does not walk the per-file measurement groups.
 
 `/indexes/startup_blob` stores the browser startup data as one versioned serialized record:
 measurements, source file statuses, file errors, and skipped-file count. Startup uses the blob to
@@ -86,7 +83,7 @@ without walking every cached file group.
 It currently reads:
 
 1. `/meta` for validation.
-2. `/semantics`.
+2. `/semantics`, if present.
 3. `/meta/has_device_metadata`.
 4. `/indexes/startup_blob`.
 
@@ -104,6 +101,7 @@ Startup cache load does not read dataframe plot payloads. Plot payloads are read
 request them.
 
 Caches without the current compact index are considered out of date and must be updated or rebuilt.
+Semantic fields do not decide cache validity.
 
 ## Writing and Updating the Cache
 
@@ -121,7 +119,8 @@ During write, each source file is compared with cached fingerprints. Unchanged f
 Changed or new files are rewritten. Cached files missing from the source scan are deleted.
 
 After file updates, `/indexes`, `/meta`, and `/semantics` are rebuilt. The index is the cache
-startup path; per-file groups are for payload lookup and cache repair.
+startup path; per-file groups are for fingerprint checks, cache repair, and future measurement-data
+payloads.
 
 ## Cache Status
 
@@ -140,25 +139,11 @@ startup path; per-file groups are for payload lookup and cache repair.
 When a cache is loaded without a source scan, the app can count cached entries but cannot know which
 source files are fresh, stale, new, or deleted. That requires filesystem scanning.
 
-## Plot Payloads
+## Measurement Data
 
-Normal single-measurement plot jobs require an active cache identity and read cached payloads through
-`_measurement_group_for_cached_plot`.
-
-RuO2 regular measurements store analyzed plot payloads under each measurement group:
-
-| Entry | Purpose |
-|---|---|
-| `plot/source = "analyzed"` | marks a normal analyzed payload |
-| `plot/df` | cached dataframe |
-| `plot/scalars` | scalar analysis fields |
-| `plot/arrays` | vector analysis fields |
-
-RuO2 PUND fatigue files are stored differently. The full fatigue dataframe is cached once at the
-file level under `signals/pund_fatigue`, and each virtual measurement stores a lightweight marker.
-When plotting one cycle, the cached full dataframe is read and the requested cycle is selected.
-
-Debug plot mode bypasses cached plot payloads and reads source CSV data directly.
+Normal plotting code asks for data through `data_of_measurements(project, measurements)`. That is
+where cached measurement data should be used once data payload caching is implemented. Project code
+does not read cache storage directly.
 
 ## UI Behavior
 

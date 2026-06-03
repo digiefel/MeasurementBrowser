@@ -1,17 +1,9 @@
 using HDF5
 using SHA
-using DataFrames
 using Serialization
 
 const _CACHE_DATASET_DEFLATE = 3
 const _CACHE_CHUNK_TARGET = 4096
-
-struct ProjectCacheUnsupportedError <: Exception
-    project_name::String
-end
-
-Base.showerror(io::IO, err::ProjectCacheUnsupportedError) =
-    print(io, "Project '$(err.project_name)' does not define HDF5 cache support")
 
 struct ProjectCacheMissingError <: Exception
     path::String
@@ -70,50 +62,6 @@ struct ProjectCacheSnapshot
 end
 
 project_cache_semantic_fields(::AbstractProject) = Dict{Symbol,Vector{Symbol}}()
-
-function project_cache_write_measurement_payload!(
-    group,
-    project::AbstractProject,
-    measurement::MeasurementInfo;
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    throw(ProjectCacheUnsupportedError(project_name(project)))
-end
-
-"""
-    project_cache_write_file_payload!(file_group, project, source, measurements; should_cancel=nothing)
-
-Write project payloads for all measurements produced from a source file.
-Projects can override this when file-level context helps populate measurement groups efficiently.
-"""
-function project_cache_write_file_payload!(
-    file_group,
-    project::AbstractProject,
-    source::SourceFile,
-    measurements::Vector{MeasurementInfo};
-    should_cancel::Union{Nothing,Function}=nothing,
-)
-    measurements_group = file_group["measurements"]
-    for measurement in measurements
-        measurement_group = measurements_group[_measurement_group_key(measurement.unique_id)]
-        project_cache_write_measurement_payload!(measurement_group, project, measurement; should_cancel)
-    end
-    return nothing
-end
-
-"""
-    project_cache_read_plot_payload(project, measurement, file_group, measurement_group)
-
-Load the project-specific payload used to render a cached measurement without reparsing the CSV.
-"""
-function project_cache_read_plot_payload(
-    project::AbstractProject,
-    measurement::MeasurementInfo,
-    file_group,
-    measurement_group,
-)
-    throw(ProjectCacheUnsupportedError(project_name(project)))
-end
 
 function project_cache_dir()
     depot = isempty(DEPOT_PATH) ? homedir() : DEPOT_PATH[1]
@@ -325,33 +273,6 @@ function _same_fingerprint(a::FileFingerprint, b::FileFingerprint)
     return a.path == b.path && a.size_bytes == b.size_bytes && a.mtime_ns == b.mtime_ns
 end
 
-function _write_dataframe!(group, name::AbstractString, df::DataFrame)
-    df_group = _replace_group(group, name)
-    column_names = names(df)
-    _write_string_vector!(df_group, "column_names", column_names)
-    columns_group = _ensure_group(df_group, "columns")
-    for column_name in column_names
-        values = df[!, column_name]
-        values isa AbstractVector || error("DataFrame column '$column_name' is not a vector")
-        _write_dataset!(columns_group, column_name, collect(values))
-    end
-    return nothing
-end
-
-function _read_dataframe(group, name::AbstractString, cache_path::AbstractString)
-    haskey(group, name) || throw(ProjectCacheInvalidError(cache_path, "missing DataFrame group '$name'"))
-    df_group = group[name]
-    column_names = String.(_read_required(df_group, "column_names", cache_path))
-    columns_group = df_group["columns"]
-    columns = Pair{Symbol,Any}[]
-    for column_name in column_names
-        haskey(columns_group, column_name) ||
-            throw(ProjectCacheInvalidError(cache_path, "missing cached DataFrame column '$column_name'"))
-        push!(columns, Symbol(column_name) => read(columns_group[column_name]))
-    end
-    return DataFrame(columns...)
-end
-
 function _write_meta!(h5, identity::ProjectCacheIdentity)
     meta = _replace_group(h5, "meta")
     _write_dataset!(meta, "project_name", identity.project_name; compress=false)
@@ -406,9 +327,7 @@ end
 
 function _write_file_group!(
     files_group,
-    project::AbstractProject,
     source::SourceFile;
-    should_cancel::Union{Nothing,Function}=nothing,
 )
     file_group = _replace_group(files_group, _file_group_key(source.fingerprint.path))
     _write_fingerprint!(file_group, source.fingerprint)
@@ -424,7 +343,6 @@ function _write_file_group!(
         _write_measurement_metadata!(measurement_group, measurement)
     end
     _write_string_vector!(file_group, "measurement_keys", measurement_keys)
-    project_cache_write_file_payload!(file_group, project, source, measurements; should_cancel)
     _write_dataset!(file_group, "status", isempty(measurements) ? "skipped" : "ok"; compress=false)
     return length(measurements)
 end
@@ -707,9 +625,7 @@ function write_project_cache!(
             try
                 measurement_count = _write_file_group!(
                     files_group,
-                    source.project,
                     source_file;
-                    should_cancel,
                 )
                 loaded_measurements += measurement_count
                 statuses[path] = measurement_count == 0 ? "skipped" : "ok"
@@ -774,11 +690,6 @@ function _load_project_cache_contents(
     snapshot = h5open(identity.cache_path, "r") do h5
         _validate_meta!(h5, identity)
         semantic_fields = _read_semantic_fields(h5, identity.cache_path)
-        expected_semantics = project_cache_semantic_fields(project)
-        semantic_fields == expected_semantics || throw(ProjectCacheInvalidError(
-            identity.cache_path,
-            "cache metadata fields are out of date",
-        ))
         has_device_metadata = _read_cache_has_device_metadata(h5, identity.cache_path)
         startup = _read_cache_startup_blob(h5, identity.cache_path)
         measurements = startup.measurements
@@ -819,30 +730,6 @@ function load_project_cache(
     on_progress::Union{Nothing,Function}=nothing,
 )
     return _load_project_cache_contents(identity; should_cancel, on_progress)
-end
-
-function _measurement_group_for_cached_plot(
-    identity::ProjectCacheIdentity,
-    measurement::MeasurementInfo,
-)
-    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
-    return h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        file_key = _file_group_key(measurement.filepath)
-        measurement_key = _measurement_group_key(measurement.unique_id)
-        files_group = h5["files"]
-        haskey(files_group, file_key) ||
-            throw(ProjectCacheInvalidError(identity.cache_path, "missing cached file group for $(measurement.filepath)"))
-        measurements_group = files_group[file_key]["measurements"]
-        haskey(measurements_group, measurement_key) ||
-            throw(ProjectCacheInvalidError(identity.cache_path, "missing cached measurement group for $(measurement.unique_id)"))
-        return project_cache_read_plot_payload(
-            _project_by_name(identity.project_name),
-            measurement,
-            files_group[file_key],
-            measurements_group[measurement_key],
-        )
-    end
 end
 
 function _project_by_name(name::AbstractString)

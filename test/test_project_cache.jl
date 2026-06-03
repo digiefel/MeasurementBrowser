@@ -1,5 +1,4 @@
 using MeasurementBrowser
-using DataFrames: nrow
 using Test
 
 const _CACHE_FIXTURES = (
@@ -70,25 +69,12 @@ end
             @test only(load_progress).loaded_measurements == 3
             @test sort([m.unique_id for m in loaded.hierarchy.all_measurements]) ==
                 sort([m.unique_id for m in snapshot.hierarchy.all_measurements])
-            @test loaded.semantic_fields[:measurement] == [
-                :measurement_id,
-                :measurement_kind,
-                :timestamp,
-                :source_file,
-            ]
+            @test isempty(loaded.semantic_fields)
 
             pund_measurement = only(filter(
                 m -> m.measurement_kind === :pund,
                 loaded.hierarchy.all_measurements,
             ))
-            cached_plot = MeasurementBrowser._measurement_group_for_cached_plot(
-                loaded.identity,
-                pund_measurement,
-            )
-            @test hasproperty(cached_plot, :df)
-            @test hasproperty(cached_plot, :pulse_groups)
-            @test cached_plot.debug == false
-            @test nrow(cached_plot.df) > 0
             @test (
                 pund_measurement.stats[:V_base],
                 pund_measurement.stats[:V_min],
