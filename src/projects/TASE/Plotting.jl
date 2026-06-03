@@ -3,34 +3,51 @@ using DataFrames
 
 using DataLoader: read_tlm_4p
 
-function load_plot_for_file(::TASEProject, path::AbstractString, kind::Union{Symbol,Nothing};
-                            should_cancel::Union{Nothing,Function}=nothing, kwargs...)
+function load_source_data(
+    ::TASEProject,
+    source_file::SourceFile;
+    measurement::Union{Nothing,MeasurementInfo}=nothing,
+    should_cancel::Union{Nothing,Function}=nothing,
+)::DataFrame
     _check_plot_cancel(should_cancel)
-    kind === :four_terminal_iv || return nothing
-    df = read_tlm_4p(basename(path), dirname(path))
-    title = strip(replace(basename(String(path)), r"\.csv$" => ""))
-    return (df=df, title=title)
+    if measurement !== nothing && measurement.measurement_kind !== :four_terminal_iv
+        error("TASE cannot load measurement data for $(measurement.measurement_kind)")
+    end
+    detect_kind(TASE_PROJECT, source_file.filename) === :four_terminal_iv ||
+        error("TASE cannot load source data for $(source_file.filepath)")
+    return read_tlm_4p(source_file.filename, dirname(source_file.filepath))
 end
 
-function analyze_plot_for_file(::TASEProject, kind::Union{Symbol,Nothing}, loaded; kwargs...)
-    kind === :four_terminal_iv || return nothing
-    loaded === nothing && return nothing
-    df = loaded.df
-    return (
-        df=df,
-        title=loaded.title,
-        current_uA=df.current_source .* 1e6,
-        voltage_mV=df.voltage_drop .* 1e3,
-    )
-end
-
-function draw_plot_for_file(::TASEProject, kind::Union{Symbol,Nothing}, analyzed; kwargs...)
-    kind === :four_terminal_iv || return nothing
-    analyzed === nothing && return nothing
-    nrow(analyzed.df) == 0 && return nothing
+function setup_plot(
+    ::TASEProject,
+    plot_kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    plot_kind === :four_terminal_iv || error("Unsupported TASE plot kind '$plot_kind'")
+    isempty(measurements) && error("TASE plot requires at least one measurement")
+    title = length(measurements) == 1 ? only(measurements).clean_title : "TASE IV overlay"
     fig = Figure(size=(700, 500))
-    ax = Axis(fig[1, 1], xlabel="Current (µA)", ylabel="Voltage Drop (mV)", title=analyzed.title)
-    lines!(ax, analyzed.current_uA, analyzed.voltage_mV, linewidth=2)
-    scatter!(ax, analyzed.current_uA, analyzed.voltage_mV, markersize=4)
+    Axis(fig[1, 1], xlabel="Current (µA)", ylabel="Voltage Drop (mV)", title=title)
     return fig
+end
+
+function plot_data!(
+    project::TASEProject,
+    plot_kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    plot_kind === :four_terminal_iv || error("Unsupported TASE plot kind '$plot_kind'")
+    axes = contents(figure[1, 1])
+    isempty(axes) && error("TASE plot figure has no axis")
+    ax = only(axes)
+    data = data_of_measurements(project, measurements)
+    for (measurement, df) in zip(measurements, data)
+        nrow(df) == 0 && continue
+        label = measurement.clean_title
+        lines!(ax, df.current_source .* 1e6, df.voltage_drop .* 1e3; linewidth=2, label)
+        scatter!(ax, df.current_source .* 1e6, df.voltage_drop .* 1e3; markersize=4)
+    end
+    length(measurements) > 1 && axislegend(ax)
+    return nothing
 end

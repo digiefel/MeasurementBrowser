@@ -49,4 +49,13 @@ using DataFrames: nrow
         @test result.table.G_over_G0 ≈ [0.001 / g0, 0.0005 / g0]
         @test result.table.G_per_wire_G0 ≈ [0.001 / g0, 0.0005 / (4 * g0)]
     end
+
+    @testset "plot data api" begin
+        data = data_of_measurements(TASE_PROJECT, measurements)
+        @test length(data) == 2
+        @test all(nrow(df) == 3 for df in data)
+
+        fig = setup_plot(TASE_PROJECT, :four_terminal_iv, measurements)
+        @test plot_data!(TASE_PROJECT, :four_terminal_iv, measurements, fig) === nothing
+    end
 end

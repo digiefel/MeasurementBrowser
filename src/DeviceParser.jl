@@ -9,6 +9,7 @@ DeviceParser.jl - Parse device hierarchy from measurement filenames
 # (parameters, tags, notes, coords) and remove redundant `DeviceInfo` copies.
 
 using Dates
+using GLMakie: Figure
 
 # ---------------------------------------------------------------------------
 # Project dispatch types
@@ -27,6 +28,9 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   interpret_file(::P, file) → Vector{MeasurementInfo}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
+#   load_source_data(::P, source_file; measurement=nothing, kwargs...) → DataFrame
+#   setup_plot(::P, kind, measurements) → Figure
+#   plot_data!(::P, kind, measurements, figure) → nothing
 #   load_plot_for_file(::P, path, kind; kwargs...) → Any
 #   analyze_plot_for_file(::P, kind, loaded; kwargs...) → Any
 #   draw_plot_for_file(::P, kind, analyzed; kwargs...) → Union{Figure,Nothing}
@@ -174,6 +178,21 @@ function MeasurementInfo(
         stats,
     )
 end
+
+setup_plot(
+    project::AbstractProject,
+    kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+)::Figure =
+    error("No setup_plot implementation for $(project_name(project)) plot kind '$kind'")
+
+plot_data!(
+    project::AbstractProject,
+    kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing =
+    error("No plot_data! implementation for $(project_name(project)) plot kind '$kind'")
 
 debug_plot(
     ::AbstractProject,

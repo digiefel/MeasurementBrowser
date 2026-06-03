@@ -42,6 +42,10 @@ function _plot_job_key(
 end
 
 function _run_plot_job(job::PlotJob, should_cancel)
+    if job.project isa TASEProject
+        return nothing
+    end
+
     if job.debug
         if length(job.measurements) == 1
             measurement = only(job.measurements)
@@ -130,6 +134,13 @@ function _cached_loaded_plot_for_files(job::PlotJob, should_cancel)
 end
 
 function _draw_plot_job(job::PlotJob, data)
+    if job.project isa TASEProject
+        job.debug && error("TASE debug plots are not implemented")
+        fig = setup_plot(job.project, job.plot_kind, job.measurements)
+        plot_data!(job.project, job.plot_kind, job.measurements, fig)
+        return fig
+    end
+
     if job.debug
         return debug_plot(
             job.project,
