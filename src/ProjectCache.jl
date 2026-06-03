@@ -20,17 +20,6 @@ end
 Base.showerror(io::IO, err::ProjectCacheInvalidError) =
     print(io, "Invalid project cache $(err.path): $(err.message)")
 
-struct ProjectCacheBuildError <: Exception
-    path::String
-    cause::Exception
-    bt
-end
-
-function Base.showerror(io::IO, err::ProjectCacheBuildError)
-    print(io, "Could not build cache entry for $(err.path): ")
-    showerror(io, err.cause)
-end
-
 struct ProjectCacheIdentity
     cache_id::String
     project_name::String
