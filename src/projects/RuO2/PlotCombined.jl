@@ -1,25 +1,23 @@
-function _load_ruo2_plot_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol;
-                             device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
-                             should_cancel::Union{Nothing,Function}=nothing, kwargs...)
-    isempty(paths) && return nothing
-
+function _ruo2_combined_plot_data(
+    measurements::Vector{MeasurementInfo},
+    data::Vector{DataFrame},
+    combined_kind::Symbol;
+    use_o2_flow::Bool=false,
+)
+    isempty(measurements) && return nothing
+    length(measurements) == length(data) || error("Measurement and data counts must match")
     if combined_kind === :tlm_analysis
         files_data_params = Tuple{String,DataFrame,Dict{Symbol,Any}}[]
-        for (i, path) in enumerate(paths)
-            _check_plot_cancel(should_cancel)
-            filename = basename(path)
-            dirname_path = dirname(path)
-            df = read_tlm_4p(filename, dirname_path)
-            device_params = i <= length(device_params_list) ? device_params_list[i] : Dict{Symbol,Any}()
-            push!(files_data_params, (path, df, device_params))
+        for (measurement, df) in zip(measurements, data)
+            params = merge(measurement.device_info.parameters, measurement.parameters)
+            push!(files_data_params, (measurement.filepath, df, params))
         end
         return (files_data_params=files_data_params,)
     elseif combined_kind === :tlm_temperature
         entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent, :oxygen_flow_sccm)}[]
-        for (i, path) in enumerate(paths)
-            _check_plot_cancel(should_cancel)
-            df = read_tlm_4p(basename(path), dirname(path))
-            params = i <= length(device_params_list) ? device_params_list[i] : Dict{Symbol,Any}()
+        for (measurement, df) in zip(measurements, data)
+            path = measurement.filepath
+            params = merge(measurement.device_info.parameters, measurement.parameters)
             tempK = _extract_temperature_K(params, path)
             isfinite(tempK) || continue
             site = _extract_site_label(params, path)
@@ -28,34 +26,19 @@ function _load_ruo2_plot_files(::RuO2Project, paths::Vector{String}, combined_ki
             push!(entries, (path=path, df=df, params=params, tempK=tempK, site=site,
                             oxygen_percent=o2, oxygen_flow_sccm=o2_flow))
         end
-        return (entries=entries, use_o2_flow=get(kwargs, :use_o2_flow, false))
+        return (entries=entries, use_o2_flow=use_o2_flow)
     elseif combined_kind === :pund_fatigue
         entries = NamedTuple[]
-        n = length(paths)
-        params_list = length(device_params_list) == n ? device_params_list : [Dict{Symbol,Any}() for _ in 1:n]
-        fatigue_files = Dict{String,DataFrame}()
-        for i in 1:n
-            _check_plot_cancel(should_cancel)
-            path = paths[i]
-            params = params_list[i]
+        for (measurement, df) in zip(measurements, data)
+            path = measurement.filepath
+            params = merge(measurement.device_info.parameters, measurement.parameters)
             ts = stat(path).mtime
-
-            if is_pund_fatigue_file(path)
-                fatigue_count = Int(params[:fatigue_idx])
-                # A fatigue source contains several logical PUND measurements, including count 0.
-                fatigue_df = get!(fatigue_files, path) do
-                    read_pund_fatigue_file(path; should_cancel=should_cancel)
-                end
-                df_p = _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
-            else
-                df_p = read_pund_file(basename(path), dirname(path))
-            end
-            push!(entries, (kind=:pund, df=df_p, params=params, timestamp=ts))
+            push!(entries, (kind=:pund, df=df, params=params, timestamp=ts))
         end
         return (entries=entries,)
     end
 
-    return nothing
+    error("Unsupported RuO2 combined plot kind '$combined_kind'")
 end
 
 function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; kwargs...)
