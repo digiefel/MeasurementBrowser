@@ -188,9 +188,7 @@ function _pulse_ranges_from_indices(pulse_idx)
     return ranges
 end
 
-"""
-Return Pr for the single loop represented by this logical measurement.
-"""
+"""Return mean Pr over the valid loop(s) represented by this logical measurement."""
 function pund_pr_value(df, area_um2::Float64)
     pid = df.pulse_idx
     maxpid = maximum(pid)
@@ -221,6 +219,6 @@ function pund_pr_value(df, area_um2::Float64)
             end
         end
     end
-    length(pr_vals) == 1 || error("Expected one PUND loop, found $(length(pr_vals))")
-    return only(pr_vals)
+    isempty(pr_vals) && error("Expected at least one PUND loop")
+    return mean(pr_vals)
 end

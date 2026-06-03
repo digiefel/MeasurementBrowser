@@ -11,6 +11,14 @@ using MeasurementBrowser
     @test isfile(fixture)
     @test isfile(headerless_fixture)
 
+    @testset "multi-loop Pr stats" begin
+        df = DataFrame(
+            pulse_idx=[2, 2, 4, 4, 7, 7, 9, 9, 10],
+            Q_FE=[0.0, 2e-6, 4e-6, 6e-6, 0.0, 4e-6, 8e-6, 12e-6, NaN],
+        )
+        @test MeasurementBrowser.pund_pr_value(df, 1e8) ≈ 4.5
+    end
+
     @testset "RuO2 fatigue file helpers" begin
         fatigue_df = MeasurementBrowser.read_pund_fatigue_file(fixture)
         @test fatigue_df isa DataFrame
