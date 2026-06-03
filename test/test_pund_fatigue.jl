@@ -68,17 +68,10 @@ using MeasurementBrowser
             MeasurementBrowser.read_pund_fatigue_file(fixture),
             Int(selected_count),
         )
-        device_params = merge(selected.device_info.parameters, selected.parameters)
-        loaded = MeasurementBrowser.load_plot_for_file(
-            RUO2_PROJECT,
-            fixture,
-            :pund;
-            device_params,
-        )
+        data = MeasurementBrowser.data_of_measurements(RUO2_PROJECT, [selected])
 
-        @test loaded !== nothing
-        @test loaded.area_um2 == get(device_params, :area_um2, nothing)
-        @test loaded.df == expected_df
+        @test length(data) == 1
+        @test only(data) == expected_df
     end
 
     @testset "RuO2 headerless fatigue file expansion" begin

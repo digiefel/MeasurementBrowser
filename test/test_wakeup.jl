@@ -103,31 +103,14 @@ end
     @test all(m -> m.device_info.location == ["RuO2test_A11", "XI", "FeCap", "A9"], expanded)
 end
 
-@testset "pund_wakeup staged plot pipeline" begin
+@testset "pund_wakeup data access" begin
     expanded = measurements_for_file(RUO2_PROJECT, _WAKEUP_FIXTURE)
 
     pn_item   = first(filter(m -> m.measurement_kind === :wakeup_pn,   expanded))
     pund_item = first(filter(m -> m.measurement_kind === :wakeup_pund, expanded))
-    pn_params   = merge(pn_item.device_info.parameters,   pn_item.parameters)
-    pund_params = merge(pund_item.device_info.parameters, pund_item.parameters)
+    data = MeasurementBrowser.data_of_measurements(RUO2_PROJECT, [pn_item, pund_item])
 
-    loaded_pn = MeasurementBrowser.load_plot_for_file(
-        RUO2_PROJECT, _WAKEUP_FIXTURE, :wakeup_pn; device_params=pn_params,
-    )
-    @test loaded_pn !== nothing
-    @test nrow(loaded_pn.df) > 0
-
-    loaded_pund = MeasurementBrowser.load_plot_for_file(
-        RUO2_PROJECT, _WAKEUP_FIXTURE, :wakeup_pund; device_params=pund_params,
-    )
-    @test loaded_pund !== nothing
-    @test nrow(loaded_pund.df) > 0
-
-    analyzed = MeasurementBrowser.analyze_plot_for_file(
-        RUO2_PROJECT, :wakeup_pund, loaded_pund,
-    )
-    @test analyzed !== nothing
-
-    fig = MeasurementBrowser.draw_plot_for_file(RUO2_PROJECT, :wakeup_pund, analyzed)
-    @test fig !== nothing
+    @test length(data) == 2
+    @test all(df -> nrow(df) > 0, data)
+    @test names(data[1]) == names(data[2])
 end
