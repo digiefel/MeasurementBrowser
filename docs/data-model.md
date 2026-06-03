@@ -7,7 +7,7 @@
 ```julia
 struct DeviceInfo
     location::Vector{String}           # ["RuO2test", "A9", "VI", "D1"]
-    parameters::Dict{Symbol,Any}       # merged from devices_info.txt (area_um2, t_HZO_nm, …)
+    parameters::Dict{Symbol,Any}       # merged from device_info.txt (area_um2, t_HZO_nm, …)
 end
 
 struct MeasurementInfo
@@ -60,7 +60,7 @@ The slash-joined string is the canonical identifier in any on-disk metadata file
 
 ## Path-prefix matching
 
-`devices_info.txt` rows are keyed by path; metadata applies to **all descendants whose location is prefixed by that key**, with longer (more specific) keys overriding shorter ones. See [scanning.md](scanning.md) for the merge logic.
+`device_info.txt` rows are keyed by path; metadata applies to **all descendants whose location is prefixed by that key**, with longer (more specific) keys overriding shorter ones. See [scanning.md](scanning.md) for the merge logic.
 
 Implication: hierarchical metadata is stored once at the highest applicable level. Inheritance is "lookup-time" — children don't physically carry parent metadata in their structs.
 

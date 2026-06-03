@@ -4,7 +4,7 @@
 
 `MeasurementBrowser` currently navigates devices through a tree panel (`Gui.jl:2542 _render_hierarchy_tree_panel`). It works, but doesn't reflect the **spatial** reality of measurements on a chip — where devices physically sit, which sites are clustered, which chips are in flight together. The user wants a hybrid file-browser + GDS-style canvas where:
 
-- Positioned items (devices, sites, sub-sites) render at hierarchical XY coordinates from `devices_info.txt`.
+- Positioned items (devices, sites, sub-sites) render at hierarchical XY coordinates from `device_info.txt`.
 - Unpositioned items (chips) get an initial grid layout but are then freely draggable like icons in a macOS file browser; a "reset layout" button reapplies the grid on demand.
 - A "level" indicator + `+/-` controls let the user descend/ascend the hierarchy, with deeper levels rendering as dots, shallower levels as bounding boxes.
 - Tags (generalizing the current "bad" flag) drive per-node color via a priority-ordered catalog and inherit to descendants.
@@ -16,7 +16,7 @@ Alongside this feature, `Gui.jl` (3,973 LOC, single module) is split into a smal
 ## Decisions locked in
 
 - **Renderer**: ImDrawList (CImGui primitives). No Makie second canvas.
-- **Storage**: focused files at the source root, lean and human-editable — `devices_info.txt` extended with `x_um/y_um/w_um/h_um`; new `layout.txt`, `tags.txt` (catalog + assignments in one file), `notes.txt`.
+- **Storage**: focused files at the source root, lean and human-editable — `device_info.txt` extended with `x_um/y_um/w_um/h_um`; new `layout.txt`, `tags.txt` (catalog + assignments in one file), `notes.txt`.
 - **Tree panel**: stays. Spatial browser is an additional dockable panel sharing `ui_state[:selected_device_paths]`.
 - **Level semantics**: depth from root. Level 0 = top containers; level N = "focusable" depth, deeper hidden, shallower rendered as bboxes.
 
@@ -31,7 +31,7 @@ src/Annotations/
 ├── Project.toml
 ├── src/
 │   ├── Annotations.jl        — module entry, re-exports
-│   ├── Coords.jl             — read/write x/y/w/h from devices_info.txt; bbox computation
+│   ├── Coords.jl             — read/write x/y/w/h from device_info.txt; bbox computation
 │   ├── Layout.jl             — layout.txt: per-path world-XY for unpositioned containers
 │   ├── Tags.jl               — tags.txt: catalog + per-path assignments in one file
 │   ├── Notes.jl              — notes.txt with [path]+fenced sections; ancestor merging
@@ -40,7 +40,7 @@ src/Annotations/
 
 **Key APIs (sketch):**
 
-- `Coords.node_position(node) :: Maybe{(x, y)}` — explicit if in `devices_info.txt`, `nothing` otherwise.
+- `Coords.node_position(node) :: Maybe{(x, y)}` — explicit if in `device_info.txt`, `nothing` otherwise.
 - `Coords.bounding_box(hierarchy, path) :: Rect` — computed from descendant positions; cached per scan.
 - `Layout.load(root) :: Dict{String, (x, y)}` / `Layout.save(root, dict)`.
 - `Layout.reset!(state, paths)` — re-seeds positions for the given paths using a default grid, called by the UI's "reset layout" button.
@@ -57,7 +57,7 @@ src/Annotations/
 
 All files live at the source root, kept lean so they read well in any text editor.
 
-- `devices_info.txt` — extended with optional `x_um, y_um, w_um, h_um` columns (path-prefix matching as today). Positioned entries set `x_um, y_um`; container entries can additionally set `w_um, h_um` to override computed bbox.
+- `device_info.txt` — extended with optional `x_um, y_um, w_um, h_um` columns (path-prefix matching as today). Positioned entries set `x_um, y_um`; container entries can additionally set `w_um, h_um` to override computed bbox.
 - `layout.txt` — `<path>\t<x_um>\t<y_um>` lines for the user-arranged unpositioned containers.
 - `tags.txt` — single file with two top sections, `[catalog]` and `[assignments]`. Catalog rows: `<name>\t<color_hex>\t<priority>`. Assignment rows: `<path>\t<tag_name>`. Ships with a default `bad` catalog entry; the legacy `bad_measurements` file is auto-migrated on first save.
 - `notes.txt` — fenced sections, robust against `[brackets]` appearing inside note bodies:
@@ -150,7 +150,7 @@ Each phase ends with a manual verification run + git commit.
 **New:**
 - `src/Gui/{State,Layout,TreePanel,PlotPanel,SpatialBrowser,AnnotationsUI,InfoModal}.jl`
 - `src/Annotations/` (full subpackage as outlined).
-- Test fixtures under `test/fixtures/spatial/` with sample `devices_info.txt`, `tags.txt`, `notes.txt`, `layout.txt`.
+- Test fixtures under `test/fixtures/spatial/` with sample `device_info.txt`, `tags.txt`, `notes.txt`, `layout.txt`.
 
 ## Verification
 

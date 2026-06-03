@@ -2,7 +2,7 @@
 
 > Files at the **source root** (the measurement folder the user opens, not the repo). All hand-editable plain text. Each file owns one orthogonal concern; resist the urge to merge them.
 
-## devices_info.txt
+## device_info.txt
 
 CSV. First column is a path (segment-joined with `/`); remaining columns are arbitrary key/value parameters merged into matching nodes.
 
@@ -14,7 +14,7 @@ RuO2test/A9/VI/D1,10.0,7.0,exact match wins,true
 RuO2test_A10/VI/25um/D1,25.0,7.0,nested scope,
 ```
 
-**Path-prefix matching** ([DeviceParser.jl:477](../src/DeviceParser.jl)): a row applies to every descendant whose location starts with that key. Longer (more specific) keys override shorter ones. So `D1` sets defaults for every `D1` leaf; `RuO2test/A9/VI/D1` overrides for that exact leaf.
+**Path-fragment matching** ([DeviceParser.jl](../src/DeviceParser.jl)): a row applies when its slash-separated path exactly matches a contiguous fragment of the parsed device location. Longer matches are merged later, so more specific rows override shorter ones. So `D1` applies to every device path containing a `D1` segment, while `RuO2test/A9/VI/D1` applies to that exact sequence.
 
 Field types are inferred (bool / int / float / date / string).
 
@@ -81,7 +81,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 | File | Concern | Read by | Written by |
 |---|---|---|---|
-| `devices_info.txt` | Per-path parameters | `_load_scan_metadata` ([DeviceParser.jl:497](../src/DeviceParser.jl)) | Hand-edited |
+| `device_info.txt` | Per-path parameters | `_load_scan_metadata` ([DeviceParser.jl](../src/DeviceParser.jl)) | Hand-edited |
 | `bad_measurements` | Bad flag (legacy mirror) | `Annotations.Tags.load` (merged as `bad` assignments) | `Annotations.Tags.save` (mirrors `bad`-tagged keys) |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
@@ -98,4 +98,5 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 ## Cache layer (separate from source-root metadata)
 
-The HDF5 cache lives elsewhere and is regenerated from CSVs. The RuO2 cache schema reserves `:x, :y` slots on devices ([src/projects/RuO2/Cache.jl:12](../src/projects/RuO2/Cache.jl)).
+The HDF5 cache is generated data, not hand-edited source-root metadata. It lives outside the
+measurement folder and is documented in [cache.md](cache.md).

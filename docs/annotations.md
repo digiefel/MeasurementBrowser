@@ -12,7 +12,7 @@ The subpackage is consumed via `using Annotations` and namespaced access (`Annot
 
 | Module | File | Concern |
 |---|---|---|
-| `Coords` | [src/Annotations/src/Coords.jl](../src/Annotations/src/Coords.jl) | Pulls `x_um, y_um, w_um, h_um` out of a parsed `devices_info` table; computes axis-aligned bounding boxes. |
+| `Coords` | [src/Annotations/src/Coords.jl](../src/Annotations/src/Coords.jl) | Pulls `x_um, y_um, w_um, h_um` out of a parsed `device_info` table; computes axis-aligned bounding boxes. |
 | `Layout` | [src/Annotations/src/Layout.jl](../src/Annotations/src/Layout.jl) | Reads/writes `layout.txt` (user-dragged container positions); generates default grid layouts. |
 | `Tags` | [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) | Reads/writes `tags.txt` (catalog + per-path assignments); resolves effective tags and dominant color. |
 | `Notes` | [src/Annotations/src/Notes.jl](../src/Annotations/src/Notes.jl) | Reads/writes `notes.txt` fenced sections; merges ancestor sections for display. |
@@ -21,8 +21,8 @@ The subpackage is consumed via `using Annotations` and namespaced access (`Annot
 
 ### `Coords`
 
-- `read_positions(devices_info) -> Dict{String, (x, y)}` — rows that supply both `x_um` and `y_um`.
-- `read_overrides(devices_info) -> Dict{String, (w, h)}` — rows that supply both `w_um` and `h_um`.
+- `read_positions(device_info) -> Dict{String, (x, y)}` — rows that supply both `x_um` and `y_um`.
+- `read_overrides(device_info) -> Dict{String, (w, h)}` — rows that supply both `w_um` and `h_um`.
 - `bounding_box(positions, descendant_paths; override=nothing) -> Union{Rect, Nothing}` — minima/maxima over the positions of `descendant_paths`. Missing paths are skipped. Returns `nothing` when no descendants resolve. `override=(w, h)` keeps the lower-left corner from the descendants but uses the given size for the width/height.
 - `Rect(x, y, w, h)` — value type; `(x, y)` is the lower-left corner, in micrometres.
 
@@ -49,7 +49,7 @@ The subpackage is consumed via `using Annotations` and namespaced access (`Annot
 
 ## File formats
 
-See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, `notes.txt`, plus the `x_um, y_um, w_um, h_um` columns on `devices_info.txt`.
+See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, `notes.txt`, plus the `x_um, y_um, w_um, h_um` columns on `device_info.txt`.
 
 ## Inheritance semantics
 
