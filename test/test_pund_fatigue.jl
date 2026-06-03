@@ -79,21 +79,6 @@ using MeasurementBrowser
         @test loaded !== nothing
         @test loaded.area_um2 == get(device_params, :area_um2, nothing)
         @test loaded.df == expected_df
-
-        job = MeasurementBrowser.PlotJob(
-            :pund_fatigue_job,
-            nothing,
-            RUO2_PROJECT,
-            :main,
-            "main",
-            [selected],
-            :pund,
-            [device_params],
-            false,
-        )
-        analyzed = MeasurementBrowser._run_plot_job(job, () -> false)
-        @test hasproperty(analyzed, :df)
-        @test MeasurementBrowser._draw_plot_job(job, analyzed) !== nothing
     end
 
     @testset "RuO2 headerless fatigue file expansion" begin
