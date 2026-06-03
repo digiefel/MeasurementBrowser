@@ -1,5 +1,14 @@
 using DataFrames
 
+"""
+    load_source_data(project, source_file; measurement=nothing, should_cancel=nothing)::DataFrame
+
+Project-implemented reader for one physical source file.
+
+When `measurement` is provided, return the table needed for that logical measurement. This lets a
+project select a cycle, segment, or sub-measurement from a larger source file while keeping package
+code independent of project file formats.
+"""
 function load_source_data(
     ::AbstractProject,
     source_file::SourceFile;
@@ -9,6 +18,15 @@ function load_source_data(
     error("No source data loader for $(source_file.filepath)")
 end
 
+"""
+    data_of_measurements(project, measurements; should_cancel=nothing)::Vector{DataFrame}
+
+Package-owned data access for selected measurements.
+
+Returns one `DataFrame` per `MeasurementInfo`, in the same order. Today this opens each measurement's
+source file through `load_source_data`; after the cache rework this is the place that will read valid
+cached data first and only open source files when needed.
+"""
 function data_of_measurements(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo};
