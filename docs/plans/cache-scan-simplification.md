@@ -23,16 +23,23 @@ does not prove the cache is valid.
 Projects should not know about the cache. A project should describe how to parse source files,
 produce measurements, and load/analyze/draw plots. The cache layer should store and reuse project
 results without requiring project-specific cache files such as `projects/RuO2/Cache.jl`.
-No project hook should write HDF5 groups, declare cache schemas, compare cache freshness, or decide
-cache repair policy.
+Project code should not write cache storage, describe cache file formats, compare cache freshness,
+or decide cache repair policy.
 
-The opened `AbstractProject` should carry package-managed runtime state: root path, cache identity,
+The opened `AbstractProject` value should carry package-managed data: root path, cache identity,
 indexes, loaded source data, and loaded measurement data. Project scripts should receive the project
-object and semantic package accessors, not a separate cache object.
+object and package functions, not a separate cache object.
 
 The project API names for this are `index_source_file` for measurement discovery,
 `load_source_data` for source-table loading, and `data_of_measurements` for package-owned data
 retrieval after measurements exist.
+
+`load_source_data(project, source_file)` loads a physical source file. When called as
+`load_source_data(project, source_file; measurement=m)`, it returns the data for that logical
+measurement. This is where projects handle virtual measurements such as one RuO2 PUND fatigue CSV
+becoming one browser measurement per cycle. The cache layer can store file-level or
+measurement-level data internally, but project-specific source-to-measurement mapping stays in the
+project API.
 
 This document is the top-level refactor outline. Each item should be expanded only after the parent
 level is agreed. If an item becomes too large for this page, its details move into a separate file.

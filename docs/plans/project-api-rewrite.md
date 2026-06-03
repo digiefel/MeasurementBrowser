@@ -5,16 +5,33 @@
 Adding a new measurement procedure should feel like writing one project module while the package
 provides scanning, caching, GUI state, plots, and figure export around it.
 
-The package owns orchestration, opened-project state, cache storage, cache freshness, cache repair,
-and UI data access. A project owns source-file meaning, measurement discovery, analysis, and
+The package owns orchestration, opened-project data, cache storage, cache freshness, cache repair,
+and UI data access. A project owns file meaning, measurement discovery, analysis, and
 plotting.
 
-Project-specific cache modules such as `projects/RuO2/Cache.jl` should disappear. Project hooks
-produce project results. The package decides whether those results come from memory, HDF5, or disk.
+Project-specific cache modules such as `projects/RuO2/Cache.jl` should disappear. Project code
+produces project results. The package decides whether those results come from cache or source files.
 
-## Naming Decision
+## What A Project Is
 
-The source-file API has two different outputs.
+A project is the code object that teaches `MeasurementBrowser` how to understand one measurement
+family. `RuO2Project` and `TASEProject` are examples. When the app opens a folder, the package
+keeps that opened folder's data on the `AbstractProject` value: root path, cache identity, indexes,
+and loaded data. Project scripts receive the project value, but they should not manage those fields
+or know how they are stored.
+
+The project API is the set of functions that package code and project code use to talk to each
+other. Package code calls project functions when it needs project-specific meaning. Project code
+calls package functions when it needs shared services such as cached data. Project authors should
+not need to know how cache storage, cache repair, tree data, or GUI data are implemented.
+
+## Source File Functions
+
+Source files are part of the project API because they are the unit the scanner discovers and the
+unit the cache repairs. The package can find files and fingerprint them, but only the project knows
+what measurements a file contains and how to load its data.
+
+The source-file functions have two different outputs: browser measurements and source data.
 
 ```julia
 index_source_file(
@@ -32,19 +49,26 @@ current example: the project must inspect the file to know which cycles exist.
 load_source_data(
     project::AbstractProject,
     source_file::SourceFile;
+    measurement::Union{Nothing,MeasurementInfo}=nothing,
     should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
 ```
 
-`load_source_data` returns reusable table data for one physical source file. Cache building, plot
-loading, stats, and exports can use it. It is not a mandatory predecessor to `index_source_file`;
-it is the named way to get source data when data is needed.
+`load_source_data(project, source_file)` returns reusable table data for one physical source file.
+Cache building, plot loading, stats, and exports can use it. It is not a mandatory predecessor to
+`index_source_file`; it is the named way to get source data when data is needed.
 
-The current code already has a package helper named `index_source_file(filepath)`, which creates a
-cheap `SourceFile` record from a path. Implementation must rename that helper before using
-`index_source_file(project, source_file)` as the project hook.
+`load_source_data(project, source_file; measurement=m)` returns the table data for one logical
+browser measurement from that source file. For one-file-one-measurement sources this may be the same
+data as the full source file. For virtual measurements, the project owns the
+measurement-scoped selection or reshaping. RuO2 PUND fatigue is the current example: the full file
+contains many cycles, and the measurement-scoped call returns the selected cycle.
 
-## Core Flow
+The current package helper named `index_source_file(filepath)` creates a cheap `SourceFile` record
+from a path. Implementation must rename that helper before using
+`index_source_file(project, source_file)` as the project function.
+
+## Project Load Flow
 
 ```text
 PACKAGE
@@ -63,8 +87,30 @@ PACKAGE -> PROJECT
       measurements::Vector{MeasurementInfo},
       source_files::Vector{SourceFile},
   )::Nothing
+```
 
-PACKAGE
+This is the scan/index path. It creates the browser tree and the source-file list used for cache
+comparison.
+
+## Data Flow
+
+```text
+PACKAGE -> PROJECT, UI THREAD
+  setup_plot(
+      project::AbstractProject,
+      plot_kind::Type{<:PlotKind},
+      measurements::Vector{MeasurementInfo},
+  )::Figure
+
+PACKAGE -> PROJECT, UI THREAD
+  plot_data!(
+      project::AbstractProject,
+      plot_kind::Type{<:PlotKind},
+      measurements::Vector{MeasurementInfo},
+      figure::Figure,
+  )::Nothing
+
+PROJECT -> PACKAGE, inside plot_data! or other data-consuming project code
   data_of_measurements(
       project::AbstractProject,
       measurements::Vector{MeasurementInfo};
@@ -75,24 +121,13 @@ PACKAGE -> PROJECT, when source data is needed
   load_source_data(
       project::AbstractProject,
       source_file::SourceFile;
+      measurement::Union{Nothing,MeasurementInfo}=nothing,
       should_cancel::Union{Nothing,Function}=nothing,
   )::DataFrame
-
-PACKAGE -> PROJECT, UI THREAD
-  setup_plot(
-      project::AbstractProject,
-      plot_kind::Type{<:PlotKind},
-      measurements::Vector{MeasurementInfo},
-  )::Figure
-
-PACKAGE -> PROJECT, UI THREAD
-  plot_data(
-      project::AbstractProject,
-      plot_kind::Type{<:PlotKind},
-      measurements::Vector{MeasurementInfo},
-      figure::Figure,
-  )::Nothing
 ```
+
+This is the data path. The package owns `data_of_measurements`, but project plotting code calls it
+when it needs the actual data for already-indexed measurements.
 
 ## Data Access
 
@@ -102,22 +137,20 @@ need loaded data for logical measurements.
 The intended order is:
 
 ```text
-memory
-  -> valid HDF5 cache
-  -> source-data load from disk
+already loaded data
+  -> valid cache
+  -> source file load
 ```
 
-Disk fallback may call `load_source_data`. Repeated source reads are allowed when the project needs
-different representations or the cache does not contain the requested data. The package should make
-those reads explicit and avoid them when cached data is valid.
-
-Do not add a separate public project hook for selecting measurement rows from source data until the
-implementation need is clear. The current code already has project-specific plot loaders; the first
-implementation can route through those while the cache boundary is simplified.
+Source-file fallback calls `load_source_data(project, source_file; measurement=m)` when it needs
+data for a logical measurement. This keeps project-specific source-to-measurement mapping in project
+code without adding a separate selector function. Repeated source reads are allowed when the project
+needs different representations or the cache does not contain the requested data. The package should
+make those reads explicit and avoid them when cached data is valid.
 
 ## Plotting
 
-Project hooks:
+Project functions:
 
 ```julia
 setup_plot(
@@ -126,7 +159,7 @@ setup_plot(
     measurements::Vector{MeasurementInfo},
 )::Figure
 
-plot_data(
+plot_data!(
     project::AbstractProject,
     plot_kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo},
@@ -136,7 +169,7 @@ plot_data(
 
 `setup_plot` creates the figure, axes, labels, and layout.
 
-`plot_data` mutates `figure`. When it needs loaded measurement data, it calls:
+`plot_data!` mutates `figure`. When it needs loaded measurement data, it calls:
 
 ```julia
 data_of_measurements(
@@ -146,7 +179,7 @@ data_of_measurements(
 )::Vector{DataFrame}
 ```
 
-Project plotting code should not read HDF5 cache storage directly.
+Project plotting code should not read cache storage directly.
 
 ## RuO2 Fatigue Example
 
@@ -183,15 +216,25 @@ end
 function load_source_data(
     project::RuO2Project,
     source_file::SourceFile;
+    measurement::Union{Nothing,MeasurementInfo}=nothing,
     should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
     if detect_kind(project, source_file.filename) === :pund_fatigue
-        return read_pund_fatigue_file(source_file.filepath; should_cancel)
+        source_data = read_pund_fatigue_file(source_file.filepath; should_cancel)
+        measurement === nothing && return source_data
+        cycle = Int(measurement.parameters[:fatigue_idx])
+        return select_pund_fatigue_cycle(source_data, cycle)
     end
+    measurement !== nothing && return read_standard_ruo2_measurement(
+        project,
+        source_file,
+        measurement;
+        should_cancel,
+    )
     return read_standard_ruo2_file(project, source_file; should_cancel)
 end
 
-function plot_data(
+function plot_data!(
     project::RuO2Project,
     plot_kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo},
@@ -205,11 +248,12 @@ function plot_data(
 end
 ```
 
-This keeps the read reasons explicit. `index_source_file` reads fatigue data because cycle discovery
-requires it. Later plot calls use `data_of_measurements`, which should reuse valid cache data before
-reading the source file again.
+This keeps the read reasons explicit. `index_source_file` reads full fatigue data because cycle
+discovery requires it. Later plot calls use `data_of_measurements`, which should reuse valid cache
+data before falling back to `load_source_data(project, source_file; measurement=m)` for the selected
+logical measurement.
 
-## Thread Boundary
+## Thread Rules
 
 These can run in background/cache work:
 
@@ -224,7 +268,7 @@ These mutate Makie objects and should run on the UI/render path:
 
 ```text
 setup_plot
-plot_data
+plot_data!
 ```
 
 Cache data and selected measurement data if useful. Do not cache or mutate Makie figures from
@@ -235,10 +279,10 @@ worker threads.
 ```text
 rename the current low-level index_source_file(filepath) helper
 rename interpret_file(project, source_file) to index_source_file(project, source_file)
-add load_source_data(project, source_file)
+add load_source_data(project, source_file; measurement=nothing)
 add data_of_measurements(project, measurements)
 make RuO2 fatigue use load_source_data where it currently reads fatigue CSVs directly
 route plot data access through data_of_measurements
-replace file-oriented plotting hooks with setup_plot / plot_data
+replace file-oriented plotting functions with setup_plot / plot_data!
 remove project-specific cache modules
 ```
