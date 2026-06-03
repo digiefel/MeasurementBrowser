@@ -19,6 +19,12 @@ function _remove_cache_file(cache_id::AbstractString)
     rm(path; force=true)
 end
 
+function _same_dataframe(left, right)
+    names(left) == names(right) || return false
+    nrow(left) == nrow(right) || return false
+    return all(name -> left[!, name] == right[!, name], names(left))
+end
+
 @testset "project HDF5 cache" begin
     cache_id = MeasurementBrowser.new_project_cache_id()
     @test occursin(r"^\d{8}_\d{6}$", cache_id)
@@ -74,6 +80,21 @@ end
                 m -> m.measurement_kind === :pund,
                 loaded.hierarchy.all_measurements,
             ))
+            source_data = only(data_of_measurements(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+            ))
+            MeasurementBrowser._set_active_project_cache!(loaded.identity)
+            cached_data = only(MeasurementBrowser._cached_measurements_data(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+            ))
+            @test cached_data !== nothing
+            @test _same_dataframe(cached_data, source_data)
+            @test _same_dataframe(
+                only(data_of_measurements(MeasurementBrowser.RUO2_PROJECT, [pund_measurement])),
+                source_data,
+            )
             @test (
                 pund_measurement.stats[:V_base],
                 pund_measurement.stats[:V_min],
@@ -83,6 +104,10 @@ end
 
             sleep(0.05)
             touch(pund_measurement.filepath)
+            @test only(MeasurementBrowser._cached_measurements_data(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+            )) === nothing
             rm(joinpath(dir, _CACHE_FIXTURES.breakdown))
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.tlm)
 
@@ -112,6 +137,7 @@ end
             @test last(cache_update_events).processed_csv == 3
             @test last(cache_update_events).total_csv == 3
         finally
+            MeasurementBrowser._set_active_project_cache!(nothing)
             _remove_cache_file(cache_id)
         end
     end

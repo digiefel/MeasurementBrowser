@@ -1,6 +1,7 @@
 using HDF5
 using SHA
 using Serialization
+using DataFrames: DataFrame
 
 const _CACHE_DATASET_DEFLATE = 3
 const _CACHE_CHUNK_TARGET = 4096
@@ -200,6 +201,34 @@ function _write_parameters!(group, name::AbstractString, parameters::Dict{Symbol
     return nothing
 end
 
+function _serialized_bytes(value)
+    io = IOBuffer()
+    serialize(io, value)
+    return take!(io)
+end
+
+function _write_serialized!(group, name::AbstractString, value)::Nothing
+    _write_dataset!(group, name, _serialized_bytes(value))
+    return nothing
+end
+
+function _read_serialized(group, name::AbstractString, cache_path::AbstractString)
+    bytes = _read_required(group, name, cache_path)
+    return deserialize(IOBuffer(bytes))
+end
+
+function _write_dataframe!(group, name::AbstractString, data::DataFrame)::Nothing
+    _write_serialized!(group, name, data)
+    return nothing
+end
+
+function _read_dataframe(group, name::AbstractString, cache_path::AbstractString)::DataFrame
+    data = _read_serialized(group, name, cache_path)
+    data isa DataFrame ||
+        throw(ProjectCacheInvalidError(cache_path, "cached dataframe '$name' has type $(typeof(data))"))
+    return data
+end
+
 function _read_parameters(group, name::AbstractString, cache_path::AbstractString)
     haskey(group, name) || return Dict{Symbol,Any}()
     param_group = group[name]
@@ -251,6 +280,13 @@ function _same_fingerprint(a::FileFingerprint, b::FileFingerprint)
     return a.path == b.path && a.size_bytes == b.size_bytes && a.mtime_ns == b.mtime_ns
 end
 
+const _ACTIVE_PROJECT_CACHE = Ref{Union{Nothing,ProjectCacheIdentity}}(nothing)
+
+function _set_active_project_cache!(identity::Union{Nothing,ProjectCacheIdentity})::Nothing
+    _ACTIVE_PROJECT_CACHE[] = identity
+    return nothing
+end
+
 function _write_meta!(h5, identity::ProjectCacheIdentity)
     meta = _replace_group(h5, "meta")
     _write_dataset!(meta, "project_name", identity.project_name; compress=false)
@@ -284,7 +320,9 @@ end
 
 function _write_file_group!(
     files_group,
-    source::SourceFile;
+    source::SourceFile,
+    project::AbstractProject;
+    should_cancel::Union{Nothing,Function}=nothing,
 )
     file_group = _replace_group(files_group, _file_group_key(source.fingerprint.path))
     _write_fingerprint!(file_group, source.fingerprint)
@@ -298,10 +336,68 @@ function _write_file_group!(
         push!(measurement_keys, measurement_key)
         measurement_group = _replace_group(measurements_group, measurement_key)
         _write_measurement_metadata!(measurement_group, measurement)
+        data = load_source_data(project, source; measurement, should_cancel)
+        _write_dataframe!(measurement_group, "data", data)
     end
     _write_string_vector!(file_group, "measurement_keys", measurement_keys)
     _write_dataset!(file_group, "status", isempty(measurements) ? "skipped" : "ok"; compress=false)
     return length(measurements)
+end
+
+function _cached_file_has_measurement_data(files_group, source::SourceFile)::Bool
+    isempty(source.measurements) && return true
+    file_key = _file_group_key(source.fingerprint.path)
+    haskey(files_group, file_key) || return false
+    file_group = files_group[file_key]
+    haskey(file_group, "measurements") || return false
+    measurements_group = file_group["measurements"]
+    for measurement in source.measurements
+        measurement_key = _measurement_group_key(measurement.unique_id)
+        haskey(measurements_group, measurement_key) || return false
+        haskey(measurements_group[measurement_key], "data") || return false
+    end
+    return true
+end
+
+function _cached_measurements_data(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo};
+    should_cancel::Union{Nothing,Function}=nothing,
+)::Vector{Union{Nothing,DataFrame}}
+    data = Union{Nothing,DataFrame}[nothing for _ in measurements]
+    identity = _ACTIVE_PROJECT_CACHE[]
+    identity === nothing && return data
+    identity.project_name == project_name(project) || return data
+    isfile(identity.cache_path) || return data
+
+    current_fingerprints = Dict{String,FileFingerprint}()
+    h5open(identity.cache_path, "r") do h5
+        _validate_meta!(h5, identity)
+        haskey(h5, "files") || return data
+        files_group = h5["files"]
+        for (index, measurement) in pairs(measurements)
+            _check_plot_cancel(should_cancel)
+            path = _cache_normalize_path(measurement.filepath)
+            isfile(path) || continue
+            current = get!(current_fingerprints, path) do
+                file_fingerprint(path)
+            end
+            file_key = _file_group_key(path)
+            haskey(files_group, file_key) || continue
+            file_group = files_group[file_key]
+            _file_status(file_group) == "ok" || continue
+            cached = _read_fingerprint(file_group, identity.cache_path)
+            _same_fingerprint(current, cached) || continue
+            haskey(file_group, "measurements") || continue
+            measurements_group = file_group["measurements"]
+            measurement_key = _measurement_group_key(measurement.unique_id)
+            haskey(measurements_group, measurement_key) || continue
+            measurement_group = measurements_group[measurement_key]
+            haskey(measurement_group, "data") || continue
+            data[index] = _read_dataframe(measurement_group, "data", identity.cache_path)
+        end
+    end
+    return data
 end
 
 function _file_status(file_group)
@@ -462,16 +558,13 @@ function _cache_startup_blob(hierarchy::MeasurementHierarchy, statuses::Dict{Str
 end
 
 function _write_cache_startup_blob!(group, blob)::Nothing
-    io = IOBuffer()
-    serialize(io, blob)
-    _write_dataset!(group, "startup_blob", take!(io))
+    _write_serialized!(group, "startup_blob", blob)
     return nothing
 end
 
 function _read_cache_startup_blob(h5, cache_path::AbstractString)
     index_group = _cache_index_group(h5, cache_path)
-    bytes = _read_required(index_group, "startup_blob", cache_path)
-    return deserialize(IOBuffer(bytes))
+    return _read_serialized(index_group, "startup_blob", cache_path)
 end
 
 function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy, statuses::Dict{String,String})
@@ -553,7 +646,10 @@ function write_project_cache!(
         else
             sort!([
                 path for path in keys(fingerprints)
-                if !haskey(cached, path) || !_same_fingerprint(fingerprints[path], cached[path])
+                if !haskey(cached, path) ||
+                    !_same_fingerprint(fingerprints[path], cached[path]) ||
+                    get(statuses, path, "missing") == "error" ||
+                    !_cached_file_has_measurement_data(files_group, source_by_path[path])
             ])
         end
         total_changes = length(deleted_paths) + length(write_paths)
@@ -581,7 +677,9 @@ function write_project_cache!(
             try
                 measurement_count = _write_file_group!(
                     files_group,
-                    source_file;
+                    source_file,
+                    source.project;
+                    should_cancel,
                 )
                 loaded_measurements += measurement_count
                 statuses[path] = measurement_count == 0 ? "skipped" : "ok"

@@ -225,6 +225,7 @@ function _init_cache_state!(ui_state)
     ui_state[:active_cache_id] = 0
     ui_state[:cache_events] = nothing
     ui_state[:cache_cancel_token] = nothing
+    _set_active_project_cache!(nothing)
 end
 
 function _init_tag_state!(ui_state)
@@ -786,6 +787,7 @@ function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
     ui_state[:project] = _project_by_name(snapshot.identity.project_name)
     ui_state[:cache_id] = snapshot.identity.cache_id
     ui_state[:cache_identity] = snapshot.identity
+    _set_active_project_cache!(snapshot.identity)
     source = get(ui_state, :source_scan_result, nothing)
     if source isa SourceScan && source.root_path == snapshot.identity.root_path
         ui_state[:cache_status] = cache_status(snapshot.identity, source)
@@ -817,6 +819,9 @@ function _apply_source_scan!(ui_state, source::SourceScan)
             cache_status(identity, source) :
             ProjectCacheStatus(length(source.files), 0, 0, 0, length(source.files), 0, 0)
         ui_state[:cache_source_checked] = true
+        isfile(identity.cache_path) && _set_active_project_cache!(identity)
+    else
+        _set_active_project_cache!(nothing)
     end
     return nothing
 end
@@ -868,6 +873,7 @@ function _launch_source_scan_job!(
     identity = project_cache_identity(cache_id, proj, norm_path)
     ui_state[:cache_id] = cache_id
     ui_state[:cache_identity] = identity
+    _set_active_project_cache!(nothing)
     _load_tag_state_for_root!(ui_state, norm_path)
     ui_state[:source_scan_seq] = get(ui_state, :source_scan_seq, 0) + 1
     scan_id = ui_state[:source_scan_seq]

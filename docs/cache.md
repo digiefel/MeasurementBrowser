@@ -66,6 +66,7 @@ Each `/files/<file_key>` group stores:
 | `source_file_unique_id` | source file id used during indexing |
 | `measurement_keys` | ordered keys for measurement groups |
 | `measurements/<measurement_key>` | serialized `MeasurementInfo` metadata |
+| `measurements/<measurement_key>/data` | cached dataframe for that logical measurement |
 | `status` | `ok`, `skipped`, or `error` |
 
 Startup cache loading does not walk the per-file measurement groups.
@@ -116,7 +117,7 @@ During write, each source file is compared with cached fingerprints. Unchanged f
 Changed or new files are rewritten. Cached files missing from the source scan are deleted.
 
 After file updates, `/indexes` and `/meta` are rebuilt. The index is the cache startup path;
-per-file groups are for fingerprint checks, cache repair, and future measurement-data payloads.
+per-file groups are for fingerprint checks, cache repair, and measurement-data payloads.
 
 ## Cache Status
 
@@ -138,8 +139,11 @@ source files are fresh, stale, new, or deleted. That requires filesystem scannin
 ## Measurement Data
 
 Normal plotting code asks for data through `data_of_measurements(project, measurements)`. That is
-where cached measurement data should be used once data payload caching is implemented. Project code
-does not read cache storage directly.
+where cached measurement data is used. Project code does not read cache storage directly.
+
+The package returns cached dataframe data only when the cached file fingerprint still matches the
+current source file. If the cache has no data, the file changed, or the cache entry errored,
+`data_of_measurements` opens the source file through `load_source_data`.
 
 ## UI Behavior
 
