@@ -26,9 +26,9 @@ end
         last_discovering = last(filter(e -> e.phase == :discovering, events))
         @test last_discovering.processed_csv == 2
         @test last_discovering.total_csv == 0
-        last_scanning = last(filter(e -> e.phase == :scanning, events))
-        @test last_scanning.processed_csv == 2
-        @test last_scanning.total_csv == 2
+        scanning_events = filter(e -> e.phase == :scanning, events)
+        @test maximum(e -> e.processed_csv, scanning_events) == 2
+        @test all(e -> e.total_csv == 2, scanning_events)
 
         # Cooperative cancellation
         fired = Ref(false)
