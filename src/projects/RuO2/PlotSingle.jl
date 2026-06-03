@@ -33,12 +33,21 @@ function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Sym
     elseif kind === :tlm4p
         df = read_tlm_4p(basename(path), dirname(path))
         return (df=df, title=_plot_title(path), device_params=device_params isa Dict ? device_params : Dict{Symbol,Any}())
-    elseif kind === :cvsweep
-        df = read_cv_sweep(basename(path), dirname(path))
-        return (df=df, title=_plot_title(path))
     end
     @warn "Unsupported RuO2 single-file plot kind" kind path
     return nothing
+end
+
+function load_source_data(
+    ::RuO2Project,
+    source_file::SourceFile;
+    measurement::Union{Nothing,MeasurementInfo}=nothing,
+    should_cancel::Union{Nothing,Function}=nothing,
+)::DataFrame
+    _check_plot_cancel(should_cancel)
+    kind = measurement === nothing ? detect_kind(RUO2_PROJECT, source_file.filename) : measurement.measurement_kind
+    kind === :cvsweep || error("RuO2 source data API is not implemented for $kind")
+    return read_cv_sweep(source_file.filename, dirname(source_file.filepath))
 end
 
 # this should be moved to PUNDAnalysis or similar once PlotKind is in
@@ -317,17 +326,57 @@ function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loade
             fit_voltage_mV=v_fit_mV,
             rho_sheet=rho_sheet,
         )
-    elseif kind === :cvsweep
-        df = loaded.df
-        isempty(df) && return nothing
-        return (
-            df=df,
-            title=loaded.title,
-            frequencies_Hz=sort(unique(df.frequency_Hz)),
-        )
     end
 
     return loaded
+end
+
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    plot_kind === :cvsweep || error("Unsupported RuO2 plot kind '$plot_kind'")
+    isempty(measurements) && error("RuO2 CVSweep plot requires at least one measurement")
+    title = length(measurements) == 1 ? only(measurements).clean_title : "RuO2 CVSweep overlay"
+    fig = Figure(size=(1100, 500))
+    Axis(fig[1, 1], xlabel="Bias (V)", ylabel="C (pF)", title="Capacitance")
+    Axis(fig[1, 2], xlabel="Bias (V)", ylabel="|Z| (MΩ)", title="Impedance")
+    Label(fig[0, :], title, fontsize=20, font=:bold)
+    return fig
+end
+
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Symbol,
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    plot_kind === :cvsweep || error("Unsupported RuO2 plot kind '$plot_kind'")
+    axes_c = contents(figure[1, 1])
+    axes_z = contents(figure[1, 2])
+    isempty(axes_c) && error("RuO2 CVSweep plot figure has no capacitance axis")
+    isempty(axes_z) && error("RuO2 CVSweep plot figure has no impedance axis")
+    ax_c = only(axes_c)
+    ax_z = only(axes_z)
+
+    data = data_of_measurements(project, measurements)
+    for (measurement, df) in zip(measurements, data)
+        nrow(df) == 0 && continue
+        frequencies_Hz = sort(unique(df.frequency_Hz))
+        colors = cgrad(:viridis, length(frequencies_Hz); categorical=true)
+        for (idx, freq_Hz) in enumerate(frequencies_Hz)
+            mask = df.frequency_Hz .== freq_Hz
+            color = colors[idx]
+            label = length(measurements) == 1 ?
+                _format_frequency_label(freq_Hz) :
+                "$(measurement.clean_title) $(_format_frequency_label(freq_Hz))"
+            lines!(ax_c, df.bias_V[mask], df.Cp_F[mask] .* 1e12; color, linewidth=2, label)
+            lines!(ax_z, df.bias_V[mask], df.Z_Ohm[mask] ./ 1e6; color, linewidth=2)
+        end
+    end
+    axislegend(ax_c, position=:lt)
+    return nothing
 end
 
 function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed; kwargs...)
@@ -417,26 +466,6 @@ function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed
         hlines!(ax2, [analyzed.fit_resistance_kohm], color=:red, linestyle=:dash, linewidth=2, label="Fitted R")
         axislegend(ax2)
         Label(fig[0, :], analyzed.title, fontsize=20, font=:bold)
-        return fig
-    elseif kind === :cvsweep
-        df = analyzed.df
-        nrow(df) == 0 && return nothing
-
-        fig = Figure(size=(1100, 500))
-        ax_c = Axis(fig[1, 1], xlabel="Bias (V)", ylabel="C (pF)", title="Capacitance")
-        ax_z = Axis(fig[1, 2], xlabel="Bias (V)", ylabel="|Z| (MΩ)", title="Impedance")
-
-        colors = cgrad(:viridis, length(analyzed.frequencies_Hz); categorical=true)
-        for (idx, freq_Hz) in enumerate(analyzed.frequencies_Hz)
-            mask = df.frequency_Hz .== freq_Hz
-            color = colors[idx]
-            label = _format_frequency_label(freq_Hz)
-            lines!(ax_c, df.bias_V[mask], df.Cp_F[mask] .* 1e12, color=color, linewidth=2, label=label)
-            lines!(ax_z, df.bias_V[mask], df.Z_Ohm[mask] ./ 1e6, color=color, linewidth=2)
-        end
-
-        Label(fig[0, :], analyzed.title, fontsize=20, font=:bold)
-        axislegend(ax_c, position=:lt)
         return fig
     end
 

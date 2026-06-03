@@ -41,8 +41,13 @@ function _plot_job_key(
     )
 end
 
+function _uses_new_plot_api(job::PlotJob)::Bool
+    return job.project isa TASEProject ||
+        (job.project isa RuO2Project && job.plot_kind === :cvsweep)
+end
+
 function _run_plot_job(job::PlotJob, should_cancel)
-    if job.project isa TASEProject
+    if _uses_new_plot_api(job)
         return nothing
     end
 
@@ -134,8 +139,8 @@ function _cached_loaded_plot_for_files(job::PlotJob, should_cancel)
 end
 
 function _draw_plot_job(job::PlotJob, data)
-    if job.project isa TASEProject
-        job.debug && error("TASE debug plots are not implemented")
+    if _uses_new_plot_api(job)
+        job.debug && error("Debug plots are not implemented for $(project_name(job.project)) $(job.plot_kind)")
         fig = setup_plot(job.project, job.plot_kind, job.measurements)
         plot_data!(job.project, job.plot_kind, job.measurements, fig)
         return fig

@@ -30,15 +30,15 @@ const _CV_FIXTURES = (
     @test all(isfinite, g_df.Z_Ohm)
     @test all(g_df.Z_Ohm .> 0)
 
-    # Full pipeline check: interpret, analyze, draw for the comment-header fixture.
+    # Full pipeline check: interpret, load, and plot for the comment-header fixture.
     items = measurements_for_file(MeasurementBrowser.RUO2_PROJECT, z_path)
     @test length(items) == 1
     @test only(items).measurement_kind == :cvsweep
 
-    loaded = MeasurementBrowser.load_plot_for_file(RUO2_PROJECT, z_path, :cvsweep)
-    analyzed = MeasurementBrowser.analyze_plot_for_file(RUO2_PROJECT, :cvsweep, loaded)
-    @test hasproperty(analyzed, :df)
-    @test hasproperty(analyzed, :frequencies_Hz)
-    @test !isempty(analyzed.frequencies_Hz)
-    @test MeasurementBrowser.draw_plot_for_file(RUO2_PROJECT, :cvsweep, analyzed) !== nothing
+    data = MeasurementBrowser.data_of_measurements(RUO2_PROJECT, items)
+    @test length(data) == 1
+    @test nrow(only(data)) == nrow(z_df)
+
+    fig = MeasurementBrowser.setup_plot(RUO2_PROJECT, :cvsweep, items)
+    @test MeasurementBrowser.plot_data!(RUO2_PROJECT, :cvsweep, items, fig) === nothing
 end
