@@ -50,15 +50,8 @@ function _run_plot_job(job::PlotJob, should_cancel)
     if job.debug
         if length(job.measurements) == 1
             measurement = only(job.measurements)
-            params = only(job.device_params)
-            return _load_ruo2_plot_file(
-                job.project,
-                measurement.filepath,
-                measurement.measurement_kind;
-                device_params=params,
-                DEBUG=job.debug,
-                should_cancel,
-            )
+            df = only(data_of_measurements(job.project, [measurement]; should_cancel))
+            return _ruo2_plot_data(measurement, df; debug=job.debug)
         end
 
         paths = [measurement.filepath for measurement in job.measurements]
@@ -74,15 +67,8 @@ function _run_plot_job(job::PlotJob, should_cancel)
 
     if length(job.measurements) == 1
         measurement = only(job.measurements)
-        params = only(job.device_params)
-        loaded = _load_ruo2_plot_file(
-            job.project,
-            measurement.filepath,
-            measurement.measurement_kind;
-            device_params=params,
-            DEBUG=job.debug,
-            should_cancel,
-        )
+        df = only(data_of_measurements(job.project, [measurement]; should_cancel))
+        loaded = _ruo2_plot_data(measurement, df; debug=job.debug)
         return _analyze_ruo2_file_plot(
             job.project,
             measurement.measurement_kind,

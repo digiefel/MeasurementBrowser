@@ -376,13 +376,8 @@ function _build_figure_measurements(
     records = FigureMeasurement[]
     for measurement in measurements
         parameters = _measurement_parameters(measurement)
-        loaded = _load_ruo2_plot_file(
-            project,
-            measurement.filepath,
-            measurement.measurement_kind;
-            device_params=parameters,
-            should_cancel=should_cancel,
-        )
+        df = only(data_of_measurements(project, [measurement]; should_cancel))
+        loaded = _ruo2_plot_data(measurement, df)
         analyzed = _analyze_ruo2_file_plot(
             project,
             measurement.measurement_kind,

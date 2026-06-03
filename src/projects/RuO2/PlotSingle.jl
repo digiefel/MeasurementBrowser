@@ -1,41 +1,31 @@
-function _load_ruo2_plot_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing};
-                            device_params=Dict{Symbol,Any}(), should_cancel::Union{Nothing,Function}=nothing, kwargs...)
-    _check_plot_cancel(should_cancel)
+function _ruo2_plot_data(
+    measurement::MeasurementInfo,
+    df::DataFrame;
+    debug::Bool=false,
+)
+    params = merge(measurement.device_info.parameters, measurement.parameters)
+    kind = measurement.measurement_kind
+    title = _plot_title(measurement.filepath)
     if kind === :pund || kind === :pn
-        params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
-        area_um2 = get(params, :area_um2, nothing)
-        title = _plot_title(path)
         segment = kind === :pn ? :pn : nothing
-        if is_pund_fatigue_file(path)
-            fatigue_count = Int(params[:fatigue_idx])
-            fatigue_df = read_pund_fatigue_file(path; should_cancel=should_cancel)
-            df = _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
-            return (df=df, title=title * " cycle $fatigue_count (fatigue)", area_um2=area_um2,
-                    debug=get(kwargs, :DEBUG, false), segment=segment)
+        if is_pund_fatigue_file(measurement.filepath)
+            fatigue_count = Int(measurement.parameters[:fatigue_idx])
+            title *= " cycle $fatigue_count (fatigue)"
+        elseif segment === :pn
+            title *= " PN"
         end
-        df = read_pund_file(basename(path), dirname(path))
-        title_suffix = segment === :pn ? " PN" : segment === :pund ? " PUND" : ""
-        return (df=df, title=title * title_suffix, area_um2=area_um2,
-                debug=get(kwargs, :DEBUG, false), segment=segment)
+        return (df=df, title=title, area_um2=get(params, :area_um2, nothing), debug=debug, segment=segment)
     elseif kind === :wakeup_pn || kind === :wakeup_pund
-        params = device_params isa Dict ? device_params : Dict{Symbol,Any}()
-        wakeup_V = Float64(params[:wakeup_V])
-        df = _select_pund_wakeup_readout(path, wakeup_V)
-        seg = kind === :wakeup_pn ? :pn : :pund
-        return (df=df, title=_plot_title(path), area_um2=get(params, :area_um2, nothing),
-                debug=get(kwargs, :DEBUG, false), segment=seg)
+        segment = kind === :wakeup_pn ? :pn : :pund
+        return (df=df, title=title, area_um2=get(params, :area_um2, nothing), debug=debug, segment=segment)
     elseif kind === :iv
-        df = read_iv_sweep(basename(path), dirname(path))
-        return (df=df, title=_plot_title(path))
+        return (df=df, title=title)
     elseif kind === :breakdown
-        df = read_iv_sweep(basename(path), dirname(path))
-        return (df=df, title=_plot_title(path) * " (Breakdown)")
+        return (df=df, title=title * " (Breakdown)")
     elseif kind === :tlm4p
-        df = read_tlm_4p(basename(path), dirname(path))
-        return (df=df, title=_plot_title(path), device_params=device_params isa Dict ? device_params : Dict{Symbol,Any}())
+        return (df=df, title=title, device_params=params)
     end
-    @warn "Unsupported RuO2 single-file plot kind" kind path
-    return nothing
+    error("Unsupported RuO2 single-measurement plot kind '$kind'")
 end
 
 function load_source_data(
