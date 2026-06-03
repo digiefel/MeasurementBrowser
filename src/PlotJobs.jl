@@ -66,7 +66,6 @@ function _run_plot_job(job::PlotJob, should_cancel)
             job.project,
             measurement.measurement_kind,
             loaded;
-            device_params=params,
             DEBUG=job.debug,
             should_cancel,
         )
