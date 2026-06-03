@@ -1,4 +1,4 @@
-function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol;
+function _load_ruo2_plot_files(::RuO2Project, paths::Vector{String}, combined_kind::Symbol;
                              device_params_list::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
                              should_cancel::Union{Nothing,Function}=nothing, kwargs...)
     isempty(paths) && return nothing
@@ -58,7 +58,7 @@ function load_plot_for_files(::RuO2Project, paths::Vector{String}, combined_kind
     return nothing
 end
 
-function analyze_plot_for_files(::RuO2Project, combined_kind::Symbol, loaded; kwargs...)
+function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; kwargs...)
     loaded === nothing && return nothing
     should_cancel = get(kwargs, :should_cancel, nothing)
     _check_plot_cancel(should_cancel)
@@ -203,7 +203,7 @@ function analyze_plot_for_files(::RuO2Project, combined_kind::Symbol, loaded; kw
     return loaded
 end
 
-function draw_plot_for_files(::RuO2Project, combined_kind::Symbol, analyzed; kwargs...)
+function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
     if combined_kind === :tlm_analysis

@@ -1,4 +1,4 @@
-function load_plot_for_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing};
+function _load_ruo2_plot_file(::RuO2Project, path::AbstractString, kind::Union{Symbol,Nothing};
                             device_params=Dict{Symbol,Any}(), should_cancel::Union{Nothing,Function}=nothing, kwargs...)
     _check_plot_cancel(should_cancel)
     if kind === :pund || kind === :pn
@@ -206,7 +206,7 @@ function _ruo2_pulse_label(pulse_idx::Int, group_size::Int)
     return ""
 end
 
-function analyze_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, loaded; kwargs...)
+function _analyze_ruo2_file_plot(::RuO2Project, kind::Union{Symbol,Nothing}, loaded; kwargs...)
     loaded === nothing && return nothing
     should_cancel = get(kwargs, :should_cancel, nothing)
     _check_plot_cancel(should_cancel)
@@ -397,7 +397,7 @@ function plot_data!(
     return nothing
 end
 
-function draw_plot_for_file(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed; kwargs...)
+function _draw_ruo2_file_plot(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
     if kind === :pund || kind === :pn || kind === :wakeup_pund || kind === :wakeup_pn

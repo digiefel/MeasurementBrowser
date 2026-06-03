@@ -51,7 +51,7 @@ function _run_plot_job(job::PlotJob, should_cancel)
         if length(job.measurements) == 1
             measurement = only(job.measurements)
             params = only(job.device_params)
-            return load_plot_for_file(
+            return _load_ruo2_plot_file(
                 job.project,
                 measurement.filepath,
                 measurement.measurement_kind;
@@ -62,7 +62,7 @@ function _run_plot_job(job::PlotJob, should_cancel)
         end
 
         paths = [measurement.filepath for measurement in job.measurements]
-        return load_plot_for_files(
+        return _load_ruo2_plot_files(
             job.project,
             paths,
             job.plot_kind;
@@ -75,7 +75,7 @@ function _run_plot_job(job::PlotJob, should_cancel)
     if length(job.measurements) == 1
         measurement = only(job.measurements)
         params = only(job.device_params)
-        loaded = load_plot_for_file(
+        loaded = _load_ruo2_plot_file(
             job.project,
             measurement.filepath,
             measurement.measurement_kind;
@@ -83,7 +83,7 @@ function _run_plot_job(job::PlotJob, should_cancel)
             DEBUG=job.debug,
             should_cancel,
         )
-        return analyze_plot_for_file(
+        return _analyze_ruo2_file_plot(
             job.project,
             measurement.measurement_kind,
             loaded;
@@ -94,7 +94,7 @@ function _run_plot_job(job::PlotJob, should_cancel)
     end
 
     paths = [measurement.filepath for measurement in job.measurements]
-    loaded = load_plot_for_files(
+    loaded = _load_ruo2_plot_files(
         job.project,
         paths,
         job.plot_kind;
@@ -102,7 +102,7 @@ function _run_plot_job(job::PlotJob, should_cancel)
         DEBUG=job.debug,
         should_cancel,
     )
-    return analyze_plot_for_files(
+    return _analyze_ruo2_files_plot(
         job.project,
         job.plot_kind,
         loaded;
@@ -130,12 +130,12 @@ function _draw_plot_job(job::PlotJob, data)
     end
 
     if length(job.measurements) == 1
-        return draw_plot_for_file(
+        return _draw_ruo2_file_plot(
             job.project,
             only(job.measurements).measurement_kind,
             data;
             device_params=only(job.device_params),
         )
     end
-    return draw_plot_for_files(job.project, job.plot_kind, data; DEBUG=job.debug)
+    return _draw_ruo2_files_plot(job.project, job.plot_kind, data; DEBUG=job.debug)
 end
