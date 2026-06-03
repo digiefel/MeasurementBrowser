@@ -1,6 +1,7 @@
 using HDF5
 using SHA
 using DataFrames
+using Serialization
 
 const _CACHE_DATASET_DEFLATE = 3
 const _CACHE_CHUNK_TARGET = 4096
@@ -565,38 +566,7 @@ function _hierarchy_from_cache_statuses(source::SourceScan, statuses::Dict{Strin
     )
 end
 
-const _CACHE_INDEX_VERSION = 2
-
-function _encode_string_list(values)::String
-    return join((escape_string(String(value)) for value in values), '\t')
-end
-
-function _decode_string_list(text::AbstractString)::Vector{String}
-    isempty(text) && return String[]
-    return unescape_string.(split(String(text), '\t'))
-end
-
-function _encode_parameters_index(parameters::Dict{Symbol,Any})::String
-    isempty(parameters) && return ""
-    entries = String[]
-    sizehint!(entries, length(parameters))
-    for key in sort!(collect(keys(parameters)); by=String)
-        type_name, encoded = _encode_cache_value(parameters[key])
-        push!(entries, string(escape_string(String(key)), '\t', type_name, '\t', escape_string(encoded)))
-    end
-    return join(entries, '\n')
-end
-
-function _decode_parameters_index(text::AbstractString)::Dict{Symbol,Any}
-    isempty(text) && return Dict{Symbol,Any}()
-    parameters = Dict{Symbol,Any}()
-    for line in split(String(text), '\n')
-        parts = split(line, '\t')
-        length(parts) == 3 || error("Invalid compact cache parameter entry")
-        parameters[Symbol(unescape_string(parts[1]))] = _decode_cache_value(parts[2], unescape_string(parts[3]))
-    end
-    return parameters
-end
+const _CACHE_INDEX_VERSION = 3
 
 function _cache_index_group(h5, cache_path::AbstractString)
     haskey(h5, "indexes") || throw(ProjectCacheInvalidError(cache_path, "missing /indexes group"))
@@ -607,112 +577,43 @@ function _cache_index_group(h5, cache_path::AbstractString)
     return index_group
 end
 
-function _read_cache_index_measurements(h5, cache_path::AbstractString)
-    index_group = _cache_index_group(h5, cache_path)
-    ids = String.(_read_required(index_group, "measurement_ids", cache_path))
-    filenames = String.(_read_required(index_group, "filenames", cache_path))
-    filepaths = String.(_read_required(index_group, "filepaths", cache_path))
-    clean_titles = String.(_read_required(index_group, "clean_titles", cache_path))
-    kinds = String.(_read_required(index_group, "measurement_kinds", cache_path))
-    timestamps = String.(_read_required(index_group, "timestamps", cache_path))
-    device_paths = String.(_read_required(index_group, "device_paths", cache_path))
-    device_parameters = String.(_read_required(index_group, "device_parameters", cache_path))
-    measurement_parameters = String.(_read_required(index_group, "measurement_parameters", cache_path))
-    measurement_stats = String.(_read_required(index_group, "measurement_stats", cache_path))
-
-    n = length(ids)
-    all(length(values) == n for values in (
-        filenames,
-        filepaths,
-        clean_titles,
-        kinds,
-        timestamps,
-        device_paths,
-        device_parameters,
-        measurement_parameters,
-        measurement_stats,
-    )) || throw(ProjectCacheInvalidError(cache_path, "compact measurement index has mismatched lengths"))
-
-    measurements = MeasurementInfo[]
-    sizehint!(measurements, n)
-    for i in 1:n
-        timestamp = isempty(timestamps[i]) ? nothing :
-            DateTime(timestamps[i], dateformat"yyyy-mm-ddTHH:MM:SS.s")
-        push!(measurements, MeasurementInfo(
-            ids[i],
-            filenames[i],
-            filepaths[i],
-            clean_titles[i],
-            Symbol(kinds[i]),
-            timestamp,
-            DeviceInfo(
-                _decode_string_list(device_paths[i]),
-                _decode_parameters_index(device_parameters[i]),
-            ),
-            _decode_parameters_index(measurement_parameters[i]),
-            _decode_parameters_index(measurement_stats[i]),
-        ))
-    end
-    return measurements
+function _cache_startup_blob(hierarchy::MeasurementHierarchy, statuses::Dict{String,String}, errors::Vector{ProjectCacheFileError})
+    return (
+        measurements=hierarchy.all_measurements,
+        statuses=statuses,
+        errors=errors,
+        skipped_count=hierarchy.skipped_count,
+    )
 end
 
-function _read_cache_index_statuses(h5, cache_path::AbstractString)
-    index_group = _cache_index_group(h5, cache_path)
-    paths = String.(_read_required(index_group, "file_paths", cache_path))
-    statuses = String.(_read_required(index_group, "file_statuses", cache_path))
-    length(paths) == length(statuses) ||
-        throw(ProjectCacheInvalidError(cache_path, "compact file status index has mismatched lengths"))
-    return Dict(path => status for (path, status) in zip(paths, statuses))
+function _write_cache_startup_blob!(group, blob)::Nothing
+    io = IOBuffer()
+    serialize(io, blob)
+    _write_dataset!(group, "startup_blob", take!(io))
+    return nothing
 end
 
-function _read_cache_index_errors(h5, cache_path::AbstractString)
+function _read_cache_startup_blob(h5, cache_path::AbstractString)
     index_group = _cache_index_group(h5, cache_path)
-    paths = String.(_read_required(index_group, "error_paths", cache_path))
-    messages = String.(_read_required(index_group, "error_messages", cache_path))
-    length(paths) == length(messages) ||
-        throw(ProjectCacheInvalidError(cache_path, "compact file error index has mismatched lengths"))
-    return ProjectCacheFileError[
-        ProjectCacheFileError(path, message)
-        for (path, message) in zip(paths, messages)
-    ]
+    bytes = _read_required(index_group, "startup_blob", cache_path)
+    return deserialize(IOBuffer(bytes))
 end
 
 function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy, statuses::Dict{String,String})
     index_group = _replace_group(h5, "indexes")
-    measurements = hierarchy.all_measurements
-    status_paths = sort!(collect(keys(statuses)))
     _write_dataset!(index_group, "version", Int64[_CACHE_INDEX_VERSION])
-    _write_string_vector!(index_group, "file_paths", status_paths)
-    _write_string_vector!(index_group, "file_statuses", [statuses[path] for path in status_paths])
-    _write_string_vector!(index_group, "measurement_ids", [m.unique_id for m in hierarchy.all_measurements])
-    _write_string_vector!(index_group, "measurement_keys", [_measurement_group_key(m.unique_id) for m in hierarchy.all_measurements])
-    _write_string_vector!(index_group, "filenames", [m.filename for m in measurements])
-    _write_string_vector!(index_group, "filepaths", [m.filepath for m in measurements])
-    _write_string_vector!(index_group, "clean_titles", [m.clean_title for m in measurements])
-    _write_string_vector!(index_group, "device_paths", [_encode_string_list(m.device_info.location) for m in measurements])
-    _write_string_vector!(index_group, "device_keys", [device_path_key(m.device_info) for m in measurements])
-    _write_string_vector!(index_group, "device_parameters", [_encode_parameters_index(m.device_info.parameters) for m in measurements])
-    _write_string_vector!(index_group, "measurement_kinds", [String(m.measurement_kind) for m in measurements])
-    _write_string_vector!(index_group, "measurement_parameters", [_encode_parameters_index(m.parameters) for m in measurements])
-    _write_string_vector!(index_group, "measurement_stats", [_encode_parameters_index(m.stats) for m in measurements])
-    _write_string_vector!(index_group, "timestamps", [
-        m.timestamp === nothing ? "" : Dates.format(m.timestamp, dateformat"yyyy-mm-ddTHH:MM:SS.s")
-        for m in measurements
-    ])
-    _write_dataset!(index_group, "skipped_count", Int64[hierarchy.skipped_count])
 
-    error_paths = String[]
-    error_messages = String[]
+    errors = ProjectCacheFileError[]
     files_group = h5["files"]
     for path in sort!([path for (path, status) in statuses if status == "error"])
         file_key = _file_group_key(path)
         haskey(files_group, file_key) || continue
         file_group = files_group[file_key]
-        push!(error_paths, path)
-        push!(error_messages, haskey(file_group, "error_message") ? read(file_group["error_message"]) : "unknown cache error")
+        message = haskey(file_group, "error_message") ? read(file_group["error_message"]) : "unknown cache error"
+        push!(errors, ProjectCacheFileError(path, message))
     end
-    _write_string_vector!(index_group, "error_paths", error_paths)
-    _write_string_vector!(index_group, "error_messages", error_messages)
+
+    _write_cache_startup_blob!(index_group, _cache_startup_blob(hierarchy, statuses, errors))
     return hierarchy
 end
 
@@ -879,10 +780,11 @@ function _load_project_cache_contents(
             "cache metadata fields are out of date",
         ))
         has_device_metadata = _read_cache_has_device_metadata(h5, identity.cache_path)
-        measurements = _read_cache_index_measurements(h5, identity.cache_path)
-        statuses = _read_cache_index_statuses(h5, identity.cache_path)
+        startup = _read_cache_startup_blob(h5, identity.cache_path)
+        measurements = startup.measurements
+        statuses = startup.statuses
         status = _cache_status_from_cached_statuses(statuses)
-        errors = _read_cache_index_errors(h5, identity.cache_path)
+        errors = startup.errors
         skipped_count = count(==("skipped"), values(statuses))
         _emit_progress(on_progress;
             phase=:cache_load,

@@ -74,10 +74,9 @@ Each `/files/<file_key>` group stores:
 Measurement groups still store metadata next to project payloads, but startup cache loading does not
 walk those groups.
 
-`/indexes` stores the browser metadata as compact arrays: source file statuses, file errors,
-measurement ids, filenames, filepaths, clean titles, kinds, timestamps, device paths, device
-parameters, measurement parameters, and measurement stats. This is the data used to rebuild the
-browser tree when a project opens.
+`/indexes/startup_blob` stores the browser startup data as one versioned serialized record:
+measurements, source file statuses, file errors, and skipped-file count. Startup uses the blob to
+rebuild the browser tree when a project opens.
 
 ## Loading the Cache
 
@@ -89,7 +88,7 @@ It currently reads:
 1. `/meta` for validation.
 2. `/semantics`.
 3. `/meta/has_device_metadata`.
-4. `/indexes` compact arrays.
+4. `/indexes/startup_blob`.
 
 It returns a `ProjectCacheSnapshot`, containing:
 
