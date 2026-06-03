@@ -9,36 +9,6 @@ function _measurement_plot_window_entry(measurement::MeasurementInfo)
     )
 end
 
-function _cache_plot_version(ui_state)
-    try
-        identity = get(ui_state, :cache_identity, nothing)
-        identity isa ProjectCacheIdentity ||
-            error("Plot job requires an active HDF5 cache identity")
-        status = get(ui_state, :cache_status, nothing)
-        status isa ProjectCacheStatus ||
-            error("Plot job requires a loaded HDF5 cache status")
-        if get(ui_state, :warned_about_cache_version, false)
-            @debug "Successfully determined cache version for plot job after previous failure" cache_id=identity.cache_id
-            ui_state[:warned_about_cache_version] = false
-        end
-        return (
-            identity.cache_id,
-            identity.cache_path,
-            status.fresh_files,
-            status.stale_files,
-            status.new_files,
-            status.deleted_files,
-            status.error_files,
-        )
-    catch err
-        if !get(ui_state, :warned_about_cache_version, false)
-            @warn "Failed to cache plot job" exception=(err, catch_backtrace())
-            ui_state[:warned_about_cache_version] = true
-        end
-        return nothing
-    end
-end
-
 function _plot_running(ui_state)
     return get(ui_state, :plot_state, :idle) in (:loading, :analyzing, :drawing, :canceling)
 end
@@ -71,12 +41,9 @@ function _plot_job(
 )
     isempty(measurements) && error("Plot job requires at least one measurement")
     debug = get(ui_state, :debug_plot_mode, false)
-    cache_identity = get(ui_state, :cache_identity, nothing)
-    cache_identity = cache_identity isa ProjectCacheIdentity ? cache_identity : nothing
-    cache_version = _cache_plot_version(ui_state)
     device_params = [merge(measurement.device_info.parameters, measurement.parameters) for measurement in measurements]
     return PlotJob(
-        _plot_job_key(proj, target, target_id, measurements, plot_kind, device_params, cache_version, debug),
+        _plot_job_key(proj, target, target_id, measurements, plot_kind, device_params, debug),
         plot_key,
         proj,
         target,
@@ -84,8 +51,6 @@ function _plot_job(
         measurements,
         plot_kind,
         device_params,
-        cache_identity,
-        cache_version,
         debug,
     )
 end
@@ -176,7 +141,6 @@ function _finish_plot_job!(ui_state, job::PlotJob; fig=nothing, error::AbstractS
         entry_target_id == job.target_id || continue
         fig === nothing ? delete!(entry, :figure) : (entry[:figure] = fig)
         failed ? (entry[:plot_error] = message) : delete!(entry, :plot_error)
-        entry[:cache_version] = job.cache_version
         entry[:debug] = job.debug
         return failed
     end
@@ -339,7 +303,6 @@ function render_plot_window(ui_state)
         plot_kind = measurement.measurement_kind
         plot_key = (
             measurement.unique_id,
-            _cache_plot_version(ui_state),
             _plot_parameters_key([measurement.parameters]),
         )
         plot_status = :ready
@@ -500,12 +463,9 @@ function render_additional_plot_windows(ui_state)
         target_id = string(get(entry, :target_id, get(entry, :id, filepath)))
         entry[:target_id] = target_id
 
-        cache_version = _cache_plot_version(ui_state)
-        existing_cache_version = get(entry, :cache_version, nothing)
         existing_debug = get(entry, :debug, false)
         has_failure = haskey(entry, :plot_error)
         refresh = (!haskey(entry, :figure) && !has_failure) ||
-            existing_cache_version != cache_version ||
             existing_debug != get(ui_state, :debug_plot_mode, false)
         if refresh
             _queue_plot_job!(ui_state, proj, measurements, plot_kind; target=:extra, target_id)
