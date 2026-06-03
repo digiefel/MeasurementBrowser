@@ -4,15 +4,28 @@
 
 Plotting should be simple for project authors and powerful in the GUI.
 
-Project code should only need to define:
+Project code should define plot kinds and two hooks:
 
 ```julia
-setup_plot(project, plot_kind, measurements)
-plot_data(project, plot_kind, measurements, fig)
+setup_plot(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+
+plot_data(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
 ```
 
-The package owns GUI composition: overlay, faceting, panel layouts, and repeated calls into project
-plotting hooks.
+The package owns selection UI, plot composition, cache storage, data reuse, and repeated calls into
+project plotting hooks.
+
+Plotting hooks are not cache hooks. Projects draw measurement data. The package decides whether
+that data comes from memory, preload, HDF5, or disk.
 
 ## User Flow
 
@@ -71,8 +84,8 @@ Vector{Type{<:PlotKind}}
 Then calls:
 
 ```julia
-kind = PUNDLoop
-fig = setup_plot(project, kind, measurements)
+kind::Type{<:PlotKind} = PUNDLoop
+fig::Figure = setup_plot(project, kind, measurements)
 plot_data(project, kind, measurements, fig)
 ```
 
@@ -86,20 +99,45 @@ not support the selected measurements, `setup_plot` or `plot_data` should fail n
 Projects define:
 
 ```julia
-setup_plot(project, ::Type{SomePlotKind}, measurements)::Figure
-plot_data(project, ::Type{SomePlotKind}, measurements, fig::Figure)
+setup_plot(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+
+plot_data(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
 ```
 
 `setup_plot` creates the Makie figure, axes, labels, and layout for that plot kind.
 
-`plot_data` adds the selected measurement data to that figure. It can handle one measurement or a
-group, depending on the plot kind.
+`plot_data` mutates the figure by adding the selected measurements. When it needs loaded
+measurement data, it calls:
+
+```julia
+data_of_measurements(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo};
+    should_cancel::Union{Nothing,Function}=nothing,
+)::Vector{DataFrame}
+```
+
+Project plotting code should not read HDF5 cache storage or know which cache entry supplied the
+data.
 
 Projects may also define an interactive debug plot for cases where the user needs to tune analysis
 parameters rather than only view the finished result:
 
 ```julia
-debug_plot(project, measurement, raw_data)::Figure
+debug_plot(
+    project::AbstractProject,
+    measurement::MeasurementInfo,
+    raw_data::DataFrame,
+)::Figure
 ```
 
 `debug_plot` is for project-specific diagnostic tools. For example, RuO2 PUND debugging needs raw
@@ -115,6 +153,7 @@ The package owns:
 - overlay behavior
 - faceting and multi-panel layout
 - caching source-file and measurement data
+- cache storage, freshness, and repair policy
 - calling `setup_plot` once and `plot_data` as many times as needed
 - calling `debug_plot` for explicit debug workflows
 
@@ -122,22 +161,17 @@ Package-level composition should not require project-specific branching.
 
 ## Data Flow
 
-Plotting uses measurement-level data:
-
-```julia
-data_contents(project, measurement)::DataFrame
-```
-
-`data_contents` returns the dataframe for one logical measurement. The package can cache it.
-
-Normal plots use analyzed or display-ready measurement data:
+Normal plots use logical measurement data:
 
 ```text
 MeasurementInfo
-  -> data_contents(project, measurement)
+  -> data_of_measurements(project, measurements)
   -> setup_plot(...)
   -> plot_data(...)
 ```
+
+`data_of_measurements` returns one `DataFrame` per `MeasurementInfo`, in the same order. The package
+owns this accessor and can cache its result.
 
 Interactive debug plots use raw data because changing a slider can change the analysis itself:
 
@@ -166,8 +200,8 @@ Makie mutation stays on the UI thread:
 
 ```text
 background/cache work:
-  file_contents
-  data_contents
+  load_source_data
+  data_of_measurements
 
 UI/render work:
   setup_plot

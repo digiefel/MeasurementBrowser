@@ -1,151 +1,222 @@
 # Project API Rewrite Sketch
 
-Goal: adding a new measurement procedure should feel like writing one project module while the app
+## Goal
+
+Adding a new measurement procedure should feel like writing one project module while the package
 provides scanning, caching, GUI state, plots, and figure export around it.
 
-The package owns orchestration and cache mechanics. A project owns file naming, file meaning,
-measurement expansion, stats, analysis, and plotting.
+The package owns orchestration, opened-project state, cache storage, cache freshness, cache repair,
+and UI data access. A project owns source-file meaning, measurement discovery, analysis, and
+plotting.
+
+Project-specific cache modules such as `projects/RuO2/Cache.jl` should disappear. Project hooks
+produce project results. The package decides whether those results come from memory, HDF5, or disk.
+
+## Naming Decision
+
+The source-file API has two different outputs.
+
+```julia
+index_source_file(
+    project::AbstractProject,
+    source_file::SourceFile;
+    should_cancel::Union{Nothing,Function}=nothing,
+)::Vector{MeasurementInfo}
+```
+
+`index_source_file` returns the logical browser measurements found in one physical source file. It
+may inspect file contents when filenames and cheap metadata are not enough. RuO2 fatigue is the
+current example: the project must inspect the file to know which cycles exist.
+
+```julia
+load_source_data(
+    project::AbstractProject,
+    source_file::SourceFile;
+    should_cancel::Union{Nothing,Function}=nothing,
+)::DataFrame
+```
+
+`load_source_data` returns reusable table data for one physical source file. Cache building, plot
+loading, stats, and exports can use it. It is not a mandatory predecessor to `index_source_file`;
+it is the named way to get source data when data is needed.
+
+The current code already has a package helper named `index_source_file(filepath)`, which creates a
+cheap `SourceFile` record from a path. Implementation must rename that helper before using
+`index_source_file(project, source_file)` as the project hook.
 
 ## Core Flow
 
 ```text
 PACKAGE
-  collect_source_files(root)
-    -> SourceFile metadata
+  collect_source_files(root::AbstractString)::Vector{SourceFile}
 
 PACKAGE -> PROJECT
-  read_source_file(project, source_file::SourceFile)
-    -> DataFrame for the physical file
-
-PACKAGE
-  stores the returned contents
-  exposes them through file_contents(source_file)::DataFrame
-
-PACKAGE -> PROJECT
-  interpret_file(project, source_file::SourceFile)
-    -> Vector{MeasurementInfo}
+  index_source_file(
+      project::AbstractProject,
+      source_file::SourceFile;
+      should_cancel::Union{Nothing,Function}=nothing,
+  )::Vector{MeasurementInfo}
 
 PACKAGE -> PROJECT
   compute_and_add_measurement_stats!(
-      project,
+      project::AbstractProject,
       measurements::Vector{MeasurementInfo},
       source_files::Vector{SourceFile},
-  )
-    -> history and waveform stats
+  )::Nothing
+
+PACKAGE
+  data_of_measurements(
+      project::AbstractProject,
+      measurements::Vector{MeasurementInfo};
+      should_cancel::Union{Nothing,Function}=nothing,
+  )::Vector{DataFrame}
+
+PACKAGE -> PROJECT, when source data is needed
+  load_source_data(
+      project::AbstractProject,
+      source_file::SourceFile;
+      should_cancel::Union{Nothing,Function}=nothing,
+  )::DataFrame
 
 PACKAGE -> PROJECT, UI THREAD
-  setup_plot(project, measurements::Vector{MeasurementInfo})
-    -> Makie Figure
+  setup_plot(
+      project::AbstractProject,
+      plot_kind::Type{<:PlotKind},
+      measurements::Vector{MeasurementInfo},
+  )::Figure
 
 PACKAGE -> PROJECT, UI THREAD
-  plot_data(project, figure::Figure, measurements::Vector{MeasurementInfo})
-    -> add cached data for one or more measurements to the figure
+  plot_data(
+      project::AbstractProject,
+      plot_kind::Type{<:PlotKind},
+      measurements::Vector{MeasurementInfo},
+      figure::Figure,
+  )::Nothing
 ```
 
-## Types
+## Data Access
 
-Existing package types:
+`data_of_measurements` is package-owned. Plotting, stats, exports, and scripts call it when they
+need loaded data for logical measurements.
 
-- `SourceFile`: one physical file, cheap metadata, and package-owned access to cached contents.
-- `MeasurementInfo`: one logical browser measurement. One source file may produce many
-  measurements. It already carries the source filepath.
+The intended order is:
 
-Target plotting type:
+```text
+memory
+  -> valid HDF5 cache
+  -> source-data load from disk
+```
 
-- Makie `Figure`: returned by `setup_plot` and mutated by `plot_data`.
+Disk fallback may call `load_source_data`. Repeated source reads are allowed when the project needs
+different representations or the cache does not contain the requested data. The package should make
+those reads explicit and avoid them when cached data is valid.
 
-## Source File Contents
+Do not add a separate public project hook for selecting measurement rows from source data until the
+implementation need is clear. The current code already has project-specific plot loaders; the first
+implementation can route through those while the cache boundary is simplified.
 
-Project-defined function to read the file and return its contents for the first time:
+## Plotting
+
+Project hooks:
 
 ```julia
-read_source_file(project, file::SourceFile; should_cancel=nothing)::DataFrame
+setup_plot(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+
+plot_data(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
 ```
 
-The package then later exposes a cached faster read:
+`setup_plot` creates the figure, axes, labels, and layout.
+
+`plot_data` mutates `figure`. When it needs loaded measurement data, it calls:
 
 ```julia
-file_contents(file::SourceFile)::DataFrame
+data_of_measurements(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo};
+    should_cancel::Union{Nothing,Function}=nothing,
+)::Vector{DataFrame}
 ```
 
-The package calls `read_source_file`, stores the dataframe with the `SourceFile`, and later serves
-it through `file_contents(file)`. This is the whole physical file dataframe. Project code must not
-care whether the dataframe came from disk, memory, async preload, or an HDF5 cache.
-
-DataLoader should provide generic CSV helpers only. Projects use those helpers inside
-`read_source_file`, then give semantic names to the columns they care about.
-
-`file_contents` may be populated or refreshed off the UI thread. Makie figures are not part of
-this cache.
-The package should take care to call `read_source_file` in advance. If `file_contents` is called
-before `read_source_file`, it should just error out naturally without much fanfare.
-
-## Measurement Data Contents
-
-Project hook:
-
-```julia
-data_contents(project, measurement::MeasurementInfo)::DataFrame
-```
-
-`data_contents` returns the dataframe for one logical measurement. For a standalone file this may
-be the whole source dataframe. For an expanded file, such as fatigue or wakeup, this is the selected
-cycle, amplitude, or block. The package can cache these logical-measurement dataframes separately
-from the physical source-file dataframe.
-
-Both `file_contents` and `data_contents` should be cheap views over cached data, as cpu-efficient and
-memory-efficient as posisble, thread-safe and fast.
+Project plotting code should not read HDF5 cache storage directly.
 
 ## RuO2 Fatigue Example
 
 ```julia
-function read_source_file(::RuO2Project, file::SourceFile; should_cancel=nothing)
-    detect_kind(RUO2_PROJECT, file.filename) === :pund_fatigue || return nothing
-    return read_pund_fatigue_file(file.filepath; should_cancel)
-end
+function index_source_file(
+    project::RuO2Project,
+    source_file::SourceFile;
+    should_cancel::Union{Nothing,Function}=nothing,
+)::Vector{MeasurementInfo}
+    kind::Symbol = detect_kind(project, source_file.filename)
+    kind === :unknown && return MeasurementInfo[]
 
-function interpret_file(::RuO2Project, file::SourceFile; should_cancel=nothing)
-    if detect_kind(RUO2_PROJECT, file.filename) === :pund_fatigue
-        fatigue_df = file_contents(file)
-        cycles = unique(fatigue_df.cycle)
-        # create one logical PUND measurement per cycle
+    base::MeasurementInfo = measurement_from_filename_and_header(project, source_file, kind)
+
+    if kind === :pund_fatigue
+        source_data::DataFrame = load_source_data(project, source_file; should_cancel)
+        cycles::Vector = unique(source_data.cycle)
+        return [
+            MeasurementInfo(base;
+                unique_id="$(base.filepath)#fatigue_count=$(Int(cycle))",
+                measurement_kind=:pund,
+                parameters=merge(
+                    deepcopy(base.parameters),
+                    Dict{Symbol,Any}(:fatigue_idx => cycle),
+                ),
+            )
+            for cycle in cycles
+        ]
     end
+
+    return [base]
 end
 
-function compute_and_add_measurement_stats!(::RuO2Project, measurements, files)
-    # reuse file_contents(file) instead of rereading the fatigue CSV
-end
-
-function setup_plot(::RuO2Project, measurements::Vector{MeasurementInfo})
-    # create the figure and axes for this measurement kind
-    return fig
-end
-
-function plot_data(::RuO2Project, fig::Figure, measurements::Vector{MeasurementInfo})
-    for measurement in measurements
-        df = data_contents(RUO2_PROJECT, measurement)
-        # add df to fig
+function load_source_data(
+    project::RuO2Project,
+    source_file::SourceFile;
+    should_cancel::Union{Nothing,Function}=nothing,
+)::DataFrame
+    if detect_kind(project, source_file.filename) === :pund_fatigue
+        return read_pund_fatigue_file(source_file.filepath; should_cancel)
     end
+    return read_standard_ruo2_file(project, source_file; should_cancel)
+end
+
+function plot_data(
+    project::RuO2Project,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    dfs::Vector{DataFrame} = data_of_measurements(project, measurements)
+    for (measurement, df) in zip(measurements, dfs)
+        # add df to figure
+    end
+    return nothing
 end
 ```
 
-For PUND fatigue, `read_source_file` returns the full physical-file dataframe. `interpret_file`
-uses it to create logical measurements, and stats/plotting use the same contents to select the
-requested cycle. `setup_plot` creates the shared figure/axes once. `plot_data` can be called for
-one or many compatible measurements and adds each measurement's data into that same plot.
-The selected data comes from `data_contents`, so repeated overlays do not reread the physical file.
-
-The package decides whether `measurements` contains one measurement or a user-selected overlay
-group. The project receives the vector either way.
+This keeps the read reasons explicit. `index_source_file` reads fatigue data because cycle discovery
+requires it. Later plot calls use `data_of_measurements`, which should reuse valid cache data before
+reading the source file again.
 
 ## Thread Boundary
 
 These can run in background/cache work:
 
 ```text
-read_source_file
-file_contents
-data_contents
+index_source_file
+load_source_data
+data_of_measurements
 compute_and_add_measurement_stats!
 ```
 
@@ -156,50 +227,18 @@ setup_plot
 plot_data
 ```
 
-Cache dataframes and selected measurement data if useful. Do not cache or mutate Makie figures
-from worker threads.
-
-## Project Hooks To Standardize
-
-Current hooks to keep and make cleaner:
-
-```julia
-read_source_file
-file_contents
-data_contents
-interpret_file
-compute_and_add_measurement_stats!
-setup_plot
-plot_data
-```
-
-Overlay plots use one setup call and repeated data calls:
-
-```julia
-fig = setup_plot(project, measurements)
-plot_data(project, fig, measurements)
-```
-
-Debug helpers should mirror the real dispatch path:
-
-```julia
-debug_file(file)
-debug_measurement(measurement)
-```
-
-`debug_file` should show source metadata, `read_source_file` cache status, interpreted
-measurements, and any errors with stack traces.
+Cache data and selected measurement data if useful. Do not cache or mutate Makie figures from
+worker threads.
 
 ## Migration Target
 
-First migration step:
-
 ```text
-add read_source_file default hook
-add file_contents accessor
-add data_contents hook/accessor
-store contents on or near SourceFile
-make RuO2 PUND fatigue use file_contents
-remove duplicate fatigue CSV reads
+rename the current low-level index_source_file(filepath) helper
+rename interpret_file(project, source_file) to index_source_file(project, source_file)
+add load_source_data(project, source_file)
+add data_of_measurements(project, measurements)
+make RuO2 fatigue use load_source_data where it currently reads fatigue CSVs directly
+route plot data access through data_of_measurements
 replace file-oriented plotting hooks with setup_plot / plot_data
+remove project-specific cache modules
 ```

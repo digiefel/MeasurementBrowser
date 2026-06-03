@@ -11,7 +11,8 @@
 - Per-node notes inherit ancestor notes as read-only sections, merged into one window.
 - All of this dovetails with the existing tree panel (which stays) and the existing measurement plot panel via shared selection state.
 
-Alongside this feature, `Gui.jl` (3,973 LOC, single module) is split into a small set of files for maintainability — driven by the new feature surface, not as a separate refactor.
+The GUI split and the `Annotations` subpackage are already in place. The remaining work is the
+spatial browser panel, notes UI, and polishing the tag/layout workflows around that panel.
 
 ## Decisions locked in
 
@@ -22,9 +23,9 @@ Alongside this feature, `Gui.jl` (3,973 LOC, single module) is split into a smal
 
 ## High-level architecture
 
-### Data layer (new module: `src/Annotations/`)
+### Data layer (`src/Annotations/`)
 
-A new internal subpackage (mirrors the structure of `DataLoader`, `DataAnalysis`, `DataPlotter`) housing all on-disk metadata that isn't filenames or measurement contents.
+Existing internal subpackage for on-disk metadata that is not filenames or measurement contents.
 
 ```
 src/Annotations/
@@ -34,8 +35,7 @@ src/Annotations/
 │   ├── Coords.jl             — read/write x/y/w/h from device_info.txt; bbox computation
 │   ├── Layout.jl             — layout.txt: per-path world-XY for unpositioned containers
 │   ├── Tags.jl               — tags.txt: catalog + per-path assignments in one file
-│   ├── Notes.jl              — notes.txt with [path]+fenced sections; ancestor merging
-│   └── BadRegistryShim.jl    — BadRegistry expressed as a built-in tag for migration
+│   └── Notes.jl              — notes.txt with [path]+fenced sections; ancestor merging
 ```
 
 **Key APIs (sketch):**
@@ -57,9 +57,9 @@ src/Annotations/
 
 All files live at the source root, kept lean so they read well in any text editor.
 
-- `device_info.txt` — extended with optional `x_um, y_um, w_um, h_um` columns (path-prefix matching as today). Positioned entries set `x_um, y_um`; container entries can additionally set `w_um, h_um` to override computed bbox.
+- `device_info.txt` — extended with optional `x_um, y_um, w_um, h_um` columns. Positioned entries set `x_um, y_um`; container entries can additionally set `w_um, h_um` to override computed bbox.
 - `layout.txt` — `<path>\t<x_um>\t<y_um>` lines for the user-arranged unpositioned containers.
-- `tags.txt` — single file with two top sections, `[catalog]` and `[assignments]`. Catalog rows: `<name>\t<color_hex>\t<priority>`. Assignment rows: `<path>\t<tag_name>`. Ships with a default `bad` catalog entry; the legacy `bad_measurements` file is auto-migrated on first save.
+- `tags.txt` — single file with two top sections, `[catalog]` and `[assignments]`. Catalog rows: `<name>\t<color_hex>\t<priority>`. Assignment rows: `<path>\t<tag_name>`. Ships with a default `bad` catalog entry.
 - `notes.txt` — fenced sections, robust against `[brackets]` appearing inside note bodies:
   ```
   [ChipB]
@@ -73,23 +73,27 @@ All files live at the source root, kept lean so they read well in any text edito
   ```
   Each section is `[<path>]` followed by a triple-backtick-fenced body. Parser keys on the fences, not on the brackets, so users can write `[anything]` freely inside.
 
-### UI layer (`Gui.jl` split)
+### UI layer
 
-`Gui.jl` (3,973 LOC) decomposes into a `Gui/` directory. Target: ~7 files, no further. Each file exposes a small surface; state stays in the existing `ui_state::Dict` (typed access helpers added but no big-bang struct refactor).
+The GUI already lives in `src/Gui/`. Spatial work should add a focused panel without reworking the
+whole UI state model.
 
 ```
 src/Gui.jl                      — module entry; re-exports create_window_and_run_loop
 src/Gui/
-├── State.jl                    — ui_state init helpers + typed accessors
+├── State.jl                    — ui_state init helpers and async state
 ├── Layout.jl                   — _setup_docking_layout!, top menu, frame loop
-├── TreePanel.jl                — current tree (move from Gui.jl as-is)
+├── TreePanel.jl                — current tree
 ├── PlotPanel.jl                — plot area + plot job queue + combined plots
-├── SpatialBrowser.jl           — NEW. Pan/zoom canvas, hit-testing, level controls
-├── AnnotationsUI.jl            — context menus, tag catalog editor, notes window
 └── InfoModal.jl                — existing device modal + figure scripts modal
 ```
 
-The split is driven by the natural seams the new feature exposes (tree, plot, spatial, annotations, info), not by lines-of-code targets.
+Planned additions:
+
+```text
+src/Gui/SpatialBrowser.jl       — pan/zoom canvas, hit-testing, level controls
+src/Gui/AnnotationsUI.jl        — tag catalog editor and notes window, if it does not fit cleanly in existing files
+```
 
 ### Spatial browser internals (`SpatialBrowser.jl`)
 
@@ -128,9 +132,9 @@ A standalone, modeless ImGui window — not anchored to any node. Opened from th
 
 Each phase is a separate spawn: small, reviewable, behavior-checked before moving on.
 
-1. **P1 — Gui.jl split, no behavior change.** Move code to `Gui/` files, keep public API identical, run smoke test (`julia --project start.jl test/fixtures/...`). Critical: no logic edits.
-2. **P2 — `Annotations` subpackage, data model only.** Implement `Coords`, `Layout`, `Tags`, `Notes`, `BadRegistryShim`. Tests with fixture files. Existing `BadRegistry` keeps working via shim.
-3. **P3 — Tagging supersedes BadRegistry.** Wire `Tags` (catalog + assignments) into the existing tree panel and measurement filtering: the bad-toggle context menu, the bad styling in the tree, and `_device_is_visible` / `_measurement_is_visible` all read from `Tags` instead of `BadRegistry`. On startup, `Tags.load` migrates any legacy `bad_measurements` file into `tags.txt` (catalog gets a `bad` entry if missing; each line becomes an assignment). `BadRegistry` is removed once parity is verified — the new system is a strict superset, not a parallel one. No spatial UI yet; this is purely a data-layer swap with the existing UI.
+1. **P1 — Done: Gui.jl split.** The GUI already lives in `src/Gui/` files.
+2. **P2 — Done: `Annotations` subpackage.** `Coords`, `Layout`, `Tags`, and `Notes` already exist with fixture tests.
+3. **P3 — Done: tags drive bad styling/filtering.** The existing tree and measurement filtering use `Tags` assignments and a `bad` catalog entry.
 4. **P4 — Spatial browser shell.** New panel, pan/zoom, render only the unpositioned-roots layer (chips with default grid initialization + "reset layout" button), drag-to-rearrange, persistence. No levels yet. Tag colors already work because P3 wired them.
 5. **P5 — Levels + bbox rendering.** Compute hierarchical positions, level state, +/- controls, render bboxes vs dots per the rules. Hit-testing across levels. Marquee selection. Labels at top-left.
 6. **P6 — Notes UI.** Right-click → notes window. Ancestor merging. Editable own section. Multi-window support.
@@ -141,15 +145,14 @@ Each phase ends with a manual verification run + git commit.
 ## Critical files (touched or created)
 
 **Modified:**
-- [src/Gui.jl](src/Gui.jl) — split into `Gui/` files (P1).
-- [src/MeasurementBrowser.jl](src/MeasurementBrowser.jl) — `include` paths for the new layout.
-- [src/DeviceParser.jl](src/DeviceParser.jl:442) — `_load_scan_metadata` extended for new optional columns (`x_um, y_um, w_um, h_um`); no behavior change for files that don't use them.
-- [src/projects/RuO2/Cache.jl:12](src/projects/RuO2/Cache.jl:12) — already reserves `:x, :y`; ensure cache writes flow through.
-- [Project.toml](Project.toml) — add `Annotations` as a path-deps subpackage.
+- `src/Gui.jl` and `src/Gui/` — existing split GUI modules; add the spatial panel here.
+- `src/MeasurementBrowser.jl` — include any new GUI files.
+- `src/DeviceParser.jl` — read optional spatial metadata from `device_info.txt`.
+- `Project.toml` — already includes `Annotations` as a path dependency.
 
 **New:**
-- `src/Gui/{State,Layout,TreePanel,PlotPanel,SpatialBrowser,AnnotationsUI,InfoModal}.jl`
-- `src/Annotations/` (full subpackage as outlined).
+- `src/Gui/SpatialBrowser.jl`
+- `src/Gui/AnnotationsUI.jl`, only if notes/tag editing does not fit cleanly in existing files.
 - Test fixtures under `test/fixtures/spatial/` with sample `device_info.txt`, `tags.txt`, `notes.txt`, `layout.txt`.
 
 ## Verification
@@ -166,7 +169,7 @@ julia --project start.jl test/fixtures/spatial   # manual UI check
 Per-phase manual checks:
 - **P1**: launch UI, confirm tree/plot/menus/modal all behave identically.
 - **P2**: unit tests against fixture files for each storage format.
-- **P3**: launch a project that has an existing `bad_measurements` file → confirm it's migrated to `tags.txt`, `bad_measurements` is gone (or kept as a one-time backup), all previously-bad items still render bad in the tree, mark/unmark still works, filtering still works. Also: assign a non-bad tag manually in `tags.txt` and confirm it's visible in the tree styling.
+- **P3**: assign a `bad` tag and a non-bad tag in `tags.txt`; confirm styling, mark/unmark, and filtering all use `Tags`.
 - **P4**: open spatial panel, see chips initialized as a grid, drag → reopen → positions persisted; "reset layout" button re-grids them; tag colors already flow through.
 - **P5**: +/- changes level; bboxes/dots render per rules with labels at top-left; marquee selects; selection mirrors tree.
 - **P6**: walk the example workflow from the user prompt verbatim; ancestor sections appear read-only, own section edits persist to `notes.txt`; opening notes for two different nodes yields two independent windows.

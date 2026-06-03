@@ -2,6 +2,10 @@
 Load the project's tag state and refresh selection visibility for the current root.
 Parse or I/O failures leave tags unavailable but keep the browser usable with bad items shown.
 """
+const BAD_TAG_NAME = "bad"
+const BAD_TAG_COLOR = (UInt8(0xff), UInt8(0x30), UInt8(0x30))
+const BAD_TAG_PRIORITY = 100
+
 function _load_tag_state_for_root!(ui_state, root_path::String)
     if isempty(root_path)
         ui_state[:tag_state] = nothing
@@ -158,14 +162,12 @@ function _apply_visible_selection!(ui_state)
 end
 
 """
-Ensure the legacy bad tag exists before writing bad-device or bad-measurement assignments.
+Ensure the bad tag exists before writing bad-device or bad-measurement assignments.
 """
 function _ensure_bad_catalog_entry!(tag_state::Annotations.Tags.TagState)
-    any(t -> t.name == Annotations.Tags.LEGACY_BAD_TAG, tag_state.catalog) && return
+    any(t -> t.name == BAD_TAG_NAME, tag_state.catalog) && return
     pushfirst!(tag_state.catalog,
-        Annotations.Tags.TagDef(Annotations.Tags.LEGACY_BAD_TAG,
-                                Annotations.Tags.LEGACY_BAD_COLOR,
-                                Annotations.Tags.LEGACY_BAD_PRIORITY))
+        Annotations.Tags.TagDef(BAD_TAG_NAME, BAD_TAG_COLOR, BAD_TAG_PRIORITY))
 end
 
 """
@@ -186,11 +188,11 @@ function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
     for device_key in unique_keys
         if bad
             set = get!(() -> Set{String}(), tag_state.assignments, device_key)
-            push!(set, Annotations.Tags.LEGACY_BAD_TAG)
+            push!(set, BAD_TAG_NAME)
         else
             tags = get(tag_state.assignments, device_key, nothing)
             if tags !== nothing
-                delete!(tags, Annotations.Tags.LEGACY_BAD_TAG)
+                delete!(tags, BAD_TAG_NAME)
                 isempty(tags) && delete!(tag_state.assignments, device_key)
             end
         end
@@ -219,11 +221,11 @@ function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::
     for measurement_id in unique_ids
         if bad
             set = get!(() -> Set{String}(), tag_state.assignments, measurement_id)
-            push!(set, Annotations.Tags.LEGACY_BAD_TAG)
+            push!(set, BAD_TAG_NAME)
         else
             tags = get(tag_state.assignments, measurement_id, nothing)
             if tags !== nothing
-                delete!(tags, Annotations.Tags.LEGACY_BAD_TAG)
+                delete!(tags, BAD_TAG_NAME)
                 isempty(tags) && delete!(tag_state.assignments, measurement_id)
             end
         end

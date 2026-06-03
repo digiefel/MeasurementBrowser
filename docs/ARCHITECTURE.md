@@ -56,7 +56,7 @@ When you change a subpackage, run `Pkg.instantiate()` in its directory too — s
 All metadata lives at the **source root** alongside the CSVs (not inside the repo). Lean, hand-editable text. See [storage](storage.md) for formats.
 
 - `device_info.txt` — per-device parameters with path-fragment matching (area, thickness, etc.).
-- `bad_measurements` — flat list of paths/IDs flagged bad.
+- `tags.txt` — tag catalog and per-path assignments.
 
 The HDF5 cache is generated and lives outside the source root. See [cache](cache.md).
 

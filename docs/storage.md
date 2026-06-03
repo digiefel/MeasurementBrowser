@@ -18,20 +18,6 @@ RuO2test_A10/VI/25um/D1,25.0,7.0,nested scope,
 
 Field types are inferred (bool / int / float / date / string).
 
-## bad_measurements
-
-Flat list, no extension, no header:
-
-```
-# comments allowed
-device RuO2test/A9/VI/D1
-measurement <measurement_id>
-```
-
-Read by [`Annotations.Tags.load`](../src/Annotations/src/Tags.jl): the file is parsed whenever it is present, regardless of whether `tags.txt` also exists. Entries merge as `bad` assignments into the single `assignments` map; both `device <path>` and `measurement <id>` lines are stored under the bare key after stripping the prefix. If the in-memory catalog has no `bad` entry, one is added with color `(0xff, 0x30, 0x30)` and priority `100`. `load` does not write to disk.
-
-Written by [`Annotations.Tags.save`](../src/Annotations/src/Tags.jl) every time it runs: the file is rewritten to mirror the current `bad`-tagged subset of `state.assignments` (one `device <key>` or `measurement <key>` line per assignment, kind picked from whether the key starts with `/`). When no key is `bad`-tagged, the file is removed. This keeps `tags.txt` and `bad_measurements` in sync so GUI mark/unmark survives reload, and subsequent `load → save` cycles produce byte-identical output as long as no external edits have grown `bad_measurements` between cycles.
-
 ## layout.txt
 
 Tab-separated, one record per line, no header:
@@ -82,7 +68,6 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 | File | Concern | Read by | Written by |
 |---|---|---|---|
 | `device_info.txt` | Per-path parameters | `_load_scan_metadata` ([DeviceParser.jl](../src/DeviceParser.jl)) | Hand-edited |
-| `bad_measurements` | Bad flag (legacy mirror) | `Annotations.Tags.load` (merged as `bad` assignments) | `Annotations.Tags.save` (mirrors `bad`-tagged keys) |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
 | `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |

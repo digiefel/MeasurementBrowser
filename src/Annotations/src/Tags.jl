@@ -19,18 +19,7 @@ The two namespaces never overlap, so no kind prefix is needed. Fields are
 tab-separated on write; whitespace-tolerant on read. Lines starting with `#`
 are comments. Malformed rows raise `TagsParseError`.
 
-`Tags.load` reads both `tags.txt` and `bad_measurements` when both are present.
-Entries from `bad_measurements` are merged as `bad` assignments into the single
-`assignments` map: `device <path>` and `measurement <id>` lines both land in
-`assignments`, prefix-stripped. If the catalog has no `bad` entry it is added.
-This makes repeated `load → save` cycles idempotent as long as `bad_measurements`
-has not grown.
-
-`Tags.save` writes `tags.txt` and simultaneously mirrors the `bad`-tagged subset
-to `bad_measurements`. Device-path keys (no leading `/`) are written as
-`device <key>`; measurement-ID keys (leading `/`) are written as
-`measurement <key>`. If the state has no `bad`-tagged keys, `bad_measurements`
-is removed.
+`Tags.load` and `Tags.save` only use `tags.txt`.
 """
 module Tags
 
@@ -38,13 +27,8 @@ export TagDef, TagState, load, save, effective, dominant_color,
        tags_path, TAGS_FILENAME
 
 const TAGS_FILENAME = "tags.txt"
-const LEGACY_BAD_FILENAME = "bad_measurements"
-const LEGACY_BAD_TAG = "bad"
-const LEGACY_BAD_COLOR = (UInt8(0xff), UInt8(0x30), UInt8(0x30))
-const LEGACY_BAD_PRIORITY = 100
 
 tags_path(root::AbstractString) = joinpath(String(root), TAGS_FILENAME)
-_legacy_bad_path(root::AbstractString) = joinpath(String(root), LEGACY_BAD_FILENAME)
 
 """
     TagDef(name, color, priority)
@@ -107,31 +91,6 @@ function _split_row(line::AbstractString)
     return [strip(p) for p in split(line) if !isempty(strip(p))]
 end
 
-# Merge entries from bad_measurements into a mutable catalog + assignments pair.
-function _merge_legacy!(catalog::Vector{TagDef},
-                        assignments::Dict{String,Set{String}},
-                        root::AbstractString)
-    path = _legacy_bad_path(root)
-    isfile(path) || return
-    if !any(t -> t.name == LEGACY_BAD_TAG, catalog)
-        push!(catalog, TagDef(LEGACY_BAD_TAG, LEGACY_BAD_COLOR, LEGACY_BAD_PRIORITY))
-    end
-    for raw in eachline(path)
-        line = strip(raw)
-        isempty(line) && continue
-        startswith(line, '#') && continue
-        parts = split(line; limit=2)
-        length(parts) == 2 || continue
-        kind = parts[1]
-        value = strip(parts[2])
-        isempty(value) && continue
-        if kind == "device" || kind == "measurement"
-            set = get!(() -> Set{String}(), assignments, String(value))
-            push!(set, LEGACY_BAD_TAG)
-        end
-    end
-end
-
 function load(root::AbstractString)::TagState
     path = tags_path(root)
 
@@ -183,8 +142,6 @@ function load(root::AbstractString)::TagState
         end
     end
 
-    _merge_legacy!(catalog, assignments, root)
-
     return TagState(catalog, assignments)
 end
 
@@ -196,30 +153,10 @@ function _format_color(color::NTuple{3,UInt8})
     )
 end
 
-function _write_legacy_bad!(root::AbstractString, state::TagState)
-    path = _legacy_bad_path(root)
-    bad_keys = String[]
-    for (key, tags) in state.assignments
-        LEGACY_BAD_TAG in tags && push!(bad_keys, key)
-    end
-    if isempty(bad_keys)
-        rm(path; force=true)
-        return
-    end
-    sort!(bad_keys)
-    open(path, "w") do io
-        for key in bad_keys
-            kind = startswith(key, '/') ? "measurement" : "device"
-            println(io, kind, ' ', key)
-        end
-    end
-end
-
 function save(root::AbstractString, state::TagState)
     path = tags_path(root)
     if isempty(state.catalog) && isempty(state.assignments)
         rm(path; force=true)
-        _write_legacy_bad!(root, state)
         return
     end
 
@@ -240,7 +177,6 @@ function save(root::AbstractString, state::TagState)
             end
         end
     end
-    _write_legacy_bad!(root, state)
 end
 
 """

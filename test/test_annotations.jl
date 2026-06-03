@@ -123,65 +123,7 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
             end
         end
 
-        @testset "legacy bad_measurements migration — device only" begin
-            mktempdir() do dir
-                write(joinpath(dir, "bad_measurements"),
-                    """
-                    # comment
-                    device RuO2test/A9/VI/D1
-                    device RuO2test/A9/VI/D2
-                    """)
-                state = Annotations.Tags.load(dir)
-                @test length(state.catalog) == 1
-                @test state.catalog[1].name == "bad"
-                @test state.catalog[1].color == (0xff, 0x30, 0x30)
-                @test state.catalog[1].priority == 100
-                @test state.assignments["RuO2test/A9/VI/D1"] == Set(["bad"])
-                @test state.assignments["RuO2test/A9/VI/D2"] == Set(["bad"])
-                @test !isfile(Annotations.Tags.tags_path(dir))
-            end
-        end
-
-        @testset "legacy bad_measurements migration — device and measurement lines" begin
-            mktempdir() do dir
-                write(joinpath(dir, "bad_measurements"),
-                    """
-                    # comment
-                    device RuO2test/A9/VI/D1
-                    device RuO2test/A9/VI/D2
-                    measurement $(ANNOT_MEASUREMENT_KEY)#cycle=1
-                    """)
-                state = Annotations.Tags.load(dir)
-                # Both device and measurement keys land in the same assignments map
-                @test state.assignments["RuO2test/A9/VI/D1"] == Set(["bad"])
-                @test state.assignments["RuO2test/A9/VI/D2"] == Set(["bad"])
-                @test state.assignments[ANNOT_MEASUREMENT_KEY * "#cycle=1"] == Set(["bad"])
-                @test length(state.catalog) == 1
-                @test state.catalog[1].name == "bad"
-                @test !isfile(Annotations.Tags.tags_path(dir))
-            end
-        end
-
-        @testset "combined tags.txt + bad_measurements" begin
-            mktempdir() do dir
-                write(joinpath(dir, "tags.txt"),
-                    "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\nRuO2test/A10/VI\ttodo\n")
-                write(joinpath(dir, "bad_measurements"),
-                    "device RuO2test/A9/VI/D1\nmeasurement $(ANNOT_MEASUREMENT_KEY)\n")
-                state = Annotations.Tags.load(dir)
-
-                names = Set(t.name for t in state.catalog)
-                @test "todo" in names
-                @test "bad" in names
-
-                # All three keys in a single assignments map
-                @test "todo" in state.assignments["RuO2test/A10/VI"]
-                @test "bad" in state.assignments["RuO2test/A9/VI/D1"]
-                @test "bad" in state.assignments[ANNOT_MEASUREMENT_KEY]
-            end
-        end
-
-        @testset "Tags.save writes bad_measurements mirror" begin
+        @testset "Tags.save writes tags.txt only" begin
             mktempdir() do dir
                 state = Annotations.Tags.TagState(
                     [Annotations.Tags.TagDef("bad", (0xff, 0x30, 0x30), 100),
@@ -194,43 +136,21 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
                 )
                 Annotations.Tags.save(dir, state)
                 @test isfile(Annotations.Tags.tags_path(dir))
-                bad_path = joinpath(dir, "bad_measurements")
-                @test isfile(bad_path)
-                bad_content = read(bad_path, String)
-                @test occursin("measurement $(ANNOT_MEASUREMENT_KEY)#cycle=1", bad_content)
-                @test occursin("device RuO2test/A9/VI/D1", bad_content)
-                @test !occursin("todo", bad_content)
             end
         end
 
-        @testset "Tags.save removes bad_measurements when no bad tags" begin
+        @testset "Tags.save removes tags.txt when state is empty" begin
             mktempdir() do dir
-                write(joinpath(dir, "bad_measurements"), "device RuO2test/A9/VI/D1\n")
-                state = Annotations.Tags.TagState(
-                    [Annotations.Tags.TagDef("todo", (0x30, 0xc0, 0xff), 50)],
-                    Dict{String,Set{String}}(
-                        "RuO2test/A10/VI" => Set(["todo"]),
-                    ),
-                )
-                Annotations.Tags.save(dir, state)
-                @test !isfile(joinpath(dir, "bad_measurements"))
-            end
-        end
-
-        @testset "Tags.save removes bad_measurements when state is empty" begin
-            mktempdir() do dir
-                write(joinpath(dir, "bad_measurements"), "device RuO2test/A9/VI/D1\n")
+                write(joinpath(dir, "tags.txt"), "[catalog]\nbad\tff3030\t100\n")
                 Annotations.Tags.save(dir, Annotations.Tags.TagState())
-                @test !isfile(joinpath(dir, "bad_measurements"))
+                @test !isfile(Annotations.Tags.tags_path(dir))
             end
         end
 
         @testset "idempotency: load → save → load → save" begin
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"),
-                    "[catalog]\ntodo\t30c0ff\t50\n\n[assignments]\nRuO2test/A10/VI\ttodo\n")
-                write(joinpath(dir, "bad_measurements"),
-                    "device RuO2test/A9/VI/D1\nmeasurement $(ANNOT_MEASUREMENT_KEY)\n")
+                    "[catalog]\ntodo\t30c0ff\t50\nbad\tff3030\t100\n\n[assignments]\nRuO2test/A10/VI\ttodo\n$(ANNOT_MEASUREMENT_KEY)\tbad\n")
 
                 state1 = Annotations.Tags.load(dir)
                 Annotations.Tags.save(dir, state1)
@@ -248,8 +168,8 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
             # Canonical pattern: is this measurement bad?
             # Pass measurement ID as the key, device path + ancestors as ancestor_paths.
             mktempdir() do dir
-                write(joinpath(dir, "bad_measurements"),
-                    "measurement $(ANNOT_MEASUREMENT_KEY)\ndevice RuO2test/A9/VI/D1\n")
+                write(joinpath(dir, "tags.txt"),
+                    "[catalog]\nbad\tff3030\t100\n\n[assignments]\n$(ANNOT_MEASUREMENT_KEY)\tbad\nRuO2test/A9/VI/D1\tbad\n")
                 state = Annotations.Tags.load(dir)
 
                 # measurement key is found directly
