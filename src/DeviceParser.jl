@@ -31,12 +31,6 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   load_source_data(::P, source_file; measurement=nothing, kwargs...) → DataFrame
 #   setup_plot(::P, kind, measurements) → Figure
 #   plot_data!(::P, kind, measurements, figure) → nothing
-#   load_plot_for_file(::P, path, kind; kwargs...) → Any
-#   analyze_plot_for_file(::P, kind, loaded; kwargs...) → Any
-#   draw_plot_for_file(::P, kind, analyzed; kwargs...) → Union{Figure,Nothing}
-#   load_plot_for_files(::P, paths, combined_kind; kwargs...) → Any
-#   analyze_plot_for_files(::P, combined_kind, loaded; kwargs...) → Any
-#   draw_plot_for_files(::P, combined_kind, analyzed; kwargs...) → Union{Figure,Nothing}
 #   debug_plot(::P, measurements, loaded; kwargs...) → Union{Figure,Nothing}
 #   available_analyses(::P, measurements) → Vector{NamedTuple}
 #   run_analysis(::P, key, measurements; kwargs...) → Union{AnalysisResult,Nothing}
@@ -45,12 +39,6 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   compatible_kinds(::P, combined_kind) → Vector{Symbol}
 #   compute_and_add_measurement_stats!(::P, measurements, files) → nothing
 
-load_plot_for_file(::AbstractProject, path::AbstractString, kind::Union{Symbol,Nothing}; kwargs...) = nothing
-analyze_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, loaded; kwargs...) = loaded
-draw_plot_for_file(::AbstractProject, kind::Union{Symbol,Nothing}, analyzed; kwargs...) = nothing
-load_plot_for_files(::AbstractProject, paths, combined_kind; kwargs...) = nothing
-analyze_plot_for_files(::AbstractProject, combined_kind, loaded; kwargs...) = loaded
-draw_plot_for_files(::AbstractProject, combined_kind, analyzed; kwargs...) = nothing
 available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing

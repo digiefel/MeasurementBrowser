@@ -27,8 +27,6 @@ export FigureMeasurement, FigureScriptData, prepare_figure_script_data, infer_me
 export parse_device_info, detect_kind, kind_label, display_label
 export measurements_for_file
 export load_source_data, data_of_measurements, setup_plot, plot_data!
-export load_plot_for_file, analyze_plot_for_file, draw_plot_for_file
-export load_plot_for_files, analyze_plot_for_files, draw_plot_for_files
 export debug_plot
 export available_analyses, run_analysis, draw_analysis_view
 export combined_plot_types, compatible_kinds
