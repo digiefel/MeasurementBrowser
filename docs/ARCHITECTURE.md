@@ -40,7 +40,7 @@ MeasurementBrowser.jl (root)
   │         ├── InfoModal.jl     — info window, figure-script window, device-info modal
   │         └── Layout.jl        — frame loop, docking, menu bar, perf/project windows
   ├── MakieIntegration.jl   — GLMakie ↔ CImGui screen-per-title bridge
-  └── projects/RuO2/        — project-specific filename interpreters & cache payload schema
+  └── projects/RuO2/        — project-specific source interpretation, data loading, and plotting
 
 Subpackages (path-deps; each has its own Project.toml):
   src/DataLoader/    — CSV readers (read_fe_pund, read_iv_sweep, …)
