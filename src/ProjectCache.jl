@@ -344,21 +344,6 @@ function _write_file_group!(
     return length(measurements)
 end
 
-function _cached_file_has_measurement_data(files_group, source::SourceFile)::Bool
-    isempty(source.measurements) && return true
-    file_key = _file_group_key(source.fingerprint.path)
-    haskey(files_group, file_key) || return false
-    file_group = files_group[file_key]
-    haskey(file_group, "measurements") || return false
-    measurements_group = file_group["measurements"]
-    for measurement in source.measurements
-        measurement_key = _measurement_group_key(measurement.unique_id)
-        haskey(measurements_group, measurement_key) || return false
-        haskey(measurements_group[measurement_key], "data") || return false
-    end
-    return true
-end
-
 function _cached_measurements_data(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo};
@@ -648,8 +633,7 @@ function write_project_cache!(
                 path for path in keys(fingerprints)
                 if !haskey(cached, path) ||
                     !_same_fingerprint(fingerprints[path], cached[path]) ||
-                    get(statuses, path, "missing") == "error" ||
-                    !_cached_file_has_measurement_data(files_group, source_by_path[path])
+                    get(statuses, path, "missing") == "error"
             ])
         end
         total_changes = length(deleted_paths) + length(write_paths)
