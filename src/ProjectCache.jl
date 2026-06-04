@@ -5,6 +5,7 @@ using DataFrames: DataFrame
 
 const _CACHE_DATASET_DEFLATE = 3
 const _CACHE_CHUNK_TARGET = 4096
+const _CACHE_SCHEMA_VERSION = 1
 
 struct ProjectCacheMissingError <: Exception
     path::String
@@ -289,6 +290,7 @@ end
 
 function _write_meta!(h5, identity::ProjectCacheIdentity)
     meta = _replace_group(h5, "meta")
+    _write_dataset!(meta, "schema_version", Int64[_CACHE_SCHEMA_VERSION])
     _write_dataset!(meta, "project_name", identity.project_name; compress=false)
     _write_dataset!(meta, "cache_id", identity.cache_id; compress=false)
     _write_dataset!(meta, "root_path", identity.root_path; compress=false)
@@ -300,6 +302,11 @@ end
 function _validate_meta!(h5, identity::ProjectCacheIdentity)
     haskey(h5, "meta") || throw(ProjectCacheInvalidError(identity.cache_path, "missing /meta group"))
     meta = h5["meta"]
+    haskey(meta, "schema_version") ||
+        throw(ProjectCacheInvalidError(identity.cache_path, "cache schema is out of date"))
+    schema_values = read(meta["schema_version"])
+    length(schema_values) == 1 && Int(schema_values[1]) == _CACHE_SCHEMA_VERSION ||
+        throw(ProjectCacheInvalidError(identity.cache_path, "cache schema is out of date"))
     project_name_value = _read_required(meta, "project_name", identity.cache_path)
     project_name_value == identity.project_name ||
         throw(ProjectCacheInvalidError(identity.cache_path, "project mismatch: expected $(identity.project_name), found $project_name_value"))

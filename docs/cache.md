@@ -54,7 +54,7 @@ Top-level groups:
 
 | Path | Purpose |
 |---|---|
-| `/meta` | project name, cache id, root path, device metadata flag, update time |
+| `/meta` | cache schema version, project name, cache id, root path, device metadata flag, update time |
 | `/files` | one group per cached source CSV |
 | `/indexes` | compact startup index rebuilt after cache writes |
 
@@ -98,12 +98,15 @@ It returns a `ProjectCacheSnapshot`, containing:
 Startup cache load does not read dataframe plot payloads. Plot payloads are read later when plot jobs
 request them.
 
-Caches without the current compact index are considered out of date and must be updated or rebuilt.
+Caches without the current schema version and compact index are out of date. They should be rebuilt.
 Semantic fields do not decide cache validity.
 
 ## Writing and Updating the Cache
 
 `write_project_cache!(identity, source; mode)` writes cache entries from a `SourceScan`.
+
+Update mode is for compatible cache files. A compatible cache has the current schema version and the
+same project/root identity.
 
 Supported modes:
 
