@@ -78,12 +78,9 @@ function read_pund_wakeup_file(filepath::AbstractString)
     )
 end
 
-function read_pund_fatigue_file(
-    filepath::AbstractString;
-    should_cancel::Union{Nothing,Function}=nothing,
-)
+function read_pund_fatigue_file(filepath::AbstractString)
     header_row = _find_table_header_row(filepath, (_PUND_FATIGUE_COLUMNS,))
-    _check_cancel(should_cancel)
+    _check_cancel()
     source = CSV.read(
         filepath,
         DataFrame;
@@ -96,7 +93,7 @@ function read_pund_fatigue_file(
             :Current_A => Float64,
         ),
     )
-    _check_cancel(should_cancel)
+    _check_cancel()
     return DataFrame(
         cycle=source.Cycle,
         time=source.Time_s,

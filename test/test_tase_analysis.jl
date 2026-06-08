@@ -55,7 +55,7 @@ using DataFrames: nrow
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)
 
-        fig = setup_plot(TASE_PROJECT, :four_terminal_iv, measurements)
-        @test plot_data!(TASE_PROJECT, :four_terminal_iv, measurements, fig) === nothing
+        fig = setup_plot(TASE_PROJECT, TASEFourTerminalIVPlot, measurements)
+        @test plot_data!(TASE_PROJECT, TASEFourTerminalIVPlot, measurements, fig) === nothing
     end
 end

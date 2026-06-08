@@ -7,9 +7,8 @@ function load_source_data(
     ::TASEProject,
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
-    should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
-    _check_plot_cancel(should_cancel)
+    _check_cancel()
     if measurement !== nothing && measurement.measurement_kind !== :four_terminal_iv
         error("TASE cannot load measurement data for $(measurement.measurement_kind)")
     end
@@ -20,10 +19,9 @@ end
 
 function setup_plot(
     ::TASEProject,
-    plot_kind::Symbol,
+    plot_kind::Type{TASEFourTerminalIVPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
-    plot_kind === :four_terminal_iv || error("Unsupported TASE plot kind '$plot_kind'")
     isempty(measurements) && error("TASE plot requires at least one measurement")
     title = length(measurements) == 1 ? only(measurements).clean_title : "TASE IV overlay"
     fig = Figure(size=(700, 500))
@@ -33,11 +31,10 @@ end
 
 function plot_data!(
     project::TASEProject,
-    plot_kind::Symbol,
+    plot_kind::Type{TASEFourTerminalIVPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    plot_kind === :four_terminal_iv || error("Unsupported TASE plot kind '$plot_kind'")
     axes = contents(figure[1, 1])
     isempty(axes) && error("TASE plot figure has no axis")
     ax = only(axes)

@@ -15,8 +15,13 @@
             pund_params = merge(pund_meas.device_info.parameters, pund_meas.parameters)
             pund_df = only(data_of_measurements(RUO2_PROJECT, [pund_meas]))
             loaded = _ruo2_plot_data(pund_meas, pund_df)
-            analyzed = _analyze_ruo2_file_plot(RUO2_PROJECT, :pund, loaded; device_params=pund_params)
-            _draw_ruo2_file_plot(RUO2_PROJECT, :pund, analyzed; device_params=pund_params)
+            analyzed = _analyze_ruo2_file_plot(
+                RUO2_PROJECT,
+                RuO2PUNDPlot,
+                loaded;
+                device_params=pund_params,
+            )
+            _draw_ruo2_file_plot(RUO2_PROJECT, RuO2PUNDPlot, analyzed; device_params=pund_params)
         end
 
         if isfile(tlm_path)
@@ -24,8 +29,18 @@
             tlm_params = merge(tlm_meas.device_info.parameters, tlm_meas.parameters)
             tlm_df = only(data_of_measurements(RUO2_PROJECT, [tlm_meas]))
             loaded = _ruo2_plot_data(tlm_meas, tlm_df)
-            analyzed = _analyze_ruo2_file_plot(RUO2_PROJECT, :tlm4p, loaded; device_params=tlm_params)
-            _draw_ruo2_file_plot(RUO2_PROJECT, :tlm4p, analyzed; device_params=tlm_params)
+            analyzed = _analyze_ruo2_file_plot(
+                RUO2_PROJECT,
+                RuO2TLM4PointPlot,
+                loaded;
+                device_params=tlm_params,
+            )
+            _draw_ruo2_file_plot(
+                RUO2_PROJECT,
+                RuO2TLM4PointPlot,
+                analyzed;
+                device_params=tlm_params,
+            )
         end
 
         if pund_meas !== nothing && tlm_meas !== nothing

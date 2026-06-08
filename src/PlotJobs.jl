@@ -5,7 +5,7 @@ struct PlotJob
     target::Symbol
     target_id::String
     measurements::Vector{MeasurementInfo}
-    plot_kind::Symbol
+    plot_kind::Type{<:PlotKind}
     device_params::Vector{Dict{Symbol,Any}}
     debug::Bool
 end
@@ -22,7 +22,7 @@ function _plot_job_key(
     target::Symbol,
     target_id::String,
     measurements::Vector{MeasurementInfo},
-    plot_kind::Symbol,
+    plot_kind::Type{<:PlotKind},
     device_params::Vector{Dict{Symbol,Any}},
     debug::Bool,
 )
@@ -31,59 +31,54 @@ function _plot_job_key(
         target,
         target_id,
         sort([measurement.unique_id for measurement in measurements]),
-        plot_kind,
+        nameof(plot_kind),
         _plot_parameters_key(device_params),
         debug,
     )
 end
 
-function _uses_new_plot_api(job::PlotJob)::Bool
-    return job.project isa TASEProject ||
-        (job.project isa RuO2Project && job.plot_kind === :cvsweep)
-end
-
-function _run_plot_job(job::PlotJob, should_cancel)
-    if _uses_new_plot_api(job)
+function _run_plot_job(job::PlotJob, cancel_requested)
+    return _with_cancel(cancel_requested) do
+    if job.project isa TASEProject || job.plot_kind === RuO2CVSweepPlot
         return nothing
     end
 
     if job.debug
         if length(job.measurements) == 1
             measurement = only(job.measurements)
-            df = only(data_of_measurements(job.project, [measurement]; should_cancel))
+            df = only(data_of_measurements(job.project, [measurement]))
             return _ruo2_plot_data(measurement, df; debug=job.debug)
         end
 
-        data = data_of_measurements(job.project, job.measurements; should_cancel)
+        data = data_of_measurements(job.project, job.measurements)
         return _ruo2_combined_plot_data(job.measurements, data, job.plot_kind)
     end
 
     if length(job.measurements) == 1
         measurement = only(job.measurements)
-        df = only(data_of_measurements(job.project, [measurement]; should_cancel))
+        df = only(data_of_measurements(job.project, [measurement]))
         loaded = _ruo2_plot_data(measurement, df; debug=job.debug)
         return _analyze_ruo2_file_plot(
             job.project,
-            measurement.measurement_kind,
+            job.plot_kind,
             loaded;
             DEBUG=job.debug,
-            should_cancel,
         )
     end
 
-    data = data_of_measurements(job.project, job.measurements; should_cancel)
+    data = data_of_measurements(job.project, job.measurements)
     loaded = _ruo2_combined_plot_data(job.measurements, data, job.plot_kind)
     return _analyze_ruo2_files_plot(
         job.project,
         job.plot_kind,
         loaded;
         DEBUG=job.debug,
-        should_cancel,
     )
+    end
 end
 
 function _draw_plot_job(job::PlotJob, data)
-    if _uses_new_plot_api(job)
+    if job.project isa TASEProject || job.plot_kind === RuO2CVSweepPlot
         job.debug && error("Debug plots are not implemented for $(project_name(job.project)) $(job.plot_kind)")
         fig = setup_plot(job.project, job.plot_kind, job.measurements)
         plot_data!(job.project, job.plot_kind, job.measurements, fig)
@@ -103,7 +98,7 @@ function _draw_plot_job(job::PlotJob, data)
     if length(job.measurements) == 1
         return _draw_ruo2_file_plot(
             job.project,
-            only(job.measurements).measurement_kind,
+            job.plot_kind,
             data;
             device_params=only(job.device_params),
         )

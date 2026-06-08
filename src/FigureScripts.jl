@@ -5,15 +5,19 @@ FigureScripts.jl - Reusable helpers for publication script generation
 """
     MeasurementFilterClause(; source_file=nothing, measurement_kind=nothing,
                              device_path=String[],
-                             parameter_conditions=Pair{Symbol,Any}[])
+                             parameter_conditions=Pair{Symbol,Any}[],
+                             timestamp_range=nothing)
 
 One exact filter clause over logical measurements. All populated conditions must match.
+`timestamp_range` is an optional `(lo, hi)` `DateTime` interval (inclusive on both ends);
+measurements with `timestamp === nothing` never match a clause that sets it.
 """
 struct MeasurementFilterClause
     source_file::Union{Nothing,String}
     measurement_kind::Union{Nothing,Symbol}
     device_path::Vector{String}
     parameter_conditions::Vector{Pair{Symbol,Any}}
+    timestamp_range::Union{Nothing,Tuple{DateTime,DateTime}}
 end
 
 function MeasurementFilterClause(;
@@ -21,12 +25,16 @@ function MeasurementFilterClause(;
     measurement_kind::Union{Nothing,Symbol}=nothing,
     device_path::AbstractVector{<:AbstractString}=String[],
     parameter_conditions::AbstractVector{<:Pair}=Pair{Symbol,Any}[],
+    timestamp_range::Union{Nothing,Tuple{DateTime,DateTime}}=nothing,
 )
     source = source_file === nothing ? nothing : String(source_file)
     path = String.(device_path)
     normalized_conditions = _normalize_parameter_conditions(parameter_conditions)
     isempty(path) || any(isempty, path) && error("device_path cannot contain empty segments")
-    return MeasurementFilterClause(source, measurement_kind, path, normalized_conditions)
+    if timestamp_range !== nothing && timestamp_range[1] > timestamp_range[2]
+        error("timestamp_range lower bound must not exceed upper bound")
+    end
+    return MeasurementFilterClause(source, measurement_kind, path, normalized_conditions, timestamp_range)
 end
 
 """
@@ -47,22 +55,37 @@ function MeasurementGroupFilter(clauses::AbstractVector{<:MeasurementFilterClaus
 end
 
 """
-    NamedMeasurementGroup(name, filter)
+    NamedMeasurementGroup(name, filter; exclude_bad=nothing)
 
 One fixed named group in a generated figure script.
+
+`exclude_bad` is an optional `Annotations.Tags.TagState`. When set, the group's
+matching pipeline first rejects any measurement carrying the "bad" tag (directly
+or via an ancestor device path), then evaluates `filter` against the survivors.
+This acts as an implicit first clause that keeps known-bad measurements out of
+generated figures unless one of them was explicitly selected.
 """
 struct NamedMeasurementGroup
     name::String
     filter::MeasurementGroupFilter
-    function NamedMeasurementGroup(name::String, filter::MeasurementGroupFilter)
+    exclude_bad::Union{Nothing,Annotations.Tags.TagState}
+    function NamedMeasurementGroup(
+        name::String,
+        filter::MeasurementGroupFilter;
+        exclude_bad::Union{Nothing,Annotations.Tags.TagState}=nothing,
+    )
         normalized_name = strip(name)
         isempty(normalized_name) && throw(FigureScriptValidationError("Measurement group names cannot be empty"))
-        return new(normalized_name, filter)
+        return new(normalized_name, filter, exclude_bad)
     end
 end
 
-function NamedMeasurementGroup(name::AbstractString, filter::MeasurementGroupFilter)
-    return NamedMeasurementGroup(String(name), filter)
+function NamedMeasurementGroup(
+    name::AbstractString,
+    filter::MeasurementGroupFilter;
+    exclude_bad::Union{Nothing,Annotations.Tags.TagState}=nothing,
+)
+    return NamedMeasurementGroup(String(name), filter; exclude_bad=exclude_bad)
 end
 
 """
@@ -300,6 +323,12 @@ function _measurement_matches_clause(measurement::MeasurementInfo, parameters::D
         haskey(parameters, condition.first) || return false
         isequal(parameters[condition.first], condition.second) || return false
     end
+
+    if clause.timestamp_range !== nothing
+        measurement.timestamp === nothing && return false
+        lo, hi = clause.timestamp_range
+        (lo <= measurement.timestamp <= hi) || return false
+    end
     return true
 end
 
@@ -308,6 +337,26 @@ function _measurement_matches_filter(measurement::MeasurementInfo, parameters::D
         _measurement_matches_clause(measurement, parameters, clause) && return true
     end
     return false
+end
+
+function _ancestor_device_keys(dev_key::AbstractString)
+    parts = split(dev_key, '/'; keepempty=false)
+    return [join(parts[1:i], '/') for i in 1:(length(parts) - 1)]
+end
+
+function _measurement_is_bad(tag_state::Annotations.Tags.TagState, measurement::MeasurementInfo)
+    dev_key = device_path_key(measurement.device_info)
+    ancestors = _ancestor_device_keys(dev_key)
+    return "bad" in Annotations.Tags.effective(tag_state, measurement.unique_id, [dev_key; ancestors])
+end
+
+function _measurement_matches_group(
+    measurement::MeasurementInfo,
+    parameters::Dict{Symbol,Any},
+    group::NamedMeasurementGroup,
+)
+    group.exclude_bad !== nothing && _measurement_is_bad(group.exclude_bad, measurement) && return false
+    return _measurement_matches_filter(measurement, parameters, group.filter)
 end
 
 function _matching_measurements(measurements::Vector{MeasurementInfo}, group::NamedMeasurementGroup)
@@ -323,7 +372,7 @@ function _matching_measurements(
     matched = MeasurementInfo[]
     for index in eachindex(measurements, parameter_maps)
         measurement = measurements[index]
-        _measurement_matches_filter(measurement, parameter_maps[index], group.filter) && push!(matched, measurement)
+        _measurement_matches_group(measurement, parameter_maps[index], group) && push!(matched, measurement)
     end
     return matched
 end
@@ -331,15 +380,15 @@ end
 function _load_measurements_from_source_files(
     root_path::AbstractString,
     project::AbstractProject,
-    source_files::Vector{String};
-    should_cancel::Union{Nothing,Function}=nothing,
+    source_files::Vector{String},
 )
     source_files = _normalize_source_files(root_path, source_files)
     meta = _load_scan_metadata(String(root_path))
     measurements = MeasurementInfo[]
     for source_file in source_files
         indexed = index_source_file(source_file)
-        items = interpret_measurements(project, indexed, meta; should_cancel=should_cancel)
+        _check_cancel()
+        items = interpret_measurements(project, indexed, meta)
         isempty(items) && throw(FigureScriptResolutionError(
             "Measurement source file '$source_file' did not produce any measurements for project $(project_name(project))",
         ))
@@ -370,20 +419,22 @@ end
 
 function _build_figure_measurements(
     project::AbstractProject,
-    measurements::Vector{MeasurementInfo};
-    should_cancel::Union{Nothing,Function}=nothing,
+    measurements::Vector{MeasurementInfo},
 )
     records = FigureMeasurement[]
     for measurement in measurements
         parameters = _measurement_parameters(measurement)
-        df = only(data_of_measurements(project, [measurement]; should_cancel))
+        df = only(data_of_measurements(project, [measurement]))
         loaded = _ruo2_plot_data(measurement, df)
+        plot_kind = default_plot_kind(project, measurement)
+        plot_kind === nothing && throw(FigureScriptResolutionError(
+            "No plot kind is available for measurement '$(measurement.unique_id)'",
+        ))
         analyzed = _analyze_ruo2_file_plot(
             project,
-            measurement.measurement_kind,
+            plot_kind,
             loaded;
             device_params=parameters,
-            should_cancel=should_cancel,
         )
         push!(records, FigureMeasurement(measurement, parameters, loaded, analyzed))
     end
@@ -391,7 +442,7 @@ function _build_figure_measurements(
 end
 
 """
-    prepare_figure_script_data(root_path, project, source_files, groups; should_cancel=nothing)
+    prepare_figure_script_data(root_path, project, source_files, groups)
 
 Load the source-file union for a figure script and expose the fixed named groups as typed data.
 """
@@ -399,21 +450,20 @@ function prepare_figure_script_data(
     root_path::AbstractString,
     project::AbstractProject,
     source_files::Vector{String},
-    groups::Vector{NamedMeasurementGroup};
-    should_cancel::Union{Nothing,Function}=nothing,
+    groups::Vector{NamedMeasurementGroup},
 )
     _validate_named_measurement_groups(groups)
     normalized_source_files = _normalize_source_files(root_path, source_files)
-    measurements = _load_measurements_from_source_files(root_path, project, normalized_source_files; should_cancel=should_cancel)
+    measurements = _load_measurements_from_source_files(root_path, project, normalized_source_files)
     _group_matches(groups, measurements)
-    records = _build_figure_measurements(project, measurements; should_cancel=should_cancel)
+    records = _build_figure_measurements(project, measurements)
 
     group_map = Dict(group.name => group for group in groups)
     match_indices = Dict{String,Vector{Int}}()
     for group in groups
         indices = Int[]
         for (index, record) in enumerate(records)
-            _measurement_matches_filter(record.measurement, record.parameters, group.filter) && push!(indices, index)
+            _measurement_matches_group(record.measurement, record.parameters, group) && push!(indices, index)
         end
         isempty(indices) && throw(FigureScriptResolutionError(
             "Measurement group '$(group.name)' matches no logical measurements after loading",
@@ -430,26 +480,12 @@ function prepare_figure_script_data(
     )
 end
 
-struct _CandidateClause
-    clause::MeasurementFilterClause
-    cover::BitVector
-    condition_count::Int
-    exact_source_selector::Int
-end
-
 function _clause_condition_count(clause::MeasurementFilterClause)
     return (clause.source_file === nothing ? 0 : 1) +
         (clause.measurement_kind === nothing ? 0 : 1) +
         (isempty(clause.device_path) ? 0 : 1) +
-        length(clause.parameter_conditions)
-end
-
-function _is_exact_source_selector_clause(clause::MeasurementFilterClause)
-    clause.source_file === nothing && return 0
-    clause.measurement_kind === nothing &&
-        isempty(clause.device_path) &&
-        isempty(clause.parameter_conditions) && return 0
-    return 1
+        length(clause.parameter_conditions) +
+        (clause.timestamp_range === nothing ? 0 : 1)
 end
 
 function _measurement_parameter_maps(measurements::Vector{MeasurementInfo})
@@ -483,8 +519,16 @@ end
 struct _FigureScriptFactIndex
     measurements::Vector{MeasurementInfo}
     parameter_maps::Vector{Dict{Symbol,Any}}
-    facts_by_measurement::Vector{Vector{Any}}
-    fact_matches::Dict{Any,BitVector}
+end
+
+function _build_figure_script_fact_index(
+    measurements::Vector{MeasurementInfo},
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
+)
+    parameter_maps = _profile_section!(profiler, :collect_parameter_maps) do
+        _measurement_parameter_maps(measurements)
+    end
+    return _FigureScriptFactIndex(measurements, parameter_maps)
 end
 
 function _matching_measurements(index::_FigureScriptFactIndex, group::NamedMeasurementGroup)
@@ -530,80 +574,6 @@ function _finalize_figure_script_profile(acc::_FigureScriptProfileAccumulator)
     )
 end
 
-function _solution_score(chosen::Vector{_CandidateClause})
-    return (
-        sum((candidate.condition_count for candidate in chosen); init=0),
-        length(chosen),
-        sum((candidate.exact_source_selector for candidate in chosen); init=0),
-    )
-end
-
-function _score_lt(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
-    lhs[1] != rhs[1] && return lhs[1] < rhs[1]
-    lhs[2] != rhs[2] && return lhs[2] < rhs[2]
-    return lhs[3] < rhs[3]
-end
-
-function _score_le(lhs::NTuple{3,Int}, rhs::NTuple{3,Int})
-    lhs == rhs && return true
-    return _score_lt(lhs, rhs)
-end
-
-function _filter_fact_list(measurement::MeasurementInfo, parameters::Dict{Symbol,Any})
-    facts = Any[
-        (:source_file, measurement.filepath),
-        (:measurement_kind, measurement.measurement_kind),
-    ]
-
-    path = measurement.device_info.location
-    for prefix_length in 1:max(length(path) - 1, 0)
-        push!(facts, (:device_prefix, Tuple(path[1:prefix_length])))
-    end
-    !isempty(path) && push!(facts, (:device_exact, Tuple(path)))
-
-    for condition in _measurement_parameter_conditions(parameters)
-        push!(facts, (:parameter, condition.first, condition.second))
-    end
-    return facts
-end
-
-function _build_figure_script_fact_index(
-    measurements::Vector{MeasurementInfo},
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
-)
-    parameter_maps = _profile_section!(profiler, :collect_parameter_maps) do
-        _measurement_parameter_maps(measurements)
-    end
-    facts_by_measurement = Vector{Vector{Any}}(undef, length(measurements))
-    fact_matches = Dict{Any,BitVector}()
-    _profile_section!(profiler, :build_fact_index) do
-        for (index, measurement) in enumerate(measurements)
-            facts = _filter_fact_list(measurement, parameter_maps[index])
-            facts_by_measurement[index] = facts
-            for fact in facts
-                matches = get!(fact_matches, fact) do
-                    falses(length(measurements))
-                end
-                matches[index] = true
-            end
-        end
-    end
-    return _FigureScriptFactIndex(measurements, parameter_maps, facts_by_measurement, fact_matches)
-end
-
-function _clause_key(clause::MeasurementFilterClause)
-    return (
-        clause.source_file,
-        clause.measurement_kind,
-        Tuple(clause.device_path),
-        Tuple((condition.first, condition.second) for condition in clause.parameter_conditions),
-    )
-end
-
-function _local_cover(mask::BitVector, selected_indices::Vector{Int})
-    return BitVector(mask[index] for index in selected_indices)
-end
-
 function _selected_measurement_ids(selected_measurements::Vector{MeasurementInfo})
     selected_ids = Set(measurement.unique_id for measurement in selected_measurements)
     length(selected_ids) == length(selected_measurements) || throw(FigureScriptValidationError(
@@ -620,50 +590,26 @@ function _selected_measurement_indices(selected_ids::Set{String}, all_measuremen
     return selected_indices
 end
 
-function _selected_measurement_mask(selected_indices::Vector{Int}, measurement_count::Int)
-    selected_mask = falses(measurement_count)
-    selected_mask[selected_indices] .= true
-    return selected_mask
+function _subset_mask(indices::Vector{Int}, measurement_count::Int)
+    mask = falses(measurement_count)
+    @inbounds for i in indices
+        mask[i] = true
+    end
+    return mask
 end
 
-function _count_common_true(left::BitVector, right::BitVector)
-    length(left) == length(right) || error("BitVector lengths must match")
-    total = 0
-    @inbounds for index in eachindex(left, right)
-        left[index] && right[index] && (total += 1)
+function _check_clause_mask!(
+    mask::BitVector,
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    clause::MeasurementFilterClause,
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
+)
+    _profile_counter!(profiler, :full_mask_checks)
+    @inbounds for i in eachindex(measurements)
+        mask[i] = _measurement_matches_clause(measurements[i], parameter_maps[i], clause)
     end
-    return total
-end
-
-function _clause_from_facts(facts::Vector{Any})
-    source_file = nothing
-    measurement_kind = nothing
-    device_path = String[]
-    parameter_conditions = Pair{Symbol,Any}[]
-
-    for fact in facts
-        tag = fact[1]
-        if tag == :source_file
-            source_file = String(fact[2])
-        elseif tag == :measurement_kind
-            measurement_kind = fact[2]
-        elseif tag == :device_prefix
-            device_path = collect(String, fact[2])
-        elseif tag == :device_exact
-            device_path = collect(String, fact[2])
-        elseif tag == :parameter
-            push!(parameter_conditions, Symbol(fact[2]) => fact[3])
-        else
-            error("Unknown figure-script fact '$tag'")
-        end
-    end
-
-    return MeasurementFilterClause(
-        source_file=source_file,
-        measurement_kind=measurement_kind,
-        device_path=device_path,
-        parameter_conditions=parameter_conditions,
-    )
+    return mask
 end
 
 function _exact_selector_clause(measurement::MeasurementInfo, parameters::Dict{Symbol,Any})
@@ -675,204 +621,340 @@ function _exact_selector_clause(measurement::MeasurementInfo, parameters::Dict{S
     )
 end
 
-function _clause_match_mask(
-    measurements::Vector{MeasurementInfo},
-    parameter_maps::Vector{Dict{Symbol,Any}},
-    clause::MeasurementFilterClause,
-)
-    length(measurements) == length(parameter_maps) || error("Measurement and parameter map lengths must match")
-    mask = falses(length(measurements))
-    for index in eachindex(measurements)
-        _measurement_matches_clause(measurements[index], parameter_maps[index], clause) && (mask[index] = true)
+function _longest_common_prefix(locations::Vector{Vector{String}})
+    isempty(locations) && return String[]
+    min_length = minimum(length, locations)
+    common = String[]
+    @inbounds for i in 1:min_length
+        first_value = locations[1][i]
+        all_equal = true
+        for j in 2:length(locations)
+            if locations[j][i] != first_value
+                all_equal = false
+                break
+            end
+        end
+        all_equal || break
+        push!(common, first_value)
     end
-    return mask
+    return common
 end
 
-function _candidate_from_mask(
-    selected_indices::Vector{Int},
-    clause::MeasurementFilterClause,
-    mask::BitVector,
+function _shared_parameter_conditions(
+    subset::Vector{Int},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    key_filter::Function,
+    skip_names::Set{Symbol},
 )
-    cover = _local_cover(mask, selected_indices)
-    any(cover) || return nothing
-    return _CandidateClause(
-        clause,
-        cover,
-        _clause_condition_count(clause),
-        _is_exact_source_selector_clause(clause),
+    isempty(subset) && return Pair{Symbol,Any}[]
+    first_map = parameter_maps[subset[1]]
+    shared = Pair{Symbol,Any}[]
+    for (name, value) in first_map
+        name in skip_names && continue
+        key_filter(name, subset[1]) || continue
+        _is_filterable_parameter_value(value) || continue
+        all_match = true
+        for i in 2:length(subset)
+            other = parameter_maps[subset[i]]
+            if !key_filter(name, subset[i]) || !haskey(other, name) || !isequal(other[name], value)
+                all_match = false
+                break
+            end
+        end
+        all_match && push!(shared, name => value)
+    end
+    sort!(shared; by=condition -> String(condition.first))
+    return shared
+end
+
+function _describe_device_stage(
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    subset::Vector{Int},
+)
+    locations = [measurements[i].device_info.location for i in subset]
+    common_prefix = _longest_common_prefix(locations)
+    shared_device = _shared_parameter_conditions(
+        subset, parameter_maps,
+        (name, i) -> haskey(measurements[i].device_info.parameters, name),
+        Set{Symbol}(),
+    )
+    return MeasurementFilterClause(
+        device_path=common_prefix,
+        parameter_conditions=shared_device,
     )
 end
 
-function _candidate_from_clause(
+function _add_measurement_stage(
+    base::MeasurementFilterClause,
     measurements::Vector{MeasurementInfo},
     parameter_maps::Vector{Dict{Symbol,Any}},
-    selected_mask::BitVector,
-    selected_indices::Vector{Int},
-    clause::MeasurementFilterClause,
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
+    subset::Vector{Int},
 )
-    _profile_counter!(profiler, :candidate_evaluation_count)
-    mask = _profile_section!(profiler, :candidate_match_mask) do
-        _clause_match_mask(measurements, parameter_maps, clause)
-    end
-    any(mask) || return nothing
-    any(mask .& .!selected_mask) && return nothing
-    return _candidate_from_mask(selected_indices, clause, mask)
+    isempty(subset) && return base
+    first_kind = measurements[subset[1]].measurement_kind
+    kind = all(measurements[i].measurement_kind == first_kind for i in subset) ? first_kind : nothing
+    existing_names = Set{Symbol}(condition.first for condition in base.parameter_conditions)
+    shared_measurement = _shared_parameter_conditions(
+        subset, parameter_maps,
+        (name, i) -> haskey(measurements[i].parameters, name),
+        existing_names,
+    )
+    combined = vcat(base.parameter_conditions, shared_measurement)
+    return MeasurementFilterClause(
+        source_file=base.source_file,
+        measurement_kind=kind,
+        device_path=base.device_path,
+        parameter_conditions=combined,
+        timestamp_range=base.timestamp_range,
+    )
 end
 
-function _collect_exact_candidates_by_fact_search(
-    index::_FigureScriptFactIndex,
-    selected_indices::Vector{Int},
-    selected_mask::BitVector,
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing;
-    max_depth::Union{Nothing,Int}=nothing,
-    seed_exact_selectors::Bool=false,
+function _add_timestamp_stage(
+    base::MeasurementFilterClause,
+    measurements::Vector{MeasurementInfo},
+    subset::Vector{Int},
 )
-    candidates = Dict{Any,_CandidateClause}()
-
-    if seed_exact_selectors
-        for selected_index in selected_indices
-            candidate = _candidate_from_clause(
-                index.measurements,
-                index.parameter_maps,
-                selected_mask,
-                selected_indices,
-                _exact_selector_clause(index.measurements[selected_index], index.parameter_maps[selected_index]),
-                profiler,
-            )
-            candidate === nothing && throw(FigureScriptResolutionError(
-                "Could not build an exact selector for the current figure-script selection",
-            ))
-            candidates[_clause_key(candidate.clause)] = candidate
-        end
+    timestamps = DateTime[]
+    for i in subset
+        ts = measurements[i].timestamp
+        ts === nothing && return nothing
+        push!(timestamps, ts)
     end
-
-    for anchor_index in selected_indices
-        _profile_counter!(profiler, :anchor_count)
-        anchor_facts = index.facts_by_measurement[anchor_index]
-
-        function search(start_index::Int, depth::Int, current_facts::Vector{Any}, current_mask::Union{Nothing,BitVector})
-            for fact_index in start_index:length(anchor_facts)
-                _profile_counter!(profiler, :candidate_evaluation_count)
-                fact = anchor_facts[fact_index]
-                fact_mask = index.fact_matches[fact]
-                next_mask = current_mask === nothing ? fact_mask : (current_mask .& fact_mask)
-                any(next_mask) || continue
-                _count_common_true(next_mask, selected_mask) == 0 && continue
-
-                push!(current_facts, fact)
-                if !any(next_mask .& .!selected_mask)
-                    clause = _clause_from_facts(current_facts)
-                    key = _clause_key(clause)
-                    haskey(candidates, key) || (candidates[key] = _candidate_from_mask(selected_indices, clause, next_mask))
-                elseif max_depth === nothing || depth < max_depth
-                    search(fact_index + 1, depth + 1, current_facts, next_mask)
-                end
-                pop!(current_facts)
-            end
-        end
-
-        _profile_section!(profiler, :candidate_search) do
-            search(1, 1, Any[], nothing)
-        end
-    end
-
-    isempty(candidates) && throw(FigureScriptResolutionError(
-        "Could not infer any exact figure-script filter clauses from the current selection",
-    ))
-    _profile_counter!(profiler, :candidate_count, length(candidates))
-    return collect(values(candidates))
+    isempty(timestamps) && return nothing
+    return MeasurementFilterClause(
+        source_file=base.source_file,
+        measurement_kind=base.measurement_kind,
+        device_path=base.device_path,
+        parameter_conditions=base.parameter_conditions,
+        timestamp_range=(minimum(timestamps), maximum(timestamps)),
+    )
 end
 
-function _cover_superset(lhs::BitVector, rhs::BitVector)
-    length(lhs) == length(rhs) || error("Coverage vectors must have equal length")
-    for index in eachindex(lhs)
-        rhs[index] && !lhs[index] && return false
+function _with_source_file(base::MeasurementFilterClause, source_file::AbstractString)
+    return MeasurementFilterClause(
+        source_file=source_file,
+        measurement_kind=base.measurement_kind,
+        device_path=base.device_path,
+        parameter_conditions=base.parameter_conditions,
+        timestamp_range=base.timestamp_range,
+    )
+end
+
+function _split_by_next_device_level(
+    measurements::Vector{MeasurementInfo},
+    subset::Vector{Int},
+    shared_prefix::Vector{String},
+)
+    next_pos = length(shared_prefix) + 1
+    groups = Dict{Union{Nothing,String},Vector{Int}}()
+    order = Union{Nothing,String}[]
+    for i in subset
+        location = measurements[i].device_info.location
+        key = length(location) >= next_pos ? location[next_pos] : nothing
+        if !haskey(groups, key)
+            groups[key] = Int[]
+            push!(order, key)
+        end
+        push!(groups[key], i)
+    end
+    return [groups[k] for k in order]
+end
+
+function _split_by_kind(measurements::Vector{MeasurementInfo}, subset::Vector{Int})
+    groups = Dict{Symbol,Vector{Int}}()
+    order = Symbol[]
+    for i in subset
+        kind = measurements[i].measurement_kind
+        if !haskey(groups, kind)
+            groups[kind] = Int[]
+            push!(order, kind)
+        end
+        push!(groups[kind], i)
+    end
+    return [groups[k] for k in order]
+end
+
+function _split_by_source_file(measurements::Vector{MeasurementInfo}, subset::Vector{Int})
+    groups = Dict{String,Vector{Int}}()
+    order = String[]
+    for i in subset
+        file = measurements[i].filepath
+        if !haskey(groups, file)
+            groups[file] = Int[]
+            push!(order, file)
+        end
+        push!(groups[file], i)
+    end
+    return [groups[k] for k in order]
+end
+
+function _mask_equals(left::BitVector, right::BitVector)
+    length(left) == length(right) || return false
+    @inbounds for i in eachindex(left)
+        left[i] == right[i] || return false
     end
     return true
 end
 
-function _remove_dominated_candidates(candidates::Vector{_CandidateClause})
-    keep = trues(length(candidates))
-    for i in eachindex(candidates)
-        keep[i] || continue
-        for j in eachindex(candidates)
-            i == j && continue
-            keep[j] || continue
-            _cover_superset(candidates[j].cover, candidates[i].cover) || continue
-            score_i = (
-                candidates[i].condition_count,
-                candidates[i].exact_source_selector,
+function _minimize_clause(
+    clause::MeasurementFilterClause,
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    subset_mask::BitVector,
+    scratch_mask::BitVector,
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator}=nothing,
+)
+    candidate = clause
+    if candidate.source_file !== nothing
+        trial = MeasurementFilterClause(
+            source_file=nothing,
+            measurement_kind=candidate.measurement_kind,
+            device_path=candidate.device_path,
+            parameter_conditions=candidate.parameter_conditions,
+            timestamp_range=candidate.timestamp_range,
+        )
+        _check_clause_mask!(scratch_mask, measurements, parameter_maps, trial, profiler)
+        _mask_equals(scratch_mask, subset_mask) && (candidate = trial)
+    end
+    if candidate.timestamp_range !== nothing
+        trial = MeasurementFilterClause(
+            source_file=candidate.source_file,
+            measurement_kind=candidate.measurement_kind,
+            device_path=candidate.device_path,
+            parameter_conditions=candidate.parameter_conditions,
+            timestamp_range=nothing,
+        )
+        _check_clause_mask!(scratch_mask, measurements, parameter_maps, trial, profiler)
+        _mask_equals(scratch_mask, subset_mask) && (candidate = trial)
+    end
+    if !isempty(candidate.parameter_conditions)
+        i = length(candidate.parameter_conditions)
+        while i >= 1
+            without = vcat(candidate.parameter_conditions[1:i-1], candidate.parameter_conditions[i+1:end])
+            trial = MeasurementFilterClause(
+                source_file=candidate.source_file,
+                measurement_kind=candidate.measurement_kind,
+                device_path=candidate.device_path,
+                parameter_conditions=without,
+                timestamp_range=candidate.timestamp_range,
             )
-            score_j = (
-                candidates[j].condition_count,
-                candidates[j].exact_source_selector,
-            )
-            if score_j < score_i || (score_j == score_i && candidates[j].cover != candidates[i].cover)
-                keep[i] = false
-                break
+            _check_clause_mask!(scratch_mask, measurements, parameter_maps, trial, profiler)
+            if _mask_equals(scratch_mask, subset_mask)
+                candidate = trial
             end
+            i -= 1
         end
     end
-    return [candidates[index] for index in eachindex(candidates) if keep[index]]
+    if candidate.measurement_kind !== nothing
+        trial = MeasurementFilterClause(
+            source_file=candidate.source_file,
+            measurement_kind=nothing,
+            device_path=candidate.device_path,
+            parameter_conditions=candidate.parameter_conditions,
+            timestamp_range=candidate.timestamp_range,
+        )
+        _check_clause_mask!(scratch_mask, measurements, parameter_maps, trial, profiler)
+        _mask_equals(scratch_mask, subset_mask) && (candidate = trial)
+    end
+    if !isempty(candidate.device_path)
+        trial = MeasurementFilterClause(
+            source_file=candidate.source_file,
+            measurement_kind=candidate.measurement_kind,
+            device_path=String[],
+            parameter_conditions=candidate.parameter_conditions,
+            timestamp_range=candidate.timestamp_range,
+        )
+        _check_clause_mask!(scratch_mask, measurements, parameter_maps, trial, profiler)
+        _mask_equals(scratch_mask, subset_mask) && (candidate = trial)
+    end
+    return candidate
 end
 
-function _choose_group_candidates_exact_cover(candidates::Vector{_CandidateClause}, selected_count::Int)
-    coverers = [Int[] for _ in 1:selected_count]
-    for (candidate_index, candidate) in enumerate(candidates)
-        for measurement_index in eachindex(candidate.cover)
-            candidate.cover[measurement_index] && push!(coverers[measurement_index], candidate_index)
-        end
+function _try_emit_stage!(
+    clauses::Vector{MeasurementFilterClause},
+    clause::MeasurementFilterClause,
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    subset_mask::BitVector,
+    scratch_mask::BitVector,
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
+)
+    _check_clause_mask!(scratch_mask, measurements, parameter_maps, clause, profiler)
+    if _mask_equals(scratch_mask, subset_mask)
+        minimized = _minimize_clause(clause, measurements, parameter_maps, subset_mask, scratch_mask, profiler)
+        push!(clauses, minimized)
+        return true
+    end
+    return false
+end
+
+function _infer_clauses_for_subset!(
+    clauses::Vector{MeasurementFilterClause},
+    measurements::Vector{MeasurementInfo},
+    parameter_maps::Vector{Dict{Symbol,Any}},
+    subset::Vector{Int},
+    scratch_mask::BitVector,
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
+)
+    isempty(subset) && return
+    _profile_counter!(profiler, :recursive_subsets)
+
+    subset_mask = _subset_mask(subset, length(measurements))
+
+    clause_device = _profile_section!(profiler, :stage_device) do
+        _describe_device_stage(measurements, parameter_maps, subset)
+    end
+    _try_emit_stage!(clauses, clause_device, measurements, parameter_maps, subset_mask, scratch_mask, profiler) && return
+
+    clause_measurement = _profile_section!(profiler, :stage_measurement) do
+        _add_measurement_stage(clause_device, measurements, parameter_maps, subset)
+    end
+    _try_emit_stage!(clauses, clause_measurement, measurements, parameter_maps, subset_mask, scratch_mask, profiler) && return
+
+    clause_timestamp = _profile_section!(profiler, :stage_timestamp) do
+        _add_timestamp_stage(clause_measurement, measurements, subset)
+    end
+    if clause_timestamp !== nothing
+        _try_emit_stage!(clauses, clause_timestamp, measurements, parameter_maps, subset_mask, scratch_mask, profiler) && return
     end
 
-    any(isempty, coverers) && throw(FigureScriptResolutionError(
-        "Could not infer an exact figure-script filter for the current selection",
-    ))
-
-    order = sortperm(candidates; by=candidate -> (
-        -count(candidate.cover),
-        candidate.condition_count,
-        candidate.exact_source_selector,
-    ))
-    best_score = nothing
-    best_choice = _CandidateClause[]
-    uncovered = trues(selected_count)
-
-    function search(chosen::Vector{_CandidateClause}, uncovered_mask::BitVector)
-        if !any(uncovered_mask)
-            score = _solution_score(chosen)
-            if best_score === nothing || _score_lt(score, best_score)
-                best_score = score
-                best_choice = copy(chosen)
-            end
-            return
+    # Splits, in priority order
+    kind_parts = _split_by_kind(measurements, subset)
+    if length(kind_parts) >= 2
+        for part in kind_parts
+            _infer_clauses_for_subset!(clauses, measurements, parameter_maps, part, scratch_mask, profiler)
         end
-
-        partial_score = _solution_score(chosen)
-        best_score !== nothing && _score_le(best_score, partial_score) && return
-
-        uncovered_indices = findall(uncovered_mask)
-        anchor = uncovered_indices[argmin(length(coverers[index]) for index in uncovered_indices)]
-        candidates_for_anchor = sort!(
-            copy(coverers[anchor]);
-            by=candidate_index -> findfirst(==(candidate_index), order),
-        )
-
-        for candidate_index in candidates_for_anchor
-            candidate = candidates[candidate_index]
-            next_uncovered = copy(uncovered_mask)
-            next_uncovered .&= .!candidate.cover
-            push!(chosen, candidate)
-            search(chosen, next_uncovered)
-            pop!(chosen)
-        end
+        return
     end
 
-    search(_CandidateClause[], uncovered)
-    isempty(best_choice) && throw(FigureScriptResolutionError(
-        "Could not choose an exact figure-script filter for the current selection",
-    ))
-    return MeasurementGroupFilter([candidate.clause for candidate in best_choice])
+    device_parts = _split_by_next_device_level(measurements, subset, clause_device.device_path)
+    if length(device_parts) >= 2
+        for part in device_parts
+            _infer_clauses_for_subset!(clauses, measurements, parameter_maps, part, scratch_mask, profiler)
+        end
+        return
+    end
+
+    _profile_counter!(profiler, :stage_fallback_entries)
+    source_parts = _split_by_source_file(measurements, subset)
+    if length(source_parts) >= 2
+        for part in source_parts
+            _infer_clauses_for_subset!(clauses, measurements, parameter_maps, part, scratch_mask, profiler)
+        end
+        return
+    end
+
+    shared_source = measurements[subset[1]].filepath
+    clause_with_source = _with_source_file(clause_measurement, shared_source)
+    if _try_emit_stage!(clauses, clause_with_source, measurements, parameter_maps, subset_mask, scratch_mask, profiler)
+        return
+    end
+
+    _profile_counter!(profiler, :exact_selector_emits, length(subset))
+    for i in subset
+        push!(clauses, _exact_selector_clause(measurements[i], parameter_maps[i]))
+    end
 end
 
 function _prepare_group_inference(
@@ -896,9 +978,10 @@ function _prepare_group_inference(
     _profile_counter!(profiler, :selected_count, length(selected_indices))
     _profile_counter!(profiler, :measurement_count, length(all_measurements))
 
-    index = _build_figure_script_fact_index(all_measurements, profiler)
-    selected_mask = _selected_measurement_mask(selected_indices, length(all_measurements))
-    return selected_ids, selected_indices, selected_mask, index
+    parameter_maps = _profile_section!(profiler, :collect_parameter_maps) do
+        _measurement_parameter_maps(all_measurements)
+    end
+    return selected_ids, selected_indices, parameter_maps
 end
 
 function _finalize_group_inference(
@@ -907,10 +990,11 @@ function _finalize_group_inference(
     measurements::Vector{MeasurementInfo},
     parameter_maps::Vector{Dict{Symbol,Any}},
     filter::MeasurementGroupFilter,
+    exclude_bad::Union{Nothing,Annotations.Tags.TagState},
     profiler::Union{Nothing,_FigureScriptProfileAccumulator},
 )
     _profile_counter!(profiler, :final_clause_count, length(filter.clauses))
-    group = NamedMeasurementGroup(name, filter)
+    group = NamedMeasurementGroup(name, filter; exclude_bad=exclude_bad)
     matched_ids = _profile_section!(profiler, :verify) do
         Set(measurement.unique_id for measurement in _matching_measurements(measurements, parameter_maps, group))
     end
@@ -920,43 +1004,67 @@ function _finalize_group_inference(
     return group
 end
 
-function _infer_measurement_group_fact_cover(
+function _effective_exclude_bad(
+    tag_state::Union{Nothing,Annotations.Tags.TagState},
+    selected_measurements::Vector{MeasurementInfo},
+)
+    tag_state === nothing && return nothing
+    # If any selected measurement is itself bad, leave bad measurements in the
+    # match pool so the explicit selection is honoured.
+    any(m -> _measurement_is_bad(tag_state, m), selected_measurements) && return nothing
+    return tag_state
+end
+
+function _infer_measurement_group_staged(
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
     all_measurements::Vector{MeasurementInfo},
-    profiler::Union{Nothing,_FigureScriptProfileAccumulator},
+    profiler::Union{Nothing,_FigureScriptProfileAccumulator};
+    tag_state::Union{Nothing,Annotations.Tags.TagState}=nothing,
 )
-    selected_ids, selected_indices, selected_mask, index = _prepare_group_inference(
-        selected_measurements,
-        all_measurements,
-        profiler,
+    exclude_bad = _effective_exclude_bad(tag_state, selected_measurements)
+    active_measurements = if exclude_bad === nothing
+        all_measurements
+    else
+        filter(m -> !_measurement_is_bad(exclude_bad, m), all_measurements)
+    end
+
+    selected_ids, selected_indices, parameter_maps = _prepare_group_inference(
+        selected_measurements, active_measurements, profiler,
     )
-    candidates = _profile_section!(profiler, :collect_candidates) do
-        _collect_exact_candidates_by_fact_search(
-            index,
-            selected_indices,
-            selected_mask,
-            profiler;
-            max_depth=3,
-            seed_exact_selectors=true,
+    scratch_mask = falses(length(active_measurements))
+    clauses = MeasurementFilterClause[]
+    _profile_section!(profiler, :infer_clauses) do
+        _infer_clauses_for_subset!(
+            clauses, active_measurements, parameter_maps, selected_indices, scratch_mask, profiler,
         )
     end
-    candidates = _profile_section!(profiler, :prune_candidates) do
-        _remove_dominated_candidates(candidates)
+    isempty(clauses) && throw(FigureScriptResolutionError(
+        "Could not infer any figure-script filter clauses from the current selection",
+    ))
+    filter_obj = MeasurementGroupFilter(clauses)
+    # Verify against the full measurement list; exclude_bad on the group will
+    # filter out bad measurements again so the result reproduces the selection.
+    verify_parameter_maps = if exclude_bad === nothing
+        parameter_maps
+    else
+        _measurement_parameter_maps(all_measurements)
     end
-    filter = _profile_section!(profiler, :choose_filter) do
-        _choose_group_candidates_exact_cover(candidates, length(selected_indices))
-    end
-    return _finalize_group_inference(name, selected_ids, all_measurements, index.parameter_maps, filter, profiler)
+    return _finalize_group_inference(
+        name, selected_ids, all_measurements, verify_parameter_maps, filter_obj, exclude_bad, profiler,
+    )
 end
 
 function infer_measurement_group(
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
+    all_measurements::Vector{MeasurementInfo};
+    tag_state::Union{Nothing,Annotations.Tags.TagState}=nothing,
 )
     try
-        group, _ = _infer_measurement_group_profiled(name, selected_measurements, all_measurements)
+        group, _ = _infer_measurement_group_profiled(
+            name, selected_measurements, all_measurements; tag_state=tag_state,
+        )
         return group
     catch err
         err isa FigureScriptProfiledError || rethrow()
@@ -967,15 +1075,17 @@ end
 function _infer_measurement_group_profiled(
     name::AbstractString,
     selected_measurements::Vector{MeasurementInfo},
-    all_measurements::Vector{MeasurementInfo},
+    all_measurements::Vector{MeasurementInfo};
+    tag_state::Union{Nothing,Annotations.Tags.TagState}=nothing,
 )
     profiler = _new_figure_script_profile_accumulator(name, length(selected_measurements), length(all_measurements))
     try
-        group = _infer_measurement_group_fact_cover(
+        group = _infer_measurement_group_staged(
             name,
             selected_measurements,
             all_measurements,
-            profiler,
+            profiler;
+            tag_state=tag_state,
         )
         return group, _finalize_figure_script_profile(profiler)
     catch err
@@ -1014,6 +1124,10 @@ function _render_clause(io::IO, clause::MeasurementFilterClause)
         end
         println(io, "                ],")
     end
+    if clause.timestamp_range !== nothing
+        lo, hi = clause.timestamp_range
+        println(io, "                timestamp_range = (", repr(lo), ", ", repr(hi), "),")
+    end
     println(io, "            ),")
 end
 
@@ -1024,7 +1138,12 @@ function _render_group(io::IO, group::NamedMeasurementGroup)
     for clause in group.filter.clauses
         _render_clause(io, clause)
     end
-    println(io, "        ]),")
+    if group.exclude_bad === nothing
+        println(io, "        ]),")
+    else
+        println(io, "        ]);")
+        println(io, "        exclude_bad = tag_state,")
+    end
     println(io, "    ),")
 end
 
@@ -1043,16 +1162,22 @@ function _render_figure_script(
 
     io = IOBuffer()
     println(io, "using MeasurementBrowser")
+    needs_dates = any(group -> any(clause -> clause.timestamp_range !== nothing, group.filter.clauses), groups)
+    needs_dates && println(io, "using Dates")
+    needs_tag_state = any(group -> group.exclude_bad !== nothing, groups)
+    needs_tag_state && println(io, "using Annotations")
     println(io)
     println(io, "# Read this file: ", normpath(joinpath(@__DIR__, "..", "docs", "figure_scripts.md")))
     println(io)
     println(io, "root_path = ", repr(root_abs))
     println(io, "project = ", project_binding)
-    println(io, "source_files = [")
+    needs_tag_state && println(io, "tag_state = Annotations.Tags.load(root_path)")
+    println(io, "source_files = joinpath.(root_path, [")
     for source_file in normalized_source_files
-        println(io, "    ", repr(source_file), ",")
+        rel = relpath(source_file, root_abs)
+        println(io, "    ", repr(rel), ",")
     end
-    println(io, "]")
+    println(io, "])")
     println(io)
     println(io, "groups = [")
     for group in groups

@@ -32,15 +32,14 @@ function load_source_data(
     ::RuO2Project,
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
-    should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
-    _check_plot_cancel(should_cancel)
+    _check_cancel()
     kind = measurement === nothing ? detect_kind(RUO2_PROJECT, source_file.filename) : measurement.measurement_kind
     if kind === :pund || kind === :pn
         if is_pund_fatigue_file(source_file.filepath)
             measurement === nothing && error("PUND fatigue data requires a logical measurement")
             fatigue_count = Int(measurement.parameters[:fatigue_idx])
-            fatigue_df = read_pund_fatigue_file(source_file.filepath; should_cancel)
+            fatigue_df = read_pund_fatigue_file(source_file.filepath)
             return _select_pund_fatigue_cycle(fatigue_df, fatigue_count)
         end
         return read_pund_file(source_file.filename, dirname(source_file.filepath))
@@ -196,14 +195,13 @@ function _ruo2_pulse_label(pulse_idx::Int, group_size::Int)
     return ""
 end
 
-function _analyze_ruo2_file_plot(::RuO2Project, kind::Union{Symbol,Nothing}, loaded; kwargs...)
+function _analyze_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, loaded; kwargs...)
     loaded === nothing && return nothing
-    should_cancel = get(kwargs, :should_cancel, nothing)
-    _check_plot_cancel(should_cancel)
+    _check_cancel()
 
-    if kind === :pund || kind === :pn || kind === :wakeup_pund || kind === :wakeup_pn
+    if plot_kind === RuO2PUNDPlot
         debug_mode = get(kwargs, :DEBUG, getproperty(loaded, :debug))
-        segment = hasproperty(loaded, :segment) ? loaded.segment : (kind === :pn ? :pn : nothing)
+        segment = hasproperty(loaded, :segment) ? loaded.segment : nothing
         group_size = 5
         if segment === :pn
             result = analyze_pund_and_pn(loaded.df; DEBUG=debug_mode)
@@ -272,10 +270,10 @@ function _analyze_ruo2_file_plot(::RuO2Project, kind::Union{Symbol,Nothing}, loa
 
         return (df=analyzed_df, title=loaded.title, area_um2=loaded.area_um2, pulse_groups=pulse_groups,
                 pulse_group_size=group_size, remnant_y_label=y_label, debug=false)
-    elseif kind === :iv || kind === :breakdown || kind === :unknown || kind === nothing
+    elseif plot_kind === RuO2IVSweepPlot
         df = DataFrame(v=loaded.df.v, i_abs=abs.(loaded.df.i), i_positive=loaded.df.i .> 0)
         return (df=df, title=loaded.title)
-    elseif kind === :tlm4p
+    elseif plot_kind === RuO2TLM4PointPlot
         df = loaded.df
         mask = isfinite.(df.current_source) .& isfinite.(df.voltage_drop)
         I = df.current_source[mask]
@@ -341,10 +339,9 @@ end
 
 function setup_plot(
     ::RuO2Project,
-    plot_kind::Symbol,
+    plot_kind::Type{RuO2CVSweepPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
-    plot_kind === :cvsweep || error("Unsupported RuO2 plot kind '$plot_kind'")
     isempty(measurements) && error("RuO2 CVSweep plot requires at least one measurement")
     title = length(measurements) == 1 ? only(measurements).clean_title : "RuO2 CVSweep overlay"
     fig = Figure(size=(1100, 500))
@@ -356,11 +353,10 @@ end
 
 function plot_data!(
     project::RuO2Project,
-    plot_kind::Symbol,
+    plot_kind::Type{RuO2CVSweepPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    plot_kind === :cvsweep || error("Unsupported RuO2 plot kind '$plot_kind'")
     axes_c = contents(figure[1, 1])
     axes_z = contents(figure[1, 2])
     isempty(axes_c) && error("RuO2 CVSweep plot figure has no capacitance axis")
@@ -387,10 +383,10 @@ function plot_data!(
     return nothing
 end
 
-function _draw_ruo2_file_plot(::RuO2Project, kind::Union{Symbol,Nothing}, analyzed; kwargs...)
+function _draw_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
-    if kind === :pund || kind === :pn || kind === :wakeup_pund || kind === :wakeup_pn
+    if plot_kind === RuO2PUNDPlot
         df = analyzed.df
         nrow(df) == 0 && return nothing
         if hasproperty(analyzed, :debug) && analyzed.debug
@@ -449,14 +445,14 @@ function _draw_ruo2_file_plot(::RuO2Project, kind::Union{Symbol,Nothing}, analyz
             tellwidth=false, tellheight=false, halign=:left, valign=:top)
         axislegend(ax3)
         return fig
-    elseif kind === :iv || kind === :breakdown || kind === :unknown || kind === nothing
+    elseif plot_kind === RuO2IVSweepPlot
         nrow(analyzed.df) == 0 && return nothing
         fig = Figure(size=(800, 600))
         ax = Axis(fig[1, 1], xlabel="Voltage (V)", ylabel="Current (A)", title=analyzed.title)
         lines!(ax, analyzed.df.v, analyzed.df.i_abs, color=analyzed.df.i_positive, colormap=:RdBu_3, linewidth=2)
         ax.yscale = log10
         return fig
-    elseif kind === :tlm4p
+    elseif plot_kind === RuO2TLM4PointPlot
         df = analyzed.df
         nrow(df) == 0 && return nothing
         fig = Figure(size=(1000, 500))

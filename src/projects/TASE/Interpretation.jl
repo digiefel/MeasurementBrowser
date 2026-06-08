@@ -12,7 +12,7 @@ end
 detect_kind(::TASEProject, filename::String)::Symbol =
     match(REGEX_TASE, filename) !== nothing ? :four_terminal_iv : :unknown
 
-function interpret_file(project::TASEProject, file::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementInfo}
+function interpret_file(project::TASEProject, file::SourceFile)::Vector{MeasurementInfo}
     match(REGEX_TASE, file.filename) === nothing && return MeasurementInfo[]
     device_info = parse_device_info(project, file)
     kind = detect_kind(project, file.filename)

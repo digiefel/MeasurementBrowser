@@ -23,6 +23,7 @@ end
         @test any(e -> e.phase == :counting, events)
         @test any(e -> e.phase == :discovering, events)
         @test any(e -> e.phase == :scanning, events)
+        @test any(e -> e.phase == :analyzing, events)
         last_discovering = last(filter(e -> e.phase == :discovering, events))
         @test last_discovering.processed_csv == 2
         @test last_discovering.total_csv == 0
@@ -30,18 +31,26 @@ end
         @test maximum(e -> e.processed_csv, scanning_events) == 2
         @test all(e -> e.total_csv == 2, scanning_events)
 
+        # Measurement batches are emitted before scan_source returns its final SourceScan.
+        streamed = Vector{MeasurementInfo}[]
+        source = scan_source(dir; on_measurements=(measurements) -> push!(streamed, copy(measurements)))
+        @test !isempty(streamed)
+        @test sum(length, streamed) == length(source.hierarchy.all_measurements)
+        @test Set(m.unique_id for batch in streamed for m in batch) ==
+              Set(m.unique_id for m in source.hierarchy.all_measurements)
+
         # Cooperative cancellation
         fired = Ref(false)
-        @test_throws MeasurementBrowser.ScanCancelled scan_source(
-            dir;
-            should_cancel=() -> begin
+        @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser._with_cancel(
+            () -> begin
                 if fired[]
                     return true
                 end
                 fired[] = true
                 return false
             end,
-            count_first=true,
-        )
+        ) do
+            scan_source(dir; count_first=true)
+        end
     end
 end

@@ -128,7 +128,7 @@ RuO2 PUND-family history now lives in `MeasurementInfo.stats`: `wakeup_count`, `
 `wakeup_V`, `fatigue_count`, `fatigue_f`, and `fatigue_V`.
 
 RuO2 PUND-family waveform stats also live in `MeasurementInfo.stats`: `V_base`, `V_min`, `V_max`,
-`V_amp`, `frequency_kHz`, and `Pr_max_uCcm2`. Voltage stats are rounded to one decimal place.
+`V_amp`, `frequency_kHz`, and `Pr_uCcm2`. Voltage stats are rounded to one decimal place.
 
 PUND-adjacent loading paths use local selection parameters only to find the selected waveform. They
 do not reconstruct public wakeup/fatigue history in UI or plotting code.
@@ -144,7 +144,7 @@ The info panel now renders `MeasurementInfo.parameters` and `MeasurementInfo.sta
 of hardcoding PUND-specific stat computation in the UI.
 
 RuO2 PUND stats now have one file/dataframe entry point. It computes `V_base`, `V_min`, `V_max`,
-`V_amp`, `frequency_kHz`, and `Pr_max_uCcm2` when the required device area is available.
+`V_amp`, `frequency_kHz`, and `Pr_uCcm2` when the required device area is available.
 
 ## Open Question
 

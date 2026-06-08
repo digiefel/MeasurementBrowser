@@ -47,11 +47,10 @@ end
 function walk_source_files(
     root_path::AbstractString;
     on_file::Function,
-    should_cancel::Union{Nothing,Function}=nothing,
 )
     for (root, _, names) in walkdir(root_path)
         for name in names
-            should_cancel !== nothing && should_cancel() && throw(ScanCancelled())
+            _check_cancel()
             endswith(lowercase(name), ".csv") || continue
             on_file(index_source_file(joinpath(root, name)))
         end
@@ -61,11 +60,10 @@ end
 
 function collect_source_files(
     root_path::AbstractString;
-    should_cancel::Union{Nothing,Function}=nothing,
     on_file::Union{Nothing,Function}=nothing,
 )
     source_files = SourceFile[]
-    walk_source_files(root_path; should_cancel=should_cancel, on_file=file -> begin
+    walk_source_files(root_path; on_file=file -> begin
         push!(source_files, file)
         on_file !== nothing && on_file(file, length(source_files))
     end)

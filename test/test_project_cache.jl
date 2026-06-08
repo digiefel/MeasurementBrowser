@@ -25,6 +25,18 @@ function _same_dataframe(left, right)
     return all(name -> left[!, name] == right[!, name], names(left))
 end
 
+function _cache_test_ui_state()
+    ui_state = Dict{Symbol,Any}()
+    MeasurementBrowser._init_scan_state!(ui_state)
+    MeasurementBrowser._init_cache_state!(ui_state)
+    MeasurementBrowser._init_tag_state!(ui_state)
+    MeasurementBrowser._init_figure_script_state!(ui_state)
+    MeasurementBrowser._init_plot_state!(ui_state)
+    ui_state[:project_preference] = "RuO2"
+    ui_state[:recent_projects] = Dict{String,String}[]
+    return ui_state
+end
+
 @testset "project HDF5 cache" begin
     cache_id = MeasurementBrowser.new_project_cache_id()
     @test occursin(r"^\d{8}_\d{6}$", cache_id)
@@ -85,16 +97,21 @@ end
                 [pund_measurement],
             ))
             MeasurementBrowser._set_active_project_cache!(loaded.identity)
+            @test only(MeasurementBrowser._cached_measurements_data(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+            )) === nothing
+            loaded_data = only(data_of_measurements(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+            ))
+            @test _same_dataframe(loaded_data, source_data)
             cached_data = only(MeasurementBrowser._cached_measurements_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             ))
             @test cached_data !== nothing
             @test _same_dataframe(cached_data, source_data)
-            @test _same_dataframe(
-                only(data_of_measurements(MeasurementBrowser.RUO2_PROJECT, [pund_measurement])),
-                source_data,
-            )
             @test (
                 pund_measurement.stats[:V_base],
                 pund_measurement.stats[:V_min],
@@ -136,9 +153,74 @@ end
             cache_update_events = filter(event -> event.phase == :cache_update, update_progress)
             @test last(cache_update_events).processed_csv == 3
             @test last(cache_update_events).total_csv == 3
+
+            failed_source = SourceScan(
+                updated_source.root_path,
+                updated_source.project,
+                updated_source.files,
+                updated_source.hierarchy,
+                [MeasurementBrowser.MeasurementAnalysisFailure(
+                    first(updated_source.files).filepath,
+                    first(updated_source.hierarchy.all_measurements).unique_id,
+                    "synthetic analysis failure",
+                )],
+            )
+            analysis_error_snapshot = write_project_cache!(
+                loaded.identity,
+                failed_source;
+                mode=:update,
+            )
+            @test analysis_error_snapshot.status.error_files == 1
+            @test only(analysis_error_snapshot.errors).message == "synthetic analysis failure"
         finally
             MeasurementBrowser._set_active_project_cache!(nothing)
             _remove_cache_file(cache_id)
         end
     end
+
+    @testset "project open updates stale cache" begin
+        mktempdir() do dir
+            _copy_cache_fixture!(dir, _CACHE_FIXTURES.tlm)
+            source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
+            identity = project_cache_identity(
+                project_cache_id(dir),
+                MeasurementBrowser.RUO2_PROJECT,
+                source.root_path,
+            )
+            try
+                write_project_cache!(identity, source; mode=:build)
+                _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
+
+                ui_state = _cache_test_ui_state()
+                MeasurementBrowser._open_project_path!(ui_state, dir; persist=false)
+                saw_writing = false
+                deadline = time() + 10
+                while time() < deadline
+                    MeasurementBrowser._poll_cache_events!(ui_state)
+                    MeasurementBrowser._poll_source_scan_events!(ui_state)
+                    saw_writing |= get(ui_state, :cache_state, :idle) == :writing
+                    status = get(ui_state, :cache_status, nothing)
+                    if saw_writing &&
+                       get(ui_state, :cache_state, :idle) == :ready &&
+                       status isa ProjectCacheStatus &&
+                       status.cached_files == 2 &&
+                       status.new_files == 0
+                        break
+                    end
+                    sleep(0.02)
+                end
+
+                status = get(ui_state, :cache_status, nothing)
+                @test saw_writing
+                @test get(ui_state, :source_scan_state, :idle) == :done
+                @test get(ui_state, :cache_state, :idle) == :ready
+                @test status isa ProjectCacheStatus
+                @test status.cached_files == 2
+                @test status.new_files == 0
+            finally
+                rm(identity.cache_path; force=true)
+            end
+        end
+    end
+
 end

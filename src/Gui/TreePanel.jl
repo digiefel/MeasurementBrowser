@@ -492,7 +492,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                                 open_plots = get!(ui_state, :open_plot_windows) do
                                     Vector{Dict{Symbol,Any}}()
                                 end
-                                push!(open_plots, _measurement_plot_window_entry(measurement))
+                                push!(open_plots, _measurement_plot_window_entry(proj, measurement))
                             end
 
                             editable = _tag_state_ready(ui_state)

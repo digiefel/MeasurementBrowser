@@ -1,7 +1,7 @@
 using DataFrames
 
 """
-    load_source_data(project, source_file; measurement=nothing, should_cancel=nothing)::DataFrame
+    load_source_data(project, source_file; measurement=nothing)::DataFrame
 
 Project-implemented reader for one physical source file.
 
@@ -13,13 +13,12 @@ function load_source_data(
     ::AbstractProject,
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
-    should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
     error("No source data loader for $(source_file.filepath)")
 end
 
 """
-    data_of_measurements(project, measurements; should_cancel=nothing)::Vector{DataFrame}
+    data_of_measurements(project, measurements)::Vector{DataFrame}
 
 Package-owned data access for selected measurements.
 
@@ -29,21 +28,22 @@ When the cache has no fresh data for a measurement, the source file is indexed a
 """
 function data_of_measurements(
     project::AbstractProject,
-    measurements::Vector{MeasurementInfo};
-    should_cancel::Union{Nothing,Function}=nothing,
+    measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
-    cached_data = _cached_measurements_data(project, measurements; should_cancel)
+    cached_data = _cached_measurements_data(project, measurements)
     data = DataFrame[]
     sizehint!(data, length(measurements))
     for (index, measurement) in pairs(measurements)
-        _check_plot_cancel(should_cancel)
+        _check_cancel()
         cached = cached_data[index]
         if cached !== nothing
             push!(data, cached)
             continue
         end
         source_file = index_source_file(measurement.filepath)
-        push!(data, load_source_data(project, source_file; measurement, should_cancel))
+        loaded = load_source_data(project, source_file; measurement)
+        _write_cached_measurement_data!(project, measurement, loaded)
+        push!(data, loaded)
     end
     return data
 end

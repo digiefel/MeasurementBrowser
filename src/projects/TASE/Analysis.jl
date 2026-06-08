@@ -33,13 +33,13 @@ function available_analyses(::TASEProject, measurements)
     ]
 end
 
-function run_analysis(::TASEProject, key::Symbol, measurements; should_cancel::Union{Nothing,Function}=nothing, kwargs...)
+function run_analysis(::TASEProject, key::Symbol, measurements; kwargs...)
     tase_measurements = _tase_four_terminal_measurements(measurements)
     isempty(tase_measurements) && return nothing
     if key === :iv_trace_table
-        return _tase_iv_trace_table_result(tase_measurements; should_cancel)
+        return _tase_iv_trace_table_result(tase_measurements)
     elseif key === :iv_device_summary
-        return _tase_iv_device_summary_result(tase_measurements; should_cancel)
+        return _tase_iv_device_summary_result(tase_measurements)
     end
     return nothing
 end
@@ -51,10 +51,10 @@ function _tase_four_terminal_measurements(measurements)
     ]
 end
 
-function _tase_iv_trace_table_result(measurements::Vector{MeasurementInfo}; should_cancel::Union{Nothing,Function}=nothing)
+function _tase_iv_trace_table_result(measurements::Vector{MeasurementInfo})
     rows = NamedTuple[]
     for meas in measurements
-        _check_plot_cancel(should_cancel)
+        _check_cancel()
         chip, facet, device_type, device_id = _tase_measurement_parts(meas)
         num_wires, wire_diameter_nm = _tase_wire_layout(device_id)
         df = read_tlm_4p(basename(meas.filepath), dirname(meas.filepath))
@@ -90,10 +90,10 @@ function _tase_iv_trace_table_result(measurements::Vector{MeasurementInfo}; shou
     )
 end
 
-function _tase_iv_device_summary_result(measurements::Vector{MeasurementInfo}; should_cancel::Union{Nothing,Function}=nothing)
+function _tase_iv_device_summary_result(measurements::Vector{MeasurementInfo})
     rows = NamedTuple[]
     for meas in measurements
-        _check_plot_cancel(should_cancel)
+        _check_cancel()
         chip, facet, device_type, device_id = _tase_measurement_parts(meas)
         num_wires, wire_diameter_nm = _tase_wire_layout(device_id)
         df = read_tlm_4p(basename(meas.filepath), dirname(meas.filepath))

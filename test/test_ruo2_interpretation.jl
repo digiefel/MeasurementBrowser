@@ -72,6 +72,31 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
         ) == ["RuO2testA10", "VI", "FeCapBD", "A1A2"]
     end
 
+    @testset "partial measurement labels" begin
+        path = _ruo2_fixture_path(_RUO2_PUND_FIXTURE)
+        measurement = only(MeasurementBrowser.interpret_file(RUO2_PROJECT, index_source_file(path)))
+        @test isempty(measurement.stats)
+        @test display_label(RUO2_PROJECT, measurement) isa String
+    end
+
+    @testset "analysis failure stays local" begin
+        measurement = MeasurementInfo(;
+            filepath=joinpath(tempdir(), "missing_pund.csv"),
+            measurement_kind=:pund,
+            device_info=DeviceInfo(["RuO2test", "A0", "I", "D0"]),
+            clean_title="Missing PUND",
+        )
+        failures = MeasurementBrowser.compute_and_add_measurement_stats!(
+            RUO2_PROJECT,
+            [measurement],
+            SourceFile[],
+        )
+        @test length(failures) == 1
+        @test failures[1].measurement_id == measurement.unique_id
+        @test measurement.stats[:wakeup_count] == 0
+        @test measurement.stats[:fatigue_count] == 0
+    end
+
     @testset "expanded measurement IDs and source paths" begin
         breakdown = measurements_for_file(RUO2_PROJECT, _ruo2_fixture_path(_RUO2_BREAKDOWN_FIXTURE))
         @test length(breakdown) == 2

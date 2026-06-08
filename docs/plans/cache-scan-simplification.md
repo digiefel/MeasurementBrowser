@@ -7,11 +7,9 @@ measurements are available and show them quickly. At the same time, it should sc
 the background. The cache gives the UI a fast first tree; the filesystem scan checks whether that
 tree still matches the source files.
 
-The current code does not model this as one project load. `_open_project_path!` starts
-`_launch_project_reload_job!`, which tries to read the HDF5 cache through `load_project_cache`.
-`scan_source` is a separate path, usually reached through manual scan or cache-build actions. Both
-paths can produce a full `MeasurementHierarchy`, and the UI applies whichever result is active
-instead of treating cache and filesystem data as two observations of the same project.
+The project load path should treat cache data and filesystem data as two observations of the same
+opened project. Cache loading provides the fast first tree. Source scanning streams measurements as
+files finish, then applies the final checked tree and cache status.
 
 The rule for correctness is file-based. A cached file entry is usable only when the source
 fingerprint stored in that entry matches the current filesystem fingerprint for the same normalized
@@ -55,6 +53,13 @@ level is agreed. If an item becomes too large for this page, its details move in
 7. Build unified project loading
 8. Implement surgical cache repair
 9. Simplify UI status and controls
+
+## Current Implementation Status
+
+Opening a project starts cache loading and source scanning together. The scan streams measurement
+batches while the final `SourceScan` is still running. Analysis has its own progress phase. When
+the source scan completes, stale, new, deleted, or analysis-error cache entries queue an update
+automatically.
 
 ## Details Files
 

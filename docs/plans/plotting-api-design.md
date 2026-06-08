@@ -72,8 +72,11 @@ struct FatigueSummary <: PlotKind end
 struct CVSweepPlot <: PlotKind end
 ```
 
-The package discovers plot kind types from the project module. A project plot kind is any concrete
-type defined in that module that subtypes `PlotKind`.
+The project lists its plot kind types explicitly:
+
+```julia
+available_plot_kinds(project::AbstractProject)::Vector{Type{<:PlotKind}}
+```
 
 The GUI receives those type objects:
 
@@ -91,14 +94,30 @@ plot_data!(project, kind, measurements, fig)
 
 This keeps plot kinds searchable in code and lets multiple dispatch route implementation.
 
-For now, the GUI does not filter plot kinds by selection. If the user chooses a plot kind that does
-not support the selected measurements, `setup_plot` or `plot_data!` should fail normally and the UI
-shows the error. Overlay uses the same rule: compatible measurements are accepted by the project
-plotting function; incompatible measurements fail there.
+The project can also define labels, descriptions, default plot choices, and compatibility rules:
+
+```julia
+plot_kind_label(kind::Type{<:PlotKind})::String
+plot_kind_description(kind::Type{<:PlotKind})::String
+plot_kind_measurement_kinds(kind::Type{<:PlotKind})::Vector{Symbol}
+plot_kind_min_measurements(kind::Type{<:PlotKind})::Int
+default_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Union{Type{<:PlotKind},Nothing}
+supports_plot_kind(kind::Type{<:PlotKind}, measurement::MeasurementInfo)::Bool
+```
+
+Single-measurement plotting uses `default_plot_kind`. Combined plotting uses `available_plot_kinds`,
+`supports_plot_kind`, and `plot_kind_min_measurements` to decide what can be generated.
 
 ## Project Responsibilities
 
 Projects define:
+
+```julia
+available_plot_kinds(project::AbstractProject)::Vector{Type{<:PlotKind}}
+default_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Union{Type{<:PlotKind},Nothing}
+```
+
+And implement plotting:
 
 ```julia
 setup_plot(
@@ -123,8 +142,7 @@ measurement data, it calls:
 ```julia
 data_of_measurements(
     project::AbstractProject,
-    measurements::Vector{MeasurementInfo};
-    should_cancel::Union{Nothing,Function}=nothing,
+    measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
 ```
 
@@ -188,7 +206,6 @@ load_source_data(
     project::AbstractProject,
     source_file::SourceFile;
     measurement::MeasurementInfo,
-    should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
 ```
 
@@ -232,6 +249,9 @@ UI/render work:
   plot_data!
   debug_plot
 ```
+
+Cancellation belongs to package-run background jobs. It should not appear in project plotting
+signatures.
 
 ## Interactive Debugging
 

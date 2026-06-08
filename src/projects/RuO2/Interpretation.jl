@@ -58,7 +58,7 @@ function parse_measurement_parameters(file::SourceFile, kind::Symbol)
 end
 
 """Interpret one RuO2 CSV file into the logical measurements shown by the browser."""
-function interpret_file(project::RuO2Project, file::SourceFile; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementInfo}
+function interpret_file(project::RuO2Project, file::SourceFile)::Vector{MeasurementInfo}
     kind = detect_kind(project, file.filename)
     kind == :unknown && return MeasurementInfo[]
     if kind == :cvsweep && !cv_sweep_has_schema(file.filepath)
@@ -79,7 +79,7 @@ function interpret_file(project::RuO2Project, file::SourceFile; should_cancel::U
 
     expanded = _ruo2_expand_multi_device_item(base)
     if kind == :pund_fatigue
-        return vcat([_ruo2_expand_pund_fatigue_item(item; should_cancel=should_cancel) for item in expanded]...)
+        return vcat([_ruo2_expand_pund_fatigue_item(item) for item in expanded]...)
     elseif kind == :pund_wakeup
         return vcat([_ruo2_expand_pund_wakeup_item(item, file.header_summary) for item in expanded]...)
     end
@@ -127,11 +127,10 @@ function _ruo2_expand_multi_device_item(measurement::MeasurementInfo)::Vector{Me
 end
 
 """Expand a PUND fatigue file into one PUND measurement per fatigue count."""
-function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo; should_cancel::Union{Nothing,Function}=nothing)::Vector{MeasurementInfo}
+function _ruo2_expand_pund_fatigue_item(measurement::MeasurementInfo)::Vector{MeasurementInfo}
     measurement.measurement_kind == :pund_fatigue || return [measurement]
     cycles = unique(read_pund_fatigue_file(
-        measurement.filepath;
-        should_cancel=should_cancel,
+        measurement.filepath,
     ).cycle)
     isempty(cycles) && return MeasurementInfo[]
     return [MeasurementInfo(measurement;

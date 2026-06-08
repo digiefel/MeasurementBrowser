@@ -9,9 +9,7 @@ without reparsing every CSV on startup. The CSV files remain the source of truth
 is usable only when its stored source fingerprint still matches the current file on disk.
 
 The intended user experience is: open a project, show cached measurements quickly when they exist,
-then check the filesystem in the background and repair stale cache entries. The current
-implementation supports the cache read and cache update pieces, but cache loading and source
-scanning are still separate UI/code paths.
+scan the filesystem in the background, and repair stale cache entries without user action.
 
 The cache is not source-root metadata and it is not meant to be hand-edited.
 
@@ -65,15 +63,22 @@ Each `/files/<file_key>` group stores:
 | `fingerprint` fields | source path, size, mtime |
 | `source_file_unique_id` | source file id used during indexing |
 | `measurement_keys` | ordered keys for measurement groups |
-| `measurements/<measurement_key>` | serialized `MeasurementInfo` metadata |
-| `measurements/<measurement_key>/data` | cached dataframe for that logical measurement |
+| `measurements/<measurement_key>` | optional payload group for that logical measurement |
+| `measurements/<measurement_key>/data` | optional cached dataframe for that logical measurement |
 | `status` | `ok`, `skipped`, or `error` |
 
 Startup cache loading does not walk the per-file measurement groups.
 
+`analysis_error` is a file status for a source file that was found and indexed, but where one or
+more logical measurements failed analysis. The measurements stay visible; the failure is reported
+as cache/source status.
+
 `/indexes/startup_blob` stores the browser startup data as one versioned serialized record:
 measurements, source file statuses, file errors, and skipped-file count. Startup uses the blob to
 rebuild the browser tree when a project opens.
+
+The startup blob is the only cache copy of measurement metadata, including parameters and stats.
+Per-file measurement groups exist so lazy dataframe payloads have a stable place to live.
 
 ## Loading the Cache
 
@@ -120,7 +125,11 @@ During write, each source file is compared with cached fingerprints. Unchanged f
 Changed or new files are rewritten. Cached files missing from the source scan are deleted.
 
 After file updates, `/indexes` and `/meta` are rebuilt. The index is the cache startup path;
-per-file groups are for fingerprint checks, cache repair, and measurement-data payloads.
+per-file groups are for fingerprint checks, cache repair, and lazy measurement-data payloads.
+
+Cache build and update do not eagerly write every dataframe payload. They write the browser tree,
+source fingerprints, measurement metadata, and status. Measurement data is cached when
+`data_of_measurements` has to load it.
 
 ## Cache Status
 
@@ -136,6 +145,8 @@ per-file groups are for fingerprint checks, cache repair, and measurement-data p
 | `deleted_files` | cached files missing from source |
 | `error_files` | cached files with transform errors |
 
+`error_files` includes cache transform errors and analysis errors found during the source scan.
+
 When a cache is loaded without a source scan, the app can count cached entries but cannot know which
 source files are fresh, stale, new, or deleted. That requires filesystem scanning.
 
@@ -148,11 +159,15 @@ The package returns cached dataframe data only when the cached file fingerprint 
 current source file. If the cache has no data, the file changed, or the cache entry errored,
 `data_of_measurements` opens the source file through `load_source_data`.
 
+When `data_of_measurements` loads source data for a measurement whose cache entry is current, it
+stores the returned dataframe in that measurement's cache entry for later calls.
+
 ## UI Behavior
 
-Opening a project currently starts cache reload first through `_open_project_path!` and
-`_launch_project_reload_job!`. On success, the UI applies the cached `MeasurementHierarchy`. Source
-scanning is a separate path triggered by scan/rescan or cache build/update actions.
+Opening a project starts cache loading and source scanning together. Cache loading may apply a
+cached `MeasurementHierarchy` before the source scan finishes. Source scanning streams interpreted
+measurements as files complete, then applies the final scan result after project stats are computed.
 
-Because cache loading and source scanning are separate paths today, the UI can show cached
-measurements before checking whether the source tree still matches the cache.
+When the final source scan is available, the UI compares source fingerprints with cached
+fingerprints. Missing, stale, deleted, or analysis-error cache entries queue a cache update
+automatically.

@@ -1,19 +1,19 @@
 function _ruo2_combined_plot_data(
     measurements::Vector{MeasurementInfo},
     data::Vector{DataFrame},
-    combined_kind::Symbol;
+    combined_kind::Type{<:PlotKind};
     use_o2_flow::Bool=false,
 )
     isempty(measurements) && return nothing
     length(measurements) == length(data) || error("Measurement and data counts must match")
-    if combined_kind === :tlm_analysis
+    if combined_kind === RuO2TLMAnalysisPlot
         files_data_params = Tuple{String,DataFrame,Dict{Symbol,Any}}[]
         for (measurement, df) in zip(measurements, data)
             params = merge(measurement.device_info.parameters, measurement.parameters)
             push!(files_data_params, (measurement.filepath, df, params))
         end
         return (files_data_params=files_data_params,)
-    elseif combined_kind === :tlm_temperature
+    elseif combined_kind === RuO2TLMTemperaturePlot
         entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent, :oxygen_flow_sccm)}[]
         for (measurement, df) in zip(measurements, data)
             path = measurement.filepath
@@ -27,11 +27,12 @@ function _ruo2_combined_plot_data(
                             oxygen_percent=o2, oxygen_flow_sccm=o2_flow))
         end
         return (entries=entries, use_o2_flow=use_o2_flow)
-    elseif combined_kind === :pund_fatigue
+    elseif combined_kind === RuO2PUNDFatiguePlot
         entries = NamedTuple[]
         for (measurement, df) in zip(measurements, data)
             path = measurement.filepath
             params = merge(measurement.device_info.parameters, measurement.parameters)
+            haskey(params, :fatigue_idx) && (params[:fatigue_count] = params[:fatigue_idx])
             ts = stat(path).mtime
             push!(entries, (kind=:pund, df=df, params=params, timestamp=ts))
         end
@@ -41,12 +42,11 @@ function _ruo2_combined_plot_data(
     error("Unsupported RuO2 combined plot kind '$combined_kind'")
 end
 
-function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; kwargs...)
+function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}, loaded; kwargs...)
     loaded === nothing && return nothing
-    should_cancel = get(kwargs, :should_cancel, nothing)
-    _check_plot_cancel(should_cancel)
+    _check_cancel()
 
-    if combined_kind === :tlm_analysis
+    if combined_kind === RuO2TLMAnalysisPlot
         analysis_df = analyze_tlm_combined(loaded.files_data_params)
         nrow(analysis_df) == 0 && return nothing
         R_sheet, R_cprime, rho_c, r_squared = calculate_sheet_resistance(analysis_df)
@@ -69,7 +69,7 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; 
             fit=(R_sheet=R_sheet, R_cprime=R_cprime, rho_c=rho_c, r_squared=r_squared),
             info_text=info_text,
         )
-    elseif combined_kind === :tlm_temperature
+    elseif combined_kind === RuO2TLMTemperaturePlot
         entries = loaded.entries
         isempty(entries) && return nothing
         results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[],
@@ -77,14 +77,14 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; 
                             oxygen_percent=Float64[], oxygen_flow_sccm=Float64[])
         by_site = Dict{String,Vector{NamedTuple}}()
         for entry in entries
-            _check_plot_cancel(should_cancel)
+            _check_cancel()
             push!(get!(by_site, entry.site, NamedTuple[]), entry)
         end
         for (site, vec) in by_site
-            _check_plot_cancel(should_cancel)
+            _check_cancel()
             temps = unique([entry.tempK for entry in vec])
             for temp in temps
-                _check_plot_cancel(should_cancel)
+                _check_cancel()
                 subset = filter(entry -> entry.tempK == temp, vec)
                 files_data_params = [(entry.path, entry.df, entry.params) for entry in subset]
                 combined_df = analyze_tlm_combined(files_data_params)
@@ -139,7 +139,7 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; 
             push!(site_summary, (site, color_value, rt_val, alpha_ppm))
         end
         return (results=results, site_summary=site_summary, use_o2_flow=loaded.use_o2_flow)
-    elseif combined_kind === :pund_fatigue
+    elseif combined_kind === RuO2PUNDFatiguePlot
         result = analyze_pund_fatigue_combined(loaded.entries)
         traces = get(result, :traces, NamedTuple[])
         pr_points = get(result, :pr_points, NamedTuple[])
@@ -151,7 +151,7 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; 
             rep_count=Int[],
         )
         for trace in traces
-            _check_plot_cancel(should_cancel)
+            _check_cancel()
             push!(traces_df, (
                 float(trace.cycles),
                 collect(trace.x),
@@ -167,7 +167,7 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; 
             rep_count=Int[],
         )
         for point in pr_points
-            _check_plot_cancel(should_cancel)
+            _check_cancel()
             push!(pr_df, (
                 float(point.cycles),
                 float(point.Pr),
@@ -186,10 +186,10 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, loaded; 
     return loaded
 end
 
-function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, analyzed; kwargs...)
+function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
-    if combined_kind === :tlm_analysis
+    if combined_kind === RuO2TLMAnalysisPlot
         analysis_df = analyzed.analysis_df
         geometry_groups = analyzed.geometry_groups
         fit = analyzed.fit
@@ -235,7 +235,7 @@ function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, analyzed; k
         ylims!(info_ax, 0, 1)
         length(widths) > 1 && axislegend(ax1, position=:lt)
         return fig
-    elseif combined_kind === :tlm_temperature
+    elseif combined_kind === RuO2TLMTemperaturePlot
         results = analyzed.results
         site_summary = analyzed.site_summary
         fig = Figure(size=(1100, 720))
@@ -316,7 +316,7 @@ function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Symbol, analyzed; k
         rowsize!(fig.layout, 1, Relative(0.6))
         rowsize!(fig.layout, 2, Relative(0.4))
         return fig
-    elseif combined_kind === :pund_fatigue
+    elseif combined_kind === RuO2PUNDFatiguePlot
         traces_df = analyzed.traces_df
         pr_df = analyzed.pr_df
         (nrow(traces_df) == 0 && nrow(pr_df) == 0) && return nothing

@@ -39,6 +39,6 @@ const _CV_FIXTURES = (
     @test length(data) == 1
     @test nrow(only(data)) == nrow(z_df)
 
-    fig = MeasurementBrowser.setup_plot(RUO2_PROJECT, :cvsweep, items)
-    @test MeasurementBrowser.plot_data!(RUO2_PROJECT, :cvsweep, items, fig) === nothing
+    fig = MeasurementBrowser.setup_plot(RUO2_PROJECT, RuO2CVSweepPlot, items)
+    @test MeasurementBrowser.plot_data!(RUO2_PROJECT, RuO2CVSweepPlot, items, fig) === nothing
 end

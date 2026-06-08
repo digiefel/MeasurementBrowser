@@ -19,8 +19,18 @@ abstract type AbstractProject end
 struct RuO2Project <: AbstractProject end
 struct TASEProject <: AbstractProject end
 
+abstract type PlotKind end
+
+const PlotKindSelection = Union{Type{<:PlotKind},Nothing}
+
 const KNOWN_PROJECTS = AbstractProject[]
 const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
+
+struct MeasurementAnalysisFailure
+    filepath::String
+    measurement_id::String
+    message::String
+end
 
 # Interface (implemented by each project via multiple dispatch):
 #   parse_device_info(::P, file::SourceFile) → DeviceInfo
@@ -28,33 +38,43 @@ const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 #   interpret_file(::P, file) → Vector{MeasurementInfo}
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
-#   load_source_data(::P, source_file; measurement=nothing, kwargs...) → DataFrame
-#   setup_plot(::P, kind, measurements) → Figure
-#   plot_data!(::P, kind, measurements, figure) → nothing
+#   load_source_data(::P, source_file; measurement=nothing) → DataFrame
+#   setup_plot(::P, plot_kind, measurements) → Figure
+#   plot_data!(::P, plot_kind, measurements, figure) → nothing
 #   debug_plot(::P, measurements, loaded; kwargs...) → Union{Figure,Nothing}
 #   available_analyses(::P, measurements) → Vector{NamedTuple}
 #   run_analysis(::P, key, measurements; kwargs...) → Union{AnalysisResult,Nothing}
 #   draw_analysis_view(result, view) → Union{Figure,Nothing}
-#   combined_plot_types(::P) → Vector{Tuple}
-#   compatible_kinds(::P, combined_kind) → Vector{Symbol}
-#   compute_and_add_measurement_stats!(::P, measurements, files) → nothing
+#   compute_and_add_measurement_stats!(::P, measurements, files) → Vector{MeasurementAnalysisFailure}
 
 available_analyses(::AbstractProject, measurements) = NamedTuple[]
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
-interpret_file(::AbstractProject, file::SourceFile; kwargs...) = MeasurementInfo[]
+interpret_file(::AbstractProject, file::SourceFile) = MeasurementInfo[]
 
 """Compute per-measurement stats after the complete measurement list and source headers are known."""
 compute_and_add_measurement_stats!(
     ::AbstractProject,
     measurements::Vector,
     files::Vector{SourceFile},
-) = nothing
+    ;
+    on_progress::Union{Nothing,Function}=nothing,
+)::Vector{MeasurementAnalysisFailure} = MeasurementAnalysisFailure[]
 
-struct PlotCancelled <: Exception end
+struct JobCancelled <: Exception end
 
-function _check_plot_cancel(should_cancel::Union{Nothing,Function})
-    should_cancel !== nothing && should_cancel() && throw(PlotCancelled())
+const _CANCEL_CALLBACK_KEY = :MeasurementBrowser_cancel_requested
+
+function _with_cancel(f::Function, cancel_requested::Union{Nothing,Function})
+    cancel_requested === nothing && return f()
+    return task_local_storage(f, _CANCEL_CALLBACK_KEY, cancel_requested)
+end
+
+function _check_cancel()
+    storage = task_local_storage()
+    cancel_requested = get(storage, _CANCEL_CALLBACK_KEY, nothing)
+    cancel_requested !== nothing && cancel_requested() && throw(JobCancelled())
+    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -169,18 +189,31 @@ end
 
 setup_plot(
     project::AbstractProject,
-    kind::Symbol,
+    kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo},
 )::Figure =
     error("No setup_plot implementation for $(project_name(project)) plot kind '$kind'")
 
 plot_data!(
     project::AbstractProject,
-    kind::Symbol,
+    kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing =
     error("No plot_data! implementation for $(project_name(project)) plot kind '$kind'")
+
+plot_kind_label(kind::Type{<:PlotKind})::String = String(nameof(kind))
+plot_kind_description(kind::Type{<:PlotKind})::String = plot_kind_label(kind)
+plot_kind_measurement_kinds(::Type{<:PlotKind})::Vector{Symbol} = Symbol[]
+plot_kind_min_measurements(::Type{<:PlotKind})::Int = 1
+available_plot_kinds(::AbstractProject)::Vector{Type{<:PlotKind}} = Type{<:PlotKind}[]
+default_plot_kind(::AbstractProject, measurement::MeasurementInfo)::PlotKindSelection =
+    nothing
+
+function supports_plot_kind(kind::Type{<:PlotKind}, measurement::MeasurementInfo)::Bool
+    kinds = plot_kind_measurement_kinds(kind)
+    return isempty(kinds) || measurement.measurement_kind in kinds
+end
 
 debug_plot(
     ::AbstractProject,
@@ -213,6 +246,16 @@ struct SourceScan
     project::AbstractProject
     files::Vector{SourceFile}
     hierarchy::MeasurementHierarchy
+    analysis_failures::Vector{MeasurementAnalysisFailure}
+end
+
+function SourceScan(
+    root_path::String,
+    project::AbstractProject,
+    files::Vector{SourceFile},
+    hierarchy::MeasurementHierarchy,
+)
+    return SourceScan(root_path, project, files, hierarchy, MeasurementAnalysisFailure[])
 end
 
 # ---------------------------------------------------------------------------
@@ -393,12 +436,6 @@ isleaf(node::HierarchyNode) = isempty(node.children)
 # Scanning
 # ---------------------------------------------------------------------------
 
-struct ScanCancelled <: Exception end
-
-function _check_cancel(should_cancel::Union{Nothing,Function})
-    should_cancel !== nothing && should_cancel() && throw(ScanCancelled())
-end
-
 function _emit_progress(
     on_progress::Union{Nothing,Function};
     phase::Symbol,
@@ -419,11 +456,11 @@ function _emit_progress(
     ))
 end
 
-function _count_csv(root_path::String; should_cancel::Union{Nothing,Function}=nothing, on_progress::Union{Nothing,Function}=nothing)
+function _count_csv(root_path::String; on_progress::Union{Nothing,Function}=nothing)
     total = 0
     for (root, _, files) in walkdir(root_path)
         for file in files
-            _check_cancel(should_cancel)
+            _check_cancel()
             endswith(lowercase(file), ".csv") || continue
             total += 1
             _emit_progress(on_progress;
@@ -564,10 +601,9 @@ from `device_info.txt` when present.
 function interpret_measurements(
     project::AbstractProject,
     file::SourceFile,
-    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
-    should_cancel::Union{Nothing,Function}=nothing,
+    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
 )
-    measurements = interpret_file(project, file; should_cancel=should_cancel)
+    measurements = interpret_file(project, file)
     if meta !== nothing
         for measurement in measurements
             dev_params = _lookup_device_params(meta, measurement.device_info.location)
@@ -575,12 +611,6 @@ function interpret_measurements(
         end
     end
     return measurements
-end
-
-function _is_scan_cancel_error(err)
-    err isa ScanCancelled && return true
-    err isa CompositeException || return false
-    return any(_is_scan_cancel_error, err.exceptions)
 end
 
 """
@@ -599,15 +629,19 @@ function measurements_for_file(
 end
 
 """
-Interpret files concurrently while preserving the original file order in callbacks.
-Progress counts files attempted, measurements loaded, and files that produced no visible measurements.
+Interpret files concurrently.
+`on_result` receives each interpreted `SourceFile` with its original file index so callers can
+assemble the final scan in stable order. `on_measurements` receives interpreted measurements as
+soon as each file finishes, allowing the UI to update while the complete scan is still running.
+Progress counts files attempted, measurements loaded, and files that produced no visible
+measurements.
 """
 function _interpret_source_files(
     project::AbstractProject,
     files::Vector{SourceFile},
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
-    should_cancel::Union{Nothing,Function}=nothing,
     on_result::Function,
+    on_measurements::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )
     processed_csv = Base.Threads.Atomic{Int}(0)
@@ -615,14 +649,22 @@ function _interpret_source_files(
     skipped_csv = Base.Threads.Atomic{Int}(0)
     progress_lock = ReentrantLock()
     worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
+    cancel_requested = get(task_local_storage(), _CANCEL_CALLBACK_KEY, nothing)
 
     @sync for (index, file) in pairs(files)
         Base.acquire(worker_limit)
         Base.Threads.@spawn begin
             try
-                measurements = interpret_measurements(project, file, meta; should_cancel=should_cancel)
+                measurements = _with_cancel(cancel_requested) do
+                    interpret_measurements(project, file, meta)
+                end
                 scanned = SourceFile(file, measurements)
                 on_result(index, scanned)
+                if on_measurements !== nothing && !isempty(measurements)
+                    lock(progress_lock) do
+                        on_measurements(measurements)
+                    end
+                end
                 isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)
                 isempty(measurements) || Base.Threads.atomic_add!(loaded_measurements, length(measurements))
                 processed_now = Base.Threads.atomic_add!(processed_csv, 1) + 1
@@ -655,19 +697,20 @@ end
 
 """
 Scan a project directory into the measurement hierarchy used by the browser.
-The scan indexes CSV files, interprets them with the selected project, applies device metadata, and builds the tree.
+The scan indexes CSV files, interprets them with the selected project, applies device metadata,
+streams interpreted measurements when requested, computes project stats, and builds the final tree.
 """
 function scan_source(
     root_path::String;
     project::Union{AbstractProject,Nothing}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
-    should_cancel::Union{Nothing,Function}=nothing,
+    on_measurements::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
     proj = _resolve_scan_project(project)
     root = normpath(abspath(expanduser(String(root_path))))
     meta = _load_scan_metadata(root)
-    count_first && _count_csv(root; should_cancel, on_progress)
+    count_first && _count_csv(root; on_progress)
     _emit_progress(on_progress;
         phase=:discovering,
         total_csv=0,
@@ -677,7 +720,6 @@ function scan_source(
     )
     files = collect_source_files(
         root;
-        should_cancel=should_cancel,
         on_file=(file, count) -> _emit_progress(
             on_progress;
             phase=:discovering,
@@ -701,8 +743,8 @@ function scan_source(
         proj,
         files,
         meta;
-        should_cancel=should_cancel,
         on_result=(index, file) -> (scanned_files[index] = file),
+        on_measurements=on_measurements,
         on_progress=(progress) -> _emit_progress(
             on_progress;
             phase=:scanning,
@@ -720,9 +762,41 @@ function scan_source(
         append!(measurements, file.measurements)
     end
 
-    compute_and_add_measurement_stats!(proj, measurements, scanned_files)
+    analysis_progress_seen = Ref(false)
+    _emit_progress(on_progress;
+        phase=:analyzing,
+        total_csv=0,
+        processed_csv=0,
+        loaded_measurements=length(measurements),
+        skipped_csv=summary.skipped_csv,
+        current_path=root,
+    )
+    analysis_failures = compute_and_add_measurement_stats!(
+        proj,
+        measurements,
+        scanned_files;
+        on_progress=(progress) -> begin
+            analysis_progress_seen[] = true
+            _emit_progress(on_progress;
+                phase=:analyzing,
+                total_csv=progress.total,
+                processed_csv=progress.processed,
+                loaded_measurements=length(measurements),
+                skipped_csv=summary.skipped_csv,
+                current_path=progress.current_path,
+            )
+        end,
+    )
+    analysis_progress_seen[] || _emit_progress(on_progress;
+        phase=:analyzing,
+        total_csv=1,
+        processed_csv=1,
+        loaded_measurements=length(measurements),
+        skipped_csv=summary.skipped_csv,
+        current_path=root,
+    )
     hierarchy = MeasurementHierarchy(measurements, root, meta !== nothing, proj, summary.skipped_csv)
-    return SourceScan(root, proj, scanned_files, hierarchy)
+    return SourceScan(root, proj, scanned_files, hierarchy, analysis_failures)
 end
 
 """Collect generic device-summary fields for the information panel."""

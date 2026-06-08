@@ -36,8 +36,7 @@ The source-file functions have two different outputs: browser measurements and s
 ```julia
 index_source_file(
     project::AbstractProject,
-    source_file::SourceFile;
-    should_cancel::Union{Nothing,Function}=nothing,
+    source_file::SourceFile,
 )::Vector{MeasurementInfo}
 ```
 
@@ -50,7 +49,6 @@ load_source_data(
     project::AbstractProject,
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
-    should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
 ```
 
@@ -77,8 +75,7 @@ PACKAGE
 PACKAGE -> PROJECT
   index_source_file(
       project::AbstractProject,
-      source_file::SourceFile;
-      should_cancel::Union{Nothing,Function}=nothing,
+      source_file::SourceFile,
   )::Vector{MeasurementInfo}
 
 PACKAGE -> PROJECT
@@ -113,8 +110,7 @@ PACKAGE -> PROJECT, UI THREAD
 PROJECT -> PACKAGE, inside plot_data! or other data-consuming project code
   data_of_measurements(
       project::AbstractProject,
-      measurements::Vector{MeasurementInfo};
-      should_cancel::Union{Nothing,Function}=nothing,
+      measurements::Vector{MeasurementInfo},
   )::Vector{DataFrame}
 
 PACKAGE -> PROJECT, when source data is needed
@@ -122,7 +118,6 @@ PACKAGE -> PROJECT, when source data is needed
       project::AbstractProject,
       source_file::SourceFile;
       measurement::Union{Nothing,MeasurementInfo}=nothing,
-      should_cancel::Union{Nothing,Function}=nothing,
   )::DataFrame
 ```
 
@@ -153,6 +148,14 @@ make those reads explicit and avoid them when cached data is valid.
 Project functions:
 
 ```julia
+available_plot_kinds(project::AbstractProject)::Vector{Type{<:PlotKind}}
+default_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Union{Type{<:PlotKind},Nothing}
+```
+
+The project owns the plot kind types it supports. The package owns the UI and asks the project which
+kind to use for each selected measurement.
+
+```julia
 setup_plot(
     project::AbstractProject,
     plot_kind::Type{<:PlotKind},
@@ -174,8 +177,7 @@ plot_data!(
 ```julia
 data_of_measurements(
     project::AbstractProject,
-    measurements::Vector{MeasurementInfo};
-    should_cancel::Union{Nothing,Function}=nothing,
+    measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
 ```
 
@@ -186,8 +188,7 @@ Project plotting code should not read cache storage directly.
 ```julia
 function index_source_file(
     project::RuO2Project,
-    source_file::SourceFile;
-    should_cancel::Union{Nothing,Function}=nothing,
+    source_file::SourceFile,
 )::Vector{MeasurementInfo}
     kind::Symbol = detect_kind(project, source_file.filename)
     kind === :unknown && return MeasurementInfo[]
@@ -195,7 +196,7 @@ function index_source_file(
     base::MeasurementInfo = measurement_from_filename_and_header(project, source_file, kind)
 
     if kind === :pund_fatigue
-        source_data::DataFrame = load_source_data(project, source_file; should_cancel)
+        source_data::DataFrame = load_source_data(project, source_file)
         cycles::Vector = unique(source_data.cycle)
         return [
             MeasurementInfo(base;
@@ -217,10 +218,9 @@ function load_source_data(
     project::RuO2Project,
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
-    should_cancel::Union{Nothing,Function}=nothing,
 )::DataFrame
     if detect_kind(project, source_file.filename) === :pund_fatigue
-        source_data = read_pund_fatigue_file(source_file.filepath; should_cancel)
+        source_data = read_pund_fatigue_file(source_file.filepath)
         measurement === nothing && return source_data
         cycle = Int(measurement.parameters[:fatigue_idx])
         return select_pund_fatigue_cycle(source_data, cycle)
@@ -228,10 +228,9 @@ function load_source_data(
     measurement !== nothing && return read_standard_ruo2_measurement(
         project,
         source_file,
-        measurement;
-        should_cancel,
+        measurement,
     )
-    return read_standard_ruo2_file(project, source_file; should_cancel)
+    return read_standard_ruo2_file(project, source_file)
 end
 
 function plot_data!(
@@ -273,6 +272,9 @@ plot_data!
 
 Cache data and selected measurement data if useful. Do not cache or mutate Makie figures from
 worker threads.
+
+Cancellation is package job control, not project API. Background workers may stop between files,
+measurements, or cache entries without adding cancellation arguments to project functions.
 
 ## Migration Target
 

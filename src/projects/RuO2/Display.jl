@@ -16,15 +16,16 @@ function display_label(proj::RuO2Project, meas::MeasurementInfo)
     label = kind_label(proj, meas.measurement_kind)
     temp = get(meas.parameters, :temperature_K, nothing)
     parts = Any[meas.timestamp, label]
+    voltage_label = _ruo2_voltage_label(meas.stats)
 
     if meas.measurement_kind === :wakeup_pn || meas.measurement_kind === :wakeup_pund
-        push!(parts, "$(meas.stats[:V_base]) ± $(meas.stats[:V_amp]) V")
+        voltage_label !== nothing && push!(parts, voltage_label)
         temp !== nothing && push!(parts, "$(temp)K")
         return join(parts, " ")
     end
 
     if meas.measurement_kind === :pund || meas.measurement_kind === :pn
-        push!(parts, "$(meas.stats[:V_base]) ± $(meas.stats[:V_amp]) V")
+        voltage_label !== nothing && push!(parts, voltage_label)
         freq = get(meas.stats, :fatigue_f, NaN)
         if isfinite(freq)
             push!(parts, freq >= 1000 ? "$(round(freq/1000, digits=1)) kHz" : "$(round(freq, digits=1)) Hz")
@@ -35,4 +36,9 @@ function display_label(proj::RuO2Project, meas::MeasurementInfo)
 
     temp !== nothing && push!(parts, "$(temp)K")
     return join(parts, " ")
+end
+
+function _ruo2_voltage_label(stats::Dict{Symbol,Any})::Union{Nothing,String}
+    haskey(stats, :V_base) && haskey(stats, :V_amp) || return nothing
+    return "$(stats[:V_base]) ± $(stats[:V_amp]) V"
 end

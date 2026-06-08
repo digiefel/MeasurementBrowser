@@ -180,6 +180,7 @@ function _open_project_path!(ui_state, path::String; persist=true)
     cache_id = _cache_id_for_path!(ui_state, norm_path)
     _load_tag_state_for_root!(ui_state, norm_path)
     _launch_project_reload_job!(ui_state, norm_path, proj, cache_id; persist)
+    _launch_source_scan_job!(ui_state, norm_path, proj; persist=false, replace=true)
 end
 
 function _project_status_text(ui_state)
@@ -415,6 +416,7 @@ function _figure_script_job_request(
         :group_index => group_index,
         :scan_id => get(ui_state, :source_scan_seq, 0),
         :root_path => get(ui_state, :root_path, ""),
+        :tag_state => get(ui_state, :tag_state, nothing),
         :status_message => String(status_message),
         :completion_message => String(completion_message),
     )
@@ -424,7 +426,8 @@ function _resolve_figure_script_job(request::Dict{Symbol,Any})
     inferred_group, profile = _infer_measurement_group_profiled(
         request[:group_name],
         request[:selected_measurements],
-        request[:all_measurements],
+        request[:all_measurements];
+        tag_state=get(request, :tag_state, nothing),
     )
     groups = copy(request[:groups])
     if request[:operation] == :create
@@ -701,7 +704,7 @@ function _cache_action_blocked(ui_state)
 end
 
 function _source_scan_running(ui_state)
-    return get(ui_state, :source_scan_state, :idle) in (:counting, :discovering, :scanning, :canceling)
+    return get(ui_state, :source_scan_state, :idle) in (:counting, :discovering, :scanning, :analyzing, :canceling)
 end
 
 function _request_cache_cancel!(ui_state)
@@ -815,18 +818,59 @@ function _apply_source_scan!(ui_state, source::SourceScan)
     ui_state[:has_device_metadata] = source.hierarchy.has_device_metadata
     identity = get(ui_state, :cache_identity, nothing)
     if identity isa ProjectCacheIdentity && identity.root_path == source.root_path
-        ui_state[:cache_status] = isfile(identity.cache_path) ?
-            cache_status(identity, source) :
-            ProjectCacheStatus(length(source.files), 0, 0, 0, length(source.files), 0, 0)
-        ui_state[:cache_source_checked] = true
-        isfile(identity.cache_path) && _set_active_project_cache!(identity)
+        cache_state = get(ui_state, :cache_state, :idle)
+        if cache_state == :ready
+            ui_state[:cache_status] = cache_status(identity, source)
+            ui_state[:cache_source_checked] = true
+            _set_active_project_cache!(identity)
+        elseif !isfile(identity.cache_path) || cache_state == :missing
+            ui_state[:cache_status] = ProjectCacheStatus(
+                length(source.files),
+                0,
+                0,
+                0,
+                length(source.files),
+                0,
+                0,
+            )
+            ui_state[:cache_source_checked] = true
+        else
+            ui_state[:cache_source_checked] = false
+        end
     else
         _set_active_project_cache!(nothing)
     end
     return nothing
 end
 
-function _append_cache_measurements!(ui_state, measurements::Vector{MeasurementInfo})
+function _cache_status_needs_update(status::ProjectCacheStatus)::Bool
+    return status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0
+end
+
+function _maybe_update_cache_from_source!(ui_state)::Nothing
+    _cache_action_blocked(ui_state) && return nothing
+    source = get(ui_state, :source_scan_result, nothing)
+    source isa SourceScan || return nothing
+    identity = get(ui_state, :cache_identity, nothing)
+    identity isa ProjectCacheIdentity || return nothing
+    identity.root_path == source.root_path || return nothing
+    project_name(source.project) == identity.project_name || return nothing
+
+    cache_state = get(ui_state, :cache_state, :idle)
+    if cache_state == :missing
+        _launch_cache_update_job!(ui_state; full_rebuild=true)
+        return nothing
+    end
+
+    status = get(ui_state, :cache_status, nothing)
+    status isa ProjectCacheStatus || return nothing
+    get(ui_state, :cache_source_checked, false) || return nothing
+    _cache_status_needs_update(status) || return nothing
+    _launch_cache_update_job!(ui_state)
+    return nothing
+end
+
+function _append_measurements!(ui_state, measurements::Vector{MeasurementInfo})
     isempty(measurements) && return nothing
     hierarchy = get(ui_state, :scan_hierarchy, nothing)
     hierarchy isa MeasurementHierarchy || return nothing
@@ -859,10 +903,11 @@ function _launch_source_scan_job!(
     path::String,
     proj::AbstractProject;
     persist::Bool=true,
+    replace::Bool=false,
 )
     if _source_scan_running(ui_state)
         _request_source_scan_cancel!(ui_state)
-        return
+        replace || return
     end
 
     norm_path = _normalize_project_path(path)
@@ -873,7 +918,6 @@ function _launch_source_scan_job!(
     identity = project_cache_identity(cache_id, proj, norm_path)
     ui_state[:cache_id] = cache_id
     ui_state[:cache_identity] = identity
-    _set_active_project_cache!(nothing)
     _load_tag_state_for_root!(ui_state, norm_path)
     ui_state[:source_scan_seq] = get(ui_state, :source_scan_seq, 0) + 1
     scan_id = ui_state[:source_scan_seq]
@@ -891,16 +935,22 @@ function _launch_source_scan_job!(
 
     Base.Threads.@spawn begin
         try
-            source = scan_source(
-                norm_path;
-                project=proj,
-                should_cancel=() -> cancel_token[],
-                on_progress=(progress) -> put!(events, (
-                    kind=:progress,
-                    scan_id=scan_id,
-                    progress=progress,
-                )),
-            )
+            source = _with_cancel(() -> cancel_token[]) do
+                scan_source(
+                    norm_path;
+                    project=proj,
+                    on_progress=(progress) -> put!(events, (
+                        kind=:progress,
+                        scan_id=scan_id,
+                        progress=progress,
+                    )),
+                    on_measurements=(measurements) -> put!(events, (
+                        kind=:measurements,
+                        scan_id=scan_id,
+                        measurements=measurements,
+                    )),
+                )
+            end
             put!(events, (
                 kind=:source_scan_result,
                 scan_id=scan_id,
@@ -909,7 +959,7 @@ function _launch_source_scan_job!(
                 persist=persist,
             ))
         catch err
-            if _is_scan_cancel_error(err) || err isa PlotCancelled
+            if err isa JobCancelled
                 put!(events, (kind=:canceled, scan_id=scan_id))
             else
                 put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
@@ -950,6 +1000,7 @@ function _launch_project_reload_job!(
     ui_state[:cache_progress] = _new_scan_progress()
     ui_state[:cache_id] = cache_id
     ui_state[:cache_identity] = identity
+    _set_active_project_cache!(nothing)
     ui_state[:cache_state] = :loading
     ui_state[:cache_error] = ""
     ui_state[:cache_status] = nothing
@@ -962,18 +1013,19 @@ function _launch_project_reload_job!(
 
     Base.Threads.@spawn begin
         try
-            snapshot = load_project_cache(
-                identity;
-                should_cancel=() -> cancel_token[],
-                on_progress=(progress) -> put!(events, (
-                    kind=:progress,
-                    cache_id=cache_id_num,
-                    progress=progress,
-                )),
-            )
+            snapshot = _with_cancel(() -> cancel_token[]) do
+                load_project_cache(
+                    identity;
+                    on_progress=(progress) -> put!(events, (
+                        kind=:progress,
+                        cache_id=cache_id_num,
+                        progress=progress,
+                    )),
+                )
+            end
             put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=persist))
         catch err
-            if _is_scan_cancel_error(err) || err isa PlotCancelled
+            if err isa JobCancelled
                 put!(events, (kind=:canceled, cache_id=cache_id_num))
             elseif err isa ProjectCacheMissingError || err isa ProjectCacheInvalidError
                 put!(events, (
@@ -1025,32 +1077,39 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
         try
             source = existing_source
             if source === nothing
-                source = scan_source(
-                    identity.root_path;
-                    project,
-                    should_cancel=() -> cancel_token[],
+                source = _with_cancel(() -> cancel_token[]) do
+                    scan_source(
+                        identity.root_path;
+                        project,
+                        on_progress=(progress) -> put!(events, (
+                            kind=:source_progress,
+                            cache_id=cache_id_num,
+                            progress=progress,
+                        )),
+                        on_measurements=(measurements) -> put!(events, (
+                            kind=:source_measurements,
+                            cache_id=cache_id_num,
+                            measurements=measurements,
+                        )),
+                    )
+                end
+                put!(events, (kind=:source_scan_result, cache_id=cache_id_num, source=source))
+            end
+            snapshot = _with_cancel(() -> cancel_token[]) do
+                write_project_cache!(
+                    identity,
+                    source;
+                    mode=operation,
                     on_progress=(progress) -> put!(events, (
-                        kind=:source_progress,
+                        kind=:progress,
                         cache_id=cache_id_num,
                         progress=progress,
                     )),
                 )
-                put!(events, (kind=:source_scan_result, cache_id=cache_id_num, source=source))
             end
-            snapshot = write_project_cache!(
-                identity,
-                source;
-                mode=operation,
-                should_cancel=() -> cancel_token[],
-                on_progress=(progress) -> put!(events, (
-                    kind=:progress,
-                    cache_id=cache_id_num,
-                    progress=progress,
-                )),
-            )
             put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=true))
         catch err
-            if _is_scan_cancel_error(err) || err isa PlotCancelled
+            if err isa JobCancelled
                 put!(events, (kind=:canceled, cache_id=cache_id_num))
             else
                 put!(events, (kind=:error, cache_id=cache_id_num, error=err, bt=catch_backtrace()))
@@ -1083,6 +1142,7 @@ function _poll_cache_events!(ui_state)
     events = get(ui_state, :cache_events, nothing)
     events === nothing && return
 
+    pending_measurements = MeasurementInfo[]
     while isready(events)
         msg = take!(events)
         msg.cache_id == get(ui_state, :active_cache_id, 0) || continue
@@ -1109,23 +1169,31 @@ function _poll_cache_events!(ui_state)
                 :current_path => p.current_path,
             )
             ui_state[:source_scan_state] = p.phase
+        elseif msg.kind == :source_measurements
+            append!(pending_measurements, msg.measurements)
         elseif msg.kind == :source_scan_result
             _apply_source_scan!(ui_state, msg.source)
             ui_state[:source_scan_state] = :done
+            _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :cache_result
             _apply_cache_snapshot!(ui_state, msg.snapshot)
             get(msg, :persist, false) && _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
             _finalize_cache!(ui_state)
+            _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :cache_missing
             identity = msg.identity
             proj = _project_by_name(identity.project_name)
-            _begin_scan!(ui_state, identity.root_path, proj, false)
+            current_root = get(ui_state, :root_path, "")
+            if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
+                _begin_scan!(ui_state, identity.root_path, proj, false)
+            end
             ui_state[:cache_id] = identity.cache_id
             ui_state[:cache_identity] = identity
             ui_state[:cache_state] = :missing
             ui_state[:cache_error] = msg.error
             msg.persist && _persist_preferences!(ui_state; path=identity.root_path)
             _finalize_cache!(ui_state)
+            _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :canceled
             ui_state[:cache_state] = :canceled
             _finalize_cache!(ui_state)
@@ -1136,12 +1204,14 @@ function _poll_cache_events!(ui_state)
             _finalize_cache!(ui_state)
         end
     end
+    _append_measurements!(ui_state, pending_measurements)
 end
 
 function _poll_source_scan_events!(ui_state)
     events = get(ui_state, :source_scan_events, nothing)
     events === nothing && return
 
+    pending_measurements = MeasurementInfo[]
     while isready(events)
         msg = take!(events)
         msg.scan_id == get(ui_state, :active_source_scan_id, 0) || continue
@@ -1158,6 +1228,8 @@ function _poll_source_scan_events!(ui_state)
             )
             ui_state[:source_scan_progress] = progress_dict
             ui_state[:source_scan_state] = p.phase
+        elseif msg.kind == :measurements
+            append!(pending_measurements, msg.measurements)
         elseif msg.kind == :source_scan_result
             ui_state[:cache_identity] = msg.identity
             ui_state[:cache_id] = msg.identity.cache_id
@@ -1165,6 +1237,7 @@ function _poll_source_scan_events!(ui_state)
             ui_state[:source_scan_state] = :done
             msg.persist && _persist_preferences!(ui_state; path=msg.identity.root_path)
             _finalize_source_scan!(ui_state)
+            _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :canceled
             ui_state[:source_scan_state] = :canceled
             _finalize_source_scan!(ui_state)
@@ -1175,6 +1248,7 @@ function _poll_source_scan_events!(ui_state)
             _finalize_source_scan!(ui_state)
         end
     end
+    _append_measurements!(ui_state, pending_measurements)
 end
 
 # Timing & allocation utilities
