@@ -1,3 +1,10 @@
+"""
+Deprecated shared CSV-reader package.
+
+This package is retained only for existing generic readers that have not yet moved to project-owned
+source loading. Do not add new project readers here. New source-file interpretation should live with
+the project that understands the file format.
+"""
 module DataLoader
 
 using CSV

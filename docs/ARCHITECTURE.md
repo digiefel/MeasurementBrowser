@@ -68,13 +68,14 @@ MeasurementBrowser.jl (root)
   └── projects/RuO2/        — project-specific source interpretation, data loading, and plotting
 
 Subpackages (path-deps; each has its own Project.toml):
-  src/DataLoader/    — CSV readers (read_fe_pund, read_iv_sweep, …)
   src/DataAnalysis/  — analyzers (analyze_pund, analyze_tlm_combined, …)
-  src/DataPlotter/   — figure_for_file, figure_for_files; depends on Loader+Analysis
   src/Annotations/   — on-disk annotation formats (Coords, Layout, Tags, Notes)
 ```
 
-When you change a subpackage, run `Pkg.instantiate()` in its directory too — see [CLAUDE.md](../CLAUDE.md).
+`src/DataLoader/` still exists for old generic CSV readers, but it is deprecated. New source readers
+belong in project code.
+
+When you change an active subpackage, run `Pkg.instantiate()` in its directory too.
 
 ## On-disk metadata
 

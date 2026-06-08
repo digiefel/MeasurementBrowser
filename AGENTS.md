@@ -25,35 +25,43 @@ Julia package internals, compile-time wiring, cache storage, worker orchestratio
 The package should compete with the direct scripting loop by being faster and more interactive, not
 by asking the project author to adopt a larger framework.
 
-## Project Structure & Modules
-- Root `Project.toml` defines the MeasurementBrowser package; entry script is `start.jl`.
-- `src/` houses core code: `MeasurementBrowser.jl` wires modules, `DeviceParser.jl` parses filenames, `Gui.jl` + `MakieIntegration.jl` drive the GLMakie/CImGui UI, and helper packages live in `src/DataLoader`, `src/DataPlotter`, `src/DataAnalysis` (each with its own `Project.toml`).
-- Measurement data are CSV files; `start.jl` defaults to a local path—pass a directory argument to override.
+## Read The Docs First
+Treat `docs/ARCHITECTURE.md` as the entry point before touching code. It links to the focused docs
+for the data model, cache, GUI, storage, annotations, and figure scripts. Current-state docs describe
+how the app works now; `docs/plans/` describes intended changes. Do not copy structure summaries
+into this file when they belong in the docs.
 
-## Setup, Build, Run
-- Install dependencies: `julia --project -e 'using Pkg; instantiate()'` (repeat with `--project=src/DataLoader` etc. when hacking subpackages).
-- Launch the browser: `julia --project start.jl /path/to/measurements`.
-- Precompile without opening the UI: `julia --project -e 'using Pkg; precompile()'`.
+When a change affects documented structure, update the matching doc in the same commit. If the code
+and docs disagree, fix the disagreement instead of adding caveats or transition notes.
 
-## Coding Style & Naming
-- Target Julia 1.12; 4-space indentation; aim for ~100-char lines.
-- Use `snake_case` for functions/variables, `UpperCamelCase` for structs/types, `ALL_CAPS` for constants; keep side effects explicit.
-- Prefer docstrings for public APIs and brief comments only where UI/GL hooks are non-obvious.
-- Find simple, stable, idiomatic solutions; avoid shortcuts.
-- Consider whether a cleaner solution emerges by refactoring first.
-- Don’t catch errors; let failures surface.
+## Working Rules
+Use Julia 1.12 style: 4-space indentation, `snake_case` functions and variables, `UpperCamelCase`
+types, and concise public docstrings with signatures and return types. Prefer small, explicit APIs.
+Project-facing functions should not expose cache controls, background-job controls, UI state, or
+other package machinery.
 
-## Testing Guidelines
-- Tests live in `test/` with fixtures (sample CSVs) plus `runtests.jl` and feature-focused files.
-- Run all tests: `julia --project -e 'using Pkg; test()'`.
-- Add targeted `@testset`s per feature; keep fixtures small/deterministic and align filenames with parsing regexes.
-- For plot/GUI changes, assert metadata/labels and ensure figure creation does not error rather than pixel-perfect checks.
+Find simple, stable, idiomatic solutions. Refactor first when that makes the change smaller or more
+obvious. Do not keep compatibility paths, fallback behavior, or legacy symbols unless the user
+explicitly asks for them. Do not hide failures that should be fixed; surface errors clearly.
 
-## Commit Workflow
-- Commits use short, imperative summaries like existing history (`fix negative filters`, `adjust dependencies`); keep scope tight and cohesive.
-- Describe behavior changes in the commit body when needed and note test commands run; reference relevant files/modules.
+Use `rg` for search. Use `apply_patch` for manual edits. Do not revert user changes or unrelated
+dirty files.
 
-## Notes & Gotchas
-- UI depends on GLMakie + CImGui; ensure an OpenGL-capable environment when running locally.
-- File parsing hinges on `RuO2test_...` patterns; update regexes and tests together if naming schemes shift.
-- Scanning very large measurement trees is slow; while developing, point `start.jl` at a small sample folder or a copy of `test/` fixtures to shorten load times.
+## Commands
+Install the root package with `julia --project -e 'using Pkg; instantiate()'`. If you change a
+path-dependency package, also instantiate that package's environment:
+`src/DataAnalysis` or `src/Annotations`. `src/DataLoader` still exists for old generic CSV readers
+but is deprecated; do not add new project readers there.
+
+Launch the browser with an explicit source-data root:
+`julia --project start.jl /path/to/measurements`. Do not rely on the default path in `start.jl`;
+it is a local convenience path.
+
+Run the full test suite with `julia --project -e 'using Pkg; Pkg.test()'`.
+
+Tests live in `test/`. Keep fixtures small and deterministic. For GUI or plotting changes, test the
+data, labels, and figure creation behavior that can be checked reliably without pixel-perfect image
+assertions.
+
+Commits should be small, cohesive, and imperative. Mention behavior changes in the commit body when
+needed, and include the tests run.
