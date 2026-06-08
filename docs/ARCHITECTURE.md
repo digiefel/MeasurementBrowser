@@ -4,7 +4,32 @@
 
 ## What this is
 
-A Julia GUI app for browsing and analyzing ferroelectric and semiconductor device measurements (RuO2 test chips). CImGui drives the UI; GLMakie renders plots embedded in the UI via a custom integration layer. CSV files on disk are the data; source-root text files are metadata; the HDF5 cache is generated acceleration for project loading and plotting.
+MeasurementBrowser is a Julia working environment for measurement projects. It should be strictly
+better than opening a REPL, finding files, loading them, extracting useful tables, computing values,
+and writing figure code by hand. The app makes that workflow interactive: open a project, browse the
+measurement structure, select measurements or devices, inspect data-derived values, and switch plots
+or views without repeating the same parsing work.
+
+CImGui drives the UI; GLMakie renders plots embedded in the UI via a custom integration layer. CSV
+files on disk are the source data; source-root text files are metadata; the generated cache lets the
+package reuse project structure and measurement data without making cache storage part of project
+code.
+
+Project code should describe the project in the same terms a script would use: which measurements a
+source file contains, how to load the data for those measurements, and how to present that data. The
+package owns scanning, cache storage, background jobs, and UI state.
+
+The intended experience is live and composable. A project can stay open while source files are added
+or changed, and the browser should update without forcing the user back through startup or manual
+reload steps. Views should be able to follow selections, devices, or matching rules, so a plot or
+inspection tool can continue to show the relevant data as the source tree changes. Built-in
+visualizers should handle common inspection tasks, while project code adds only the interpretation
+and presentation details that are specific to the experiment.
+
+Keep this boundary small. It should be possible to evolve project code toward hot reloading,
+interpreted execution, or an out-of-process implementation without changing what a project author is
+trying to express: source files become measurements, measurements provide reusable data, and reusable
+data feeds inspection and presentation tools.
 
 ## Three-stage pipeline
 

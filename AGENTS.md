@@ -1,5 +1,30 @@
 # Repository Guidelines
 
+## Product Goal
+MeasurementBrowser should be a better working environment than opening a Julia REPL and scripting
+the same project by hand. Without the app, a user would find files, load them, parse them, reshape
+or extract useful tables, compute values, and write figure code. The app exists to make that loop
+faster, easier to inspect, and less repetitive while preserving the same mental model.
+
+Project code should therefore stay close to the script a project maintainer would naturally write:
+identify the measurements in a source file, load the data for a measurement, and render or summarize
+that data. Project code should not know about cache files, background jobs, UI state, or package
+lifecycle details. The package owns those concerns so that project implementations remain small and
+focused on data interpretation and presentation.
+
+The long-term direction is a live measurement workspace with instant feedback. Source data should be
+watched continuously; new or changed files should appear without restarting the app; views should be
+able to stay attached to selections, devices, or matching rules as the project changes. Built-in
+visual inspection tools should cover common experimental tasks, and custom project code should extend
+those tools without replacing the package's shared browsing, caching, selection, composition, and
+reload behavior.
+
+The project boundary should stay simple enough to support hot reloading, interpretation, or
+out-of-process implementations later. Avoid designs that require project authors to understand the
+Julia package internals, compile-time wiring, cache storage, worker orchestration, or GUI machinery.
+The package should compete with the direct scripting loop by being faster and more interactive, not
+by asking the project author to adopt a larger framework.
+
 ## Project Structure & Modules
 - Root `Project.toml` defines the MeasurementBrowser package; entry script is `start.jl`.
 - `src/` houses core code: `MeasurementBrowser.jl` wires modules, `DeviceParser.jl` parses filenames, `Gui.jl` + `MakieIntegration.jl` drive the GLMakie/CImGui UI, and helper packages live in `src/DataLoader`, `src/DataPlotter`, `src/DataAnalysis` (each with its own `Project.toml`).
