@@ -29,56 +29,23 @@ include("RuO2/PlotCombined.jl")
 project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 
-function _ruo2_uses_setup_plot_api(plot_kind::Type{<:PlotKind})::Bool
-    return plot_kind in (
-        RuO2PUNDPlot,
-        RuO2IVSweepPlot,
-        RuO2TLM4PointPlot,
-        RuO2CVSweepPlot,
-        RuO2TLMAnalysisPlot,
-        RuO2TLMTemperaturePlot,
-    )
-end
-
 function _plot_job_data(
     project::RuO2Project,
     plot_kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo};
     debug::Bool=false,
 )
-    if _ruo2_uses_setup_plot_api(plot_kind)
-        if debug
-            plot_kind === RuO2PUNDPlot ||
-                error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
-            length(measurements) == 1 ||
-                error("RuO2 PUND debug plot requires exactly one measurement")
-            measurement = only(measurements)
-            df = only(read_measurement_data(project, [measurement]))
-            return _ruo2_plot_data(measurement, df; debug)
-        end
-        return nothing
-    end
-
     if debug
-        if length(measurements) == 1
-            measurement = only(measurements)
-            df = only(read_measurement_data(project, [measurement]))
-            return _ruo2_plot_data(measurement, df; debug)
-        end
-
-        data = read_measurement_data(project, measurements)
-        return _ruo2_combined_plot_data(measurements, data, plot_kind)
-    end
-
-    if length(measurements) == 1
+        plot_kind === RuO2PUNDPlot ||
+            error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
+        length(measurements) == 1 ||
+            error("RuO2 PUND debug plot requires exactly one measurement")
         measurement = only(measurements)
         df = only(read_measurement_data(project, [measurement]))
         return _ruo2_plot_data(measurement, df; debug)
     end
 
-    data = read_measurement_data(project, measurements)
-    loaded = _ruo2_combined_plot_data(measurements, data, plot_kind)
-    return _analyze_ruo2_files_plot(project, plot_kind, loaded; DEBUG=debug)
+    return nothing
 end
 
 function _plot_job_figure(
@@ -89,25 +56,15 @@ function _plot_job_figure(
     debug::Bool=false,
     device_params::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
 )
-    if _ruo2_uses_setup_plot_api(plot_kind)
-        if debug
-            plot_kind === RuO2PUNDPlot ||
-                error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
-            return debug_plot(project, measurements, data; device_params, plot_kind)
-        end
-        fig = setup_plot(project, plot_kind, measurements)
-        plot_data!(project, plot_kind, measurements, fig)
-        return fig
-    end
-
     if debug
+        plot_kind === RuO2PUNDPlot ||
+            error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
         return debug_plot(project, measurements, data; device_params, plot_kind)
     end
 
-    if length(measurements) == 1
-        return nothing
-    end
-    return _draw_ruo2_files_plot(project, plot_kind, data; DEBUG=debug)
+    fig = setup_plot(project, plot_kind, measurements)
+    plot_data!(project, plot_kind, measurements, fig)
+    return fig
 end
 
 # ---------------------------------------------------------------------------

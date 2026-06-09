@@ -7,10 +7,12 @@ using Test
     pund_path = joinpath(fixtures_dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
     iv_path = joinpath(fixtures_dir, "RuO2test_A11_XI_FeCapBD_A1A2_20260509_184021_IVSweep.csv")
     tlm_path = joinpath(fixtures_dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
+    fatigue_path = joinpath(fixtures_dir, "RuO2test_A12_XI_FeCap_D6_20260511_222203_PUND_Fatigue_V2.csv")
 
     pund = only(measurements_for_file(RUO2_PROJECT, pund_path))
     iv = only(measurements_for_file(RUO2_PROJECT, iv_path))
     tlm = only(measurements_for_file(RUO2_PROJECT, tlm_path))
+    fatigue = measurements_for_file(RUO2_PROJECT, fatigue_path)[1:3]
 
     function tlm_measurement(length_um, temperature_K=nothing)
         parameters = deepcopy(tlm.parameters)
@@ -49,6 +51,7 @@ using Test
     @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm]) === nothing
     @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements) === nothing
     @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLMTemperaturePlot, tlm_temperature_measurements) === nothing
+    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2PUNDFatiguePlot, fatigue) === nothing
 
     pund_data = only(process_measurement_data(RUO2_PROJECT, [pund]))
     @test all(name in names(pund_data) for name in [
@@ -95,4 +98,7 @@ using Test
     @test_logs (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") begin
         @test plot_data!(RUO2_PROJECT, RuO2TLMTemperaturePlot, tlm_temperature_measurements, tlm_temperature_fig) === nothing
     end
+
+    fatigue_fig = setup_plot(RUO2_PROJECT, RuO2PUNDFatiguePlot, fatigue)
+    @test plot_data!(RUO2_PROJECT, RuO2PUNDFatiguePlot, fatigue, fatigue_fig) === nothing
 end

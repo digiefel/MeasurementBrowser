@@ -1,76 +1,3 @@
-function _ruo2_combined_plot_data(
-    measurements::Vector{MeasurementInfo},
-    data::Vector{DataFrame},
-    combined_kind::Type{<:PlotKind},
-)
-    isempty(measurements) && return nothing
-    length(measurements) == length(data) || error("Measurement and data counts must match")
-    if combined_kind === RuO2PUNDFatiguePlot
-        entries = NamedTuple[]
-        for (measurement, df) in zip(measurements, data)
-            path = measurement.filepath
-            params = merge(measurement.device_info.parameters, measurement.parameters)
-            haskey(params, :fatigue_idx) && (params[:fatigue_count] = params[:fatigue_idx])
-            ts = stat(path).mtime
-            push!(entries, (kind=:pund, df=df, params=params, timestamp=ts))
-        end
-        return (entries=entries,)
-    end
-
-    error("Unsupported RuO2 combined plot kind '$combined_kind'")
-end
-
-function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}, loaded; kwargs...)
-    loaded === nothing && return nothing
-    _check_cancel()
-
-    if combined_kind === RuO2PUNDFatiguePlot
-        result = analyze_pund_fatigue_combined(loaded.entries)
-        traces = get(result, :traces, NamedTuple[])
-        pr_points = get(result, :pr_points, NamedTuple[])
-        traces_df = DataFrame(
-            cycles=Float64[],
-            x=Vector{Float64}[],
-            y=Vector{Float64}[],
-            rep_index=Int[],
-            rep_count=Int[],
-        )
-        for trace in traces
-            _check_cancel()
-            push!(traces_df, (
-                float(trace.cycles),
-                collect(trace.x),
-                collect(trace.y),
-                Int(trace.rep_index),
-                Int(trace.rep_count),
-            ))
-        end
-        pr_df = DataFrame(
-            cycles=Float64[],
-            pr=Float64[],
-            rep_index=Int[],
-            rep_count=Int[],
-        )
-        for point in pr_points
-            _check_cancel()
-            push!(pr_df, (
-                float(point.cycles),
-                float(point.Pr),
-                Int(point.rep_index),
-                Int(point.rep_count),
-            ))
-        end
-        return (
-            traces_df=traces_df,
-            pr_df=pr_df,
-            x_label=get(result, :x_label, "Voltage (V)"),
-            y_label=get(result, :y_label, "Polarization (μC/cm²)"),
-        )
-    end
-
-    return loaded
-end
-
 function _ruo2_tlm_files_data_params(
     measurements::Vector{MeasurementInfo},
     data::Vector{DataFrame},
@@ -387,79 +314,157 @@ function _draw_ruo2_tlm_temperature!(fig::Figure, analyzed::NamedTuple)::Nothing
     return nothing
 end
 
-function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}, analyzed; kwargs...)
-    analyzed === nothing && return nothing
-
-    if combined_kind === RuO2PUNDFatiguePlot
-        traces_df = analyzed.traces_df
-        pr_df = analyzed.pr_df
-        (nrow(traces_df) == 0 && nrow(pr_df) == 0) && return nothing
-        fig = Figure(size=(1200, 800))
-        ax_top = Axis(fig[1, 1], xlabel=analyzed.x_label, ylabel=analyzed.y_label,
-            title="Overlapped P-E curves (color-coded by fatigue cycles)")
-        gl_ctrl = GridLayout(fig[1, 2])
-        ax_bottom = Axis(fig[2, 1:2], xlabel="Fatigue cycles", ylabel="Remnant polarization (μC/cm²)",
-            title="Remnant polarization vs fatigue cycles")
-        last_only = Observable(false)
-        btn = Button(gl_ctrl[1, 1], label="Last only: OFF")
-        on(btn.clicks) do _
-            last_only[] = !last_only[]
-            btn.label[] = last_only[] ? "Last only: ON" : "Last only: OFF"
-        end
-        cyc_vals = traces_df.cycles
-        if isempty(cyc_vals)
-            text!(ax_top, 0.5, 0.5, text="No valid P-E traces", align=(:center, :center), color=:gray)
-        else
-            logvals = log10.(Float64.(cyc_vals))
-            vmin = minimum(logvals)
-            vmax = maximum(logvals)
-            tick_positions = collect(floor(Int, vmin):ceil(Int, vmax))
-            tick_labels = string.(Int.(10 .^ tick_positions))
-            Colorbar(gl_ctrl[2, 1], colormap=:viridis, limits=(vmin, vmax), label="Fatigue cycles (log10)",
-                ticks=(tick_positions, tick_labels))
-            plotted_traces = NamedTuple{(:plt, :is_last)}[]
-            for row in eachrow(traces_df)
-                isempty(row.x) && continue
-                isempty(row.y) && continue
-                plt = lines!(ax_top, row.x, row.y; color=log10(float(row.cycles)), colormap=:viridis,
-                    colorrange=(vmin, vmax), linewidth=2)
-                push!(plotted_traces, (plt=plt, is_last=row.rep_index == row.rep_count))
-            end
-            on(last_only) do value
-                for entry in plotted_traces
-                    entry.plt.visible[] = (!value) || entry.is_last
-                end
-            end
-        end
-        if nrow(pr_df) > 0
-            ord_all = sortperm(pr_df.cycles)
-            all_x = pr_df.cycles[ord_all]
-            all_y = pr_df.pr[ord_all]
-            lines_all = lines!(ax_bottom, all_x, all_y, color=:black, linewidth=2, alpha=0.7)
-            scatter_all = scatter!(ax_bottom, pr_df.cycles, pr_df.pr, color=:red, markersize=8)
-            last_mask = pr_df.rep_index .== pr_df.rep_count
-            last_lines = nothing
-            last_scatter = nothing
-            if any(last_mask)
-                ord_last = sortperm(pr_df.cycles[last_mask])
-                last_x = pr_df.cycles[last_mask][ord_last]
-                last_y = pr_df.pr[last_mask][ord_last]
-                last_lines = lines!(ax_bottom, last_x, last_y, color=:black, linewidth=2, alpha=0.7)
-                last_scatter = scatter!(ax_bottom, pr_df.cycles[last_mask], pr_df.pr[last_mask], color=:red, markersize=8)
-                last_lines.visible[] = false
-                last_scatter.visible[] = false
-            end
-            on(last_only) do value
-                lines_all.visible[] = !value
-                scatter_all.visible[] = !value
-                if last_lines !== nothing
-                    last_lines.visible[] = value
-                    last_scatter.visible[] = value
-                end
-            end
-        end
-        return fig
+function _ruo2_pund_fatigue_entries(
+    measurements::Vector{MeasurementInfo},
+    data::Vector{DataFrame},
+)::Vector{NamedTuple}
+    length(measurements) == length(data) || error("Measurement and data counts must match")
+    entries = NamedTuple[]
+    sizehint!(entries, length(measurements))
+    for (measurement, df) in zip(measurements, data)
+        params = merge(measurement.device_info.parameters, measurement.parameters)
+        haskey(params, :fatigue_idx) && (params[:fatigue_count] = params[:fatigue_idx])
+        push!(entries, (
+            kind=:pund,
+            df=df,
+            params=params,
+            timestamp=stat(measurement.filepath).mtime,
+        ))
     end
+    return entries
+end
 
+function _ruo2_pund_fatigue_analysis(entries::Vector{NamedTuple})::NamedTuple
+    result = analyze_pund_fatigue_combined(entries)
+    traces = get(result, :traces, NamedTuple[])
+    pr_points = get(result, :pr_points, NamedTuple[])
+    traces_df = DataFrame(
+        cycles=Float64[],
+        x=Vector{Float64}[],
+        y=Vector{Float64}[],
+        rep_index=Int[],
+        rep_count=Int[],
+    )
+    for trace in traces
+        _check_cancel()
+        push!(traces_df, (
+            float(trace.cycles),
+            collect(trace.x),
+            collect(trace.y),
+            Int(trace.rep_index),
+            Int(trace.rep_count),
+        ))
+    end
+    pr_df = DataFrame(
+        cycles=Float64[],
+        pr=Float64[],
+        rep_index=Int[],
+        rep_count=Int[],
+    )
+    for point in pr_points
+        _check_cancel()
+        push!(pr_df, (
+            float(point.cycles),
+            float(point.Pr),
+            Int(point.rep_index),
+            Int(point.rep_count),
+        ))
+    end
+    return (
+        traces_df=traces_df,
+        pr_df=pr_df,
+        x_label=get(result, :x_label, "Voltage (V)"),
+        y_label=get(result, :y_label, "Polarization (μC/cm²)"),
+    )
+end
+
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Type{RuO2PUNDFatiguePlot},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    isempty(measurements) && error("RuO2 PUND fatigue plot requires at least one measurement")
+    return Figure(size=(1200, 800))
+end
+
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Type{RuO2PUNDFatiguePlot},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    data = read_measurement_data(project, measurements)
+    entries = _ruo2_pund_fatigue_entries(measurements, data)
+    analyzed = _ruo2_pund_fatigue_analysis(entries)
+    return _draw_ruo2_pund_fatigue!(figure, analyzed)
+end
+
+function _draw_ruo2_pund_fatigue!(fig::Figure, analyzed::NamedTuple)::Nothing
+    traces_df = analyzed.traces_df
+    pr_df = analyzed.pr_df
+    (nrow(traces_df) == 0 && nrow(pr_df) == 0) && return nothing
+    ax_top = Axis(fig[1, 1], xlabel=analyzed.x_label, ylabel=analyzed.y_label,
+        title="Overlapped P-E curves (color-coded by fatigue cycles)")
+    gl_ctrl = GridLayout(fig[1, 2])
+    ax_bottom = Axis(fig[2, 1:2], xlabel="Fatigue cycles", ylabel="Remnant polarization (μC/cm²)",
+        title="Remnant polarization vs fatigue cycles")
+    last_only = Observable(false)
+    btn = Button(gl_ctrl[1, 1], label="Last only: OFF")
+    on(btn.clicks) do _
+        last_only[] = !last_only[]
+        btn.label[] = last_only[] ? "Last only: ON" : "Last only: OFF"
+    end
+    cyc_vals = traces_df.cycles
+    if isempty(cyc_vals)
+        text!(ax_top, 0.5, 0.5, text="No valid P-E traces", align=(:center, :center), color=:gray)
+    else
+        logvals = log10.(Float64.(cyc_vals))
+        vmin = minimum(logvals)
+        vmax = maximum(logvals)
+        tick_positions = collect(floor(Int, vmin):ceil(Int, vmax))
+        tick_labels = string.(Int.(10 .^ tick_positions))
+        Colorbar(gl_ctrl[2, 1], colormap=:viridis, limits=(vmin, vmax), label="Fatigue cycles (log10)",
+            ticks=(tick_positions, tick_labels))
+        plotted_traces = NamedTuple{(:plt, :is_last)}[]
+        for row in eachrow(traces_df)
+            isempty(row.x) && continue
+            isempty(row.y) && continue
+            plt = lines!(ax_top, row.x, row.y; color=log10(float(row.cycles)), colormap=:viridis,
+                colorrange=(vmin, vmax), linewidth=2)
+            push!(plotted_traces, (plt=plt, is_last=row.rep_index == row.rep_count))
+        end
+        on(last_only) do value
+            for entry in plotted_traces
+                entry.plt.visible[] = (!value) || entry.is_last
+            end
+        end
+    end
+    if nrow(pr_df) > 0
+        ord_all = sortperm(pr_df.cycles)
+        all_x = pr_df.cycles[ord_all]
+        all_y = pr_df.pr[ord_all]
+        lines_all = lines!(ax_bottom, all_x, all_y, color=:black, linewidth=2, alpha=0.7)
+        scatter_all = scatter!(ax_bottom, pr_df.cycles, pr_df.pr, color=:red, markersize=8)
+        last_mask = pr_df.rep_index .== pr_df.rep_count
+        last_lines = nothing
+        last_scatter = nothing
+        if any(last_mask)
+            ord_last = sortperm(pr_df.cycles[last_mask])
+            last_x = pr_df.cycles[last_mask][ord_last]
+            last_y = pr_df.pr[last_mask][ord_last]
+            last_lines = lines!(ax_bottom, last_x, last_y, color=:black, linewidth=2, alpha=0.7)
+            last_scatter = scatter!(ax_bottom, pr_df.cycles[last_mask], pr_df.pr[last_mask], color=:red, markersize=8)
+            last_lines.visible[] = false
+            last_scatter.visible[] = false
+        end
+        on(last_only) do value
+            lines_all.visible[] = !value
+            scatter_all.visible[] = !value
+            if last_lines !== nothing
+                last_lines.visible[] = value
+                last_scatter.visible[] = value
+            end
+        end
+    end
     return nothing
 end
