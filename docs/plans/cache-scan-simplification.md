@@ -29,7 +29,7 @@ indexes, loaded source data, and loaded measurement data. Project scripts should
 object and package functions, not a separate cache object.
 
 The project API names for this are `index_source_file` for measurement discovery,
-`load_source_data` for source-table loading, and `data_of_measurements` for package-owned data
+`load_source_data` for source-table loading, and `read_measurement_data` for package-owned data
 retrieval after measurements exist.
 
 `load_source_data(project, source_file)` loads a physical source file. When called as

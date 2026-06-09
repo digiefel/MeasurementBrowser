@@ -364,7 +364,7 @@ function plot_data!(
     ax_c = only(axes_c)
     ax_z = only(axes_z)
 
-    data = data_of_measurements(project, measurements)
+    data = read_measurement_data(project, measurements)
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
         frequencies_Hz = sort(unique(df.frequency_Hz))

@@ -63,8 +63,9 @@ Each `/files/<file_key>` group stores:
 | `fingerprint` fields | source path, size, mtime |
 | `source_file_unique_id` | source file id used during indexing |
 | `measurement_keys` | ordered keys for measurement groups |
-| `measurements/<measurement_key>` | optional payload group for that logical measurement |
+| `measurements/<measurement_key>` | optional data group for that logical measurement |
 | `measurements/<measurement_key>/data` | optional cached dataframe for that logical measurement |
+| `measurements/<measurement_key>/processed_data` | optional cached processed dataframe for that logical measurement |
 | `status` | `ok`, `skipped`, or `error` |
 
 Startup cache loading does not walk the per-file measurement groups.
@@ -78,7 +79,7 @@ measurements, source file statuses, file errors, and skipped-file count. Startup
 rebuild the browser tree when a project opens.
 
 The startup blob is the only cache copy of measurement metadata, including parameters and stats.
-Per-file measurement groups exist so lazy dataframe payloads have a stable place to live.
+Per-file measurement groups exist so lazily cached dataframes have a stable place to live.
 
 ## Loading the Cache
 
@@ -100,8 +101,8 @@ It returns a `ProjectCacheSnapshot`, containing:
 | `status` | cache status counts |
 | `errors` | per-file cache transform errors |
 
-Startup cache load does not read dataframe plot payloads. Plot payloads are read later when plot jobs
-request them.
+Startup cache load does not read cached dataframe data. Measurement data is read later when a view
+requests it through `read_measurement_data`.
 
 Caches without the current schema version and compact index are out of date. They should be rebuilt.
 Semantic fields do not decide cache validity.
@@ -125,11 +126,11 @@ During write, each source file is compared with cached fingerprints. Unchanged f
 Changed or new files are rewritten. Cached files missing from the source scan are deleted.
 
 After file updates, `/indexes` and `/meta` are rebuilt. The index is the cache startup path;
-per-file groups are for fingerprint checks, cache repair, and lazy measurement-data payloads.
+per-file groups are for fingerprint checks, cache repair, and lazy measurement-data entries.
 
-Cache build and update do not eagerly write every dataframe payload. They write the browser tree,
+Cache build and update do not eagerly write every measurement dataframe. They write the browser tree,
 source fingerprints, measurement metadata, and status. Measurement data is cached when
-`data_of_measurements` has to load it.
+`read_measurement_data` has to load it.
 
 ## Cache Status
 
@@ -152,14 +153,18 @@ source files are fresh, stale, new, or deleted. That requires filesystem scannin
 
 ## Measurement Data
 
-Normal plotting code asks for data through `data_of_measurements(project, measurements)`. That is
-where cached measurement data is used. Project code does not read cache storage directly.
+Views ask for measurement data through `read_measurement_data(project, measurements)`. That is where
+cached measurement data is used. Project code does not read cache storage directly.
+
+Callers that need processed measurement data use `process_measurement_data(project, measurements)`.
+This uses the same cache boundary but stores a separate dataframe entry. Direct data and processed
+data are separate on purpose so cache contents stay easy to inspect and debug.
 
 The package returns cached dataframe data only when the cached file fingerprint still matches the
 current source file. If the cache has no data, the file changed, or the cache entry errored,
-`data_of_measurements` opens the source file through `load_source_data`.
+`read_measurement_data` opens the source file through `load_source_data`.
 
-When `data_of_measurements` loads source data for a measurement whose cache entry is current, it
+When `read_measurement_data` loads source data for a measurement whose cache entry is current, it
 stores the returned dataframe in that measurement's cache entry for later calls.
 
 ## UI Behavior

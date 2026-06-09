@@ -62,6 +62,19 @@ data as the full source file. For virtual measurements, the project owns the
 measurement-scoped selection or reshaping. RuO2 PUND fatigue is the current example: the full file
 contains many cycles, and the measurement-scoped call returns the selected cycle.
 
+```julia
+process_measurement_data(
+    project::AbstractProject,
+    measurement::MeasurementInfo,
+    data::DataFrame,
+)::DataFrame
+```
+
+`process_measurement_data(project, measurement, data)` returns the processed dataframe for one
+logical measurement. The package calls it lazily from
+`process_measurement_data(project, measurements)` when processed data is requested and no valid
+processed cache entry exists. The default implementation returns `data` unchanged.
+
 The current package helper named `index_source_file(filepath)` creates a cheap `SourceFile` record
 from a path. Implementation must rename that helper before using
 `index_source_file(project, source_file)` as the project function.
@@ -108,7 +121,13 @@ PACKAGE -> PROJECT, UI THREAD
   )::Nothing
 
 PROJECT -> PACKAGE, inside plot_data! or other data-consuming project code
-  data_of_measurements(
+  read_measurement_data(
+      project::AbstractProject,
+      measurements::Vector{MeasurementInfo},
+  )::Vector{DataFrame}
+
+PROJECT -> PACKAGE, when processed measurement data is needed
+  process_measurement_data(
       project::AbstractProject,
       measurements::Vector{MeasurementInfo},
   )::Vector{DataFrame}
@@ -121,13 +140,18 @@ PACKAGE -> PROJECT, when source data is needed
   )::DataFrame
 ```
 
-This is the data path. The package owns `data_of_measurements`, but project plotting code calls it
-when it needs the actual data for already-indexed measurements.
+This is the data path. The package owns `read_measurement_data` and the cached vector form of
+`process_measurement_data`, but project plotting code calls them when it needs data for
+already-indexed measurements.
 
 ## Data Access
 
-`data_of_measurements` is package-owned. Plotting, stats, exports, and scripts call it when they
-need loaded data for logical measurements.
+`read_measurement_data` is package-owned. Plotting, stats, exports, and scripts call it when they
+need loaded direct data for logical measurements.
+
+`process_measurement_data(project, measurements)` is also package-owned. It returns cached processed
+data when available. On a miss, it reads direct data and calls the project method
+`process_measurement_data(project, measurement, data)` for each missing measurement.
 
 The intended order is:
 
@@ -137,7 +161,7 @@ already loaded data
   -> source file load
 ```
 
-Source-file fallback calls `load_source_data(project, source_file; measurement=m)` when it needs
+On a cache miss, the package calls `load_source_data(project, source_file; measurement=m)` to read
 data for a logical measurement. This keeps project-specific source-to-measurement mapping in project
 code without adding a separate selector function. Repeated source reads are allowed when the project
 needs different representations or the cache does not contain the requested data. The package should
@@ -175,7 +199,7 @@ plot_data!(
 `plot_data!` mutates `figure`. When it needs loaded measurement data, it calls:
 
 ```julia
-data_of_measurements(
+read_measurement_data(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
@@ -239,7 +263,7 @@ function plot_data!(
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    dfs::Vector{DataFrame} = data_of_measurements(project, measurements)
+    dfs::Vector{DataFrame} = read_measurement_data(project, measurements)
     for (measurement, df) in zip(measurements, dfs)
         # add df to figure
     end
@@ -248,9 +272,9 @@ end
 ```
 
 This keeps the read reasons explicit. `index_source_file` reads full fatigue data because cycle
-discovery requires it. Later plot calls use `data_of_measurements`, which should reuse valid cache
-data before falling back to `load_source_data(project, source_file; measurement=m)` for the selected
-logical measurement.
+discovery requires it. Later plot calls use `read_measurement_data`, which should reuse valid cache
+data before calling `load_source_data(project, source_file; measurement=m)` for the selected logical
+measurement.
 
 ## Thread Rules
 
@@ -259,7 +283,7 @@ These can run in background/cache work:
 ```text
 index_source_file
 load_source_data
-data_of_measurements
+read_measurement_data
 compute_and_add_measurement_stats!
 ```
 
@@ -282,9 +306,9 @@ measurements, or cache entries without adding cancellation arguments to project 
 rename the current low-level index_source_file(filepath) helper
 rename interpret_file(project, source_file) to index_source_file(project, source_file)
 add load_source_data(project, source_file; measurement=nothing)
-add data_of_measurements(project, measurements)
+add read_measurement_data(project, measurements)
 make RuO2 fatigue use load_source_data where it currently reads fatigue CSVs directly
-route plot data access through data_of_measurements
+route plot data access through read_measurement_data
 replace file-oriented plotting functions with setup_plot / plot_data!
 remove project-specific cache modules
 ```

@@ -136,11 +136,20 @@ plot_data!(
 
 `setup_plot` creates the Makie figure, axes, labels, and layout for that plot kind.
 
-`plot_data!` mutates the figure by adding the selected measurements. When it needs loaded
+`plot_data!` mutates the figure by adding the selected measurements. When it needs direct
 measurement data, it calls:
 
 ```julia
-data_of_measurements(
+read_measurement_data(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo},
+)::Vector{DataFrame}
+```
+
+When it needs processed measurement data, it calls:
+
+```julia
+process_measurement_data(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
@@ -163,9 +172,9 @@ debug_plot(
 waveform data, sliders for pulse-detection parameters, and plots that update when those sliders
 change.
 
-The package supplies `raw_data` by asking for the selected measurement's data, not by reading cached
-plot results. Debug mode may use cached source or measurement data when valid, but it should not use
-an already analyzed normal-plot payload.
+The package supplies `raw_data` by asking for the selected measurement's direct data, not by reading
+processed plot results. Debug mode may use cached source or measurement data when valid, but it
+should not use already processed normal-plot data.
 
 ## Package Responsibilities
 
@@ -192,14 +201,17 @@ Normal plots use logical measurement data:
 MeasurementInfo
   -> setup_plot(...)
   -> plot_data!(...)
-  -> data_of_measurements(project, measurements) when plot_data! needs data
+  -> read_measurement_data(project, measurements) or process_measurement_data(project, measurements)
 ```
 
-`data_of_measurements` returns one `DataFrame` per `MeasurementInfo`, in the same order. The package
+`read_measurement_data` returns one `DataFrame` per `MeasurementInfo`, in the same order. The package
 owns this function and can cache its result.
 
-When the package must fall back to source files, it asks the project for measurement-scoped source
-data:
+`process_measurement_data(project, measurements)` returns one processed `DataFrame` per
+`MeasurementInfo`, in the same order. The package owns the cached vector form; projects implement
+the single-measurement conversion from direct data to processed data.
+
+When the package needs source data, it asks the project for measurement-scoped source data:
 
 ```julia
 load_source_data(
@@ -242,7 +254,8 @@ Makie mutation stays on the UI thread:
 ```text
 background/cache work:
   load_source_data
-  data_of_measurements
+  read_measurement_data
+  process_measurement_data
 
 UI/render work:
   setup_plot

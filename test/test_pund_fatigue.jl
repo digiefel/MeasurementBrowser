@@ -68,7 +68,7 @@ using MeasurementBrowser
             MeasurementBrowser.read_pund_fatigue_file(fixture),
             Int(selected_count),
         )
-        data = MeasurementBrowser.data_of_measurements(RUO2_PROJECT, [selected])
+        data = MeasurementBrowser.read_measurement_data(RUO2_PROJECT, [selected])
 
         @test length(data) == 1
         @test only(data) == expected_df

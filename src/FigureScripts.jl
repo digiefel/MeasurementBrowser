@@ -424,7 +424,7 @@ function _build_figure_measurements(
     records = FigureMeasurement[]
     for measurement in measurements
         parameters = _measurement_parameters(measurement)
-        df = only(data_of_measurements(project, [measurement]))
+        df = only(read_measurement_data(project, [measurement]))
         loaded = _ruo2_plot_data(measurement, df)
         plot_kind = default_plot_kind(project, measurement)
         plot_kind === nothing && throw(FigureScriptResolutionError(

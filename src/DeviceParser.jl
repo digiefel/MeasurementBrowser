@@ -39,6 +39,7 @@ end
 #   kind_label(::P, kind) → String
 #   display_label(::P, meas) → String
 #   load_source_data(::P, source_file; measurement=nothing) → DataFrame
+#   process_measurement_data(::P, measurement, data) → DataFrame
 #   setup_plot(::P, plot_kind, measurements) → Figure
 #   plot_data!(::P, plot_kind, measurements, figure) → nothing
 #   debug_plot(::P, measurements, loaded; kwargs...) → Union{Figure,Nothing}

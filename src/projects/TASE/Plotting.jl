@@ -38,7 +38,7 @@ function plot_data!(
     axes = contents(figure[1, 1])
     isempty(axes) && error("TASE plot figure has no axis")
     ax = only(axes)
-    data = data_of_measurements(project, measurements)
+    data = read_measurement_data(project, measurements)
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
         label = measurement.clean_title

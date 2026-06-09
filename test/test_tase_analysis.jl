@@ -51,7 +51,7 @@ using DataFrames: nrow
     end
 
     @testset "plot data api" begin
-        data = data_of_measurements(TASE_PROJECT, measurements)
+        data = read_measurement_data(TASE_PROJECT, measurements)
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)
 

@@ -46,17 +46,17 @@ function _run_plot_job(job::PlotJob, cancel_requested)
     if job.debug
         if length(job.measurements) == 1
             measurement = only(job.measurements)
-            df = only(data_of_measurements(job.project, [measurement]))
+            df = only(read_measurement_data(job.project, [measurement]))
             return _ruo2_plot_data(measurement, df; debug=job.debug)
         end
 
-        data = data_of_measurements(job.project, job.measurements)
+        data = read_measurement_data(job.project, job.measurements)
         return _ruo2_combined_plot_data(job.measurements, data, job.plot_kind)
     end
 
     if length(job.measurements) == 1
         measurement = only(job.measurements)
-        df = only(data_of_measurements(job.project, [measurement]))
+        df = only(read_measurement_data(job.project, [measurement]))
         loaded = _ruo2_plot_data(measurement, df; debug=job.debug)
         return _analyze_ruo2_file_plot(
             job.project,
@@ -66,7 +66,7 @@ function _run_plot_job(job::PlotJob, cancel_requested)
         )
     end
 
-    data = data_of_measurements(job.project, job.measurements)
+    data = read_measurement_data(job.project, job.measurements)
     loaded = _ruo2_combined_plot_data(job.measurements, data, job.plot_kind)
     return _analyze_ruo2_files_plot(
         job.project,

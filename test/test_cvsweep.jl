@@ -35,7 +35,7 @@ const _CV_FIXTURES = (
     @test length(items) == 1
     @test only(items).measurement_kind == :cvsweep
 
-    data = MeasurementBrowser.data_of_measurements(RUO2_PROJECT, items)
+    data = MeasurementBrowser.read_measurement_data(RUO2_PROJECT, items)
     @test length(data) == 1
     @test nrow(only(data)) == nrow(z_df)
 

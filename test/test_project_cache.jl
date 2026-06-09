@@ -92,7 +92,7 @@ end
                 m -> m.measurement_kind === :pund,
                 loaded.hierarchy.all_measurements,
             ))
-            source_data = only(data_of_measurements(
+            source_data = only(read_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             ))
@@ -101,7 +101,7 @@ end
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             )) === nothing
-            loaded_data = only(data_of_measurements(
+            loaded_data = only(read_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             ))
@@ -112,6 +112,28 @@ end
             ))
             @test cached_data !== nothing
             @test _same_dataframe(cached_data, source_data)
+            @test only(MeasurementBrowser._cached_measurements_data(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement];
+                processed=true,
+            )) === nothing
+            processed_data = only(process_measurement_data(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement],
+            ))
+            @test _same_dataframe(processed_data, source_data)
+            @test only(MeasurementBrowser._cached_measurements_data(
+                MeasurementBrowser.RUO2_PROJECT,
+                [pund_measurement];
+                processed=true,
+            )) !== nothing
+            @test _same_dataframe(
+                only(MeasurementBrowser._cached_measurements_data(
+                    MeasurementBrowser.RUO2_PROJECT,
+                    [pund_measurement],
+                )),
+                source_data,
+            )
             @test (
                 pund_measurement.stats[:V_base],
                 pund_measurement.stats[:V_min],

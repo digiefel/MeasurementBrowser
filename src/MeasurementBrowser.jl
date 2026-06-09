@@ -29,7 +29,7 @@ export MeasurementFilterClause, MeasurementGroupFilter, NamedMeasurementGroup
 export FigureMeasurement, FigureScriptData, prepare_figure_script_data, infer_measurement_group
 export parse_device_info, detect_kind, kind_label, display_label
 export measurements_for_file
-export load_source_data, data_of_measurements, setup_plot, plot_data!
+export load_source_data, read_measurement_data, process_measurement_data, setup_plot, plot_data!
 export available_plot_kinds, default_plot_kind, plot_kind_label, plot_kind_description
 export plot_kind_measurement_kinds, plot_kind_min_measurements, supports_plot_kind
 export debug_plot

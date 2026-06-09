@@ -259,6 +259,8 @@ function _write_cached_measurement_data!(
     project::AbstractProject,
     measurement::MeasurementInfo,
     data::DataFrame,
+    ;
+    processed::Bool=false,
 )::Nothing
     identity = _ACTIVE_PROJECT_CACHE[]
     identity === nothing && return nothing
@@ -283,7 +285,8 @@ function _write_cached_measurement_data!(
         measurements_group = file_group["measurements"]
         measurement_key = _measurement_group_key(measurement.unique_id)
         haskey(measurements_group, measurement_key) || return nothing
-        _write_dataframe!(measurements_group[measurement_key], "data", data)
+        measurement_group = measurements_group[measurement_key]
+        _write_dataframe!(measurement_group, _measurement_data_name(processed), data)
     end
     return nothing
 end
@@ -291,6 +294,8 @@ end
 function _cached_measurements_data(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo},
+    ;
+    processed::Bool=false,
 )::Vector{Union{Nothing,DataFrame}}
     data = Union{Nothing,DataFrame}[nothing for _ in measurements]
     identity = _ACTIVE_PROJECT_CACHE[]
@@ -321,12 +326,15 @@ function _cached_measurements_data(
             measurement_key = _measurement_group_key(measurement.unique_id)
             haskey(measurements_group, measurement_key) || continue
             measurement_group = measurements_group[measurement_key]
-            haskey(measurement_group, "data") || continue
-            data[index] = _read_dataframe(measurement_group, "data", identity.cache_path)
+            data_name = _measurement_data_name(processed)
+            haskey(measurement_group, data_name) || continue
+            data[index] = _read_dataframe(measurement_group, data_name, identity.cache_path)
         end
     end
     return data
 end
+
+_measurement_data_name(processed::Bool)::String = processed ? "processed_data" : "data"
 
 function _file_status(file_group)
     return haskey(file_group, "status") ? read(file_group["status"]) : "ok"

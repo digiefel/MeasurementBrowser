@@ -13,7 +13,7 @@
         if isfile(pund_path)
             pund_meas = only(measurements_for_file(RUO2_PROJECT, pund_path))
             pund_params = merge(pund_meas.device_info.parameters, pund_meas.parameters)
-            pund_df = only(data_of_measurements(RUO2_PROJECT, [pund_meas]))
+            pund_df = only(read_measurement_data(RUO2_PROJECT, [pund_meas]))
             loaded = _ruo2_plot_data(pund_meas, pund_df)
             analyzed = _analyze_ruo2_file_plot(
                 RUO2_PROJECT,
@@ -27,7 +27,7 @@
         if isfile(tlm_path)
             tlm_meas = only(measurements_for_file(RUO2_PROJECT, tlm_path))
             tlm_params = merge(tlm_meas.device_info.parameters, tlm_meas.parameters)
-            tlm_df = only(data_of_measurements(RUO2_PROJECT, [tlm_meas]))
+            tlm_df = only(read_measurement_data(RUO2_PROJECT, [tlm_meas]))
             loaded = _ruo2_plot_data(tlm_meas, tlm_df)
             analyzed = _analyze_ruo2_file_plot(
                 RUO2_PROJECT,
