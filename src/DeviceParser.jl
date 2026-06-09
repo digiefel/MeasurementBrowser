@@ -603,8 +603,13 @@ end
 
 _resolve_scan_project(project::Union{AbstractProject,Nothing}) = project !== nothing ? project : _default_project[]
 
+const DEVICE_INFO_FILENAME = "device_info.txt"
+
+_device_info_path(root_path::AbstractString) = joinpath(root_path, DEVICE_INFO_FILENAME)
+_has_device_metadata(root_path::AbstractString)::Bool = isfile(_device_info_path(root_path))
+
 function _load_scan_metadata(root_path::String)
-    meta_path = joinpath(root_path, "device_info.txt")
+    meta_path = _device_info_path(root_path)
     return isfile(meta_path) ? _load_device_info_txt(meta_path) : nothing
 end
 

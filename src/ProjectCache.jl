@@ -202,7 +202,7 @@ function _write_meta!(h5, identity::ProjectCacheIdentity)
     _write_dataset!(meta, "project_name", identity.project_name; compress=false)
     _write_dataset!(meta, "cache_id", identity.cache_id; compress=false)
     _write_dataset!(meta, "root_path", identity.root_path; compress=false)
-    _write_dataset!(meta, "has_device_metadata", Bool[isfile(joinpath(identity.root_path, "device_info.txt"))])
+    _write_dataset!(meta, "has_device_metadata", Bool[_has_device_metadata(identity.root_path)])
     _write_dataset!(meta, "updated_at", Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS.s"); compress=false)
     return nothing
 end

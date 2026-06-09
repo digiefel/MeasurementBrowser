@@ -2,19 +2,19 @@ function _plot_kind_name(kind::Type{<:PlotKind})::String
     return String(nameof(kind))
 end
 
-function _selected_plot_kind!(ui_state)
+function _selected_plot_kind(ui_state)
     kinds = plot_kinds()
     isempty(kinds) && return nothing
     current = get(ui_state, :selected_plot_kind, nothing)
     if current isa Type && current <: PlotKind && current in kinds
         return current
     end
-    ui_state[:selected_plot_kind] = first(kinds)
-    return ui_state[:selected_plot_kind]
+    delete!(ui_state, :selected_plot_kind)
+    return nothing
 end
 
 function _measurement_plot_window_entry(ui_state, measurement::MeasurementInfo)
-    plot_kind = _selected_plot_kind!(ui_state)
+    plot_kind = _selected_plot_kind(ui_state)
     target_id = plot_kind === nothing ? measurement.unique_id :
         "$(measurement.unique_id)#$(nameof(plot_kind))"
     return Dict{Symbol,Any}(
@@ -165,6 +165,49 @@ function _finish_plot_job!(ui_state, job::PlotJob; fig=nothing, error::AbstractS
     return failed
 end
 
+function _plot_measurement_context(measurements::Vector{MeasurementInfo})::String
+    lines = String["Measurements: $(length(measurements))"]
+    shown = min(length(measurements), 3)
+    for measurement in first(measurements, shown)
+        push!(lines, "Measurement: $(measurement.clean_title) ($(measurement.measurement_kind))")
+        push!(lines, "File: $(measurement.filepath)")
+    end
+    length(measurements) > shown && push!(lines, "More files: $(length(measurements) - shown)")
+    return join(lines, "\n")
+end
+
+function _plot_stack_noise(file::AbstractString)::Bool
+    return occursin("GlfwOpenGLBackend", file) ||
+        occursin("CImGui", file) ||
+        occursin("GLFW", file) ||
+        endswith(file, "client.jl")
+end
+
+function _plot_backtrace_summary(bt)::String
+    bt === nothing && return ""
+    lines = String[]
+    for frame in stacktrace(bt)
+        file = String(frame.file)
+        _plot_stack_noise(file) && continue
+        push!(lines, "  $(frame.func) at $(basename(file)):$(frame.line)")
+        length(lines) >= 10 && break
+    end
+    isempty(lines) && return ""
+    return "Stack:\n" * join(lines, "\n")
+end
+
+function _format_plot_error(job::PlotJob, err, bt; phase::AbstractString)::String
+    parts = String[
+        "Plot failed while $phase: $(sprint(showerror, err))",
+        "Project: $(project_name(job.project))",
+        "Plot: $(nameof(job.plot_kind))",
+        _plot_measurement_context(job.measurements),
+    ]
+    stack = _plot_backtrace_summary(bt)
+    !isempty(stack) && push!(parts, stack)
+    return join(parts, "\n")
+end
+
 function _poll_plot_events!(ui_state)
     events = get(ui_state, :plot_events, nothing)
     events === nothing && return
@@ -182,10 +225,10 @@ function _poll_plot_events!(ui_state)
                 ui_state[:plot_state] = _finish_plot_job!(ui_state, job; fig) ? :error : :done
             catch err
                 bt = catch_backtrace()
-                message = bt === nothing ? sprint(showerror, err) : sprint(showerror, err, bt)
+                message = _format_plot_error(job, err, bt; phase="drawing")
                 _finish_plot_job!(ui_state, job; error=message)
                 ui_state[:plot_state] = :error
-                @error "Plot drawing failed" exception = (err, bt)
+                @error "Plot drawing failed" details = message
             end
             _finalize_plot_job!(ui_state)
         elseif msg.kind == :canceled
@@ -194,10 +237,10 @@ function _poll_plot_events!(ui_state)
         elseif msg.kind == :error
             job = get(ui_state, :active_plot_job, nothing)
             job isa PlotJob || continue
-            message = msg.bt === nothing ? sprint(showerror, msg.error) : sprint(showerror, msg.error, msg.bt)
+            message = _format_plot_error(job, msg.error, msg.bt; phase="loading data")
             _finish_plot_job!(ui_state, job; error=message)
             ui_state[:plot_state] = :error
-            @error "Plot job failed" exception = (msg.error, msg.bt)
+            @error "Plot job failed" details = message
             _finalize_plot_job!(ui_state)
         end
     end
@@ -304,7 +347,7 @@ end
 function render_plot_window(ui_state)
     proj = ui_state[:project]
     selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-    selected_kind = _selected_plot_kind!(ui_state)
+    selected_kind = _selected_plot_kind(ui_state)
     plot_measurements = MeasurementInfo[]
     plot_kind = selected_kind
     plot_key = nothing
@@ -371,8 +414,8 @@ end
 function render_combined_plots_window(ui_state)
     proj = ui_state[:project]
     if ig.Begin("Combined Plots")
-        current_kind = _selected_plot_kind!(ui_state)
-        kind_label = current_kind === nothing ? "None" : _plot_kind_name(current_kind)
+        current_kind = _selected_plot_kind(ui_state)
+        kind_label = current_kind === nothing ? "Choose plot kind" : _plot_kind_name(current_kind)
 
         if ig.BeginCombo("Plot Kind", kind_label)
             for plot_kind in plot_kinds()
@@ -438,7 +481,7 @@ function render_additional_plot_windows(ui_state)
         target_id = string(get(entry, :target_id, get(entry, :id, filepath)))
         entry[:target_id] = target_id
         if plot_kind === nothing
-            entry[:plot_error] = "No plot kind is available for this measurement."
+            entry[:plot_error] = "No plot kind selected."
         end
 
         existing_debug = get(entry, :debug, false)

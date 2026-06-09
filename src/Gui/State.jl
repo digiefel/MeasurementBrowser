@@ -721,7 +721,12 @@ function _request_source_scan_cancel!(ui_state)
     ui_state[:source_scan_state] = :canceling
 end
 
-function _begin_scan!(ui_state, path::String, proj::AbstractProject, has_device_metadata::Bool)
+function _begin_scan!(
+    ui_state,
+    path::String,
+    proj::AbstractProject,
+    has_device_metadata::Bool=_has_device_metadata(path),
+)
     _clear_plot_jobs!(ui_state)
     _clear_selection!(ui_state)
     delete!(ui_state, :plot_figure)
@@ -775,6 +780,7 @@ function _apply_scan_snapshot!(ui_state, snapshot)
     ui_state[:measurement_index] = snapshot.measurement_index
     ui_state[:device_metadata_keys] = snapshot.device_metadata_keys
     ui_state[:skipped_count] = snapshot.skipped_count
+    ui_state[:has_device_metadata] = hierarchy.has_device_metadata || _has_device_metadata(hierarchy.root_path)
     _apply_visible_selection!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
 end
@@ -926,7 +932,7 @@ function _launch_source_scan_job!(
     ui_state[:source_scan_state] = :discovering
     ui_state[:source_scan_progress] = _new_scan_progress()
     ui_state[:source_scan_error] = ""
-    _begin_scan!(ui_state, norm_path, proj, false)
+    _begin_scan!(ui_state, norm_path, proj, _has_device_metadata(norm_path))
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
@@ -988,7 +994,7 @@ function _launch_project_reload_job!(
     identity = project_cache_identity(cache_id, proj, path)
     current_root = get(ui_state, :root_path, "")
     if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
-        _begin_scan!(ui_state, identity.root_path, proj, false)
+        _begin_scan!(ui_state, identity.root_path, proj, _has_device_metadata(identity.root_path))
     else
         ui_state[:root_path] = identity.root_path
         ui_state[:project] = proj
@@ -1185,7 +1191,7 @@ function _poll_cache_events!(ui_state)
             proj = _project_by_name(identity.project_name)
             current_root = get(ui_state, :root_path, "")
             if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
-                _begin_scan!(ui_state, identity.root_path, proj, false)
+                _begin_scan!(ui_state, identity.root_path, proj, _has_device_metadata(identity.root_path))
             end
             ui_state[:cache_id] = identity.cache_id
             ui_state[:cache_identity] = identity
