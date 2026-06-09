@@ -29,13 +29,17 @@ include("RuO2/PlotCombined.jl")
 project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 
+function _ruo2_uses_setup_plot_api(plot_kind::Type{<:PlotKind})::Bool
+    return plot_kind in (RuO2CVSweepPlot, RuO2IVSweepPlot, RuO2TLM4PointPlot)
+end
+
 function _plot_job_data(
     project::RuO2Project,
     plot_kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo};
     debug::Bool=false,
 )
-    if plot_kind === RuO2CVSweepPlot
+    if _ruo2_uses_setup_plot_api(plot_kind)
         return nothing
     end
 
@@ -70,7 +74,7 @@ function _plot_job_figure(
     debug::Bool=false,
     device_params::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
 )
-    if plot_kind === RuO2CVSweepPlot
+    if _ruo2_uses_setup_plot_api(plot_kind)
         debug && error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
         fig = setup_plot(project, plot_kind, measurements)
         plot_data!(project, plot_kind, measurements, fig)

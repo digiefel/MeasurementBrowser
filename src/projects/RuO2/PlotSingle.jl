@@ -18,12 +18,6 @@ function _ruo2_plot_data(
     elseif kind === :wakeup_pn || kind === :wakeup_pund
         segment = kind === :wakeup_pn ? :pn : :pund
         return (df=df, title=title, area_um2=get(params, :area_um2, nothing), debug=debug, segment=segment)
-    elseif kind === :iv
-        return (df=df, title=title)
-    elseif kind === :breakdown
-        return (df=df, title=title * " (Breakdown)")
-    elseif kind === :tlm4p
-        return (df=df, title=title, device_params=params)
     end
     error("Unsupported RuO2 single-measurement plot kind '$kind'")
 end
@@ -195,6 +189,74 @@ function _ruo2_pulse_label(pulse_idx::Int, group_size::Int)
     return ""
 end
 
+function _process_ruo2_iv_data(data::DataFrame)::DataFrame
+    nrow(data) == 0 && return DataFrame(v=Float64[], i_abs=Float64[], i_positive=Bool[])
+    return DataFrame(
+        v=Float64.(data.v),
+        i_abs=abs.(Float64.(data.i)),
+        i_positive=Float64.(data.i) .> 0,
+    )
+end
+
+function _empty_ruo2_tlm_data()::DataFrame
+    return DataFrame(
+        current_uA=Float64[],
+        voltage_mV=Float64[],
+        resistance_kohm=Float64[],
+        valid_resistance=Bool[],
+        fit_resistance_ohm=Float64[],
+        fit_offset_V=Float64[],
+        rho_sheet=Float64[],
+    )
+end
+
+function _process_ruo2_tlm_data(measurement::MeasurementInfo, data::DataFrame)::DataFrame
+    nrow(data) == 0 && return _empty_ruo2_tlm_data()
+
+    mask = isfinite.(data.current_source) .& isfinite.(data.voltage_drop)
+    I = Float64.(data.current_source[mask])
+    V = Float64.(data.voltage_drop[mask])
+    isempty(I) && return _empty_ruo2_tlm_data()
+
+    n = length(I)
+    sx = sum(I)
+    sy = sum(V)
+    sxx = sum(I .^ 2)
+    sxy = sum(I .* V)
+    denom = n * sxx - sx^2
+    R_fit = 0.0
+    offset = 0.0
+    if abs(denom) > 1e-20
+        R_fit = (n * sxy - sx * sy) / denom
+        offset = (sy - R_fit * sx) / n
+    end
+
+    params = merge(measurement.device_info.parameters, measurement.parameters)
+    L_um, W_um = extract_tlm_geometry_from_params(params)
+    rho_sheet = (!isnan(L_um) && !isnan(W_um) && L_um > 0) ? R_fit * W_um / L_um : NaN
+    resistance_kohm = (V ./ I) ./ 1e3
+
+    return DataFrame(
+        current_uA=I .* 1e6,
+        voltage_mV=V .* 1e3,
+        resistance_kohm=resistance_kohm,
+        valid_resistance=isfinite.(resistance_kohm) .& (abs.(resistance_kohm) .< 1e6),
+        fit_resistance_ohm=fill(R_fit, n),
+        fit_offset_V=fill(offset, n),
+        rho_sheet=fill(rho_sheet, n),
+    )
+end
+
+function process_measurement_data(
+    ::RuO2Project,
+    measurement::MeasurementInfo,
+    data::DataFrame,
+)::DataFrame
+    measurement.measurement_kind in (:iv, :breakdown) && return _process_ruo2_iv_data(data)
+    measurement.measurement_kind === :tlm4p && return _process_ruo2_tlm_data(measurement, data)
+    return data
+end
+
 function _analyze_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, loaded; kwargs...)
     loaded === nothing && return nothing
     _check_cancel()
@@ -270,71 +332,147 @@ function _analyze_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, loa
 
         return (df=analyzed_df, title=loaded.title, area_um2=loaded.area_um2, pulse_groups=pulse_groups,
                 pulse_group_size=group_size, remnant_y_label=y_label, debug=false)
-    elseif plot_kind === RuO2IVSweepPlot
-        df = DataFrame(v=loaded.df.v, i_abs=abs.(loaded.df.i), i_positive=loaded.df.i .> 0)
-        return (df=df, title=loaded.title)
-    elseif plot_kind === RuO2TLM4PointPlot
-        df = loaded.df
-        mask = isfinite.(df.current_source) .& isfinite.(df.voltage_drop)
-        I = df.current_source[mask]
-        V = df.voltage_drop[mask]
-        isempty(I) && return nothing
-
-        n = length(I)
-        sx = sum(I)
-        sy = sum(V)
-        sxx = sum(I .^ 2)
-        sxy = sum(I .* V)
-        denom = n * sxx - sx^2
-        R_fit = 0.0
-        offset = 0.0
-        if abs(denom) > 1e-20
-            R_fit = (n * sxy - sx * sy) / denom
-            offset = (sy - R_fit * sx) / n
-        end
-
-        L_um, W_um = extract_tlm_geometry_from_params(loaded.device_params)
-        rho_sheet = (!isnan(L_um) && !isnan(W_um) && L_um > 0) ? R_fit * W_um / L_um : NaN
-
-        parts = split(loaded.title, ['_', ' '])
-        chip = !isempty(parts) ? parts[1] : "?"
-        geometry_str = "?"
-        temp = "?"
-        for part in parts
-            occursin(r"L\d+W\d+", part) && (geometry_str = part)
-            occursin(r"\d+K", part) && (temp = part)
-        end
-        if haskey(loaded.device_params, :temperature_K)
-            temp = "$(loaded.device_params[:temperature_K])K"
-        end
-
-        i_uA = I .* 1e6
-        v_mV = V .* 1e3
-        r_kohm = (V ./ I) ./ 1e3
-        i_min, i_max = minimum(i_uA), maximum(i_uA)
-        i_span = i_max - i_min
-        i_span == 0 && (i_span = 1.0)
-        i_fit = [i_min - 0.1 * i_span, i_max + 0.1 * i_span]
-        v_fit_mV = (R_fit / 1e3) .* i_fit .+ (offset * 1e3)
-
-        analyzed_df = DataFrame(
-            current_uA=i_uA,
-            voltage_mV=v_mV,
-            resistance_kohm=r_kohm,
-            valid_resistance=isfinite.(r_kohm) .& (abs.(r_kohm) .< 1e6),
-        )
-        return (
-            df=analyzed_df,
-            title="$chip $geometry_str $temp",
-            fit_resistance_ohm=R_fit,
-            fit_resistance_kohm=R_fit / 1e3,
-            fit_current_uA=i_fit,
-            fit_voltage_mV=v_fit_mV,
-            rho_sheet=rho_sheet,
-        )
     end
 
     return loaded
+end
+
+function _ruo2_tlm_title(measurement::MeasurementInfo)::String
+    params = merge(measurement.device_info.parameters, measurement.parameters)
+    title = _plot_title(measurement.filepath)
+    parts = split(title, ['_', ' '])
+    chip = !isempty(parts) ? parts[1] : "?"
+    geometry_str = "?"
+    temp = "?"
+    for part in parts
+        occursin(r"L\d+W\d+", part) && (geometry_str = part)
+        occursin(r"\d+K", part) && (temp = part)
+    end
+    haskey(params, :temperature_K) && (temp = "$(params[:temperature_K])K")
+    return "$chip $geometry_str $temp"
+end
+
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Type{RuO2IVSweepPlot},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    isempty(measurements) && error("RuO2 IV sweep plot requires at least one measurement")
+    title = length(measurements) == 1 ? only(measurements).clean_title : "RuO2 IV sweep overlay"
+    fig = Figure(size=(800, 600))
+    Axis(fig[1, 1], xlabel="Voltage (V)", ylabel="Current (A)", title=title)
+    return fig
+end
+
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Type{RuO2IVSweepPlot},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    axes = contents(figure[1, 1])
+    isempty(axes) && error("RuO2 IV sweep plot figure has no axis")
+    ax = only(axes)
+
+    data = process_measurement_data(project, measurements)
+    for (measurement, df) in zip(measurements, data)
+        nrow(df) == 0 && continue
+        label = length(measurements) == 1 ? nothing : measurement.clean_title
+        if label === nothing
+            lines!(ax, df.v, df.i_abs; color=df.i_positive, colormap=:RdBu_3, linewidth=2)
+        else
+            lines!(ax, df.v, df.i_abs; color=df.i_positive, colormap=:RdBu_3, linewidth=2, label)
+        end
+    end
+    ax.yscale = log10
+    length(measurements) > 1 && axislegend(ax)
+    return nothing
+end
+
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Type{RuO2TLM4PointPlot},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    isempty(measurements) && error("RuO2 TLM 4-point plot requires at least one measurement")
+    title = length(measurements) == 1 ? _ruo2_tlm_title(only(measurements)) : "RuO2 TLM 4-point overlay"
+    fig = Figure(size=(1000, 500))
+    Axis(fig[1, 1], xlabel="Current (μA)", ylabel="Voltage (mV)", title="I-V Curve")
+    Axis(fig[1, 2], xlabel="Current (μA)", ylabel="Resistance (kΩ)", title="Resistance vs Current")
+    Label(fig[0, :], title, fontsize=20, font=:bold)
+    return fig
+end
+
+function _ruo2_tlm_fit_line(df::DataFrame)::Tuple{Vector{Float64},Vector{Float64}}
+    i_min, i_max = minimum(df.current_uA), maximum(df.current_uA)
+    i_span = i_max - i_min
+    i_span == 0 && (i_span = 1.0)
+    current_uA = [i_min - 0.1 * i_span, i_max + 0.1 * i_span]
+    R_fit = first(df.fit_resistance_ohm)
+    offset = first(df.fit_offset_V)
+    voltage_mV = (R_fit / 1e3) .* current_uA .+ (offset * 1e3)
+    return current_uA, voltage_mV
+end
+
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Type{RuO2TLM4PointPlot},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    axes_iv = contents(figure[1, 1])
+    axes_r = contents(figure[1, 2])
+    isempty(axes_iv) && error("RuO2 TLM 4-point plot figure has no I-V axis")
+    isempty(axes_r) && error("RuO2 TLM 4-point plot figure has no resistance axis")
+    ax_iv = only(axes_iv)
+    ax_r = only(axes_r)
+
+    data = process_measurement_data(project, measurements)
+    colors = cgrad(:tab10, max(length(data), 1); categorical=true)
+    for (index, (measurement, df)) in enumerate(zip(measurements, data))
+        nrow(df) == 0 && continue
+        color = colors[index]
+        if length(measurements) == 1
+            scatter!(ax_iv, df.current_uA, df.voltage_mV; color, markersize=8, label="Data")
+        else
+            scatter!(ax_iv, df.current_uA, df.voltage_mV; color, markersize=8, label=measurement.clean_title)
+        end
+        fit_current_uA, fit_voltage_mV = _ruo2_tlm_fit_line(df)
+        fit_label = "Fit: R=$(round(first(df.fit_resistance_ohm), digits=2)) Ω"
+        if length(measurements) == 1
+            lines!(ax_iv, fit_current_uA, fit_voltage_mV; color=:red, linewidth=2, label=fit_label)
+            isfinite(first(df.rho_sheet)) && lines!(
+                ax_iv,
+                [NaN],
+                [NaN];
+                color=:transparent,
+                label="ρ_sq = $(round(first(df.rho_sheet), digits=2)) Ω/sq",
+            )
+        else
+            lines!(ax_iv, fit_current_uA, fit_voltage_mV; color, linewidth=2, linestyle=:dash)
+        end
+
+        valid = df.valid_resistance
+        any(valid) && scatter!(
+            ax_r,
+            df.current_uA[valid],
+            df.resistance_kohm[valid];
+            color,
+            markersize=8,
+            label=length(measurements) == 1 ? "R = V/I" : measurement.clean_title,
+        )
+        hlines!(
+            ax_r,
+            [first(df.fit_resistance_ohm) / 1e3];
+            color=length(measurements) == 1 ? :red : color,
+            linestyle=:dash,
+            linewidth=2,
+            label=length(measurements) == 1 ? "Fitted R" : nothing,
+        )
+    end
+    axislegend(ax_iv, position=:lt)
+    axislegend(ax_r)
+    return nothing
 end
 
 function setup_plot(
@@ -444,32 +582,6 @@ function _draw_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, analyz
         Legend(fig[1, 1], [l1, l2, l3], ["Current", "Voltage", "FE Current"],
             tellwidth=false, tellheight=false, halign=:left, valign=:top)
         axislegend(ax3)
-        return fig
-    elseif plot_kind === RuO2IVSweepPlot
-        nrow(analyzed.df) == 0 && return nothing
-        fig = Figure(size=(800, 600))
-        ax = Axis(fig[1, 1], xlabel="Voltage (V)", ylabel="Current (A)", title=analyzed.title)
-        lines!(ax, analyzed.df.v, analyzed.df.i_abs, color=analyzed.df.i_positive, colormap=:RdBu_3, linewidth=2)
-        ax.yscale = log10
-        return fig
-    elseif plot_kind === RuO2TLM4PointPlot
-        df = analyzed.df
-        nrow(df) == 0 && return nothing
-        fig = Figure(size=(1000, 500))
-        ax1 = Axis(fig[1, 1], xlabel="Current (μA)", ylabel="Voltage (mV)", title="I-V Curve")
-        scatter!(ax1, df.current_uA, df.voltage_mV, color=:blue, markersize=8, label="Data")
-        lines!(ax1, analyzed.fit_current_uA, analyzed.fit_voltage_mV, color=:red, linewidth=2,
-            label="Fit: R=$(round(analyzed.fit_resistance_ohm, digits=2)) Ω")
-        if isfinite(analyzed.rho_sheet)
-            lines!(ax1, [NaN], [NaN], color=:transparent, label="ρ_sq = $(round(analyzed.rho_sheet, digits=2)) Ω/sq")
-        end
-        axislegend(ax1, position=:lt)
-        ax2 = Axis(fig[1, 2], xlabel="Current (μA)", ylabel="Resistance (kΩ)", title="Resistance vs Current")
-        valid = df.valid_resistance
-        any(valid) && scatter!(ax2, df.current_uA[valid], df.resistance_kohm[valid], color=:green, markersize=8, label="R = V/I")
-        hlines!(ax2, [analyzed.fit_resistance_kohm], color=:red, linestyle=:dash, linewidth=2, label="Fitted R")
-        axislegend(ax2)
-        Label(fig[0, :], analyzed.title, fontsize=20, font=:bold)
         return fig
     end
 
