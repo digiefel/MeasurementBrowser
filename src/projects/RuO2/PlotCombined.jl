@@ -1,26 +1,11 @@
 function _ruo2_combined_plot_data(
     measurements::Vector{MeasurementInfo},
     data::Vector{DataFrame},
-    combined_kind::Type{<:PlotKind};
-    use_o2_flow::Bool=false,
+    combined_kind::Type{<:PlotKind},
 )
     isempty(measurements) && return nothing
     length(measurements) == length(data) || error("Measurement and data counts must match")
-    if combined_kind === RuO2TLMTemperaturePlot
-        entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent, :oxygen_flow_sccm)}[]
-        for (measurement, df) in zip(measurements, data)
-            path = measurement.filepath
-            params = merge(measurement.device_info.parameters, measurement.parameters)
-            tempK = _extract_temperature_K(params, path)
-            isfinite(tempK) || continue
-            site = _extract_site_label(params, path)
-            o2 = _extract_oxygen_percent(params, path)
-            o2_flow = _extract_oxygen_flow(params, path)
-            push!(entries, (path=path, df=df, params=params, tempK=tempK, site=site,
-                            oxygen_percent=o2, oxygen_flow_sccm=o2_flow))
-        end
-        return (entries=entries, use_o2_flow=use_o2_flow)
-    elseif combined_kind === RuO2PUNDFatiguePlot
+    if combined_kind === RuO2PUNDFatiguePlot
         entries = NamedTuple[]
         for (measurement, df) in zip(measurements, data)
             path = measurement.filepath
@@ -39,77 +24,7 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}
     loaded === nothing && return nothing
     _check_cancel()
 
-    if combined_kind === RuO2TLMTemperaturePlot
-        entries = loaded.entries
-        isempty(entries) && return nothing
-        results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[],
-                            rho_c=Float64[], r_squared=Float64[], n_files=Int[], thickness_cm=Float64[],
-                            oxygen_percent=Float64[], oxygen_flow_sccm=Float64[])
-        by_site = Dict{String,Vector{NamedTuple}}()
-        for entry in entries
-            _check_cancel()
-            push!(get!(by_site, entry.site, NamedTuple[]), entry)
-        end
-        for (site, vec) in by_site
-            _check_cancel()
-            temps = unique([entry.tempK for entry in vec])
-            for temp in temps
-                _check_cancel()
-                subset = filter(entry -> entry.tempK == temp, vec)
-                files_data_params = [(entry.path, entry.df, entry.params) for entry in subset]
-                combined_df = analyze_tlm_combined(files_data_params)
-                nrow(combined_df) == 0 && continue
-                R_sheet, R_cprime, rho_c, r2 = calculate_sheet_resistance(combined_df)
-                isfinite(R_sheet) || continue
-                thickness_values = Float64[]
-                for sample in subset
-                    if haskey(sample.params, :t_RuO2_nm)
-                        t_nm = try
-                            Float64(sample.params[:t_RuO2_nm])
-                        catch
-                            NaN
-                        end
-                        isfinite(t_nm) && t_nm > 0 && push!(thickness_values, t_nm)
-                    end
-                end
-                thickness_cm = NaN
-                if length(thickness_values) == length(subset) && !isempty(thickness_values)
-                    thickness_cm = mean(thickness_values) * 1e-7
-                end
-                R_val = isfinite(thickness_cm) ? R_sheet * thickness_cm : R_sheet
-                o2 = begin
-                    vals = filter(isfinite, [sample.oxygen_percent for sample in subset])
-                    isempty(vals) ? NaN : mean(vals)
-                end
-                o2_flow = begin
-                    vals = filter(isfinite, [sample.oxygen_flow_sccm for sample in subset])
-                    isempty(vals) ? NaN : mean(vals)
-                end
-                push!(results, (site, temp, R_val, R_cprime, rho_c, r2, length(subset), thickness_cm, o2, o2_flow))
-            end
-        end
-        nrow(results) == 0 && return nothing
-
-        sites = sort(unique(results.site))
-        site_summary = DataFrame(
-            site=String[],
-            color_value=Float64[],
-            rt_val=Float64[],
-            tcr_ppm=Float64[],
-        )
-        for site in sites
-            sub = sort(filter(row -> row.site == site, results), :temperature_K)
-            plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
-            a, b, ok = _ols_ab(sub.temperature_K, plot_vals)
-            alpha_ppm = (ok && isfinite(a) && a != 0) ? (b / a) * 1e6 : NaN
-            idx = isempty(plot_vals) ? 1 : argmin(abs.(sub.temperature_K .- 298.0))
-            rt_val = isempty(plot_vals) ? NaN : plot_vals[idx]
-            o2_vals = filter(isfinite, results.oxygen_percent[results.site .== site])
-            color_value = isempty(o2_vals) ? NaN : mean(o2_vals)
-            push!(site_summary, (site, color_value, rt_val, alpha_ppm))
-        end
-        return (results=results, site_summary=site_summary, use_o2_flow=loaded.use_o2_flow)
-    elseif combined_kind === RuO2PUNDFatiguePlot
+    if combined_kind === RuO2PUNDFatiguePlot
         result = analyze_pund_fatigue_combined(loaded.entries)
         traces = get(result, :traces, NamedTuple[])
         pr_points = get(result, :pr_points, NamedTuple[])
@@ -272,91 +187,210 @@ function plot_data!(
     return nothing
 end
 
+function _ruo2_tlm_temperature_entries(
+    measurements::Vector{MeasurementInfo},
+    data::Vector{DataFrame},
+)::Vector{NamedTuple}
+    length(measurements) == length(data) || error("Measurement and data counts must match")
+    entries = NamedTuple[]
+    sizehint!(entries, length(measurements))
+    for (measurement, df) in zip(measurements, data)
+        path = measurement.filepath
+        params = merge(measurement.device_info.parameters, measurement.parameters)
+        tempK = _extract_temperature_K(params, path)
+        isfinite(tempK) || continue
+        push!(entries, (
+            path=path,
+            df=df,
+            params=params,
+            tempK=tempK,
+            site=_extract_site_label(params, path),
+            oxygen_percent=_extract_oxygen_percent(params, path),
+            oxygen_flow_sccm=_extract_oxygen_flow(params, path),
+        ))
+    end
+    return entries
+end
+
+function _ruo2_tlm_temperature_analysis(entries::Vector{NamedTuple})::Union{Nothing,NamedTuple}
+    isempty(entries) && return nothing
+    results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[],
+                        rho_c=Float64[], r_squared=Float64[], n_files=Int[], thickness_cm=Float64[],
+                        oxygen_percent=Float64[], oxygen_flow_sccm=Float64[])
+    by_site = Dict{String,Vector{NamedTuple}}()
+    for entry in entries
+        _check_cancel()
+        push!(get!(by_site, entry.site, NamedTuple[]), entry)
+    end
+    for (site, vec) in by_site
+        _check_cancel()
+        temps = unique([entry.tempK for entry in vec])
+        for temp in temps
+            _check_cancel()
+            subset = filter(entry -> entry.tempK == temp, vec)
+            files_data_params = [(entry.path, entry.df, entry.params) for entry in subset]
+            combined_df = analyze_tlm_combined(files_data_params)
+            nrow(combined_df) == 0 && continue
+            R_sheet, R_cprime, rho_c, r2 = calculate_sheet_resistance(combined_df)
+            isfinite(R_sheet) || continue
+            thickness_values = Float64[]
+            for sample in subset
+                if haskey(sample.params, :t_RuO2_nm)
+                    t_nm = try
+                        Float64(sample.params[:t_RuO2_nm])
+                    catch
+                        NaN
+                    end
+                    isfinite(t_nm) && t_nm > 0 && push!(thickness_values, t_nm)
+                end
+            end
+            thickness_cm = NaN
+            if length(thickness_values) == length(subset) && !isempty(thickness_values)
+                thickness_cm = mean(thickness_values) * 1e-7
+            end
+            R_val = isfinite(thickness_cm) ? R_sheet * thickness_cm : R_sheet
+            o2 = begin
+                vals = filter(isfinite, [sample.oxygen_percent for sample in subset])
+                isempty(vals) ? NaN : mean(vals)
+            end
+            o2_flow = begin
+                vals = filter(isfinite, [sample.oxygen_flow_sccm for sample in subset])
+                isempty(vals) ? NaN : mean(vals)
+            end
+            push!(results, (site, temp, R_val, R_cprime, rho_c, r2, length(subset), thickness_cm, o2, o2_flow))
+        end
+    end
+    nrow(results) == 0 && return nothing
+
+    sites = sort(unique(results.site))
+    site_summary = DataFrame(
+        site=String[],
+        color_value=Float64[],
+        rt_val=Float64[],
+        tcr_ppm=Float64[],
+    )
+    for site in sites
+        sub = sort(filter(row -> row.site == site, results), :temperature_K)
+        plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
+        a, b, ok = _ols_ab(sub.temperature_K, plot_vals)
+        alpha_ppm = (ok && isfinite(a) && a != 0) ? (b / a) * 1e6 : NaN
+        idx = isempty(plot_vals) ? 1 : argmin(abs.(sub.temperature_K .- 298.0))
+        rt_val = isempty(plot_vals) ? NaN : plot_vals[idx]
+        o2_vals = filter(isfinite, results.oxygen_percent[results.site .== site])
+        color_value = isempty(o2_vals) ? NaN : mean(o2_vals)
+        push!(site_summary, (site, color_value, rt_val, alpha_ppm))
+    end
+    return (results=results, site_summary=site_summary, use_o2_flow=false)
+end
+
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Type{RuO2TLMTemperaturePlot},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    isempty(measurements) && error("RuO2 TLM temperature plot requires at least one measurement")
+    return Figure(size=(1100, 720))
+end
+
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Type{RuO2TLMTemperaturePlot},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    data = read_measurement_data(project, measurements)
+    entries = _ruo2_tlm_temperature_entries(measurements, data)
+    analyzed = _ruo2_tlm_temperature_analysis(entries)
+    analyzed === nothing && return nothing
+    return _draw_ruo2_tlm_temperature!(figure, analyzed)
+end
+
+function _draw_ruo2_tlm_temperature!(fig::Figure, analyzed::NamedTuple)::Nothing
+    results = analyzed.results
+    site_summary = analyzed.site_summary
+    any_thickness = any(isfinite, results.thickness_cm)
+    y_label = any_thickness ? "Resistivity (mΩ·cm)" : "Sheet Resistance (Ω/□)"
+    title_str = any_thickness ? "TLM Resistivity vs Temperature" : "TLM Sheet Resistance vs Temperature"
+    controls = GridLayout(fig[0, 1:2], tellwidth=false)
+    Label(controls[1, 1], "O2 metric")
+    toggle_flow = Toggle(controls[1, 2], active=analyzed.use_o2_flow, width=80)
+    Label(controls[1, 3], "Use O2 flow (sccm)")
+    ax = Axis(fig[1, 1:2], xlabel="Temperature (K)", ylabel=y_label, title=title_str)
+    ax_rt = Axis(fig[2, 1], xlabel="O2 (%)",
+        ylabel=any_thickness ? "Resistivity(~298K) (mΩ·cm)" : "Sheet R(~298K) (Ω/□)",
+        title="Resistivity vs O2%")
+    ax_tcr = Axis(fig[2, 2], xlabel="O2 (%)", ylabel="TCR (ppm/K)", title="TCR vs O2")
+    sites = sort(unique(results.site))
+    cmap = to_colormap(Reverse(:seaborn_flare_gradient))
+    base_colors = to_colormap(:tab10)
+    finite_color_vals = filter(isfinite, site_summary.color_value)
+    color_min, color_max = isempty(finite_color_vals) ? (0.0, 1.0) : (minimum(finite_color_vals), maximum(finite_color_vals))
+    colors = [
+        (isfinite(site_summary.color_value[i]) && color_max > color_min) ?
+            cmap[clamp(Int(round(1 + (length(cmap) - 1) * (site_summary.color_value[i] - color_min) / (color_max - color_min))), 1, length(cmap))] :
+            base_colors[mod1(i, length(base_colors))]
+        for i in 1:nrow(site_summary)
+    ]
+    rt_x = [Observable([NaN]) for _ in sites]
+    tcr_x = [Observable([NaN]) for _ in sites]
+    data_lines = Any[]
+    for (i, site) in enumerate(sites)
+        sub = sort(filter(row -> row.site == site, results), :temperature_K)
+        plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
+        line = lines!(ax, sub.temperature_K, plot_vals; color=colors[i], linewidth=2, label=site)
+        points = scatter!(ax, sub.temperature_K, plot_vals; color=colors[i], marker=:circle, markersize=10, label=site)
+        push!(data_lines, (line=line, points=points))
+        summary_row = filter(row -> row.site == site, site_summary)
+        nrow(summary_row) == 1 || continue
+        rt_val = summary_row.rt_val[1]
+        tcr_ppm = summary_row.tcr_ppm[1]
+        scatter!(ax_rt, rt_x[i], [rt_val]; color=colors[i], marker=:circle, markersize=9)
+        scatter!(ax_tcr, tcr_x[i], [tcr_ppm]; color=colors[i], marker=:diamond, markersize=9)
+        if isfinite(tcr_ppm)
+            a, b, ok = _ols_ab(sub.temperature_K, plot_vals)
+            if ok
+                tspan = range(minimum(sub.temperature_K), maximum(sub.temperature_K); length=50)
+                fit_vals = a .+ b .* tspan
+                lines!(ax, tspan, fit_vals; color=colors[i], linestyle=:dash, linewidth=1.5)
+                text!(ax, maximum(sub.temperature_K), a + b * maximum(sub.temperature_K);
+                    text="TCR=$(round(tcr_ppm)) ppm/K", align=(:left, :center), color=colors[i], offset=(8, 0))
+            end
+        end
+    end
+    axislegend(ax, position=:rt, merge=true)
+    function update_o2_metric!()
+        use_flow = toggle_flow.active[]
+        field = use_flow ? :oxygen_flow_sccm : :oxygen_percent
+        suffix = use_flow ? " sccm O2" : "% O2"
+        ax_rt.xlabel[] = use_flow ? "O2 Flow (sccm)" : "O2 (%)"
+        ax_tcr.xlabel[] = ax_rt.xlabel[]
+        ax_rt.title[] = use_flow ? "Resistivity vs O2 flow" : "Resistivity vs O2%"
+        ax_tcr.title[] = use_flow ? "TCR vs O2 flow" : "TCR vs O2"
+        for (i, site) in enumerate(sites)
+            vals = filter(isfinite, results[results.site .== site, field])
+            metric_val = isempty(vals) ? NaN : mean(vals)
+            label = isfinite(metric_val) ? string(site, " (", round(metric_val, digits=2), suffix, ")") : site
+            data_lines[i].line.label[] = label
+            data_lines[i].points.label[] = label
+            rt_x[i][] = [metric_val]
+            tcr_x[i][] = [metric_val]
+        end
+    end
+    update_o2_metric!()
+    on(toggle_flow.active) do _
+        update_o2_metric!()
+        reset_limits!(ax_rt)
+        reset_limits!(ax_tcr)
+    end
+    rowsize!(fig.layout, 1, Relative(0.6))
+    rowsize!(fig.layout, 2, Relative(0.4))
+    return nothing
+end
+
 function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
-    if combined_kind === RuO2TLMTemperaturePlot
-        results = analyzed.results
-        site_summary = analyzed.site_summary
-        fig = Figure(size=(1100, 720))
-        any_thickness = any(isfinite, results.thickness_cm)
-        y_label = any_thickness ? "Resistivity (mΩ·cm)" : "Sheet Resistance (Ω/□)"
-        title_str = any_thickness ? "TLM Resistivity vs Temperature" : "TLM Sheet Resistance vs Temperature"
-        controls = GridLayout(fig[0, 1:2], tellwidth=false)
-        Label(controls[1, 1], "O2 metric")
-        toggle_flow = Toggle(controls[1, 2], active=analyzed.use_o2_flow, width=80)
-        Label(controls[1, 3], "Use O2 flow (sccm)")
-        ax = Axis(fig[1, 1:2], xlabel="Temperature (K)", ylabel=y_label, title=title_str)
-        ax_rt = Axis(fig[2, 1], xlabel="O2 (%)",
-            ylabel=any_thickness ? "Resistivity(~298K) (mΩ·cm)" : "Sheet R(~298K) (Ω/□)",
-            title="Resistivity vs O2%")
-        ax_tcr = Axis(fig[2, 2], xlabel="O2 (%)", ylabel="TCR (ppm/K)", title="TCR vs O2")
-        sites = sort(unique(results.site))
-        cmap = to_colormap(Reverse(:seaborn_flare_gradient))
-        base_colors = to_colormap(:tab10)
-        finite_color_vals = filter(isfinite, site_summary.color_value)
-        color_min, color_max = isempty(finite_color_vals) ? (0.0, 1.0) : (minimum(finite_color_vals), maximum(finite_color_vals))
-        colors = [
-            (isfinite(site_summary.color_value[i]) && color_max > color_min) ?
-                cmap[clamp(Int(round(1 + (length(cmap) - 1) * (site_summary.color_value[i] - color_min) / (color_max - color_min))), 1, length(cmap))] :
-                base_colors[mod1(i, length(base_colors))]
-            for i in 1:nrow(site_summary)
-        ]
-        rt_x = [Observable([NaN]) for _ in sites]
-        tcr_x = [Observable([NaN]) for _ in sites]
-        data_lines = Any[]
-        for (i, site) in enumerate(sites)
-            sub = sort(filter(row -> row.site == site, results), :temperature_K)
-            plot_vals = [isfinite(sub.thickness_cm[j]) ? sub.R_val[j] * 1e3 : sub.R_val[j] for j in eachindex(sub.R_val)]
-            line = lines!(ax, sub.temperature_K, plot_vals; color=colors[i], linewidth=2, label=site)
-            points = scatter!(ax, sub.temperature_K, plot_vals; color=colors[i], marker=:circle, markersize=10, label=site)
-            push!(data_lines, (line=line, points=points))
-            summary_row = filter(row -> row.site == site, site_summary)
-            nrow(summary_row) == 1 || continue
-            rt_val = summary_row.rt_val[1]
-            tcr_ppm = summary_row.tcr_ppm[1]
-            scatter!(ax_rt, rt_x[i], [rt_val]; color=colors[i], marker=:circle, markersize=9)
-            scatter!(ax_tcr, tcr_x[i], [tcr_ppm]; color=colors[i], marker=:diamond, markersize=9)
-            if isfinite(tcr_ppm)
-                a, b, ok = _ols_ab(sub.temperature_K, plot_vals)
-                if ok
-                    tspan = range(minimum(sub.temperature_K), maximum(sub.temperature_K); length=50)
-                    fit_vals = a .+ b .* tspan
-                    lines!(ax, tspan, fit_vals; color=colors[i], linestyle=:dash, linewidth=1.5)
-                    text!(ax, maximum(sub.temperature_K), a + b * maximum(sub.temperature_K);
-                        text="TCR=$(round(tcr_ppm)) ppm/K", align=(:left, :center), color=colors[i], offset=(8, 0))
-                end
-            end
-        end
-        axislegend(ax, position=:rt, merge=true)
-        function update_o2_metric!()
-            use_flow = toggle_flow.active[]
-            field = use_flow ? :oxygen_flow_sccm : :oxygen_percent
-            suffix = use_flow ? " sccm O2" : "% O2"
-            ax_rt.xlabel[] = use_flow ? "O2 Flow (sccm)" : "O2 (%)"
-            ax_tcr.xlabel[] = ax_rt.xlabel[]
-            ax_rt.title[] = use_flow ? "Resistivity vs O2 flow" : "Resistivity vs O2%"
-            ax_tcr.title[] = use_flow ? "TCR vs O2 flow" : "TCR vs O2"
-            for (i, site) in enumerate(sites)
-                vals = filter(isfinite, results[results.site .== site, field])
-                metric_val = isempty(vals) ? NaN : mean(vals)
-                label = isfinite(metric_val) ? string(site, " (", round(metric_val, digits=2), suffix, ")") : site
-                data_lines[i].line.label[] = label
-                data_lines[i].points.label[] = label
-                rt_x[i][] = [metric_val]
-                tcr_x[i][] = [metric_val]
-            end
-        end
-        update_o2_metric!()
-        on(toggle_flow.active) do _
-            update_o2_metric!()
-            reset_limits!(ax_rt)
-            reset_limits!(ax_tcr)
-        end
-        rowsize!(fig.layout, 1, Relative(0.6))
-        rowsize!(fig.layout, 2, Relative(0.4))
-        return fig
-    elseif combined_kind === RuO2PUNDFatiguePlot
+    if combined_kind === RuO2PUNDFatiguePlot
         traces_df = analyzed.traces_df
         pr_df = analyzed.pr_df
         (nrow(traces_df) == 0 && nrow(pr_df) == 0) && return nothing

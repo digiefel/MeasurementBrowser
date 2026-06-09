@@ -36,6 +36,7 @@ function _ruo2_uses_setup_plot_api(plot_kind::Type{<:PlotKind})::Bool
         RuO2TLM4PointPlot,
         RuO2CVSweepPlot,
         RuO2TLMAnalysisPlot,
+        RuO2TLMTemperaturePlot,
     )
 end
 
