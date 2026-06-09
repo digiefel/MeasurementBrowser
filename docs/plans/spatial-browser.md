@@ -84,7 +84,7 @@ src/Gui/
 ├── State.jl                    — ui_state init helpers and async state
 ├── Layout.jl                   — _setup_docking_layout!, top menu, frame loop
 ├── TreePanel.jl                — current tree
-├── PlotPanel.jl                — plot area + plot job queue + combined plots
+├── PlotPanel.jl                — plot toolbar, plot area, detached plots, plot job queue
 └── InfoModal.jl                — existing device modal + figure scripts modal
 ```
 

@@ -34,8 +34,8 @@ The GUI starts from a measurement selection.
 ```text
 select measurements
   -> package discovers loaded PlotKind types
-  -> show all of them
-  -> user chooses one
+  -> plot window shows all of them
+  -> user chooses one in that plot window
   -> setup_plot once
   -> plot_data! one or more times
 ```
@@ -44,9 +44,9 @@ Overlay should feel effortless:
 
 ```text
 select measurements
-  -> Overlay
+  -> choose plot kind in the main plot window
   -> one shared plot
-  -> selected measurements added to it
+  -> selected measurements drawn together
 ```
 
 Composition should feel just as effortless:
@@ -95,9 +95,10 @@ plot_data!(project, kind, measurements, fig)
 This keeps plot kinds searchable in code and lets multiple dispatch route implementation.
 
 The UI does not need project-defined labels, descriptions, default choices, compatibility rules, or
-minimum selection rules at this stage. The last plot kind selected by the user stays selected. If
-the selected measurements do not fit that plot kind, the project plotting method fails normally and
-the GUI shows the error.
+minimum selection rules at this stage. Each plot window owns its selected plot kind. The main plot
+window follows the browser selection by default. Detached plot windows keep their own measurements
+unless Live is enabled in that window. If the selected measurements do not fit that plot kind, the
+project plotting method fails normally and the GUI shows the error.
 
 ## Project Responsibilities
 

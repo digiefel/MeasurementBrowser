@@ -725,15 +725,9 @@ function _setup_docking_layout!(dockspace_id)
     bottom_left = Ref{UInt32}(0)
     ig.DockBuilderSplitNode(left[], ig.ImGuiDir_Up, 3/4, top_left, bottom_left)
 
-    # Right column: top 3/4 plot, bottom 1/4 combined plots
-    top_right    = Ref{UInt32}(0)
-    bottom_right = Ref{UInt32}(0)
-    ig.DockBuilderSplitNode(right[], ig.ImGuiDir_Up, 3/4, top_right, bottom_right)
-
     ig.DockBuilderDockWindow("Hierarchy",         top_left[])
-    ig.DockBuilderDockWindow("Plot Area",          top_right[])
+    ig.DockBuilderDockWindow("Plot Area",          right[])
     ig.DockBuilderDockWindow("Information Panel",  bottom_left[])
-    ig.DockBuilderDockWindow("Combined Plots",     bottom_right[])
 
     ig.DockBuilderFinish(dockspace_id)
 end
@@ -810,9 +804,6 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         end
         _time!(ui_state, :perf_window) do
             render_perf_window(ui_state)
-        end
-        _time!(ui_state, :combined_plots) do
-            render_combined_plots_window(ui_state)
         end
         # Show metadata guidance modal if needed
         render_device_info_modal(ui_state)

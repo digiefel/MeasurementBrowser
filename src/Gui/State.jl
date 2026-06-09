@@ -253,6 +253,9 @@ function _init_plot_state!(ui_state)
     ui_state[:active_plot_job] = nothing
     ui_state[:pending_plot_job] = nothing
     ui_state[:plot_runtime_warmed] = false
+    ui_state[:main_plot_live] = true
+    ui_state[:main_plot_measurements] = MeasurementInfo[]
+    ui_state[:_plot_window_counter] = 0
 end
 
 const _FIGURE_SCRIPT_NAME_BUFFER_SIZE = 192

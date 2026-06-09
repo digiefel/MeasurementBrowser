@@ -2,27 +2,46 @@ function _plot_kind_name(kind::Type{<:PlotKind})::String
     return String(nameof(kind))
 end
 
-function _selected_plot_kind(ui_state)
+function _plot_kind_from_state!(state::Dict{Symbol,Any}, key::Symbol)::Union{Nothing,Type{<:PlotKind}}
     kinds = plot_kinds()
     isempty(kinds) && return nothing
-    current = get(ui_state, :selected_plot_kind, nothing)
+    current = get(state, key, nothing)
     if current isa Type && current <: PlotKind && current in kinds
         return current
     end
-    delete!(ui_state, :selected_plot_kind)
+    delete!(state, key)
     return nothing
 end
 
-function _measurement_plot_window_entry(ui_state, measurement::MeasurementInfo)
-    plot_kind = _selected_plot_kind(ui_state)
-    target_id = plot_kind === nothing ? measurement.unique_id :
-        "$(measurement.unique_id)#$(nameof(plot_kind))"
+function _next_plot_window_id!(ui_state::Dict{Symbol,Any})::String
+    counter = get(ui_state, :_plot_window_counter, 0) + 1
+    ui_state[:_plot_window_counter] = counter
+    return "plot_$counter"
+end
+
+function _plot_view_key(
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+)::Tuple
+    return (
+        nameof(plot_kind),
+        sort([measurement.unique_id for measurement in measurements]),
+        _plot_parameters_key([measurement.parameters for measurement in measurements]),
+    )
+end
+
+function _measurement_plot_window_entry(
+    ui_state::Dict{Symbol,Any},
+    measurement::MeasurementInfo,
+)::Dict{Symbol,Any}
+    plot_kind = _plot_kind_from_state!(ui_state, :main_plot_kind)
     return Dict{Symbol,Any}(
-        :target_id => target_id,
+        :target_id => _next_plot_window_id!(ui_state),
         :filepath => measurement.filepath,
-        :measurement => measurement,
+        :measurements => [measurement],
         :title => measurement.clean_title,
         :plot_kind => plot_kind,
+        :live => false,
         :params => _measurement_parameters(measurement),
     )
 end
@@ -158,6 +177,7 @@ function _finish_plot_job!(ui_state, job::PlotJob; fig=nothing, error::AbstractS
         entry_target_id = get(entry, :target_id, get(entry, :filepath, ""))
         entry_target_id == job.target_id || continue
         fig === nothing ? delete!(entry, :figure) : (entry[:figure] = fig)
+        job.plot_key === nothing ? delete!(entry, :_last_plot_key) : (entry[:_last_plot_key] = job.plot_key)
         failed ? (entry[:plot_error] = message) : delete!(entry, :plot_error)
         entry[:debug] = job.debug
         return failed
@@ -289,6 +309,255 @@ function _render_plot_error_detail!(message)
     end
 end
 
+function _render_plot_kind_combo!(
+    state::Dict{Symbol,Any},
+    key::Symbol,
+    label::AbstractString,
+)::Bool
+    current = _plot_kind_from_state!(state, key)
+    preview = current === nothing ? "Choose plot kind" : _plot_kind_name(current)
+    changed = false
+
+    ig.SetNextItemWidth(240)
+    if ig.BeginCombo(String(label), preview)
+        for plot_kind in plot_kinds()
+            if ig.Selectable(_plot_kind_name(plot_kind), current === plot_kind)
+                state[key] = plot_kind
+                changed = true
+            end
+        end
+        ig.EndCombo()
+    end
+    return changed
+end
+
+function _render_live_checkbox!(
+    state::Dict{Symbol,Any},
+    key::Symbol,
+    default::Bool,
+    label::AbstractString,
+)::Bool
+    live = get(state, key, default) === true
+    changed = @c ig.Checkbox(String(label), &live)
+    state[key] = live
+    return changed
+end
+
+function _plot_help_text()::String
+    return """
+    Plot controls:
+    Live keeps this plot attached to the current browser selection.
+    Detach opens the current view as an independent plot window.
+    Export saves the current figure.
+
+    Figure controls:
+    Scroll to zoom.
+    Click and drag to zoom into a rectangle.
+    Right click and drag to pan.
+    Use x/y plus scroll to zoom one axis.
+    Ctrl + left click resets the limits.
+    Right click inside the plot for axis scale settings.
+    """
+end
+
+function _render_plot_help_button!(id::AbstractString)::Nothing
+    popup_id = "plot_help_popup_$id"
+    button_width = ig.CalcTextSize("?").x + 18.0f0
+    remaining = ig.GetContentRegionAvail().x
+    ig.SameLine()
+    ig.SetCursorPosX(ig.GetCursorPosX() + max(0.0f0, remaining - button_width))
+    if ig.Button("?##plot_help_$id")
+        ig.OpenPopup(popup_id)
+    end
+    if ig.BeginItemTooltip()
+        ig.TextUnformatted("Help")
+        ig.EndTooltip()
+    end
+    if ig.BeginPopup(popup_id)
+        ig.PushTextWrapPos(ig.GetFontSize() * 38.0)
+        ig.TextUnformatted(_plot_help_text())
+        ig.PopTextWrapPos()
+        ig.EndPopup()
+    end
+    return nothing
+end
+
+function _plot_export_path(default_name::AbstractString)::String
+    path = save_file(String(default_name); filterlist="png,jpg,jpeg,svg,pdf")
+    isempty(path) && return ""
+    _, ext = splitext(path)
+    isempty(ext) && return path * ".png"
+    return path
+end
+
+function _export_plot_figure!(
+    state::Dict{Symbol,Any},
+    figure::Figure,
+    default_name::AbstractString,
+)::Nothing
+    path = _plot_export_path(default_name)
+    isempty(path) && return nothing
+
+    try
+        Makie.save(path, figure)
+        delete!(state, :plot_export_error)
+    catch err
+        message = "Export failed for $path: $(sprint(showerror, err))"
+        state[:plot_export_error] = message
+        @error "Plot export failed" details = message
+    end
+    return nothing
+end
+
+function _plot_export_name(
+    plot_kind::Union{Nothing,Type{<:PlotKind}},
+    measurements::Vector{MeasurementInfo},
+)::String
+    kind_name = plot_kind === nothing ? "plot" : lowercase(String(nameof(plot_kind)))
+    if length(measurements) == 1
+        stem = splitext(basename(only(measurements).filepath))[1]
+        return "$stem-$kind_name.png"
+    end
+    return "$(length(measurements))-measurements-$kind_name.png"
+end
+
+function _detach_plot_window!(
+    ui_state::Dict{Symbol,Any},
+    measurements::Vector{MeasurementInfo},
+    plot_kind::Type{<:PlotKind},
+)::Nothing
+    open_plots = get!(ui_state, :open_plot_windows) do
+        Vector{Dict{Symbol,Any}}()
+    end
+    target_id = _next_plot_window_id!(ui_state)
+    title = length(measurements) == 1 ?
+        only(measurements).clean_title :
+        "$(length(measurements)) measurements"
+    push!(open_plots, Dict{Symbol,Any}(
+        :title => title,
+        :target_id => target_id,
+        :measurements => copy(measurements),
+        :plot_kind => plot_kind,
+        :live => false,
+    ))
+    return nothing
+end
+
+function _main_plot_measurements!(ui_state::Dict{Symbol,Any})::Vector{MeasurementInfo}
+    selected = get(ui_state, :selected_measurements, MeasurementInfo[])
+    if get(ui_state, :main_plot_live, true) === true
+        ui_state[:main_plot_measurements] = copy(selected)
+        return selected
+    end
+
+    measurements = get(ui_state, :main_plot_measurements, nothing)
+    if measurements isa Vector{MeasurementInfo}
+        return measurements
+    end
+    ui_state[:main_plot_measurements] = copy(selected)
+    return selected
+end
+
+function _entry_plot_measurements!(
+    entry::Dict{Symbol,Any},
+    selected::Vector{MeasurementInfo},
+)::Vector{MeasurementInfo}
+    if get(entry, :live, false) === true
+        entry[:measurements] = copy(selected)
+        return selected
+    end
+
+    measurements = get(entry, :measurements, MeasurementInfo[])
+    if measurements isa Vector{MeasurementInfo}
+        return measurements
+    end
+    return MeasurementInfo[]
+end
+
+function _render_main_plot_toolbar!(
+    ui_state::Dict{Symbol,Any},
+    measurements::Vector{MeasurementInfo},
+    plot_kind::Union{Nothing,Type{<:PlotKind}},
+)::Nothing
+    if _render_plot_kind_combo!(ui_state, :main_plot_kind, "##main_plot_kind")
+        delete!(ui_state, :_last_plot_key)
+        ui_state[:plot_error] = ""
+    end
+
+    ig.SameLine()
+    if _render_live_checkbox!(ui_state, :main_plot_live, true, "Live##main_plot_live")
+        if get(ui_state, :main_plot_live, true) === false
+            ui_state[:main_plot_measurements] = copy(get(ui_state, :selected_measurements, MeasurementInfo[]))
+        end
+        delete!(ui_state, :_last_plot_key)
+    end
+
+    can_detach = plot_kind !== nothing && !isempty(measurements)
+    ig.SameLine()
+    !can_detach && ig.BeginDisabled()
+    if ig.Button("Detach") && can_detach
+        _detach_plot_window!(ui_state, measurements, plot_kind)
+    end
+    !can_detach && ig.EndDisabled()
+
+    can_export = haskey(ui_state, :plot_figure)
+    ig.SameLine()
+    !can_export && ig.BeginDisabled()
+    if ig.Button("Export") && can_export
+        _export_plot_figure!(
+            ui_state,
+            ui_state[:plot_figure],
+            _plot_export_name(plot_kind, measurements),
+        )
+    end
+    !can_export && ig.EndDisabled()
+
+    _render_plot_help_button!("main")
+    if haskey(ui_state, :plot_export_error)
+        _render_plot_error_detail!(ui_state[:plot_export_error])
+    end
+    return nothing
+end
+
+function _render_extra_plot_toolbar!(
+    entry::Dict{Symbol,Any},
+    selected_measurements::Vector{MeasurementInfo},
+    id::AbstractString,
+)::Nothing
+    if _render_plot_kind_combo!(entry, :plot_kind, "##plot_kind_$id")
+        delete!(entry, :_last_plot_key)
+        delete!(entry, :plot_error)
+    end
+
+    ig.SameLine()
+    if _render_live_checkbox!(entry, :live, false, "Live##plot_live_$id")
+        if get(entry, :live, false) === false
+            entry[:measurements] = copy(selected_measurements)
+        end
+        delete!(entry, :_last_plot_key)
+    end
+
+    can_export = haskey(entry, :figure)
+    ig.SameLine()
+    !can_export && ig.BeginDisabled()
+    if ig.Button("Export##plot_export_$id") && can_export
+        plot_kind = _plot_kind_from_state!(entry, :plot_kind)
+        measurements = _entry_plot_measurements!(entry, selected_measurements)
+        _export_plot_figure!(
+            entry,
+            entry[:figure],
+            _plot_export_name(plot_kind, measurements),
+        )
+    end
+    !can_export && ig.EndDisabled()
+
+    _render_plot_help_button!(id)
+    if haskey(entry, :plot_export_error)
+        _render_plot_error_detail!(entry[:plot_export_error])
+    end
+    return nothing
+end
+
 function _plot_runtime_warmup_figure()
     fig = Figure(size=(64, 48))
     ax1 = Axis(fig[1, 1], xlabel="x", ylabel="y", title="warm")
@@ -324,62 +593,35 @@ function _ensure_plot_runtime_warmed!(ui_state)
     ig.End()
 end
 
-function _open_combined_plot_window!(ui_state, proj, measurements::Vector{MeasurementInfo}, plot_kind::Type{<:PlotKind})
-    open_plots = get!(ui_state, :open_plot_windows) do
-        Vector{Dict{Symbol,Any}}()
-    end
-    counter = get!(ui_state, :_combined_plot_counter) do
-        0
-    end
-    ui_state[:_combined_plot_counter] = counter + 1
-    target_id = "combined_$(counter + 1)"
-    entry = Dict(
-        :title => "Combined: $(_plot_kind_name(plot_kind))",
-        :id => target_id,
-        :target_id => target_id,
-        :combined_kind => plot_kind,
-        :measurements => measurements,
-    )
-    push!(open_plots, entry)
-    _queue_plot_job!(ui_state, proj, measurements, plot_kind; target=:extra, target_id)
-end
-
-function render_plot_window(ui_state)
+function render_plot_window(ui_state::Dict{Symbol,Any})::Nothing
     proj = ui_state[:project]
-    selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-    selected_kind = _selected_plot_kind(ui_state)
-    plot_measurements = MeasurementInfo[]
-    plot_kind = selected_kind
+    plot_measurements = _main_plot_measurements!(ui_state)
+    plot_kind = _plot_kind_from_state!(ui_state, :main_plot_kind)
     plot_key = nothing
     plot_status = :empty
 
-    if isempty(selected_measurements)
+    if isempty(plot_measurements)
         plot_status = :empty
     elseif plot_kind === nothing
         plot_status = :needs_kind
     else
-        plot_measurements = selected_measurements
-        plot_key = (
-            nameof(plot_kind),
-            sort([measurement.unique_id for measurement in plot_measurements]),
-            _plot_parameters_key([measurement.parameters for measurement in plot_measurements]),
-        )
+        plot_key = _plot_view_key(plot_kind, plot_measurements)
         plot_status = :ready
     end
 
-    generate_combined = get(ui_state, :generate_combined_plot, false)
-    if generate_combined
-        ui_state[:generate_combined_plot] = false
-        _clear_plot_jobs!(ui_state)
-    end
     should_queue = plot_status == :ready &&
-        get(ui_state, :_last_plot_key, nothing) != plot_key &&
-        (length(plot_measurements) == 1 || generate_combined)
+        get(ui_state, :_last_plot_key, nothing) != plot_key
     if should_queue
         _queue_plot_job!(ui_state, proj, plot_measurements, plot_kind; target=:main, target_id="main", plot_key)
+    elseif plot_status != :ready && get(ui_state, :main_plot_live, true) === true
+        delete!(ui_state, :plot_figure)
+        delete!(ui_state, :_last_plot_key)
     end
 
     if ig.Begin("Plot Area")
+        _render_main_plot_toolbar!(ui_state, plot_measurements, plot_kind)
+        ig.Separator()
+
         if get(ui_state, :debug_plot_mode, false)
             ig.TextColored((0.2, 0.8, 0.2, 1.0), "Debug Plot Mode")
             ig.SameLine()
@@ -390,129 +632,82 @@ function render_plot_window(ui_state)
         if haskey(ui_state, :plot_figure)
             f = ui_state[:plot_figure]
             _time!(ui_state, :makie_fig) do
-                MakieFigure("measurement_plot", f; auto_resize_x=true, auto_resize_y=true)
+                MakieFigure("measurement_plot", f; auto_resize_x=true, auto_resize_y=true, tooltip=false)
             end
         else
             if _plot_target_loading(ui_state, :main; target_id="main")
-                ig.TextDisabled(length(plot_measurements) > 1 ? "Loading combined plot..." : "Loading plot...")
+                ig.TextDisabled("Loading plot...")
             elseif plot_status == :needs_kind
                 ig.TextDisabled("No plot kind selected")
             elseif plot_status == :empty
                 ig.TextDisabled("No measurement selected")
             else
-                ig.TextColored((1.0, 0.4, 0.4, 1.0), length(plot_measurements) > 1 ? "Combined plot generation failed" : "Plot generation failed")
+                ig.TextColored((1.0, 0.4, 0.4, 1.0), "Plot generation failed")
                 ig.Text("Check file format and measurement type")
                 _render_plot_error_detail!(get(ui_state, :plot_error, ""))
             end
         end
-
-        ig.Separator()
     end
     ig.End()
+    return nothing
 end
 
-function render_combined_plots_window(ui_state)
-    proj = ui_state[:project]
-    if ig.Begin("Combined Plots")
-        current_kind = _selected_plot_kind(ui_state)
-        kind_label = current_kind === nothing ? "Choose plot kind" : _plot_kind_name(current_kind)
-
-        if ig.BeginCombo("Plot Kind", kind_label)
-            for plot_kind in plot_kinds()
-                if ig.Selectable(_plot_kind_name(plot_kind), current_kind === plot_kind)
-                    ui_state[:selected_plot_kind] = plot_kind
-                end
-            end
-            ig.EndCombo()
-        end
-
-        selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-        can_generate = current_kind !== nothing && !isempty(selected_measurements)
-        ig.Separator()
-
-        if !isempty(selected_measurements)
-            ig.TextColored((0.6, 0.8, 1.0, 1.0), "Selected: $(length(selected_measurements)) measurements")
-        else
-            ig.TextDisabled("No measurements selected")
-        end
-
-        if can_generate
-            ig.TextColored((0.2, 0.8, 0.2, 1.0), "Ready")
-        elseif length(selected_measurements) > 1
-            ig.TextColored((0.8, 0.8, 0.2, 1.0), "Select a plot kind")
-        end
-
-        ig.Separator()
-        if !can_generate
-            ig.BeginDisabled()
-        end
-        if ig.Button("Generate Combined Plot", (-1, 0))
-            ui_state[:generate_combined_plot] = true
-        end
-        if can_generate && ig.BeginPopupContextItem()
-            if ig.MenuItem("Open in New Window")
-                _open_combined_plot_window!(ui_state, proj, selected_measurements, current_kind)
-            end
-            ig.EndPopup()
-        end
-        if !can_generate
-            ig.EndDisabled()
-        end
-    end
-    ig.End()
-end
-
-# Render any additional plot windows opened via right-click context menu.
-function render_additional_plot_windows(ui_state)
+function render_additional_plot_windows(ui_state::Dict{Symbol,Any})::Nothing
     proj = ui_state[:project]
     open_plots = get(ui_state, :open_plot_windows, nothing)
     open_plots === nothing && return
     isempty(open_plots) && return
+    selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
     to_keep = Vector{Dict{Symbol,Any}}()
     for entry in open_plots
-        is_combined = haskey(entry, :combined_kind)
-        filepath = get(entry, :filepath, "")
-        measurements = is_combined ? get(entry, :measurements, MeasurementInfo[]) :
-            (get(entry, :measurement, nothing) isa MeasurementInfo ? [entry[:measurement]] : MeasurementInfo[])
-        isempty(measurements) && continue
-
-        plot_kind = is_combined ? entry[:combined_kind] : entry[:plot_kind]
-        title = get(entry, :title, is_combined ? "Combined Plot" : basename(filepath))
-        target_id = string(get(entry, :target_id, get(entry, :id, filepath)))
+        if !haskey(entry, :target_id)
+            entry[:target_id] = _next_plot_window_id!(ui_state)
+        end
+        target_id = string(entry[:target_id])
         entry[:target_id] = target_id
-        if plot_kind === nothing
-            entry[:plot_error] = "No plot kind selected."
-        end
-
-        existing_debug = get(entry, :debug, false)
-        has_failure = haskey(entry, :plot_error)
-        refresh = (!haskey(entry, :figure) && !has_failure) ||
-            existing_debug != get(ui_state, :debug_plot_mode, false)
-        if refresh
-            _queue_plot_job!(ui_state, proj, measurements, plot_kind; target=:extra, target_id)
-        end
-
         open_ref = Ref(true)
         window_id = replace(target_id, '/' => '_')
+        title = get(entry, :title, "Plot")
         if ig.Begin("Plot: $title###plot_window_$window_id", open_ref)
+            _render_extra_plot_toolbar!(entry, selected_measurements, window_id)
+            ig.Separator()
+
+            measurements = _entry_plot_measurements!(entry, selected_measurements)
+            plot_kind = _plot_kind_from_state!(entry, :plot_kind)
+            plot_status = isempty(measurements) ? :empty :
+                plot_kind === nothing ? :needs_kind : :ready
+            plot_key = plot_status == :ready ? _plot_view_key(plot_kind, measurements) : nothing
+            debug_changed = get(entry, :debug, false) != get(ui_state, :debug_plot_mode, false)
+            should_queue = plot_status == :ready &&
+                (get(entry, :_last_plot_key, nothing) != plot_key || debug_changed)
+            if should_queue
+                _queue_plot_job!(ui_state, proj, measurements, plot_kind; target=:extra, target_id, plot_key)
+            elseif plot_status != :ready && get(entry, :live, false) === true
+                delete!(entry, :figure)
+                delete!(entry, :_last_plot_key)
+            end
+
             if haskey(entry, :figure)
                 f = entry[:figure]
                 _time!(ui_state, :makie_fig) do
-                    MakieFigure("measurement_plot_$window_id", f; auto_resize_x=true, auto_resize_y=true)
+                    MakieFigure("measurement_plot_$window_id", f; auto_resize_x=true, auto_resize_y=true, tooltip=false)
                 end
             elseif _plot_target_loading(ui_state, :extra; target_id=target_id)
                 ig.TextDisabled("Loading plot...")
+            elseif plot_status == :needs_kind
+                ig.TextDisabled("No plot kind selected")
+            elseif plot_status == :empty
+                ig.TextDisabled("No measurement selected")
             elseif haskey(entry, :plot_error)
                 ig.TextColored((1.0, 0.4, 0.4, 1.0), "Plot generation failed")
                 _render_plot_error_detail!(entry[:plot_error])
             else
                 ig.Text("No plot available")
             end
-            ig.Separator()
-            ig.TextDisabled(is_combined ? title : basename(filepath))
         end
         ig.End()
         open_ref[] && push!(to_keep, entry)
     end
     ui_state[:open_plot_windows] = to_keep
+    return nothing
 end

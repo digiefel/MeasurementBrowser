@@ -12,7 +12,7 @@ include("MakieIntegration.jl")
 using .MakieImguiIntegration
 
 using TOML
-using NativeFileDialog: pick_folder
+using NativeFileDialog: pick_folder, save_file
 
 # ---------------------------------------------------------------------------
 # Gui module split into src/Gui/ — see docs/gui.md for the file map.

@@ -65,7 +65,7 @@ MeasurementBrowser.jl (root)
   │     └── Gui/
   │         ├── State.jl         — ui_state init + scan/cache/figure-script state machines
   │         ├── BadAndStyling.jl — bad-registry helpers, visibility, styling
-  │         ├── PlotPanel.jl     — plot job queue, plot/combined plot windows
+  │         ├── PlotPanel.jl     — plot job queue, plot toolbar, plot windows
   │         ├── TreePanel.jl     — hierarchy tree + measurements panel + selection
   │         ├── InfoModal.jl     — info window, figure-script window, device-info modal
   │         └── Layout.jl        — frame loop, docking, menu bar, perf/project windows
