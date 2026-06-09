@@ -31,23 +31,28 @@ interpreted execution, or an out-of-process implementation without changing what
 trying to express: source files become measurements, measurements provide reusable data, and reusable
 data feeds inspection and presentation tools.
 
-## Three-stage pipeline
+## Core Flow
 
 ```
                 ┌─────────────────────────────────────────────────────┐
-disk (CSVs +    │  scan      →   hierarchy   →   plot                 │
-metadata)       │  --------     -----------     ------                │
-                │  walk fs      build tree      figure_for_file(s)    │
-                │  parse        per-leaf        Makie figure embedded │
-                │  filenames    measurements    in CImGui via         │
-                │  merge meta                   MakieIntegration      │
+disk (CSVs +    │  scan      →   hierarchy   →   data      →   view   │
+metadata)       │  --------     -----------     ----          ----     │
+                │  walk fs      build tree      cache or      Makie  │
+                │  interpret    per-leaf        source        figure │
+                │  source       measurements    load          table  │
+                │  files        + stats                      summary │
                 └─────────────────────────────────────────────────────┘
 ```
 
-1. **Scan** ([scanning](scanning.md)): `scan_source` walks a folder of CSVs, parses each filename to a `MeasurementInfo`, merges in `device_info.txt` metadata, and inserts results into a tree.
-2. **Hierarchy** ([data-model](data-model.md)): a variable-depth `MeasurementHierarchy` whose leaves hold measurements. Stable identity is the slash-joined `device_path_key`.
-3. **Cache** ([cache](cache.md)): generated HDF5 data can repopulate the browser tree and serve normal plot jobs without reparsing every CSV.
-4. **Plot** ([gui](gui.md), [plotting](plotting.md)): the GUI's tree panel drives a selection vector; selection feeds cached or source-loaded plot data into Makie figures. Figures render asynchronously via a `PlotJob` queue.
+`scan_source` walks source CSVs, asks the active project which measurements each file contains, merges
+source-root metadata, computes project stats, and builds the hierarchy described in
+[data-model.md](data-model.md). The cache described in [cache.md](cache.md) can restore that
+hierarchy quickly while source scanning continues in the background.
+
+When a view needs measurement data, it goes through `read_measurement_data(project, measurements)`.
+That package-owned path returns cached dataframe data when it is valid and falls back to the
+project's `load_source_data` when the cache is missing or stale. GUI selection, background jobs, and
+Makie embedding are described in [gui.md](gui.md).
 
 ## Module map
 
@@ -102,7 +107,7 @@ The HDF5 cache is generated and lives outside the source root. See [cache](cache
 | [data-model.md](data-model.md) | You're touching `DeviceParser`, hierarchy traversal, or paths/IDs. |
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
-| [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or plot payloads. |
+| [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or measurement data. |
 | [annotations.md](annotations.md) | You're touching `src/Annotations/` — coords, layout, tags, notes. |
 | [figure_scripts.md](figure_scripts.md) | You're working on the figure-script export feature. |
 
