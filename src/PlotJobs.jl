@@ -39,69 +39,17 @@ end
 
 function _run_plot_job(job::PlotJob, cancel_requested)
     return _with_cancel(cancel_requested) do
-    if job.project isa TASEProject || job.plot_kind === RuO2CVSweepPlot
-        return nothing
-    end
-
-    if job.debug
-        if length(job.measurements) == 1
-            measurement = only(job.measurements)
-            df = only(read_measurement_data(job.project, [measurement]))
-            return _ruo2_plot_data(measurement, df; debug=job.debug)
-        end
-
-        data = read_measurement_data(job.project, job.measurements)
-        return _ruo2_combined_plot_data(job.measurements, data, job.plot_kind)
-    end
-
-    if length(job.measurements) == 1
-        measurement = only(job.measurements)
-        df = only(read_measurement_data(job.project, [measurement]))
-        loaded = _ruo2_plot_data(measurement, df; debug=job.debug)
-        return _analyze_ruo2_file_plot(
-            job.project,
-            job.plot_kind,
-            loaded;
-            DEBUG=job.debug,
-        )
-    end
-
-    data = read_measurement_data(job.project, job.measurements)
-    loaded = _ruo2_combined_plot_data(job.measurements, data, job.plot_kind)
-    return _analyze_ruo2_files_plot(
-        job.project,
-        job.plot_kind,
-        loaded;
-        DEBUG=job.debug,
-    )
+        return _plot_job_data(job.project, job.plot_kind, job.measurements; debug=job.debug)
     end
 end
 
 function _draw_plot_job(job::PlotJob, data)
-    if job.project isa TASEProject || job.plot_kind === RuO2CVSweepPlot
-        job.debug && error("Debug plots are not implemented for $(project_name(job.project)) $(job.plot_kind)")
-        fig = setup_plot(job.project, job.plot_kind, job.measurements)
-        plot_data!(job.project, job.plot_kind, job.measurements, fig)
-        return fig
-    end
-
-    if job.debug
-        return debug_plot(
-            job.project,
-            job.measurements,
-            data;
-            device_params=job.device_params,
-            plot_kind=job.plot_kind,
-        )
-    end
-
-    if length(job.measurements) == 1
-        return _draw_ruo2_file_plot(
-            job.project,
-            job.plot_kind,
-            data;
-            device_params=only(job.device_params),
-        )
-    end
-    return _draw_ruo2_files_plot(job.project, job.plot_kind, data; DEBUG=job.debug)
+    return _plot_job_figure(
+        job.project,
+        job.plot_kind,
+        job.measurements,
+        data;
+        debug=job.debug,
+        device_params=job.device_params,
+    )
 end

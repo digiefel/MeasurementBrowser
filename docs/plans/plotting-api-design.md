@@ -33,8 +33,8 @@ The GUI starts from a measurement selection.
 
 ```text
 select measurements
-  -> package discovers plot kinds from the project module
-  -> show those plot kinds
+  -> package discovers loaded PlotKind types
+  -> show all of them
   -> user chooses one
   -> setup_plot once
   -> plot_data! one or more times
@@ -43,7 +43,7 @@ select measurements
 Overlay should feel effortless:
 
 ```text
-select compatible measurements
+select measurements
   -> Overlay
   -> one shared plot
   -> selected measurements added to it
@@ -54,7 +54,7 @@ Composition should feel just as effortless:
 ```text
 select measurements
   -> choose plot kind
-  -> add more compatible data to the same plot
+  -> add more selected data to the same plot
   -> optionally facet or split into panels
 ```
 
@@ -72,13 +72,13 @@ struct FatigueSummary <: PlotKind end
 struct CVSweepPlot <: PlotKind end
 ```
 
-The project lists its plot kind types explicitly:
+The package discovers concrete plot kind types that are already loaded:
 
 ```julia
-available_plot_kinds(project::AbstractProject)::Vector{Type{<:PlotKind}}
+plot_kinds()::Vector{Type{<:PlotKind}}
 ```
 
-The GUI receives those type objects:
+The GUI shows those type objects by type name:
 
 ```julia
 Vector{Type{<:PlotKind}}
@@ -94,30 +94,14 @@ plot_data!(project, kind, measurements, fig)
 
 This keeps plot kinds searchable in code and lets multiple dispatch route implementation.
 
-The project can also define labels, descriptions, default plot choices, and compatibility rules:
-
-```julia
-plot_kind_label(kind::Type{<:PlotKind})::String
-plot_kind_description(kind::Type{<:PlotKind})::String
-plot_kind_measurement_kinds(kind::Type{<:PlotKind})::Vector{Symbol}
-plot_kind_min_measurements(kind::Type{<:PlotKind})::Int
-default_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Union{Type{<:PlotKind},Nothing}
-supports_plot_kind(kind::Type{<:PlotKind}, measurement::MeasurementInfo)::Bool
-```
-
-Single-measurement plotting uses `default_plot_kind`. Combined plotting uses `available_plot_kinds`,
-`supports_plot_kind`, and `plot_kind_min_measurements` to decide what can be generated.
+The UI does not need project-defined labels, descriptions, default choices, compatibility rules, or
+minimum selection rules at this stage. The last plot kind selected by the user stays selected. If
+the selected measurements do not fit that plot kind, the project plotting method fails normally and
+the GUI shows the error.
 
 ## Project Responsibilities
 
-Projects define:
-
-```julia
-available_plot_kinds(project::AbstractProject)::Vector{Type{<:PlotKind}}
-default_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Union{Type{<:PlotKind},Nothing}
-```
-
-And implement plotting:
+Projects define concrete plot kind types and implement plotting:
 
 ```julia
 setup_plot(

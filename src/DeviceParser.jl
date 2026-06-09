@@ -21,8 +21,6 @@ struct TASEProject <: AbstractProject end
 
 abstract type PlotKind end
 
-const PlotKindSelection = Union{Type{<:PlotKind},Nothing}
-
 const KNOWN_PROJECTS = AbstractProject[]
 const _default_project = Ref{Union{AbstractProject,Nothing}}(nothing)
 
@@ -203,17 +201,50 @@ plot_data!(
 )::Nothing =
     error("No plot_data! implementation for $(project_name(project)) plot kind '$kind'")
 
-plot_kind_label(kind::Type{<:PlotKind})::String = String(nameof(kind))
-plot_kind_description(kind::Type{<:PlotKind})::String = plot_kind_label(kind)
-plot_kind_measurement_kinds(::Type{<:PlotKind})::Vector{Symbol} = Symbol[]
-plot_kind_min_measurements(::Type{<:PlotKind})::Int = 1
-available_plot_kinds(::AbstractProject)::Vector{Type{<:PlotKind}} = Type{<:PlotKind}[]
-default_plot_kind(::AbstractProject, measurement::MeasurementInfo)::PlotKindSelection =
-    nothing
+function _append_plot_kinds!(kinds::Vector{Type{<:PlotKind}}, parent::Type)
+    for name in names(@__MODULE__; all=true)
+        isdefined(@__MODULE__, name) || continue
+        child = getfield(@__MODULE__, name)
+        child isa DataType || continue
+        supertype(child) === parent || continue
+        if isabstracttype(child)
+            _append_plot_kinds!(kinds, child)
+        elseif child <: PlotKind
+            push!(kinds, child)
+        end
+    end
+    return kinds
+end
 
-function supports_plot_kind(kind::Type{<:PlotKind}, measurement::MeasurementInfo)::Bool
-    kinds = plot_kind_measurement_kinds(kind)
-    return isempty(kinds) || measurement.measurement_kind in kinds
+function plot_kinds()::Vector{Type{<:PlotKind}}
+    kinds = _append_plot_kinds!(Type{<:PlotKind}[], PlotKind)
+    sort!(kinds; by=kind -> String(nameof(kind)))
+    return kinds
+end
+
+function _plot_job_data(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo};
+    debug::Bool=false,
+)
+    return nothing
+end
+
+function _plot_job_figure(
+    project::AbstractProject,
+    plot_kind::Type{<:PlotKind},
+    measurements::Vector{MeasurementInfo},
+    data;
+    debug::Bool=false,
+    device_params::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
+)
+    if debug
+        return debug_plot(project, measurements, data; device_params, plot_kind)
+    end
+    fig = setup_plot(project, plot_kind, measurements)
+    plot_data!(project, plot_kind, measurements, fig)
+    return fig
 end
 
 debug_plot(

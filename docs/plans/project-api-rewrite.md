@@ -169,15 +169,16 @@ make those reads explicit and avoid them when cached data is valid.
 
 ## Plotting
 
-Project functions:
+Projects define concrete plot kind types:
 
 ```julia
-available_plot_kinds(project::AbstractProject)::Vector{Type{<:PlotKind}}
-default_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Union{Type{<:PlotKind},Nothing}
+struct SomePlot <: PlotKind end
 ```
 
-The project owns the plot kind types it supports. The package owns the UI and asks the project which
-kind to use for each selected measurement.
+The package discovers loaded plot kind types with `plot_kinds()`. The UI shows every loaded plot
+kind by type name and remembers the last one the user selected. The package does not ask projects
+for plot labels, defaults, compatibility rules, or minimum selection sizes. If a selected plot kind
+does not fit the selected measurements, the plotting method fails and the GUI reports that error.
 
 ```julia
 setup_plot(

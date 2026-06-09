@@ -1,10 +1,28 @@
-function _measurement_plot_window_entry(proj::AbstractProject, measurement::MeasurementInfo)
+function _plot_kind_name(kind::Type{<:PlotKind})::String
+    return String(nameof(kind))
+end
+
+function _selected_plot_kind!(ui_state)
+    kinds = plot_kinds()
+    isempty(kinds) && return nothing
+    current = get(ui_state, :selected_plot_kind, nothing)
+    if current isa Type && current <: PlotKind && current in kinds
+        return current
+    end
+    ui_state[:selected_plot_kind] = first(kinds)
+    return ui_state[:selected_plot_kind]
+end
+
+function _measurement_plot_window_entry(ui_state, measurement::MeasurementInfo)
+    plot_kind = _selected_plot_kind!(ui_state)
+    target_id = plot_kind === nothing ? measurement.unique_id :
+        "$(measurement.unique_id)#$(nameof(plot_kind))"
     return Dict{Symbol,Any}(
-        :target_id => measurement.unique_id,
+        :target_id => target_id,
         :filepath => measurement.filepath,
         :measurement => measurement,
         :title => measurement.clean_title,
-        :plot_kind => default_plot_kind(proj, measurement),
+        :plot_kind => plot_kind,
         :params => _measurement_parameters(measurement),
     )
 end
@@ -263,16 +281,7 @@ function _ensure_plot_runtime_warmed!(ui_state)
     ig.End()
 end
 
-function _compatible_measurements(proj, measurements::Vector{MeasurementInfo}, combined_kind)
-    combined_kind === nothing && return MeasurementInfo[]
-    return filter(m -> supports_plot_kind(combined_kind, m), measurements)
-end
-
-function _combined_plot_kinds(proj)::Vector{Type{<:PlotKind}}
-    return filter(kind -> plot_kind_min_measurements(kind) > 1, available_plot_kinds(proj))
-end
-
-function _open_combined_plot_window!(ui_state, proj, measurements::Vector{MeasurementInfo}, combined_kind)
+function _open_combined_plot_window!(ui_state, proj, measurements::Vector{MeasurementInfo}, plot_kind::Type{<:PlotKind})
     open_plots = get!(ui_state, :open_plot_windows) do
         Vector{Dict{Symbol,Any}}()
     end
@@ -282,44 +291,37 @@ function _open_combined_plot_window!(ui_state, proj, measurements::Vector{Measur
     ui_state[:_combined_plot_counter] = counter + 1
     target_id = "combined_$(counter + 1)"
     entry = Dict(
-        :title => "Combined: $(plot_kind_label(combined_kind))",
+        :title => "Combined: $(_plot_kind_name(plot_kind))",
         :id => target_id,
         :target_id => target_id,
-        :combined_kind => combined_kind,
+        :combined_kind => plot_kind,
         :measurements => measurements,
     )
     push!(open_plots, entry)
-    _queue_plot_job!(ui_state, proj, measurements, combined_kind; target=:extra, target_id)
+    _queue_plot_job!(ui_state, proj, measurements, plot_kind; target=:extra, target_id)
 end
 
 function render_plot_window(ui_state)
     proj = ui_state[:project]
     selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-    combined_kind = get(ui_state, :combined_plot_kind, nothing)
+    selected_kind = _selected_plot_kind!(ui_state)
     plot_measurements = MeasurementInfo[]
-    plot_kind = nothing
+    plot_kind = selected_kind
     plot_key = nothing
     plot_status = :empty
 
-    if length(selected_measurements) == 1
-        measurement = only(selected_measurements)
+    if isempty(selected_measurements)
+        plot_status = :empty
+    elseif plot_kind === nothing
+        plot_status = :needs_kind
+    else
         plot_measurements = selected_measurements
-        plot_kind = default_plot_kind(proj, measurement)
         plot_key = (
-            measurement.unique_id,
-            plot_kind === nothing ? nothing : nameof(plot_kind),
-            _plot_parameters_key([measurement.parameters]),
+            nameof(plot_kind),
+            sort([measurement.unique_id for measurement in plot_measurements]),
+            _plot_parameters_key([measurement.parameters for measurement in plot_measurements]),
         )
-        plot_status = plot_kind === nothing ? :incompatible : :ready
-    elseif length(selected_measurements) > 1
-        if combined_kind === nothing
-            plot_status = :needs_kind
-        else
-            plot_measurements = _compatible_measurements(proj, selected_measurements, combined_kind)
-            plot_kind = combined_kind
-            plot_key = (nameof(combined_kind), sort([m.filepath for m in plot_measurements]))
-            plot_status = length(plot_measurements) >= plot_kind_min_measurements(combined_kind) ? :ready : :incompatible
-        end
+        plot_status = :ready
     end
 
     generate_combined = get(ui_state, :generate_combined_plot, false)
@@ -332,10 +334,6 @@ function render_plot_window(ui_state)
         (length(plot_measurements) == 1 || generate_combined)
     if should_queue
         _queue_plot_job!(ui_state, proj, plot_measurements, plot_kind; target=:main, target_id="main", plot_key)
-    elseif plot_status == :incompatible
-        delete!(ui_state, :plot_figure)
-        ui_state[:_last_plot_key] = plot_key
-        ui_state[:plot_error] = ""
     end
 
     if ig.Begin("Plot Area")
@@ -352,17 +350,10 @@ function render_plot_window(ui_state)
                 MakieFigure("measurement_plot", f; auto_resize_x=true, auto_resize_y=true)
             end
         else
-            if plot_status == :incompatible
-                label = combined_kind === nothing ? "selected plot" : plot_kind_label(combined_kind)
-                ig.TextColored((1.0, 0.6, 0.2, 1.0), "Not enough compatible measurements for $label")
-                ig.Text("Selected: $(length(selected_measurements)), Compatible: $(length(plot_measurements))")
-                if combined_kind !== nothing
-                    ig.TextDisabled("Requires at least $(plot_kind_min_measurements(combined_kind)) compatible measurements")
-                end
-            elseif _plot_target_loading(ui_state, :main; target_id="main")
+            if _plot_target_loading(ui_state, :main; target_id="main")
                 ig.TextDisabled(length(plot_measurements) > 1 ? "Loading combined plot..." : "Loading plot...")
             elseif plot_status == :needs_kind
-                ig.TextDisabled("Multiple measurements selected")
+                ig.TextDisabled("No plot kind selected")
             elseif plot_status == :empty
                 ig.TextDisabled("No measurement selected")
             else
@@ -380,28 +371,20 @@ end
 function render_combined_plots_window(ui_state)
     proj = ui_state[:project]
     if ig.Begin("Combined Plots")
-        current_kind = get(ui_state, :combined_plot_kind, nothing)
-        kind_label = current_kind === nothing ? "None" : plot_kind_label(current_kind)
+        current_kind = _selected_plot_kind!(ui_state)
+        kind_label = current_kind === nothing ? "None" : _plot_kind_name(current_kind)
 
         if ig.BeginCombo("Plot Kind", kind_label)
-            if ig.Selectable("None", current_kind === nothing)
-                ui_state[:combined_plot_kind] = nothing
-            end
-            for plot_kind in _combined_plot_kinds(proj)
-                if ig.Selectable(plot_kind_label(plot_kind), current_kind === plot_kind)
-                    ui_state[:combined_plot_kind] = plot_kind
+            for plot_kind in plot_kinds()
+                if ig.Selectable(_plot_kind_name(plot_kind), current_kind === plot_kind)
+                    ui_state[:selected_plot_kind] = plot_kind
                 end
-                ig.SameLine()
-                _helpmarker(plot_kind_description(plot_kind))
             end
             ig.EndCombo()
         end
 
         selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
-        compatible_measurements = _compatible_measurements(proj, selected_measurements, current_kind)
-        compatible_count = length(compatible_measurements)
-        can_generate = current_kind !== nothing &&
-            compatible_count >= plot_kind_min_measurements(current_kind)
+        can_generate = current_kind !== nothing && !isempty(selected_measurements)
         ig.Separator()
 
         if !isempty(selected_measurements)
@@ -411,14 +394,7 @@ function render_combined_plots_window(ui_state)
         end
 
         if can_generate
-            ig.TextColored((0.2, 0.8, 0.2, 1.0), "Ready: $compatible_count compatible measurements")
-        elseif current_kind !== nothing && length(selected_measurements) > 1
-            ig.TextColored(
-                (1.0, 0.6, 0.2, 1.0),
-                "Warning: Only $compatible_count compatible (need $(plot_kind_min_measurements(current_kind))+)",
-            )
-        elseif current_kind !== nothing
-            ig.TextDisabled("Select multiple measurements for combined plots")
+            ig.TextColored((0.2, 0.8, 0.2, 1.0), "Ready")
         elseif length(selected_measurements) > 1
             ig.TextColored((0.8, 0.8, 0.2, 1.0), "Select a plot kind")
         end
@@ -432,7 +408,7 @@ function render_combined_plots_window(ui_state)
         end
         if can_generate && ig.BeginPopupContextItem()
             if ig.MenuItem("Open in New Window")
-                _open_combined_plot_window!(ui_state, proj, compatible_measurements, current_kind)
+                _open_combined_plot_window!(ui_state, proj, selected_measurements, current_kind)
             end
             ig.EndPopup()
         end

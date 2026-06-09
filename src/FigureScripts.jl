@@ -417,6 +417,22 @@ function _group_matches(
     return matches
 end
 
+function _figure_script_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Type{<:PlotKind}
+    throw(FigureScriptResolutionError(
+        "Figure script plot data is not implemented for $(project_name(project))",
+    ))
+end
+
+function _figure_script_plot_kind(::RuO2Project, measurement::MeasurementInfo)::Type{<:PlotKind}
+    measurement.measurement_kind in (:pund, :pn, :wakeup_pn, :wakeup_pund) && return RuO2PUNDPlot
+    measurement.measurement_kind in (:iv, :breakdown, :unknown) && return RuO2IVSweepPlot
+    measurement.measurement_kind === :tlm4p && return RuO2TLM4PointPlot
+    measurement.measurement_kind === :cvsweep && return RuO2CVSweepPlot
+    throw(FigureScriptResolutionError(
+        "No figure script plot kind is available for measurement '$(measurement.unique_id)'",
+    ))
+end
+
 function _build_figure_measurements(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo},
@@ -424,12 +440,9 @@ function _build_figure_measurements(
     records = FigureMeasurement[]
     for measurement in measurements
         parameters = _measurement_parameters(measurement)
+        plot_kind = _figure_script_plot_kind(project, measurement)
         df = only(read_measurement_data(project, [measurement]))
         loaded = _ruo2_plot_data(measurement, df)
-        plot_kind = default_plot_kind(project, measurement)
-        plot_kind === nothing && throw(FigureScriptResolutionError(
-            "No plot kind is available for measurement '$(measurement.unique_id)'",
-        ))
         analyzed = _analyze_ruo2_file_plot(
             project,
             plot_kind,
