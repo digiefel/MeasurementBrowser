@@ -46,13 +46,6 @@ using Test
         tlm_measurement(50.0, 350.0),
     ]
 
-    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2PUNDPlot, [pund]) === nothing
-    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2IVSweepPlot, [iv]) === nothing
-    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm]) === nothing
-    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements) === nothing
-    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLMTemperaturePlot, tlm_temperature_measurements) === nothing
-    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2PUNDFatiguePlot, fatigue) === nothing
-
     pund_data = only(process_measurement_data(RUO2_PROJECT, [pund]))
     @test all(name in names(pund_data) for name in [
         "time_us",

@@ -363,16 +363,24 @@ function render_perf_window(ui_state)
         allocs = get(ui_state, :_allocs,
             Dict{Symbol,Vector{Int}}())
 
-        for (k, v) in timings
-            isempty(v) && continue
-            a = get(allocs, k, Int[])
-            last_ms = round(v[end]; digits=2)
-            mean_ms = round(mean(v); digits=2)
-            last_alloc = isempty(a) ? 0.0 : round(a[end] / 1024; digits=1)
-            mean_alloc = isempty(a) ? 0.0 : round(mean(a) / 1024; digits=1)
-            msg = @sprintf "%s: last=%.2f ms  mean=%.2f ms  alloc_last=%.1f KB  alloc_mean=%.1f KB" String(k) last_ms mean_ms last_alloc mean_alloc
+        plot_timing_keys = haskey(timings, :plot_draw) ? [:plot_draw] : Symbol[]
+        other_timing_keys = sort([key for key in keys(timings) if key != :plot_draw])
+        for (title, keys_to_show) in (("Plot drawing", plot_timing_keys), ("Frame/UI timings", other_timing_keys))
+            isempty(keys_to_show) && continue
+            ig.Separator()
+            ig.Text(title)
+            for key in keys_to_show
+                samples = timings[key]
+                isempty(samples) && continue
+                bytes = get(allocs, key, Int[])
+                last_ms = round(samples[end]; digits=2)
+                mean_ms = round(mean(samples); digits=2)
+                last_alloc = isempty(bytes) ? 0.0 : round(bytes[end] / 1024; digits=1)
+                mean_alloc = isempty(bytes) ? 0.0 : round(mean(bytes) / 1024; digits=1)
+                msg = @sprintf "%s: n=%d  last=%.2f ms  mean=%.2f ms  alloc_last=%.1f KB  alloc_mean=%.1f KB" String(key) length(samples) last_ms mean_ms last_alloc mean_alloc
 
-            ig.BulletText(msg)
+                ig.BulletText(msg)
+            end
         end
 
         profiles = get(ui_state, :figure_script_job_profiles, Any[])
@@ -527,10 +535,7 @@ function render_menu_bar(ui_state)
             end
             if ig.MenuItem("Debug Plot Mode", C_NULL, get(ui_state, :debug_plot_mode, false))
                 ui_state[:debug_plot_mode] = !get(ui_state, :debug_plot_mode, false)
-                # Invalidate cached figures when toggled
-                _clear_plot_jobs!(ui_state)
-                delete!(ui_state, :plot_figure)
-                delete!(ui_state, :_last_plot_key)
+                _clear_plot_views!(ui_state)
             end
             ig.EndMenu()
         end
@@ -786,7 +791,6 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         ui_state[:_frame] += 1
         _poll_cache_events!(ui_state)
         _poll_source_scan_events!(ui_state)
-        _poll_plot_events!(ui_state)
         _poll_figure_script_job_events!(ui_state)
         if first_frame[] && !haskey(ui_state, :_gl_info)
             ui_state[:_gl_info] = _collect_gl_info!()

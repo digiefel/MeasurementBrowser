@@ -14,7 +14,6 @@ include("projects/RuO2Project.jl")   # defines methods + registers RUO2_PROJECT
 include("projects/TASEProject.jl")   # defines methods + registers TASE_PROJECT
 include("ProjectCache.jl")
 include("Precompile.jl")
-include("PlotJobs.jl")
 include("Gui.jl")
 
 export start_browser, scan_source

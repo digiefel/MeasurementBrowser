@@ -79,14 +79,7 @@ function _init_tag_state!(ui_state)
 end
 
 function _init_plot_state!(ui_state)
-    ui_state[:plot_state] = :idle
     ui_state[:plot_error] = ""
-    ui_state[:plot_seq] = 0
-    ui_state[:active_plot_id] = 0
-    ui_state[:plot_events] = nothing
-    ui_state[:plot_cancel_token] = nothing
-    ui_state[:active_plot_job] = nothing
-    ui_state[:pending_plot_job] = nothing
     ui_state[:plot_runtime_warmed] = false
     ui_state[:main_plot_live] = true
     ui_state[:main_plot_measurements] = MeasurementInfo[]
@@ -159,11 +152,8 @@ function _request_background_jobs_cancel!(ui_state)::Nothing
     ui_state[:shutting_down] = true
     _request_cancel_token!(ui_state, :source_scan_cancel_token)
     _request_cancel_token!(ui_state, :cache_cancel_token)
-    _request_cancel_token!(ui_state, :plot_cancel_token)
-    ui_state[:pending_plot_job] = nothing
     _source_scan_running(ui_state) && (ui_state[:source_scan_state] = :canceling)
     _cache_action_blocked(ui_state) && (ui_state[:cache_state] = :canceling)
-    _plot_running(ui_state) && (ui_state[:plot_state] = :canceling)
     return nothing
 end
 
@@ -619,9 +609,7 @@ function _begin_scan!(
         current_project isa AbstractProject &&
         project_name(current_project) == project_name(proj)
 
-    _clear_plot_jobs!(ui_state)
-    delete!(ui_state, :plot_figure)
-    delete!(ui_state, :_last_plot_key)
+    _clear_plot_views!(ui_state)
     if !same_project
         _clear_selection!(ui_state)
         delete!(ui_state, :main_plot_kind)
@@ -967,7 +955,7 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
     project = _project_by_name(identity.project_name)
     previous_cache_state = get(ui_state, :cache_state, :idle)
     _cancel_figure_script_job!(ui_state)
-    _clear_plot_jobs!(ui_state)
+    _clear_plot_views!(ui_state)
 
     cache_id_num = get(ui_state, :cache_seq, 0) + 1
     ui_state[:cache_seq] = cache_id_num
