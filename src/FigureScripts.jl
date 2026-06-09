@@ -1,5 +1,8 @@
 """
-FigureScripts.jl - Reusable helpers for publication script generation
+FigureScripts.jl - Deprecated helpers for publication script generation.
+
+This file is kept for old generated scripts while the app moves toward simpler live workflows.
+Do not build new plotting or analysis behavior here.
 """
 
 """
