@@ -357,13 +357,6 @@ function plot_data!(
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    for measurement in measurements
-        measurement.measurement_kind === :cvsweep || error(
-            "RuO2CVSweepPlot expects C-V sweep measurements, got $(measurement.measurement_kind) " *
-            "for '$(measurement.clean_title)'. File: $(measurement.filepath)",
-        )
-    end
-
     axes_c = contents(figure[1, 1])
     axes_z = contents(figure[1, 2])
     isempty(axes_c) && error("RuO2 CVSweep plot figure has no capacitance axis")
@@ -374,12 +367,6 @@ function plot_data!(
     data = read_measurement_data(project, measurements)
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
-        required_columns = [:frequency_Hz, :bias_V, :Cp_F, :Z_Ohm]
-        missing_columns = setdiff(required_columns, propertynames(df))
-        isempty(missing_columns) || error(
-            "RuO2CVSweepPlot expected columns $(join(string.(required_columns), ", ")), " *
-            "but $(measurement.filepath) is missing $(join(string.(missing_columns), ", ")).",
-        )
         frequencies_Hz = sort(unique(df.frequency_Hz))
         colors = cgrad(:viridis, length(frequencies_Hz); categorical=true)
         for (idx, freq_Hz) in enumerate(frequencies_Hz)
