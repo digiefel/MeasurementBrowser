@@ -64,6 +64,14 @@ struct JobCancelled <: Exception end
 
 const _CANCEL_CALLBACK_KEY = :MeasurementBrowser_cancel_requested
 
+function _is_job_cancelled(err)::Bool
+    err isa JobCancelled && return true
+    if err isa CompositeException
+        return !isempty(err.exceptions) && all(_is_job_cancelled, err.exceptions)
+    end
+    return false
+end
+
 function _with_cancel(f::Function, cancel_requested::Union{Nothing,Function})
     cancel_requested === nothing && return f()
     return task_local_storage(f, _CANCEL_CALLBACK_KEY, cancel_requested)
@@ -689,33 +697,42 @@ function _interpret_source_files(
     cancel_requested = get(task_local_storage(), _CANCEL_CALLBACK_KEY, nothing)
 
     @sync for (index, file) in pairs(files)
+        _check_cancel()
         Base.acquire(worker_limit)
+        try
+            _check_cancel()
+        catch
+            Base.release(worker_limit)
+            rethrow()
+        end
         Base.Threads.@spawn begin
             try
-                measurements = _with_cancel(cancel_requested) do
-                    interpret_measurements(project, file, meta)
-                end
-                scanned = SourceFile(file, measurements)
-                on_result(index, scanned)
-                if on_measurements !== nothing && !isempty(measurements)
-                    lock(progress_lock) do
-                        on_measurements(measurements)
+                _with_cancel(cancel_requested) do
+                    _check_cancel()
+                    measurements = interpret_measurements(project, file, meta)
+                    _check_cancel()
+                    scanned = SourceFile(file, measurements)
+                    on_result(index, scanned)
+                    if on_measurements !== nothing && !isempty(measurements)
+                        lock(progress_lock) do
+                            on_measurements(measurements)
+                        end
                     end
-                end
-                isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)
-                isempty(measurements) || Base.Threads.atomic_add!(loaded_measurements, length(measurements))
-                processed_now = Base.Threads.atomic_add!(processed_csv, 1) + 1
+                    isempty(measurements) && Base.Threads.atomic_add!(skipped_csv, 1)
+                    isempty(measurements) || Base.Threads.atomic_add!(loaded_measurements, length(measurements))
+                    processed_now = Base.Threads.atomic_add!(processed_csv, 1) + 1
 
-                if on_progress !== nothing
-                    progress = (
-                        total_csv=length(files),
-                        processed_csv=processed_now,
-                        loaded_measurements=loaded_measurements[],
-                        skipped_csv=skipped_csv[],
-                        current_path=file.filepath,
-                    )
-                    lock(progress_lock) do
-                        on_progress(progress)
+                    if on_progress !== nothing
+                        progress = (
+                            total_csv=length(files),
+                            processed_csv=processed_now,
+                            loaded_measurements=loaded_measurements[],
+                            skipped_csv=skipped_csv[],
+                            current_path=file.filepath,
+                        )
+                        lock(progress_lock) do
+                            on_progress(progress)
+                        end
                     end
                 end
             finally
@@ -767,6 +784,7 @@ function scan_source(
             current_path=file.filepath,
         ),
     )
+    _check_cancel()
     scanned_files = Vector{SourceFile}(undef, length(files))
     _emit_progress(on_progress;
         phase=:scanning,
@@ -792,6 +810,7 @@ function scan_source(
             current_path=progress.current_path,
         ),
     )
+    _check_cancel()
 
     measurements = MeasurementInfo[]
     sizehint!(measurements, summary.loaded_measurements)
@@ -808,6 +827,7 @@ function scan_source(
         skipped_csv=summary.skipped_csv,
         current_path=root,
     )
+    _check_cancel()
     analysis_failures = compute_and_add_measurement_stats!(
         proj,
         measurements,
@@ -832,6 +852,7 @@ function scan_source(
         skipped_csv=summary.skipped_csv,
         current_path=root,
     )
+    _check_cancel()
     hierarchy = MeasurementHierarchy(measurements, root, meta !== nothing, proj, summary.skipped_csv)
     return SourceScan(root, proj, scanned_files, hierarchy, analysis_failures)
 end

@@ -732,6 +732,12 @@ function _setup_docking_layout!(dockspace_id)
     ig.DockBuilderFinish(dockspace_id)
 end
 
+function _window_close_requested()::Bool
+    window = ig.current_window()
+    window === nothing && return false
+    return GLFW.WindowShouldClose(window)
+end
+
 function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; engine=nothing, spawn=1)
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
@@ -768,10 +774,15 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         spawn,
         wait_events=false,
         on_exit=() -> begin
+            _shutdown_background_jobs!(ui_state)
             _save_project_view_if_changed!(ui_state)
             _print_perf_summary(ui_state)
         end,
     ) do
+        if _window_close_requested()
+            _shutdown_background_jobs!(ui_state)
+            return :imgui_exit_loop
+        end
         ui_state[:_frame] += 1
         _poll_cache_events!(ui_state)
         _poll_source_scan_events!(ui_state)

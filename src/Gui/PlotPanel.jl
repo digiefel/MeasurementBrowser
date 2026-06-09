@@ -116,6 +116,7 @@ function _plot_running(ui_state)
 end
 
 function _clear_plot_jobs!(ui_state)
+    _request_cancel_token!(ui_state, :plot_cancel_token)
     ui_state[:plot_state] = :idle
     ui_state[:plot_error] = ""
     ui_state[:plot_events] = nothing
@@ -171,13 +172,13 @@ function _launch_plot_job!(ui_state, job::PlotJob)
     cancel_token = Base.Threads.Atomic{Bool}(false)
     ui_state[:plot_cancel_token] = cancel_token
 
-    Base.Threads.@spawn begin
+    task = Base.Threads.@spawn begin
         try
             data = _run_plot_job(job, () -> cancel_token[])
             cancel_token[] && throw(JobCancelled())
             put!(events, (kind=:data, plot_id=plot_id, data=data))
         catch err
-            if err isa JobCancelled
+            if _is_job_cancelled(err)
                 put!(events, (kind=:canceled, plot_id=plot_id))
             else
                 put!(events, (kind=:error, plot_id=plot_id, error=err, bt=catch_backtrace()))
@@ -186,6 +187,7 @@ function _launch_plot_job!(ui_state, job::PlotJob)
             close(events)
         end
     end
+    _remember_background_task!(ui_state, task)
 end
 
 function _queue_plot_job!(ui_state, job::PlotJob)

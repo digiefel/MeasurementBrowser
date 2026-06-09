@@ -139,6 +139,52 @@ function _init_figure_script_state!(ui_state)
     ui_state[:figure_script_job_profiles] = Any[]
 end
 
+function _remember_background_task!(ui_state, task::Task)::Task
+    tasks = get!(ui_state, :background_tasks) do
+        Task[]
+    end
+    filter!(!istaskdone, tasks)
+    push!(tasks, task)
+    return task
+end
+
+function _request_cancel_token!(ui_state, key::Symbol)::Nothing
+    token = get(ui_state, key, nothing)
+    token === nothing && return nothing
+    Base.Threads.atomic_xchg!(token, true)
+    return nothing
+end
+
+function _request_background_jobs_cancel!(ui_state)::Nothing
+    ui_state[:shutting_down] = true
+    _request_cancel_token!(ui_state, :source_scan_cancel_token)
+    _request_cancel_token!(ui_state, :cache_cancel_token)
+    _request_cancel_token!(ui_state, :plot_cancel_token)
+    ui_state[:pending_plot_job] = nothing
+    _source_scan_running(ui_state) && (ui_state[:source_scan_state] = :canceling)
+    _cache_action_blocked(ui_state) && (ui_state[:cache_state] = :canceling)
+    _plot_running(ui_state) && (ui_state[:plot_state] = :canceling)
+    return nothing
+end
+
+function _wait_for_background_jobs!(ui_state)::Nothing
+    tasks = get(ui_state, :background_tasks, Task[])
+    tasks isa Vector{Task} || return nothing
+    while true
+        filter!(!istaskdone, tasks)
+        isempty(tasks) && return nothing
+        sleep(0.02)
+    end
+end
+
+function _shutdown_background_jobs!(ui_state)::Nothing
+    get(ui_state, :shutdown_complete, false) && return nothing
+    _request_background_jobs_cancel!(ui_state)
+    _wait_for_background_jobs!(ui_state)
+    ui_state[:shutdown_complete] = true
+    return nothing
+end
+
 function _clear_selection!(ui_state)
     ui_state[:selected_device_paths] = String[]
     ui_state[:selected_measurement_ids] = String[]
@@ -295,7 +341,7 @@ function _launch_figure_script_job!(ui_state, request::Dict{Symbol,Any})
     events = Channel{NamedTuple}(1)
     ui_state[:figure_script_job_events] = events
 
-    Base.Threads.@spawn begin
+    task = Base.Threads.@spawn begin
         try
             groups, selected_index, profile = _resolve_figure_script_job(request)
             put!(events, (
@@ -324,6 +370,7 @@ function _launch_figure_script_job!(ui_state, request::Dict{Symbol,Any})
             close(events)
         end
     end
+    _remember_background_task!(ui_state, task)
 end
 
 function _poll_figure_script_job_events!(ui_state)
@@ -800,7 +847,7 @@ function _launch_source_scan_job!(
     ui_state[:source_scan_events] = events
     ui_state[:source_scan_cancel_token] = cancel_token
 
-    Base.Threads.@spawn begin
+    task = Base.Threads.@spawn begin
         try
             source = _with_cancel(() -> cancel_token[]) do
                 scan_source(
@@ -826,7 +873,7 @@ function _launch_source_scan_job!(
                 persist=persist,
             ))
         catch err
-            if err isa JobCancelled
+            if _is_job_cancelled(err)
                 put!(events, (kind=:canceled, scan_id=scan_id))
             else
                 put!(events, (kind=:error, scan_id=scan_id, error=err, bt=catch_backtrace()))
@@ -835,6 +882,7 @@ function _launch_source_scan_job!(
             close(events)
         end
     end
+    _remember_background_task!(ui_state, task)
     return nothing
 end
 
@@ -878,7 +926,7 @@ function _launch_project_reload_job!(
     ui_state[:cache_events] = events
     ui_state[:cache_cancel_token] = cancel_token
 
-    Base.Threads.@spawn begin
+    task = Base.Threads.@spawn begin
         try
             snapshot = _with_cancel(() -> cancel_token[]) do
                 load_project_cache(
@@ -892,7 +940,7 @@ function _launch_project_reload_job!(
             end
             put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=persist))
         catch err
-            if err isa JobCancelled
+            if _is_job_cancelled(err)
                 put!(events, (kind=:canceled, cache_id=cache_id_num))
             elseif err isa ProjectCacheMissingError || err isa ProjectCacheInvalidError
                 put!(events, (
@@ -909,6 +957,7 @@ function _launch_project_reload_job!(
             close(events)
         end
     end
+    _remember_background_task!(ui_state, task)
     return nothing
 end
 
@@ -940,7 +989,7 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
         existing_source = nothing
     end
 
-    Base.Threads.@spawn begin
+    task = Base.Threads.@spawn begin
         try
             source = existing_source
             if source === nothing
@@ -976,7 +1025,7 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
             end
             put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=true))
         catch err
-            if err isa JobCancelled
+            if _is_job_cancelled(err)
                 put!(events, (kind=:canceled, cache_id=cache_id_num))
             else
                 put!(events, (kind=:error, cache_id=cache_id_num, error=err, bt=catch_backtrace()))
@@ -985,6 +1034,7 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
             close(events)
         end
     end
+    _remember_background_task!(ui_state, task)
 end
 
 function _queue_cache_update!(ui_state; full_rebuild::Bool=false)
