@@ -6,14 +6,7 @@ function _ruo2_combined_plot_data(
 )
     isempty(measurements) && return nothing
     length(measurements) == length(data) || error("Measurement and data counts must match")
-    if combined_kind === RuO2TLMAnalysisPlot
-        files_data_params = Tuple{String,DataFrame,Dict{Symbol,Any}}[]
-        for (measurement, df) in zip(measurements, data)
-            params = merge(measurement.device_info.parameters, measurement.parameters)
-            push!(files_data_params, (measurement.filepath, df, params))
-        end
-        return (files_data_params=files_data_params,)
-    elseif combined_kind === RuO2TLMTemperaturePlot
+    if combined_kind === RuO2TLMTemperaturePlot
         entries = NamedTuple{(:path, :df, :params, :tempK, :site, :oxygen_percent, :oxygen_flow_sccm)}[]
         for (measurement, df) in zip(measurements, data)
             path = measurement.filepath
@@ -46,30 +39,7 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}
     loaded === nothing && return nothing
     _check_cancel()
 
-    if combined_kind === RuO2TLMAnalysisPlot
-        analysis_df = analyze_tlm_combined(loaded.files_data_params)
-        nrow(analysis_df) == 0 && return nothing
-        R_sheet, R_cprime, rho_c, r_squared = calculate_sheet_resistance(analysis_df)
-        geometry_groups = combine(groupby(analysis_df, [:length_um, :width_um]),
-            :resistance_ohm => (x -> mean(filter(isfinite, x))) => :avg_resistance_ohm)
-        widths = unique(geometry_groups.width_um)
-        info_text = ""
-        if isfinite(R_sheet)
-            info_text *= "Sheet Resistance (R□):  $(round(R_sheet, digits=2)) Ω/□\n\n"
-            isfinite(R_cprime) && (info_text *= "Contact per width (R_c'):  $(round(R_cprime, sigdigits=4)) Ω·cm\n\n")
-            isfinite(rho_c) && (info_text *= "Specific Contact (ρ_c):  $(round(rho_c, sigdigits=4)) Ω·cm²\n\n")
-        else
-            info_text *= "Width-invariant fit unavailable (need ≥2 geometries)\n\n"
-        end
-        info_text *= "Files analyzed: $(length(loaded.files_data_params))\nWidths: $(length(widths))\nData points: $(nrow(analysis_df))"
-        return (
-            analysis_df=analysis_df,
-            geometry_groups=geometry_groups,
-            widths=widths,
-            fit=(R_sheet=R_sheet, R_cprime=R_cprime, rho_c=rho_c, r_squared=r_squared),
-            info_text=info_text,
-        )
-    elseif combined_kind === RuO2TLMTemperaturePlot
+    if combined_kind === RuO2TLMTemperaturePlot
         entries = loaded.entries
         isempty(entries) && return nothing
         results = DataFrame(site=String[], temperature_K=Float64[], R_val=Float64[], R_cprime=Float64[],
@@ -186,56 +156,126 @@ function _analyze_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}
     return loaded
 end
 
+function _ruo2_tlm_files_data_params(
+    measurements::Vector{MeasurementInfo},
+    data::Vector{DataFrame},
+)::Vector{Tuple{String,DataFrame,Dict{Symbol,Any}}}
+    length(measurements) == length(data) || error("Measurement and data counts must match")
+    files_data_params = Tuple{String,DataFrame,Dict{Symbol,Any}}[]
+    sizehint!(files_data_params, length(measurements))
+    for (measurement, df) in zip(measurements, data)
+        params = merge(measurement.device_info.parameters, measurement.parameters)
+        push!(files_data_params, (measurement.filepath, df, params))
+    end
+    return files_data_params
+end
+
+function _ruo2_tlm_analysis_info(
+    analysis_df::DataFrame,
+    file_count::Int,
+)
+    R_sheet, R_cprime, rho_c, r_squared = calculate_sheet_resistance(analysis_df)
+    geometry_groups = combine(groupby(analysis_df, [:length_um, :width_um]),
+        :resistance_ohm => (x -> mean(filter(isfinite, x))) => :avg_resistance_ohm)
+    widths = unique(geometry_groups.width_um)
+    info_text = ""
+    if isfinite(R_sheet)
+        info_text *= "Sheet Resistance (R□):  $(round(R_sheet, digits=2)) Ω/□\n\n"
+        isfinite(R_cprime) && (info_text *= "Contact per width (R_c'):  $(round(R_cprime, sigdigits=4)) Ω·cm\n\n")
+        isfinite(rho_c) && (info_text *= "Specific Contact (ρ_c):  $(round(rho_c, sigdigits=4)) Ω·cm²\n\n")
+    else
+        info_text *= "Width-invariant fit unavailable (need ≥2 geometries)\n\n"
+    end
+    info_text *= "Files analyzed: $file_count\nWidths: $(length(widths))\nData points: $(nrow(analysis_df))"
+    return (
+        geometry_groups=geometry_groups,
+        widths=widths,
+        fit=(R_sheet=R_sheet, R_cprime=R_cprime, rho_c=rho_c, r_squared=r_squared),
+        info_text=info_text,
+    )
+end
+
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Type{RuO2TLMAnalysisPlot},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    isempty(measurements) && error("RuO2 TLM analysis plot requires at least one measurement")
+    fig = Figure(size=(900, 600))
+    Axis(fig[1, 1:2], xlabel="Length/Width Ratio (L/W)", ylabel="Resistance (kΩ)",
+        title="TLM Analysis - Model from (R□, R_c')")
+    Axis(fig[2, 1], xlabel="Length (μm)", ylabel="Width-Normalized Resistance (Ω·μm)",
+        title="Width-Normalized Resistance vs Length")
+    info_ax = Axis(fig[2, 2], xlabel="", ylabel="", title="Analysis Results")
+    hidedecorations!(info_ax)
+    hidespines!(info_ax)
+    rowsize!(fig.layout, 1, Relative(0.65))
+    rowsize!(fig.layout, 2, Relative(0.35))
+    return fig
+end
+
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Type{RuO2TLMAnalysisPlot},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    axes_model = contents(figure[1, 1:2])
+    axes_norm = contents(figure[2, 1])
+    axes_info = contents(figure[2, 2])
+    isempty(axes_model) && error("RuO2 TLM analysis plot figure has no model axis")
+    isempty(axes_norm) && error("RuO2 TLM analysis plot figure has no normalized-resistance axis")
+    isempty(axes_info) && error("RuO2 TLM analysis plot figure has no info axis")
+    ax1 = only(axes_model)
+    ax2 = only(axes_norm)
+    info_ax = only(axes_info)
+
+    data = read_measurement_data(project, measurements)
+    files_data_params = _ruo2_tlm_files_data_params(measurements, data)
+    analysis_df = analyze_tlm_combined(files_data_params)
+    nrow(analysis_df) == 0 && return nothing
+    analyzed = _ruo2_tlm_analysis_info(analysis_df, length(files_data_params))
+    geometry_groups = analyzed.geometry_groups
+    widths = analyzed.widths
+    fit = analyzed.fit
+    colors = cgrad(:tab10, length(widths), categorical=true)
+
+    for (i, width_um) in enumerate(widths)
+        width_geom = filter(row -> row.width_um == width_um, geometry_groups)
+        if nrow(width_geom) > 0
+            scatter!(ax1, width_geom.length_um ./ width_geom.width_um, width_geom.avg_resistance_ohm ./ 1e3,
+                color=colors[i], label="$(width_um) μm", markersize=10)
+        end
+    end
+    if isfinite(fit.R_sheet) && isfinite(fit.R_cprime)
+        for (i, width_um) in enumerate(widths)
+            mask = geometry_groups.width_um .== width_um
+            if any(mask)
+                w_cm = width_um * 1e-4
+                a_w = 2 * (fit.R_cprime / w_cm)
+                xspan = geometry_groups.length_um[mask] ./ geometry_groups.width_um[mask]
+                lw_fit = range(0, max(maximum(xspan), 1.0), length=200)
+                r_fit = (a_w .+ fit.R_sheet .* lw_fit) ./ 1e3
+                lines!(ax1, lw_fit, r_fit, color=colors[i], linewidth=2, linestyle=:dash)
+            end
+        end
+    end
+    for (i, width_um) in enumerate(widths)
+        width_data = filter(row -> row.width_um == width_um, analysis_df)
+        scatter!(ax2, width_data.length_um, width_data.resistance_normalized,
+            color=colors[i], label="$(width_um) μm", markersize=6)
+    end
+    text!(info_ax, 0.05, 0.95, text=analyzed.info_text, align=(:left, :top), fontsize=15, space=:relative)
+    xlims!(info_ax, 0, 1)
+    ylims!(info_ax, 0, 1)
+    length(widths) > 1 && axislegend(ax1, position=:lt)
+    return nothing
+end
+
 function _draw_ruo2_files_plot(::RuO2Project, combined_kind::Type{<:PlotKind}, analyzed; kwargs...)
     analyzed === nothing && return nothing
 
-    if combined_kind === RuO2TLMAnalysisPlot
-        analysis_df = analyzed.analysis_df
-        geometry_groups = analyzed.geometry_groups
-        fit = analyzed.fit
-        fig = Figure(size=(900, 600))
-        ax1 = Axis(fig[1, 1:2], xlabel="Length/Width Ratio (L/W)", ylabel="Resistance (kΩ)",
-            title="TLM Analysis - Model from (R□, R_c')")
-        ax2 = Axis(fig[2, 1], xlabel="Length (μm)", ylabel="Width-Normalized Resistance (Ω·μm)",
-            title="Width-Normalized Resistance vs Length")
-        info_ax = Axis(fig[2, 2], xlabel="", ylabel="", title="Analysis Results")
-        hidedecorations!(info_ax)
-        hidespines!(info_ax)
-        rowsize!(fig.layout, 1, Relative(0.65))
-        rowsize!(fig.layout, 2, Relative(0.35))
-        widths = analyzed.widths
-        colors = cgrad(:tab10, length(widths), categorical=true)
-        for (i, width_um) in enumerate(widths)
-            width_geom = filter(row -> row.width_um == width_um, geometry_groups)
-            if nrow(width_geom) > 0
-                scatter!(ax1, width_geom.length_um ./ width_geom.width_um, width_geom.avg_resistance_ohm ./ 1e3,
-                    color=colors[i], label="$(width_um) μm", markersize=10)
-            end
-        end
-        if isfinite(fit.R_sheet) && isfinite(fit.R_cprime)
-            for (i, width_um) in enumerate(widths)
-                mask = geometry_groups.width_um .== width_um
-                if any(mask)
-                    w_cm = width_um * 1e-4
-                    a_w = 2 * (fit.R_cprime / w_cm)
-                    xspan = geometry_groups.length_um[mask] ./ geometry_groups.width_um[mask]
-                    lw_fit = range(0, max(maximum(xspan), 1.0), length=200)
-                    r_fit = (a_w .+ fit.R_sheet .* lw_fit) ./ 1e3
-                    lines!(ax1, lw_fit, r_fit, color=colors[i], linewidth=2, linestyle=:dash)
-                end
-            end
-        end
-        for (i, width_um) in enumerate(widths)
-            width_data = filter(row -> row.width_um == width_um, analysis_df)
-            scatter!(ax2, width_data.length_um, width_data.resistance_normalized,
-                color=colors[i], label="$(width_um) μm", markersize=6)
-        end
-        text!(info_ax, 0.05, 0.95, text=analyzed.info_text, align=(:left, :top), fontsize=15, space=:relative)
-        xlims!(info_ax, 0, 1)
-        ylims!(info_ax, 0, 1)
-        length(widths) > 1 && axislegend(ax1, position=:lt)
-        return fig
-    elseif combined_kind === RuO2TLMTemperaturePlot
+    if combined_kind === RuO2TLMTemperaturePlot
         results = analyzed.results
         site_summary = analyzed.site_summary
         fig = Figure(size=(1100, 720))

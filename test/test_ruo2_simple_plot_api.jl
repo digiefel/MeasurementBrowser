@@ -11,10 +11,30 @@ using Test
     pund = only(measurements_for_file(RUO2_PROJECT, pund_path))
     iv = only(measurements_for_file(RUO2_PROJECT, iv_path))
     tlm = only(measurements_for_file(RUO2_PROJECT, tlm_path))
+    tlm_l100 = MeasurementInfo(
+        tlm;
+        unique_id="$(tlm.unique_id):L100",
+        clean_title="$(tlm.clean_title) L100",
+        device_info=DeviceInfo(
+            copy(tlm.device_info.location),
+            merge(tlm.device_info.parameters, Dict{Symbol,Any}(:length_um => 100.0, :width_um => 2.0)),
+        ),
+    )
+    tlm_l50 = MeasurementInfo(
+        tlm;
+        unique_id="$(tlm.unique_id):L50",
+        clean_title="$(tlm.clean_title) L50",
+        device_info=DeviceInfo(
+            copy(tlm.device_info.location),
+            merge(tlm.device_info.parameters, Dict{Symbol,Any}(:length_um => 50.0, :width_um => 2.0)),
+        ),
+    )
+    tlm_analysis_measurements = [tlm_l100, tlm_l50]
 
     @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2PUNDPlot, [pund]) === nothing
     @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2IVSweepPlot, [iv]) === nothing
     @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm]) === nothing
+    @test MeasurementBrowser._plot_job_data(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements) === nothing
 
     pund_data = only(process_measurement_data(RUO2_PROJECT, [pund]))
     @test all(name in names(pund_data) for name in [
@@ -51,4 +71,9 @@ using Test
 
     tlm_fig = setup_plot(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm, tlm])
     @test plot_data!(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm, tlm], tlm_fig) === nothing
+
+    tlm_analysis_fig = setup_plot(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements)
+    @test_logs (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") begin
+        @test plot_data!(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements, tlm_analysis_fig) === nothing
+    end
 end

@@ -30,7 +30,13 @@ project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 
 function _ruo2_uses_setup_plot_api(plot_kind::Type{<:PlotKind})::Bool
-    return plot_kind in (RuO2PUNDPlot, RuO2CVSweepPlot, RuO2IVSweepPlot, RuO2TLM4PointPlot)
+    return plot_kind in (
+        RuO2PUNDPlot,
+        RuO2IVSweepPlot,
+        RuO2TLM4PointPlot,
+        RuO2CVSweepPlot,
+        RuO2TLMAnalysisPlot,
+    )
 end
 
 function _plot_job_data(
