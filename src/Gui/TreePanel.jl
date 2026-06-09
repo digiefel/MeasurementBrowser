@@ -43,8 +43,10 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
 
     visible_devices = HierarchyNode[]
     visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
+    expanded_device_path_set = Set(get(ui_state, :expanded_device_paths, String[]))
     selected_device_path_set = Set(get(ui_state, :selected_device_paths, String[]))
     all_device_count = 0
+    filter_active = ig.ImGuiTextFilter_IsActive(filter_tree)
 
     if root !== nothing
         has_visible_leaf_cache = IdDict{HierarchyNode,Bool}()
@@ -132,7 +134,12 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
         next_node_id(parent_id::UInt64, node::HierarchyNode) = hash(node.name, parent_id)
         to_imgui_id(node_id::UInt64) = Int32(node_id % UInt64(typemax(Int32)))
 
-        function render_node(node::HierarchyNode, node_id::UInt64, force_show::Bool=false)
+        function render_node(
+            node::HierarchyNode,
+            node_id::UInt64,
+            path_segments::Vector{String},
+            force_show::Bool=false,
+        )
             has_visible_leaf(node) || return
             force_show || subtree_matches(node) || return
 
@@ -143,6 +150,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             ig.PushID(to_imgui_id(node_id))
 
             is_leaf = isempty(children(node))
+            path_key = join(path_segments, '/')
             leaf_device_key = is_leaf ? device_key(node) : nothing
             selected = is_leaf && (leaf_device_key in selected_device_path_set)
 
@@ -164,7 +172,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             if selected
                 flags |= ig.ImGuiTreeNodeFlags_Selected
             end
-            if ig.ImGuiTextFilter_IsActive(filter_tree) && direct_match && !is_leaf
+            if filter_active && direct_match && !is_leaf
                 flags |= ig.ImGuiTreeNodeFlags_DefaultOpen
             end
 
@@ -175,7 +183,20 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 ancestor_keys = _ancestor_keys_for_path(leaf_device_key)
                 bad_text_pushed = _push_tag_text_style!(tag_state, leaf_device_key, ancestor_keys)
             end
+            if !is_leaf && !filter_active
+                ig.SetNextItemOpen(path_key in expanded_device_path_set, ig.ImGuiCond_Always)
+            end
             opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
+            if !is_leaf && !filter_active && ig.IsItemToggledOpen()
+                expanded_device_paths = copy(get(ui_state, :expanded_device_paths, String[]))
+                if opened
+                    path_key in expanded_device_paths || push!(expanded_device_paths, path_key)
+                else
+                    filter!(key -> key != path_key, expanded_device_paths)
+                end
+                ui_state[:expanded_device_paths] = expanded_device_paths
+                expanded_device_path_set = Set(expanded_device_paths)
+            end
             bad_text_pushed && ig.PopStyleColor()
 
             if ig.IsItemClicked()
@@ -231,7 +252,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
 
             if opened && !is_leaf
                 for child in children(node)
-                    render_node(child, next_node_id(node_id, child), direct_match)
+                    render_node(child, next_node_id(node_id, child), [path_segments; child.name], direct_match)
                 end
                 ig.TreePop()
             end
@@ -253,7 +274,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             ig.TableAngledHeadersRow()
             ig.TableHeadersRow()
             for child in children(root)
-                render_node(child, next_node_id(node_seed, child), false)
+                render_node(child, next_node_id(node_seed, child), [child.name], false)
             end
             ig.EndTable()
         end
@@ -530,12 +551,8 @@ end
 
 function render_selection_window(ui_state)
     ui_state[:_node_count] = 0
-    filter_tree = get!(ui_state, :_imgui_text_filter_tree) do
-        ig.ImGuiTextFilter_ImGuiTextFilter(C_NULL)
-    end
-    filter_meas = get!(ui_state, :_imgui_text_filter_meas) do
-        ig.ImGuiTextFilter_ImGuiTextFilter(C_NULL)
-    end
+    filter_tree = _imgui_text_filter_for_state!(ui_state, :_imgui_text_filter_tree, :tree_filter)
+    filter_meas = _imgui_text_filter_for_state!(ui_state, :_imgui_text_filter_meas, :measurement_filter)
 
     if ig.Begin("Hierarchy", C_NULL, ig.ImGuiWindowFlags_MenuBar)
         render_menu_bar(ui_state)
@@ -549,4 +566,6 @@ function render_selection_window(ui_state)
         end
     end
     ig.End()
+    _sync_imgui_text_filter!(ui_state, :tree_filter, filter_tree)
+    _sync_imgui_text_filter!(ui_state, :measurement_filter, filter_meas)
 end

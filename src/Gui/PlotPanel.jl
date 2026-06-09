@@ -31,13 +31,9 @@ function _remembered_plot_kind(
     ui_state::Dict{Symbol,Any},
     measurement_kind::Symbol,
 )::Union{Nothing,Type{<:PlotKind}}
-    project = get(ui_state, :project, nothing)
-    project isa AbstractProject || return nothing
-    prefs = get(ui_state, :plot_kind_preferences, Dict{String,Dict{String,String}}())
+    prefs = get(ui_state, :plot_kind_by_measurement_kind, Dict{String,String}())
     prefs isa AbstractDict || return nothing
-    project_prefs = get(prefs, project_name(project), nothing)
-    project_prefs isa AbstractDict || return nothing
-    name = get(project_prefs, String(measurement_kind), nothing)
+    name = get(prefs, String(measurement_kind), nothing)
     name isa AbstractString || return nothing
     return _plot_kind_named(name)
 end
@@ -47,20 +43,14 @@ function _remember_plot_kind!(
     measurements::Vector{MeasurementInfo},
     plot_kind::Type{<:PlotKind},
 )::Nothing
-    project = get(ui_state, :project, nothing)
-    project isa AbstractProject || return nothing
     isempty(measurements) && return nothing
 
-    prefs = get!(ui_state, :plot_kind_preferences) do
-        Dict{String,Dict{String,String}}()
-    end
-    project_prefs = get!(prefs, project_name(project)) do
+    prefs = get!(ui_state, :plot_kind_by_measurement_kind) do
         Dict{String,String}()
     end
     for measurement_kind in unique([measurement.measurement_kind for measurement in measurements])
-        project_prefs[String(measurement_kind)] = String(nameof(plot_kind))
+        prefs[String(measurement_kind)] = String(nameof(plot_kind))
     end
-    _persist_plot_kind_preferences!(ui_state)
     return nothing
 end
 
@@ -112,6 +102,7 @@ function _measurement_plot_window_entry(
     return Dict{Symbol,Any}(
         :target_id => _next_plot_window_id!(ui_state),
         :filepath => measurement.filepath,
+        :measurement_ids => [measurement.unique_id],
         :measurements => [measurement],
         :title => measurement.clean_title,
         :plot_kind => plot_kind,
@@ -510,6 +501,7 @@ function _detach_plot_window!(
     push!(open_plots, Dict{Symbol,Any}(
         :title => title,
         :target_id => target_id,
+        :measurement_ids => [measurement.unique_id for measurement in measurements],
         :measurements => copy(measurements),
         :plot_kind => plot_kind,
         :live => false,
@@ -564,6 +556,7 @@ function _render_main_plot_toolbar!(
     if _render_live_checkbox!(ui_state, :main_plot_live, true, "Live##main_plot_live")
         if get(ui_state, :main_plot_live, true) === false
             ui_state[:main_plot_measurements] = copy(get(ui_state, :selected_measurements, MeasurementInfo[]))
+            ui_state[:main_plot_measurement_ids] = [measurement.unique_id for measurement in ui_state[:main_plot_measurements]]
         end
         delete!(ui_state, :_last_plot_key)
     end
@@ -613,6 +606,7 @@ function _render_extra_plot_toolbar!(
     if _render_live_checkbox!(entry, :live, false, "Live##plot_live_$id")
         if get(entry, :live, false) === false
             entry[:measurements] = copy(selected_measurements)
+            entry[:measurement_ids] = [measurement.unique_id for measurement in selected_measurements]
         end
         delete!(entry, :_last_plot_key)
     end

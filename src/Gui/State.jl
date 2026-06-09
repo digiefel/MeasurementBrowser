@@ -1,212 +1,3 @@
-# ---------------------------------------------------------------------------
-# Preferences (persistent project selection + recent folders)
-# ---------------------------------------------------------------------------
-
-function _prefs_path()
-    return joinpath(homedir(), ".config", "MeasurementBrowser", "prefs.toml")
-end
-
-function _load_prefs()
-    path = _prefs_path()
-    isfile(path) || return Dict{String,Any}()
-    return TOML.parsefile(path)
-end
-
-function _save_prefs(data::Dict)
-    path = _prefs_path()
-    mkpath(dirname(path))
-    open(path, "w") do io
-        TOML.print(io, data)
-    end
-end
-
-const _MAX_RECENT_PROJECTS = 12
-
-function _normalize_project_path(path::AbstractString)
-    return normpath(abspath(expanduser(String(path))))
-end
-
-function _sanitize_project_preference(pref::String)
-    pref == "auto" && return "auto"
-    for p in KNOWN_PROJECTS
-        project_name(p) == pref && return pref
-    end
-    return "auto"
-end
-
-function _sanitize_figure_script_output_dir(value)
-    value isa AbstractString || return ""
-    return String(strip(String(value)))
-end
-
-function _sanitize_cache_id(value)
-    value isa AbstractString || return ""
-    stripped = strip(String(value))
-    isempty(stripped) && return ""
-    occursin(r"^[A-Za-z0-9_.-]+$", stripped) ||
-        error("Invalid cache id '$stripped'; expected letters, numbers, '.', '_' or '-'")
-    return stripped
-end
-
-function _parse_recent_projects(prefs::Dict{String,Any})
-    recents = Dict{String,String}[]
-    raw = get(prefs, "recent_projects", Any[])
-    raw isa Vector || return recents
-
-    for entry in raw
-        entry isa AbstractDict || continue
-        path = get(entry, "path", nothing)
-        path isa AbstractString || continue
-        path = strip(path)
-        isempty(path) && continue
-        pref = get(entry, "project_preference", "auto")
-        pref = pref isa AbstractString ? pref : "auto"
-        figure_script_output_dir = _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
-        cache_id = _sanitize_cache_id(get(entry, "cache_id", ""))
-        push!(recents, Dict{String,String}(
-            "path" => _normalize_project_path(path),
-            "project_preference" => _sanitize_project_preference(pref),
-            "figure_script_output_dir" => figure_script_output_dir,
-            "cache_id" => cache_id,
-        ))
-    end
-
-    return recents
-end
-
-function _parse_plot_kind_preferences(prefs::Dict{String,Any})::Dict{String,Dict{String,String}}
-    parsed = Dict{String,Dict{String,String}}()
-    raw = get(prefs, "plot_kind_by_project", Dict{String,Any}())
-    raw isa AbstractDict || return parsed
-
-    for (project_key, project_value) in raw
-        project_value isa AbstractDict || continue
-        project_prefs = Dict{String,String}()
-        for (measurement_key, plot_kind_name) in project_value
-            plot_kind_name isa AbstractString || continue
-            project_prefs[String(measurement_key)] = String(plot_kind_name)
-        end
-        isempty(project_prefs) || (parsed[String(project_key)] = project_prefs)
-    end
-    return parsed
-end
-
-function _plot_kind_preferences_for_toml(ui_state)::Dict{String,Dict{String,String}}
-    raw = get(ui_state, :plot_kind_preferences, Dict{String,Dict{String,String}}())
-    raw isa AbstractDict || return Dict{String,Dict{String,String}}()
-
-    prefs = Dict{String,Dict{String,String}}()
-    for (project_key, project_value) in raw
-        project_value isa AbstractDict || continue
-        project_prefs = Dict{String,String}()
-        for (measurement_key, plot_kind_name) in project_value
-            plot_kind_name isa AbstractString || continue
-            project_prefs[String(measurement_key)] = String(plot_kind_name)
-        end
-        isempty(project_prefs) || (prefs[String(project_key)] = project_prefs)
-    end
-    return prefs
-end
-
-function _update_recent_projects(
-    recents::Vector{Dict{String,String}},
-    path::AbstractString,
-    pref::AbstractString,
-    figure_script_output_dir::AbstractString,
-    cache_id::AbstractString,
-)
-    norm_path = _normalize_project_path(path)
-    filter!(entry -> get(entry, "path", "") != norm_path, recents)
-    pushfirst!(recents, Dict{String,String}(
-        "path" => norm_path,
-        "project_preference" => String(pref),
-        "figure_script_output_dir" => _sanitize_figure_script_output_dir(figure_script_output_dir),
-        "cache_id" => _sanitize_cache_id(cache_id),
-    ))
-    length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
-    return recents
-end
-
-function _current_figure_script_output_dir(ui_state)
-    haskey(ui_state, :figure_script_output_dir_buffer) || return ""
-    return _sanitize_figure_script_output_dir(_buffer_string(ui_state[:figure_script_output_dir_buffer]))
-end
-
-function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
-    prefs = _load_prefs()
-    pref = _sanitize_project_preference(string(get(ui_state, :project_preference, "auto")))
-    ui_state[:project_preference] = pref
-    prefs["project"] = pref
-
-    recents = _parse_recent_projects(prefs)
-    if path !== nothing && !isempty(path)
-        cache_id = string(get(ui_state, :cache_id, ""))
-        _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state), cache_id)
-        prefs["recent_projects"] = recents
-    end
-    prefs["plot_kind_by_project"] = _plot_kind_preferences_for_toml(ui_state)
-
-    _save_prefs(prefs)
-    ui_state[:recent_projects] = recents
-end
-
-function _persist_plot_kind_preferences!(ui_state)::Nothing
-    prefs = _load_prefs()
-    prefs["plot_kind_by_project"] = _plot_kind_preferences_for_toml(ui_state)
-    _save_prefs(prefs)
-    return nothing
-end
-
-function _recent_project_entry_for_path(ui_state, path::String)
-    recents = get(ui_state, :recent_projects, Dict{String,String}[])
-    for entry in recents
-        get(entry, "path", "") == path && return entry
-    end
-    return nothing
-end
-
-function _project_preference_for_path(ui_state, path::String)
-    entry = _recent_project_entry_for_path(ui_state, path)
-    if entry !== nothing
-        pref = get(entry, "project_preference", "auto")
-        return _sanitize_project_preference(pref)
-    end
-    pref = string(get(ui_state, :project_preference, "auto"))
-    return _sanitize_project_preference(pref)
-end
-
-function _figure_script_output_dir_for_path(ui_state, path::String)
-    entry = _recent_project_entry_for_path(ui_state, path)
-    entry === nothing && return ""
-    return _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
-end
-
-function _cache_id_for_path!(ui_state, path::String)
-    cache_id = project_cache_id(path)
-    pref = _project_preference_for_path(ui_state, path)
-    recents = get!(ui_state, :recent_projects) do
-        Dict{String,String}[]
-    end
-    _update_recent_projects(
-        recents,
-        path,
-        pref,
-        _figure_script_output_dir_for_path(ui_state, path),
-        cache_id,
-    )
-    prefs = _load_prefs()
-    prefs["recent_projects"] = recents
-    prefs["project"] = pref
-    _save_prefs(prefs)
-    return cache_id
-end
-
-function _persist_current_project_preferences!(ui_state)
-    current_root = get(ui_state, :root_path, "")
-    isempty(current_root) && return
-    _persist_preferences!(ui_state; path=current_root)
-end
-
 function _project_for_preference(pref::AbstractString)
     pref == "auto" && return something(_default_project[])
     for project in KNOWN_PROJECTS
@@ -220,6 +11,7 @@ function _open_project_path!(ui_state, path::String; persist=true)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
     proj = _project_for_preference(ui_state[:project_preference])
     cache_id = _cache_id_for_path!(ui_state, norm_path)
+    _load_project_view!(ui_state, norm_path, proj)
     _load_tag_state_for_root!(ui_state, norm_path)
     _launch_project_reload_job!(ui_state, norm_path, proj, cache_id; persist)
     _launch_source_scan_job!(ui_state, norm_path, proj; persist=false, replace=true)
@@ -275,6 +67,7 @@ function _init_tag_state!(ui_state)
     ui_state[:show_bad] = true
     ui_state[:tag_state] = nothing
     ui_state[:tag_state_error] = ""
+    ui_state[:expanded_device_paths] = String[]
     ui_state[:selected_device_paths] = String[]
     ui_state[:selected_measurement_ids] = String[]
     ui_state[:selected_devices] = HierarchyNode[]
@@ -298,7 +91,7 @@ function _init_plot_state!(ui_state)
     ui_state[:main_plot_live] = true
     ui_state[:main_plot_measurements] = MeasurementInfo[]
     ui_state[:_plot_window_counter] = 0
-    ui_state[:plot_kind_preferences] = Dict{String,Dict{String,String}}()
+    ui_state[:plot_kind_by_measurement_kind] = Dict{String,String}()
 end
 
 const _FIGURE_SCRIPT_NAME_BUFFER_SIZE = 192
@@ -773,12 +566,23 @@ function _begin_scan!(
     proj::AbstractProject,
     has_device_metadata::Bool=_has_device_metadata(path),
 )
+    current_project = get(ui_state, :project, nothing)
+    same_project =
+        get(ui_state, :root_path, "") == path &&
+        current_project isa AbstractProject &&
+        project_name(current_project) == project_name(proj)
+
     _clear_plot_jobs!(ui_state)
-    _clear_selection!(ui_state)
     delete!(ui_state, :plot_figure)
     delete!(ui_state, :_last_plot_key)
-    delete!(ui_state, :main_plot_kind)
-    delete!(ui_state, :main_plot_measurement_kind)
+    if !same_project
+        _clear_selection!(ui_state)
+        delete!(ui_state, :main_plot_kind)
+        delete!(ui_state, :main_plot_measurement_kind)
+        ui_state[:main_plot_measurement_ids] = String[]
+        ui_state[:main_plot_measurements] = MeasurementInfo[]
+        ui_state[:open_plot_windows] = Vector{Dict{Symbol,Any}}()
+    end
     if get(ui_state, :figure_script_root_path, "") != path
         _reset_figure_script_state!(ui_state, path)
     else
@@ -795,6 +599,13 @@ function _begin_scan!(
     ui_state[:skipped_count] = 0
     ui_state[:device_metadata_keys] = Symbol[]
     ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
+    if !same_project
+        view = get(ui_state, :project_view_loaded, PersistedProjectView(project=project_name(proj)))
+        _apply_project_view!(ui_state, view)
+    else
+        _apply_visible_selection!(ui_state)
+        _refresh_plot_measurement_refs!(ui_state)
+    end
     _invalidate_figure_script_scan_cache!(ui_state)
 end
 
@@ -830,6 +641,7 @@ function _apply_scan_snapshot!(ui_state, snapshot)
     ui_state[:skipped_count] = snapshot.skipped_count
     ui_state[:has_device_metadata] = hierarchy.has_device_metadata || _has_device_metadata(hierarchy.root_path)
     _apply_visible_selection!(ui_state)
+    _refresh_plot_measurement_refs!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
 end
 
@@ -948,6 +760,7 @@ function _append_measurements!(ui_state, measurements::Vector{MeasurementInfo})
     ui_state[:measurement_index] = measurement_index
     ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
     _apply_visible_selection!(ui_state)
+    _refresh_plot_measurement_refs!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
     return nothing
 end

@@ -753,7 +753,6 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     prefs = _load_prefs()
     ui_state[:project_preference] = get(prefs, "project", "auto")
     ui_state[:recent_projects] = _parse_recent_projects(prefs)
-    ui_state[:plot_kind_preferences] = _parse_plot_kind_preferences(prefs)
 
     if root_path !== nothing && root_path != ""
         _open_project_path!(ui_state, root_path)
@@ -768,7 +767,10 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         opengl_version=v"3.3",
         spawn,
         wait_events=false,
-        on_exit=() -> _print_perf_summary(ui_state),
+        on_exit=() -> begin
+            _save_project_view_if_changed!(ui_state)
+            _print_perf_summary(ui_state)
+        end,
     ) do
         ui_state[:_frame] += 1
         _poll_cache_events!(ui_state)
@@ -806,6 +808,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         _time!(ui_state, :perf_window) do
             render_perf_window(ui_state)
         end
+        _save_project_view_if_changed!(ui_state)
         # Show metadata guidance modal if needed
         render_device_info_modal(ui_state)
     end

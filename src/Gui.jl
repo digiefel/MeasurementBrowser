@@ -21,6 +21,7 @@ using NativeFileDialog: pick_folder, save_file
 include("Gui/State.jl")
 include("Gui/BadAndStyling.jl")
 include("Gui/PlotPanel.jl")
+include("Gui/Persistence.jl")
 include("Gui/TreePanel.jl")
 include("Gui/InfoModal.jl")
 include("Gui/Layout.jl")
