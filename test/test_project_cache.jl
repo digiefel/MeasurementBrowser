@@ -121,7 +121,14 @@ end
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             ))
-            @test _same_dataframe(processed_data, source_data)
+            @test all(name in names(processed_data) for name in [
+                "time_us",
+                "current_uA",
+                "i_fe_uA",
+                "q_fe_pC",
+                "q_centered_pC",
+                "pulse_group_size",
+            ])
             @test only(MeasurementBrowser._cached_measurements_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement];

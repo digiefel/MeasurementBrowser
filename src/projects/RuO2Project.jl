@@ -30,7 +30,7 @@ project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 
 function _ruo2_uses_setup_plot_api(plot_kind::Type{<:PlotKind})::Bool
-    return plot_kind in (RuO2CVSweepPlot, RuO2IVSweepPlot, RuO2TLM4PointPlot)
+    return plot_kind in (RuO2PUNDPlot, RuO2CVSweepPlot, RuO2IVSweepPlot, RuO2TLM4PointPlot)
 end
 
 function _plot_job_data(
@@ -40,6 +40,15 @@ function _plot_job_data(
     debug::Bool=false,
 )
     if _ruo2_uses_setup_plot_api(plot_kind)
+        if debug
+            plot_kind === RuO2PUNDPlot ||
+                error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
+            length(measurements) == 1 ||
+                error("RuO2 PUND debug plot requires exactly one measurement")
+            measurement = only(measurements)
+            df = only(read_measurement_data(project, [measurement]))
+            return _ruo2_plot_data(measurement, df; debug)
+        end
         return nothing
     end
 
@@ -57,8 +66,7 @@ function _plot_job_data(
     if length(measurements) == 1
         measurement = only(measurements)
         df = only(read_measurement_data(project, [measurement]))
-        loaded = _ruo2_plot_data(measurement, df; debug)
-        return _analyze_ruo2_file_plot(project, plot_kind, loaded; DEBUG=debug)
+        return _ruo2_plot_data(measurement, df; debug)
     end
 
     data = read_measurement_data(project, measurements)
@@ -75,7 +83,11 @@ function _plot_job_figure(
     device_params::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
 )
     if _ruo2_uses_setup_plot_api(plot_kind)
-        debug && error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
+        if debug
+            plot_kind === RuO2PUNDPlot ||
+                error("Debug plots are not implemented for $(project_name(project)) $(plot_kind)")
+            return debug_plot(project, measurements, data; device_params, plot_kind)
+        end
         fig = setup_plot(project, plot_kind, measurements)
         plot_data!(project, plot_kind, measurements, fig)
         return fig
@@ -86,7 +98,7 @@ function _plot_job_figure(
     end
 
     if length(measurements) == 1
-        return _draw_ruo2_file_plot(project, plot_kind, data; device_params=only(device_params))
+        return nothing
     end
     return _draw_ruo2_files_plot(project, plot_kind, data; DEBUG=debug)
 end

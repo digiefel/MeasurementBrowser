@@ -189,6 +189,66 @@ function _ruo2_pulse_label(pulse_idx::Int, group_size::Int)
     return ""
 end
 
+function _ruo2_pund_segment(measurement::MeasurementInfo)::Union{Nothing,Symbol}
+    kind = measurement.measurement_kind
+    kind === :pn && return :pn
+    kind === :wakeup_pn && return :pn
+    kind === :wakeup_pund && return :pund
+    return nothing
+end
+
+function _ruo2_pund_title(measurement::MeasurementInfo)::String
+    kind = measurement.measurement_kind
+    title = _plot_title(measurement.filepath)
+    if kind === :pund
+        if is_pund_fatigue_file(measurement.filepath)
+            fatigue_count = Int(measurement.parameters[:fatigue_idx])
+            return "$title cycle $fatigue_count (fatigue)"
+        end
+        return title
+    elseif kind === :pn
+        return "$title PN"
+    end
+    return title
+end
+
+function _process_ruo2_pund_data(measurement::MeasurementInfo, data::DataFrame)::DataFrame
+    segment = _ruo2_pund_segment(measurement)
+    group_size = 5
+    df = if segment === :pn
+        result = analyze_pund_and_pn(data)
+        group_size = result.pn_group_size
+        result.pn
+    elseif segment === :pund
+        result = analyze_pund_and_pn(data)
+        group_size = result.pund_group_size
+        result.pund
+    else
+        analyze_pund(data)
+    end
+
+    df === nothing && return DataFrame()
+    processed = DataFrame(df)
+    processed.time_us = processed.time .* 1e6
+    processed.current_uA = processed.current .* 1e6
+    processed.i_fe_uA = processed.I_FE .* 1e6
+    processed.q_fe_pC = processed.Q_FE .* 1e12
+    processed.pulse_group_size = fill(group_size, nrow(processed))
+
+    finite_q = filter(isfinite, processed.Q_FE)
+    q_mean = isempty(finite_q) ? 0.0 : mean(finite_q)
+    q_centered = processed.Q_FE .- q_mean
+    processed.q_centered_pC = q_centered .* 1e12
+
+    params = merge(measurement.device_info.parameters, measurement.parameters)
+    area_um2 = get(params, :area_um2, nothing)
+    if area_um2 !== nothing
+        area_cm2 = Float64(area_um2) / 1e8
+        processed.p_fe_uC_cm2 = (q_centered ./ area_cm2) .* 1e6
+    end
+    return processed
+end
+
 function _process_ruo2_iv_data(data::DataFrame)::DataFrame
     nrow(data) == 0 && return DataFrame(v=Float64[], i_abs=Float64[], i_positive=Bool[])
     return DataFrame(
@@ -252,89 +312,80 @@ function process_measurement_data(
     measurement::MeasurementInfo,
     data::DataFrame,
 )::DataFrame
+    measurement.measurement_kind in (:pund, :pn, :wakeup_pn, :wakeup_pund) &&
+        return _process_ruo2_pund_data(measurement, data)
     measurement.measurement_kind in (:iv, :breakdown) && return _process_ruo2_iv_data(data)
     measurement.measurement_kind === :tlm4p && return _process_ruo2_tlm_data(measurement, data)
     return data
 end
 
-function _analyze_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, loaded; kwargs...)
-    loaded === nothing && return nothing
-    _check_cancel()
+function setup_plot(
+    ::RuO2Project,
+    plot_kind::Type{RuO2PUNDPlot},
+    measurements::Vector{MeasurementInfo},
+)::Figure
+    isempty(measurements) && error("RuO2 PUND plot requires at least one measurement")
+    title = length(measurements) == 1 ? _ruo2_pund_title(only(measurements)) : "RuO2 PUND overlay"
+    fig = Figure(size=(1200, 800))
+    Axis(fig[1, 1:2], xlabel="Time (μs)", ylabel="Current (μA)", yticklabelcolor=:blue,
+        title=title)
+    Axis(fig[1, 1:2], yaxisposition=:right, ylabel="Voltage (V)", yticklabelcolor=:red)
+    Axis(fig[2, 1], xlabel="Voltage (V)", ylabel="Current (μA)", title="I-V Characteristic")
+    Axis(fig[2, 2], xlabel="Voltage (V)", ylabel="Switching Charge (pC)", title="Ferroelectric Switching Charge")
+    return fig
+end
 
-    if plot_kind === RuO2PUNDPlot
-        debug_mode = get(kwargs, :DEBUG, getproperty(loaded, :debug))
-        segment = hasproperty(loaded, :segment) ? loaded.segment : nothing
-        group_size = 5
-        if segment === :pn
-            result = analyze_pund_and_pn(loaded.df; DEBUG=debug_mode)
-            df = result.pn
-            group_size = result.pn_group_size
-        elseif segment === :pund
-            result = analyze_pund_and_pn(loaded.df; DEBUG=debug_mode)
-            df = result.pund
-            group_size = result.pund_group_size
-        else
-            df = debug_mode ? analyze_pund(loaded.df; DEBUG=true) : analyze_pund(loaded.df)
-        end
-        df === nothing && return nothing
-        analyzed_df = DataFrame(df)
-        analyzed_df.time_us = analyzed_df.time .* 1e6
-        analyzed_df.current_uA = analyzed_df.current .* 1e6
-        analyzed_df.i_fe_uA = analyzed_df.I_FE .* 1e6
-        analyzed_df.q_fe_pC = analyzed_df.Q_FE .* 1e12
+function plot_data!(
+    project::RuO2Project,
+    plot_kind::Type{RuO2PUNDPlot},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing
+    axes_time = contents(figure[1, 1:2])
+    axes_iv = contents(figure[2, 1])
+    axes_q = contents(figure[2, 2])
+    length(axes_time) < 2 && error("RuO2 PUND plot figure has no time-domain axes")
+    isempty(axes_iv) && error("RuO2 PUND plot figure has no I-V axis")
+    isempty(axes_q) && error("RuO2 PUND plot figure has no switching-charge axis")
+    ax_time = axes_time[1]
+    ax_voltage = axes_time[2]
+    ax_iv = only(axes_iv)
+    ax_q = only(axes_q)
+    linkxaxes!(ax_time, ax_voltage)
 
-        finite_q = filter(isfinite, analyzed_df.Q_FE)
-        q_mean = isempty(finite_q) ? 0.0 : mean(finite_q)
-        q_centered = analyzed_df.Q_FE .- q_mean
-        analyzed_df.q_centered_pC = q_centered .* 1e12
-        y_label = "Switching Charge (pC)"
-        if loaded.area_um2 !== nothing
-            area_cm2 = loaded.area_um2 / 1e8
-            analyzed_df.p_fe_uC_cm2 = (q_centered ./ area_cm2) .* 1e6
-            y_label = "Remnant Polarization (μC/cm²)"
-        end
+    data = process_measurement_data(project, measurements)
+    colors = cgrad(:tab10, max(length(data), 1); categorical=true)
+    plotted_q_labels = length(measurements) == 1
+    for (index, (measurement, df)) in enumerate(zip(measurements, data))
+        nrow(df) == 0 && continue
+        color = colors[index]
+        label = length(measurements) == 1 ? nothing : _ruo2_pund_title(measurement)
+        current_color = length(measurements) == 1 ? :blue : color
+        voltage_color = length(measurements) == 1 ? :red : color
+        fe_current_color = length(measurements) == 1 ? :purple : color
+        current_plot = lines!(ax_time, df.time_us, df.current_uA; color=current_color, linewidth=2, label)
+        voltage_plot = lines!(ax_voltage, df.time_us, df.voltage; color=voltage_color, linewidth=2, linestyle=:dash)
+        fe_current_plot = lines!(ax_time, df.time_us, df.i_fe_uA; color=fe_current_color, linewidth=2, linestyle=:dot)
+        lines!(ax_iv, df.voltage, df.current_uA; color=length(measurements) == 1 ? :green : color, linewidth=2)
+        lines!(ax_iv, df.voltage, df.i_fe_uA; color=fe_current_color, linewidth=2, linestyle=:dot)
 
-        pulse_groups = _ruo2_pulse_groups(analyzed_df, group_size)
-
-        debug_labels = NamedTuple[]
-        if debug_mode
-            pid = analyzed_df.pulse_idx
-            time_us = analyzed_df.time_us
-            boundaries = Float64[]
-            for i in 2:length(pid)
-                pid[i] != pid[i - 1] && push!(boundaries, time_us[i])
-            end
-
-            seg_start = 1
-            for i in 2:length(pid)
-                if pid[i] != pid[i - 1]
-                    if pid[seg_start] > 0
-                        label = _ruo2_pulse_label(pid[seg_start], group_size)
-                        if !isempty(label)
-                            tmid = (time_us[seg_start] + time_us[i - 1]) / 2
-                            push!(debug_labels, (time_us=tmid, label=label))
-                        end
-                    end
-                    seg_start = i
-                end
-            end
-            if !isempty(pid) && pid[seg_start] > 0
-                label = _ruo2_pulse_label(pid[seg_start], group_size)
-                if !isempty(label)
-                    tmid = (time_us[seg_start] + time_us[end]) / 2
-                    push!(debug_labels, (time_us=tmid, label=label))
-                end
-            end
-            return (df=analyzed_df, title=loaded.title, area_um2=loaded.area_um2, pulse_groups=pulse_groups,
-                    pulse_group_size=group_size, remnant_y_label=y_label, debug=true,
-                    debug_boundaries=boundaries, debug_labels=debug_labels)
+        group_size = first(df.pulse_group_size)
+        y_column = hasproperty(df, :p_fe_uC_cm2) ? :p_fe_uC_cm2 : :q_centered_pC
+        ax_q.ylabel = y_column === :p_fe_uC_cm2 ? "Remnant Polarization (μC/cm²)" : "Switching Charge (pC)"
+        for (rep, mask) in _ruo2_pulse_groups(df, group_size)
+            q_label = plotted_q_labels ? string(rep) : nothing
+            lines!(ax_q, df.voltage[mask], df[mask, y_column]; color, linewidth=2, label=q_label)
         end
 
-        return (df=analyzed_df, title=loaded.title, area_um2=loaded.area_um2, pulse_groups=pulse_groups,
-                pulse_group_size=group_size, remnant_y_label=y_label, debug=false)
+        if length(measurements) == 1
+            Legend(figure[1, 1], [current_plot, voltage_plot, fe_current_plot],
+                ["Current", "Voltage", "FE Current"],
+                tellwidth=false, tellheight=false, halign=:left, valign=:top)
+        end
     end
-
-    return loaded
+    length(measurements) > 1 && axislegend(ax_time)
+    plotted_q_labels && axislegend(ax_q)
+    return nothing
 end
 
 function _ruo2_tlm_title(measurement::MeasurementInfo)::String
@@ -518,72 +569,5 @@ function plot_data!(
         end
     end
     axislegend(ax_c, position=:lt)
-    return nothing
-end
-
-function _draw_ruo2_file_plot(::RuO2Project, plot_kind::Type{<:PlotKind}, analyzed; kwargs...)
-    analyzed === nothing && return nothing
-
-    if plot_kind === RuO2PUNDPlot
-        df = analyzed.df
-        nrow(df) == 0 && return nothing
-        if hasproperty(analyzed, :debug) && analyzed.debug
-            fig = Figure(size=(1200, 800))
-            ax1 = Axis(fig[1, 1:2], xlabel="Time (μs)", ylabel="Current (μA)",
-                yticklabelcolor=:blue, title="$(analyzed.title) - DEBUG (time domain)")
-            ax1twin = Axis(fig[1, 1:2], yaxisposition=:right, ylabel="Voltage (V)", yticklabelcolor=:red)
-            linkxaxes!(ax1, ax1twin)
-            lI = lines!(ax1, df.time_us, df.current_uA, color=:blue, linewidth=2)
-            lIFE = lines!(ax1, df.time_us, df.i_fe_uA, color=:purple, linewidth=2)
-            lV = lines!(ax1twin, df.time_us, df.voltage, color=:red, linewidth=1, linestyle=:dash)
-            ax2 = Axis(fig[2, 1:2], xlabel="Time (μs)", ylabel="Switching Charge (pC)", title="$(analyzed.title) - Q_FE(t)")
-            lines!(ax2, df.time_us, df.q_fe_pC, color=:orange, linewidth=2)
-            for t in analyzed.debug_boundaries
-                vlines!(ax1, t, color=:black, linestyle=:dot, linewidth=1, alpha=0.5)
-                vlines!(ax2, t, color=:black, linestyle=:dot, linewidth=1, alpha=0.5)
-            end
-            yI_finite = filter(isfinite, df.current_uA)
-            yImaxabs = isempty(yI_finite) ? 1.0 : maximum(abs.(yI_finite))
-            yImaxabs = isfinite(yImaxabs) && yImaxabs > 0 ? yImaxabs : 1.0
-            yImaxv = isempty(yI_finite) ? yImaxabs : maximum(yI_finite)
-            yQ_finite = filter(isfinite, df.q_fe_pC)
-            yQmaxabs = isempty(yQ_finite) ? 1.0 : maximum(abs.(yQ_finite))
-            yQmaxabs = isfinite(yQmaxabs) && yQmaxabs > 0 ? yQmaxabs : 1.0
-            yQmaxv = isempty(yQ_finite) ? yQmaxabs : maximum(yQ_finite)
-            for entry in analyzed.debug_labels
-                text!(ax1, entry.time_us, yImaxv + 0.25 * yImaxabs; text=entry.label, align=(:center, :baseline), color=:black)
-                text!(ax2, entry.time_us, yQmaxv + 0.25 * yQmaxabs; text=entry.label, align=(:center, :baseline), color=:black)
-            end
-            Legend(fig[1, 1], [lI, lV, lIFE], ["Current", "Voltage", "FE Current"],
-                tellwidth=false, tellheight=false, halign=:left, valign=:top)
-            return fig
-        end
-
-        fig = Figure(size=(1200, 800))
-        area_str = isnothing(analyzed.area_um2) ? "?" : round(analyzed.area_um2, digits=2)
-        ax1 = Axis(fig[1, 1:2], xlabel="Time (μs)", ylabel="Current (μA)", yticklabelcolor=:blue,
-            title="$(analyzed.title) - Area = $area_str um²")
-        ax1twin = Axis(fig[1, 1:2], yaxisposition=:right, ylabel="Voltage (V)", yticklabelcolor=:red)
-        ax2 = Axis(fig[2, 1], xlabel="Voltage (V)", ylabel="Current (μA)", title="$(analyzed.title) - I-V Characteristic")
-        ax3 = Axis(fig[2, 2], xlabel="Voltage (V)", ylabel=analyzed.remnant_y_label, title="$(analyzed.title) - Ferroelectric Switching Charge")
-        linkxaxes!(ax1, ax1twin)
-        l1 = lines!(ax1, df.time_us, df.current_uA, color=:blue, linewidth=2)
-        l2 = lines!(ax1twin, df.time_us, df.voltage, color=:red, linewidth=2, linestyle=:dash)
-        l3 = lines!(ax1, df.time_us, df.i_fe_uA, color=:purple, linewidth=2)
-        lines!(ax2, df.voltage, df.current_uA, color=:green, linewidth=2)
-        lines!(ax2, df.voltage, df.i_fe_uA, color=:purple, linewidth=2)
-        for (rep, mask) in analyzed.pulse_groups
-            if hasproperty(df, :p_fe_uC_cm2)
-                lines!(ax3, df.voltage[mask], df.p_fe_uC_cm2[mask], linewidth=2, color=:purple, label="$rep")
-            else
-                lines!(ax3, df.voltage[mask], df.q_centered_pC[mask], linewidth=2, color=:purple, label="$rep")
-            end
-        end
-        Legend(fig[1, 1], [l1, l2, l3], ["Current", "Voltage", "FE Current"],
-            tellwidth=false, tellheight=false, halign=:left, valign=:top)
-        axislegend(ax3)
-        return fig
-    end
-
     return nothing
 end
