@@ -74,6 +74,40 @@ function _parse_recent_projects(prefs::Dict{String,Any})
     return recents
 end
 
+function _parse_plot_kind_preferences(prefs::Dict{String,Any})::Dict{String,Dict{String,String}}
+    parsed = Dict{String,Dict{String,String}}()
+    raw = get(prefs, "plot_kind_by_project", Dict{String,Any}())
+    raw isa AbstractDict || return parsed
+
+    for (project_key, project_value) in raw
+        project_value isa AbstractDict || continue
+        project_prefs = Dict{String,String}()
+        for (measurement_key, plot_kind_name) in project_value
+            plot_kind_name isa AbstractString || continue
+            project_prefs[String(measurement_key)] = String(plot_kind_name)
+        end
+        isempty(project_prefs) || (parsed[String(project_key)] = project_prefs)
+    end
+    return parsed
+end
+
+function _plot_kind_preferences_for_toml(ui_state)::Dict{String,Dict{String,String}}
+    raw = get(ui_state, :plot_kind_preferences, Dict{String,Dict{String,String}}())
+    raw isa AbstractDict || return Dict{String,Dict{String,String}}()
+
+    prefs = Dict{String,Dict{String,String}}()
+    for (project_key, project_value) in raw
+        project_value isa AbstractDict || continue
+        project_prefs = Dict{String,String}()
+        for (measurement_key, plot_kind_name) in project_value
+            plot_kind_name isa AbstractString || continue
+            project_prefs[String(measurement_key)] = String(plot_kind_name)
+        end
+        isempty(project_prefs) || (prefs[String(project_key)] = project_prefs)
+    end
+    return prefs
+end
+
 function _update_recent_projects(
     recents::Vector{Dict{String,String}},
     path::AbstractString,
@@ -110,9 +144,17 @@ function _persist_preferences!(ui_state; path::Union{Nothing,String}=nothing)
         _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state), cache_id)
         prefs["recent_projects"] = recents
     end
+    prefs["plot_kind_by_project"] = _plot_kind_preferences_for_toml(ui_state)
 
     _save_prefs(prefs)
     ui_state[:recent_projects] = recents
+end
+
+function _persist_plot_kind_preferences!(ui_state)::Nothing
+    prefs = _load_prefs()
+    prefs["plot_kind_by_project"] = _plot_kind_preferences_for_toml(ui_state)
+    _save_prefs(prefs)
+    return nothing
 end
 
 function _recent_project_entry_for_path(ui_state, path::String)
@@ -256,6 +298,7 @@ function _init_plot_state!(ui_state)
     ui_state[:main_plot_live] = true
     ui_state[:main_plot_measurements] = MeasurementInfo[]
     ui_state[:_plot_window_counter] = 0
+    ui_state[:plot_kind_preferences] = Dict{String,Dict{String,String}}()
 end
 
 const _FIGURE_SCRIPT_NAME_BUFFER_SIZE = 192
@@ -734,6 +777,8 @@ function _begin_scan!(
     _clear_selection!(ui_state)
     delete!(ui_state, :plot_figure)
     delete!(ui_state, :_last_plot_key)
+    delete!(ui_state, :main_plot_kind)
+    delete!(ui_state, :main_plot_measurement_kind)
     if get(ui_state, :figure_script_root_path, "") != path
         _reset_figure_script_state!(ui_state, path)
     else

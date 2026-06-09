@@ -13,6 +13,80 @@ function _plot_kind_from_state!(state::Dict{Symbol,Any}, key::Symbol)::Union{Not
     return nothing
 end
 
+function _plot_kind_named(name::AbstractString)::Union{Nothing,Type{<:PlotKind}}
+    for plot_kind in plot_kinds()
+        String(nameof(plot_kind)) == String(name) && return plot_kind
+    end
+    return nothing
+end
+
+function _single_measurement_kind(measurements::Vector{MeasurementInfo})::Union{Nothing,Symbol}
+    isempty(measurements) && return nothing
+    kind = first(measurements).measurement_kind
+    all(measurement -> measurement.measurement_kind === kind, measurements) || return nothing
+    return kind
+end
+
+function _remembered_plot_kind(
+    ui_state::Dict{Symbol,Any},
+    measurement_kind::Symbol,
+)::Union{Nothing,Type{<:PlotKind}}
+    project = get(ui_state, :project, nothing)
+    project isa AbstractProject || return nothing
+    prefs = get(ui_state, :plot_kind_preferences, Dict{String,Dict{String,String}}())
+    prefs isa AbstractDict || return nothing
+    project_prefs = get(prefs, project_name(project), nothing)
+    project_prefs isa AbstractDict || return nothing
+    name = get(project_prefs, String(measurement_kind), nothing)
+    name isa AbstractString || return nothing
+    return _plot_kind_named(name)
+end
+
+function _remember_plot_kind!(
+    ui_state::Dict{Symbol,Any},
+    measurements::Vector{MeasurementInfo},
+    plot_kind::Type{<:PlotKind},
+)::Nothing
+    project = get(ui_state, :project, nothing)
+    project isa AbstractProject || return nothing
+    isempty(measurements) && return nothing
+
+    prefs = get!(ui_state, :plot_kind_preferences) do
+        Dict{String,Dict{String,String}}()
+    end
+    project_prefs = get!(prefs, project_name(project)) do
+        Dict{String,String}()
+    end
+    for measurement_kind in unique([measurement.measurement_kind for measurement in measurements])
+        project_prefs[String(measurement_kind)] = String(nameof(plot_kind))
+    end
+    _persist_plot_kind_preferences!(ui_state)
+    return nothing
+end
+
+function _apply_remembered_main_plot_kind!(
+    ui_state::Dict{Symbol,Any},
+    measurements::Vector{MeasurementInfo},
+)::Nothing
+    get(ui_state, :main_plot_live, true) === true || return nothing
+    measurement_kind = _single_measurement_kind(measurements)
+    if measurement_kind === nothing
+        delete!(ui_state, :main_plot_measurement_kind)
+        return nothing
+    end
+
+    get(ui_state, :main_plot_measurement_kind, nothing) === measurement_kind && return nothing
+    ui_state[:main_plot_measurement_kind] = measurement_kind
+    plot_kind = _remembered_plot_kind(ui_state, measurement_kind)
+    if plot_kind === nothing
+        delete!(ui_state, :main_plot_kind)
+    else
+        ui_state[:main_plot_kind] = plot_kind
+    end
+    delete!(ui_state, :_last_plot_key)
+    return nothing
+end
+
 function _next_plot_window_id!(ui_state::Dict{Symbol,Any})::String
     counter = get(ui_state, :_plot_window_counter, 0) + 1
     ui_state[:_plot_window_counter] = counter
@@ -34,7 +108,7 @@ function _measurement_plot_window_entry(
     ui_state::Dict{Symbol,Any},
     measurement::MeasurementInfo,
 )::Dict{Symbol,Any}
-    plot_kind = _plot_kind_from_state!(ui_state, :main_plot_kind)
+    plot_kind = _remembered_plot_kind(ui_state, measurement.measurement_kind)
     return Dict{Symbol,Any}(
         :target_id => _next_plot_window_id!(ui_state),
         :filepath => measurement.filepath,
@@ -248,7 +322,7 @@ function _poll_plot_events!(ui_state)
                 message = _format_plot_error(job, err, bt; phase="drawing")
                 _finish_plot_job!(ui_state, job; error=message)
                 ui_state[:plot_state] = :error
-                @error "Plot drawing failed" details = message
+                @error "Plot drawing failed\n$message"
             end
             _finalize_plot_job!(ui_state)
         elseif msg.kind == :canceled
@@ -260,7 +334,7 @@ function _poll_plot_events!(ui_state)
             message = _format_plot_error(job, msg.error, msg.bt; phase="loading data")
             _finish_plot_job!(ui_state, job; error=message)
             ui_state[:plot_state] = :error
-            @error "Plot job failed" details = message
+            @error "Plot job failed\n$message"
             _finalize_plot_job!(ui_state)
         end
     end
@@ -404,7 +478,7 @@ function _export_plot_figure!(
     catch err
         message = "Export failed for $path: $(sprint(showerror, err))"
         state[:plot_export_error] = message
-        @error "Plot export failed" details = message
+        @error "Plot export failed\n$message"
     end
     return nothing
 end
@@ -482,6 +556,8 @@ function _render_main_plot_toolbar!(
     if _render_plot_kind_combo!(ui_state, :main_plot_kind, "##main_plot_kind")
         delete!(ui_state, :_last_plot_key)
         ui_state[:plot_error] = ""
+        remembered = _plot_kind_from_state!(ui_state, :main_plot_kind)
+        remembered === nothing || _remember_plot_kind!(ui_state, measurements, remembered)
     end
 
     ig.SameLine()
@@ -520,6 +596,7 @@ function _render_main_plot_toolbar!(
 end
 
 function _render_extra_plot_toolbar!(
+    ui_state::Dict{Symbol,Any},
     entry::Dict{Symbol,Any},
     selected_measurements::Vector{MeasurementInfo},
     id::AbstractString,
@@ -527,6 +604,9 @@ function _render_extra_plot_toolbar!(
     if _render_plot_kind_combo!(entry, :plot_kind, "##plot_kind_$id")
         delete!(entry, :_last_plot_key)
         delete!(entry, :plot_error)
+        remembered = _plot_kind_from_state!(entry, :plot_kind)
+        measurements = _entry_plot_measurements!(entry, selected_measurements)
+        remembered === nothing || _remember_plot_kind!(ui_state, measurements, remembered)
     end
 
     ig.SameLine()
@@ -596,6 +676,7 @@ end
 function render_plot_window(ui_state::Dict{Symbol,Any})::Nothing
     proj = ui_state[:project]
     plot_measurements = _main_plot_measurements!(ui_state)
+    _apply_remembered_main_plot_kind!(ui_state, plot_measurements)
     plot_kind = _plot_kind_from_state!(ui_state, :main_plot_kind)
     plot_key = nothing
     plot_status = :empty
@@ -669,7 +750,7 @@ function render_additional_plot_windows(ui_state::Dict{Symbol,Any})::Nothing
         window_id = replace(target_id, '/' => '_')
         title = get(entry, :title, "Plot")
         if ig.Begin("Plot: $title###plot_window_$window_id", open_ref)
-            _render_extra_plot_toolbar!(entry, selected_measurements, window_id)
+            _render_extra_plot_toolbar!(ui_state, entry, selected_measurements, window_id)
             ig.Separator()
 
             measurements = _entry_plot_measurements!(entry, selected_measurements)

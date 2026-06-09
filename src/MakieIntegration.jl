@@ -47,6 +47,7 @@ function destroy_context()
 end
 
 Base.isopen(window::ImMakieWindow) = isopen(window.glfw_window)
+GLFW.SwapBuffers(::ImMakieWindow) = nothing
 GLMakie.destroy!(::ImMakieWindow) = nothing
 GLMakie.reopen!(screen::GLMakie.Screen{ImMakieWindow}) = screen
 GLMakie.set_screen_visibility!(::GLMakie.Screen{ImMakieWindow}, ::Bool) = nothing

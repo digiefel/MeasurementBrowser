@@ -753,6 +753,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     prefs = _load_prefs()
     ui_state[:project_preference] = get(prefs, "project", "auto")
     ui_state[:recent_projects] = _parse_recent_projects(prefs)
+    ui_state[:plot_kind_preferences] = _parse_plot_kind_preferences(prefs)
 
     if root_path !== nothing && root_path != ""
         _open_project_path!(ui_state, root_path)

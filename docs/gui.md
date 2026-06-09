@@ -41,6 +41,7 @@ All defined near the top of [State.jl](../src/Gui/State.jl).
 | `:main_plot_kind` | `Type{<:PlotKind}` or missing | Plot kind selected in the main plot toolbar. |
 | `:main_plot_live` | `Bool` | Whether the main plot follows the current browser selection. Defaults to `true`. |
 | `:main_plot_measurements` | `Vector{MeasurementInfo}` | Measurements used by the main plot when Live is disabled. |
+| `:plot_kind_preferences` | `Dict{String,Dict{String,String}}` | Remembered plot kind by project and measurement kind. |
 | `:open_plot_windows` | `Vector{Dict{Symbol,Any}}` | Detached plot windows. Each stores its own plot kind, measurements, Live flag, figure, and error. |
 | `:tag_state` | `Annotations.Tags.TagState` | Catalog + per-key assignments (loaded at project init). |
 
@@ -67,6 +68,8 @@ All defined near the top of [State.jl](../src/Gui/State.jl).
 Plots render off the UI thread via the `PlotJob` queue ([PlotJobs.jl](../src/PlotJobs.jl) + [PlotPanel.jl](../src/Gui/PlotPanel.jl) `_queue_plot_job!`). Results are polled each frame in `_poll_plot_events!` ([PlotPanel.jl](../src/Gui/PlotPanel.jl)). The main figure is stored in `ui_state[:plot_figure]`; detached windows store figures in their own entry.
 
 Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the measurements they were created with unless the user enables Live in that window.
+
+Plot kind choices are persisted in the app preferences as project name → measurement kind → plot kind type name. When the main Live plot sees a single measurement kind, it uses that remembered plot kind or clears the chooser if none has been chosen for that kind yet.
 
 ## Context menus (right-click)
 

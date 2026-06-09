@@ -169,44 +169,10 @@ make those reads explicit and avoid them when cached data is valid.
 
 ## Plotting
 
-Projects define concrete plot kind types:
-
-```julia
-struct SomePlot <: PlotKind end
-```
-
-The package discovers loaded plot kind types with `plot_kinds()`. Each plot window shows every
-loaded plot kind by type name and owns its own selected plot kind. The package does not ask projects
-for plot labels, defaults, compatibility rules, or minimum selection sizes. If a selected plot kind
-does not fit the selected measurements, the plotting method fails and the GUI reports that error.
-
-```julia
-setup_plot(
-    project::AbstractProject,
-    plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
-)::Figure
-
-plot_data!(
-    project::AbstractProject,
-    plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
-    figure::Figure,
-)::Nothing
-```
-
-`setup_plot` creates the figure, axes, labels, and layout.
-
-`plot_data!` mutates `figure`. When it needs loaded measurement data, it calls:
-
-```julia
-read_measurement_data(
-    project::AbstractProject,
-    measurements::Vector{MeasurementInfo},
-)::Vector{DataFrame}
-```
-
-Project plotting code should not read cache storage directly.
+Plotting is part of the project API, but the plotting contract lives in
+[plotting-api-design.md](plotting-api-design.md). This document only owns the project boundary:
+project code defines plot kinds and draws data; the package owns selection, plot windows, caching,
+composition, and repeated calls into project plotting code.
 
 ## RuO2 Fatigue Example
 

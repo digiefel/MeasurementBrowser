@@ -95,10 +95,9 @@ plot_data!(project, kind, measurements, fig)
 This keeps plot kinds searchable in code and lets multiple dispatch route implementation.
 
 The UI does not need project-defined labels, descriptions, default choices, compatibility rules, or
-minimum selection rules at this stage. Each plot window owns its selected plot kind. The main plot
-window follows the browser selection by default. Detached plot windows keep their own measurements
-unless Live is enabled in that window. If the selected measurements do not fit that plot kind, the
-project plotting method fails normally and the GUI shows the error.
+minimum selection rules at this stage. If the selected measurements do not fit that plot kind, the
+project plotting method fails normally and the GUI shows the error. Current plot-window behavior is
+documented in [gui.md](../gui.md).
 
 ## Project Responsibilities
 
