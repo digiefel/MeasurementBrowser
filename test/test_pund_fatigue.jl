@@ -4,6 +4,8 @@ using DataFrames
 using DataLoader
 using MeasurementBrowser
 
+const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
+
 @testset "PUND fatigue regression" begin
     fixture = joinpath(@__DIR__, "fixtures", "RuO2", "RuO2test_A12_XI_FeCap_D6_20260511_222203_PUND_Fatigue_V2.csv")
     headerless_fixture = joinpath(@__DIR__, "fixtures", "RuO2", "RuO2test_A11_VII_FeCap_A2_20260130_155835_273K_PUND_Fatigue.csv")

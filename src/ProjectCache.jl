@@ -3,25 +3,22 @@ using SHA
 using Serialization
 using DataFrames: DataFrame
 
-const _CACHE_DATASET_DEFLATE = 3
-const _CACHE_CHUNK_TARGET = 4096
-const _CACHE_SCHEMA_VERSION = 1
+const PROJECT_CACHE_COMPRESSION = 3
+const PROJECT_CACHE_SCHEMA_VERSION = 2
+const PROJECT_CACHE_INDEX_DATASET = "index"
+const PROJECT_CACHE_LOCK = ReentrantLock()
 
-struct ProjectCacheMissingError <: Exception
-    path::String
-end
-
-Base.showerror(io::IO, err::ProjectCacheMissingError) =
-    print(io, "Project cache does not exist: $(err.path)")
-
-struct ProjectCacheInvalidError <: Exception
+"""Error raised when a project cache is missing or does not match the current project."""
+struct ProjectCacheError <: Exception
     path::String
     message::String
 end
 
-Base.showerror(io::IO, err::ProjectCacheInvalidError) =
+"""Print the cache path and validation failure."""
+Base.showerror(io::IO, err::ProjectCacheError)::Nothing =
     print(io, "Invalid project cache $(err.path): $(err.message)")
 
+"""The project, source root, and HDF5 file belonging to one cache."""
 struct ProjectCacheIdentity
     cache_id::String
     project_name::String
@@ -29,6 +26,7 @@ struct ProjectCacheIdentity
     cache_path::String
 end
 
+"""Counts describing the differences between a source scan and its cache."""
 struct ProjectCacheStatus
     total_files::Int
     cached_files::Int
@@ -39,720 +37,398 @@ struct ProjectCacheStatus
     error_files::Int
 end
 
-struct ProjectCacheFileError
-    path::String
-    message::String
-end
-
-struct ProjectCacheSnapshot
+"""All non-dataframe content needed to restore and compare a project cache."""
+struct ProjectCacheIndex
     identity::ProjectCacheIdentity
-    hierarchy::MeasurementHierarchy
-    status::ProjectCacheStatus
-    errors::Vector{ProjectCacheFileError}
+    source::SourceScan
+    files::Dict{String,SourceFile}
+    analysis_errors::Dict{String,String}
 end
 
-function project_cache_dir()
-    depot = isempty(DEPOT_PATH) ? homedir() : DEPOT_PATH[1]
-    return joinpath(depot, "measurementbrowser", "cache")
+const ACTIVE_PROJECT_CACHE = Ref{Union{Nothing,ProjectCacheIndex}}(nothing)
+
+"""
+Return the deterministic cache id for a source root.
+
+The folder name keeps paths recognizable; the digest distinguishes equal folder names at different
+locations.
+"""
+function project_cache_id(root_path::AbstractString)::String
+    root = normpath(abspath(expanduser(String(root_path))))
+    name = replace(lowercase(basename(root)), r"[^a-z0-9_.-]+" => "_")
+    isempty(name) && (name = "project")
+    return "$name-$(bytes2hex(sha1(root))[1:12])"
 end
 
-function new_project_cache_id()
-    return Dates.format(now(), dateformat"yyyymmdd_HHMMSS")
-end
+"""
+Bind one cache id to a project and normalized source root.
 
-function _cache_slug(value::AbstractString)
-    normalized = lowercase(String(value))
-    return replace(normalized, r"[^a-z0-9_.-]+" => "_")
-end
-
-function _cache_normalize_path(path::AbstractString)
-    return normpath(abspath(expanduser(String(path))))
-end
-
-function project_cache_id(root_path::AbstractString)
-    norm_root = _cache_normalize_path(root_path)
-    name = basename(norm_root)
-    slug = isempty(name) ? "project" : _cache_slug(name)
-    digest = bytes2hex(sha1(norm_root))[1:12]
-    return "$slug-$digest"
-end
-
-function project_cache_path(cache_id::AbstractString, project::AbstractProject)
-    return joinpath(
-        project_cache_dir(),
-        _cache_slug(project_name(project)),
-        "$(String(cache_id)).h5",
-    )
-end
-
+The returned identity also contains the package-owned HDF5 path.
+"""
 function project_cache_identity(
     cache_id::AbstractString,
     project::AbstractProject,
     root_path::AbstractString,
-)
-    norm_root = _cache_normalize_path(root_path)
+)::ProjectCacheIdentity
+    root = normpath(abspath(expanduser(String(root_path))))
+    depot = isempty(DEPOT_PATH) ? homedir() : DEPOT_PATH[1]
+    project_dir = replace(lowercase(project_name(project)), r"[^a-z0-9_.-]+" => "_")
     return ProjectCacheIdentity(
         String(cache_id),
         project_name(project),
-        norm_root,
-        project_cache_path(cache_id, project),
+        root,
+        joinpath(
+            depot,
+            "measurementbrowser",
+            "cache",
+            project_dir,
+            "$(String(cache_id)).h5",
+        ),
     )
 end
 
-function _hash_key(value::AbstractString)
+"""
+Return a fixed-length HDF5 name for a source path or measurement id.
+"""
+function cache_object_key(value::AbstractString)::String
     return bytes2hex(sha1(String(value)))
 end
 
-_file_group_key(path::AbstractString) = _hash_key(_cache_normalize_path(path))
-_measurement_group_key(id::AbstractString) = _hash_key(id)
+"""
+Replace one HDF5 dataset with a Julia serialization of `value`.
 
-function _dataset_chunk(data)
-    data isa AbstractVector || return nothing
-    isempty(data) && return nothing
-    return (min(length(data), _CACHE_CHUNK_TARGET),)
-end
-
-function _write_dataset!(group, name::AbstractString, data; compress::Bool=true)
-    haskey(group, name) && HDF5.delete_object(group, name)
-    chunk = _dataset_chunk(data)
-    if compress && chunk !== nothing && !(eltype(data) <: AbstractString)
-        write(group, name, data; chunk, deflate=_CACHE_DATASET_DEFLATE)
-    else
-        write(group, name, data)
-    end
-    return nothing
-end
-
-function _ensure_group(parent, name::AbstractString)
-    return haskey(parent, name) ? parent[name] : create_group(parent, name)
-end
-
-function _replace_group(parent, name::AbstractString)
-    haskey(parent, name) && HDF5.delete_object(parent, name)
-    return create_group(parent, name)
-end
-
-function _read_required(parent, path::AbstractString, cache_path::AbstractString)
-    haskey(parent, path) || throw(ProjectCacheInvalidError(cache_path, "missing dataset '$path'"))
-    return read(parent[path])
-end
-
-function _write_string_vector!(group, name::AbstractString, values::AbstractVector{<:AbstractString})
-    _write_dataset!(group, name, String.(values); compress=false)
-end
-
-function _serialized_bytes(value)
+Cache indexes are contiguous for fast startup reads. Measurement payloads use larger compressed
+chunks to reduce disk use without fragmenting them into many tiny reads.
+"""
+function write_serialized_dataset!(
+    parent::Union{HDF5.File,HDF5.Group},
+    name::AbstractString,
+    value::Any,
+    ;
+    compress::Bool=true,
+)::Nothing
     io = IOBuffer()
     serialize(io, value)
-    return take!(io)
-end
-
-function _write_serialized!(group, name::AbstractString, value)::Nothing
-    _write_dataset!(group, name, _serialized_bytes(value))
-    return nothing
-end
-
-function _read_serialized(group, name::AbstractString, cache_path::AbstractString)
-    bytes = _read_required(group, name, cache_path)
-    return deserialize(IOBuffer(bytes))
-end
-
-function _write_dataframe!(group, name::AbstractString, data::DataFrame)::Nothing
-    _write_serialized!(group, name, data)
-    return nothing
-end
-
-function _read_dataframe(group, name::AbstractString, cache_path::AbstractString)::DataFrame
-    data = _read_serialized(group, name, cache_path)
-    data isa DataFrame ||
-        throw(ProjectCacheInvalidError(cache_path, "cached dataframe '$name' has type $(typeof(data))"))
-    return data
-end
-
-function _write_fingerprint!(group, fingerprint::FileFingerprint)
-    _write_dataset!(group, "path", fingerprint.path; compress=false)
-    _write_dataset!(group, "size_bytes", Int64[fingerprint.size_bytes])
-    _write_dataset!(group, "mtime_ns", Int64[fingerprint.mtime_ns])
-    return nothing
-end
-
-function _read_fingerprint(group, cache_path::AbstractString)
-    path = _read_required(group, "path", cache_path)
-    sizes = _read_required(group, "size_bytes", cache_path)
-    mtimes = _read_required(group, "mtime_ns", cache_path)
-    length(sizes) == 1 && length(mtimes) == 1 ||
-        throw(ProjectCacheInvalidError(cache_path, "invalid file fingerprint for '$path'"))
-    return FileFingerprint(path, Int64(sizes[1]), Int64(mtimes[1]))
-end
-
-function _same_fingerprint(a::FileFingerprint, b::FileFingerprint)
-    return a.path == b.path && a.size_bytes == b.size_bytes && a.mtime_ns == b.mtime_ns
-end
-
-const _ACTIVE_PROJECT_CACHE = Ref{Union{Nothing,ProjectCacheIdentity}}(nothing)
-
-function _set_active_project_cache!(identity::Union{Nothing,ProjectCacheIdentity})::Nothing
-    _ACTIVE_PROJECT_CACHE[] = identity
-    return nothing
-end
-
-function _write_meta!(h5, identity::ProjectCacheIdentity)
-    meta = _replace_group(h5, "meta")
-    _write_dataset!(meta, "schema_version", Int64[_CACHE_SCHEMA_VERSION])
-    _write_dataset!(meta, "project_name", identity.project_name; compress=false)
-    _write_dataset!(meta, "cache_id", identity.cache_id; compress=false)
-    _write_dataset!(meta, "root_path", identity.root_path; compress=false)
-    _write_dataset!(meta, "has_device_metadata", Bool[_has_device_metadata(identity.root_path)])
-    _write_dataset!(meta, "updated_at", Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS.s"); compress=false)
-    return nothing
-end
-
-function _validate_meta!(h5, identity::ProjectCacheIdentity)
-    haskey(h5, "meta") || throw(ProjectCacheInvalidError(identity.cache_path, "missing /meta group"))
-    meta = h5["meta"]
-    haskey(meta, "schema_version") ||
-        throw(ProjectCacheInvalidError(identity.cache_path, "cache schema is out of date"))
-    schema_values = read(meta["schema_version"])
-    length(schema_values) == 1 && Int(schema_values[1]) == _CACHE_SCHEMA_VERSION ||
-        throw(ProjectCacheInvalidError(identity.cache_path, "cache schema is out of date"))
-    project_name_value = _read_required(meta, "project_name", identity.cache_path)
-    project_name_value == identity.project_name ||
-        throw(ProjectCacheInvalidError(identity.cache_path, "project mismatch: expected $(identity.project_name), found $project_name_value"))
-    cache_id_value = _read_required(meta, "cache_id", identity.cache_path)
-    cache_id_value == identity.cache_id ||
-        @warn "Cache ID mismatch; expected $(identity.cache_id), found $cache_id_value"
-    return nothing
-end
-
-function _read_cache_has_device_metadata(h5, cache_path::AbstractString)
-    haskey(h5, "meta") || throw(ProjectCacheInvalidError(cache_path, "missing /meta group"))
-    meta = h5["meta"]
-    values = _read_required(meta, "has_device_metadata", cache_path)
-    length(values) == 1 ||
-        throw(ProjectCacheInvalidError(cache_path, "invalid has_device_metadata value"))
-    return Bool(values[1])
-end
-
-function _write_file_group!(
-    files_group,
-    source::SourceFile,
-    project::AbstractProject,
-)
-    measurements = MeasurementInfo[source.measurements...]
-    file_group = _replace_group(files_group, _file_group_key(source.fingerprint.path))
-    _write_fingerprint!(file_group, source.fingerprint)
-    _write_dataset!(file_group, "source_file_unique_id", source.unique_id; compress=false)
-
-    measurement_keys = String[]
-    measurements_group = _ensure_group(file_group, "measurements")
-    for measurement in measurements
-        measurement_key = _measurement_group_key(measurement.unique_id)
-        push!(measurement_keys, measurement_key)
-        _replace_group(measurements_group, measurement_key)
-    end
-    _write_string_vector!(file_group, "measurement_keys", measurement_keys)
-    _write_dataset!(file_group, "status", isempty(measurements) ? "skipped" : "ok"; compress=false)
-    return length(measurements)
-end
-
-function _write_cached_measurement_data!(
-    project::AbstractProject,
-    measurement::MeasurementInfo,
-    data::DataFrame,
-    ;
-    processed::Bool=false,
-)::Nothing
-    identity = _ACTIVE_PROJECT_CACHE[]
-    identity === nothing && return nothing
-    identity.project_name == project_name(project) || return nothing
-    isfile(identity.cache_path) || return nothing
-
-    path = _cache_normalize_path(measurement.filepath)
-    isfile(path) || return nothing
-    current = file_fingerprint(path)
-
-    h5open(identity.cache_path, "r+") do h5
-        _validate_meta!(h5, identity)
-        haskey(h5, "files") || return nothing
-        files_group = h5["files"]
-        file_key = _file_group_key(path)
-        haskey(files_group, file_key) || return nothing
-        file_group = files_group[file_key]
-        _file_status(file_group) in ("ok", "analysis_error") || return nothing
-        cached = _read_fingerprint(file_group, identity.cache_path)
-        _same_fingerprint(current, cached) || return nothing
-        haskey(file_group, "measurements") || return nothing
-        measurements_group = file_group["measurements"]
-        measurement_key = _measurement_group_key(measurement.unique_id)
-        haskey(measurements_group, measurement_key) || return nothing
-        measurement_group = measurements_group[measurement_key]
-        _write_dataframe!(measurement_group, _measurement_data_name(processed), data)
+    bytes = take!(io)
+    haskey(parent, name) && HDF5.delete_object(parent, name)
+    if compress
+        write(
+            parent,
+            name,
+            bytes;
+            chunk=(min(length(bytes), 262_144),),
+            deflate=PROJECT_CACHE_COMPRESSION,
+        )
+    else
+        write(parent, name, bytes)
     end
     return nothing
 end
 
-function _cached_measurements_data(
-    project::AbstractProject,
-    measurements::Vector{MeasurementInfo},
-    ;
-    processed::Bool=false,
-)::Vector{Union{Nothing,DataFrame}}
-    data = Union{Nothing,DataFrame}[nothing for _ in measurements]
-    identity = _ACTIVE_PROJECT_CACHE[]
-    identity === nothing && return data
-    identity.project_name == project_name(project) || return data
-    isfile(identity.cache_path) || return data
+"""
+Read and deserialize one required HDF5 dataset.
 
-    current_fingerprints = Dict{String,FileFingerprint}()
-    h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        haskey(h5, "files") || return data
-        files_group = h5["files"]
-        for (index, measurement) in pairs(measurements)
-            _check_cancel()
-            path = _cache_normalize_path(measurement.filepath)
-            isfile(path) || continue
-            current = get!(current_fingerprints, path) do
-                file_fingerprint(path)
-            end
-            file_key = _file_group_key(path)
-            haskey(files_group, file_key) || continue
-            file_group = files_group[file_key]
-            _file_status(file_group) in ("ok", "analysis_error") || continue
-            cached = _read_fingerprint(file_group, identity.cache_path)
-            _same_fingerprint(current, cached) || continue
-            haskey(file_group, "measurements") || continue
-            measurements_group = file_group["measurements"]
-            measurement_key = _measurement_group_key(measurement.unique_id)
-            haskey(measurements_group, measurement_key) || continue
-            measurement_group = measurements_group[measurement_key]
-            data_name = _measurement_data_name(processed)
-            haskey(measurement_group, data_name) || continue
-            data[index] = _read_dataframe(measurement_group, data_name, identity.cache_path)
-        end
-    end
-    return data
+Missing datasets identify an invalid cache rather than a cache miss.
+"""
+function read_serialized_dataset(
+    parent::Union{HDF5.File,HDF5.Group},
+    name::AbstractString,
+    cache_path::AbstractString,
+)::Any
+    haskey(parent, name) ||
+        throw(ProjectCacheError(String(cache_path), "missing dataset '$name'"))
+    return deserialize(IOBuffer(read(parent[name])))
 end
 
-_measurement_data_name(processed::Bool)::String = processed ? "processed_data" : "data"
+"""
+Open one HDF5 cache while holding the process-wide cache lock.
 
-function _file_status(file_group)
-    return haskey(file_group, "status") ? read(file_group["status"]) : "ok"
-end
-
-function _cached_file_fingerprints(h5, cache_path::AbstractString)
-    haskey(h5, "files") || return Dict{String,FileFingerprint}()
-    fingerprints = Dict{String,FileFingerprint}()
-    for file_key in keys(h5["files"])
-        group = h5["files"][file_key]
-        fp = _read_fingerprint(group, cache_path)
-        fingerprints[fp.path] = fp
-    end
-    return fingerprints
-end
-
-function _cached_file_statuses(h5)
-    haskey(h5, "files") || return Dict{String,String}()
-    statuses = Dict{String,String}()
-    for file_key in keys(h5["files"])
-        group = h5["files"][file_key]
-        path = haskey(group, "path") ? read(group["path"]) : file_key
-        statuses[path] = _file_status(group)
-    end
-    return statuses
-end
-
-function _read_cache_file_errors(h5, cache_path::AbstractString)
-    haskey(h5, "files") || return ProjectCacheFileError[]
-    errors = ProjectCacheFileError[]
-    for file_key in sort!(collect(keys(h5["files"])))
-        group = h5["files"][file_key]
-        _file_status(group) in ("error", "analysis_error") || continue
-        fp = _read_fingerprint(group, cache_path)
-        message = haskey(group, "error_message") ? read(group["error_message"]) :
-            "Cache transform failed without an error message"
-        push!(errors, ProjectCacheFileError(fp.path, message))
-    end
-    return errors
-end
-
-function _cache_file_errors(identity::ProjectCacheIdentity)
-    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
-    return h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        _read_cache_file_errors(h5, identity.cache_path)
-    end
-end
-
-function _cache_status_from_fingerprints(
+All cache reads and writes use this path so background updates cannot overlap plotting reads.
+"""
+function with_project_cache_file(
+    read_or_write::Function,
     identity::ProjectCacheIdentity,
-    raw::Dict{String,FileFingerprint},
-)
-    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
-    return h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        cached = _cached_file_fingerprints(h5, identity.cache_path)
-        statuses = _cached_file_statuses(h5)
-        return _cache_status_from_fingerprints(raw, cached, statuses)
+    mode::AbstractString,
+)::Any
+    return lock(PROJECT_CACHE_LOCK) do
+        h5open(read_or_write, identity.cache_path, mode)
     end
 end
 
-function _source_fingerprints(source::SourceScan)
-    fingerprints = Dict{String,FileFingerprint}()
-    for file in source.files
-        fingerprints[file.fingerprint.path] = file.fingerprint
+"""
+Open and validate one existing project cache index.
+
+Validation happens before deserialization so an old schema is reported clearly.
+"""
+function project_cache_index(identity::ProjectCacheIdentity)::ProjectCacheIndex
+    isfile(identity.cache_path) ||
+        throw(ProjectCacheError(identity.cache_path, "file does not exist"))
+    return with_project_cache_file(identity, "r") do h5
+        file_attributes = HDF5.attributes(h5)
+        haskey(file_attributes, "schema_version") ||
+            throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
+        read(file_attributes["schema_version"]) == PROJECT_CACHE_SCHEMA_VERSION ||
+            throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
+        index = read_serialized_dataset(h5, PROJECT_CACHE_INDEX_DATASET, identity.cache_path)
+        index isa ProjectCacheIndex ||
+            throw(ProjectCacheError(identity.cache_path, "cache index has the wrong type"))
+        index.identity.cache_id == identity.cache_id &&
+            index.identity.project_name == identity.project_name &&
+            index.identity.root_path == identity.root_path ||
+            throw(ProjectCacheError(identity.cache_path, "cache identity does not match"))
+        return index
     end
-    return fingerprints
 end
 
-function _source_analysis_statuses(source::SourceScan)::Dict{String,String}
-    statuses = Dict{String,String}()
+"""
+Build the complete cache index represented by one finished source scan.
+
+Analysis failures remain attached to their physical source files while successful measurements stay
+available.
+"""
+function ProjectCacheIndex(
+    identity::ProjectCacheIdentity,
+    source::SourceScan,
+)::ProjectCacheIndex
+    errors = Dict{String,Vector{String}}()
     for failure in source.analysis_failures
-        statuses[failure.filepath] = "analysis_error"
+        push!(get!(errors, failure.filepath, String[]), failure.message)
     end
-    return statuses
+    return ProjectCacheIndex(
+        identity,
+        source,
+        Dict(file.fingerprint.path => file for file in source.files),
+        Dict(path => join(messages, "\n") for (path, messages) in errors),
+    )
 end
 
-function _cache_status_from_fingerprints(
-    raw::Dict{String,FileFingerprint},
-    cached::Dict{String,FileFingerprint},
-    statuses::Dict{String,String},
-)
-    stale = count(path -> haskey(raw, path) && !_same_fingerprint(raw[path], cached[path]), keys(cached))
-    deleted = count(path -> !haskey(raw, path), keys(cached))
-    new_count = count(path -> !haskey(cached, path), keys(raw))
-    fresh = count(
-        path -> haskey(cached, path) &&
-            _same_fingerprint(raw[path], cached[path]) &&
-            get(statuses, path, "ok") in ("ok", "skipped"),
-        keys(raw),
-    )
-    error_count = count(status -> status in ("error", "analysis_error"), values(statuses))
+"""
+Compare a cached index with the index produced by the current source scan.
+
+The result counts matching, changed, new, deleted, and failed source files.
+"""
+function cache_status(
+    cached::ProjectCacheIndex,
+    source::SourceScan,
+)::ProjectCacheStatus
+    current = ProjectCacheIndex(cached.identity, source)
+    stale = 0
+    fresh = 0
+    for (path, source_file) in current.files
+        previous = get(cached.files, path, nothing)
+        previous === nothing && continue
+        changed = previous.fingerprint != source_file.fingerprint ||
+            get(cached.analysis_errors, path, "") != get(current.analysis_errors, path, "")
+        stale += changed
+        fresh += !changed && !haskey(current.analysis_errors, path)
+    end
     return ProjectCacheStatus(
-        length(raw),
-        length(cached),
+        length(current.files),
+        length(cached.files),
         fresh,
         stale,
-        new_count,
-        deleted,
-        error_count,
+        count(path -> !haskey(cached.files, path), keys(current.files)),
+        count(path -> !haskey(current.files, path), keys(cached.files)),
+        length(current.analysis_errors),
     )
 end
 
-function _cached_cache_index(identity::ProjectCacheIdentity)
-    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
-    return h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        (_cached_file_fingerprints(h5, identity.cache_path), _cached_file_statuses(h5))
-    end
-end
-
-function cache_status(identity::ProjectCacheIdentity, source::SourceScan)
-    identity.root_path == source.root_path ||
-        error("Cache root $(identity.root_path) does not match source scan root $(source.root_path)")
-    project_name(source.project) == identity.project_name ||
-        error("Cache project $(identity.project_name) does not match source scan project $(project_name(source.project))")
-    cached, statuses = _cached_cache_index(identity)
-    merge!(statuses, _source_analysis_statuses(source))
-    return _cache_status_from_fingerprints(_source_fingerprints(source), cached, statuses)
-end
-
-function _cache_status_from_cached_statuses(statuses::Dict{String,String})
-    error_count = count(status -> status in ("error", "analysis_error"), values(statuses))
-    cached = length(statuses)
-    return ProjectCacheStatus(cached, cached, cached - error_count, 0, 0, 0, error_count)
-end
-
-function _hierarchy_from_cache_statuses(source::SourceScan, statuses::Dict{String,String})
-    measurements = MeasurementInfo[]
-    skipped_count = 0
-    for source_file in source.files
-        status = get(statuses, source_file.fingerprint.path, "missing")
-        if status in ("ok", "error", "analysis_error")
-            append!(measurements, source_file.measurements)
-        elseif status == "skipped"
-            skipped_count += 1
-        end
-    end
-    return MeasurementHierarchy(
-        measurements,
-        source.root_path,
-        source.hierarchy.has_device_metadata,
-        source.project,
-        skipped_count,
-    )
-end
-
-const _CACHE_INDEX_VERSION = 3
-
-function _cache_index_group(h5, cache_path::AbstractString)
-    haskey(h5, "indexes") || throw(ProjectCacheInvalidError(cache_path, "missing /indexes group"))
-    index_group = h5["indexes"]
-    version_values = _read_required(index_group, "version", cache_path)
-    length(version_values) == 1 && Int(version_values[1]) == _CACHE_INDEX_VERSION ||
-        throw(ProjectCacheInvalidError(cache_path, "cache index is out of date"))
-    return index_group
-end
-
-function _cache_startup_blob(hierarchy::MeasurementHierarchy, statuses::Dict{String,String}, errors::Vector{ProjectCacheFileError})
-    return (
-        measurements=hierarchy.all_measurements,
-        statuses=statuses,
-        errors=errors,
-        skipped_count=hierarchy.skipped_count,
-    )
-end
-
-function _write_cache_startup_blob!(group, blob)::Nothing
-    _write_serialized!(group, "startup_blob", blob)
-    return nothing
-end
-
-function _read_cache_startup_blob(h5, cache_path::AbstractString)
-    index_group = _cache_index_group(h5, cache_path)
-    return _read_serialized(index_group, "startup_blob", cache_path)
-end
-
-function _rebuild_indexes!(h5, hierarchy::MeasurementHierarchy, statuses::Dict{String,String})
-    index_group = _replace_group(h5, "indexes")
-    _write_dataset!(index_group, "version", Int64[_CACHE_INDEX_VERSION])
-
-    errors = ProjectCacheFileError[]
-    files_group = h5["files"]
-    for path in sort!([path for (path, status) in statuses if status in ("error", "analysis_error")])
-        file_key = _file_group_key(path)
-        haskey(files_group, file_key) || continue
-        file_group = files_group[file_key]
-        message = haskey(file_group, "error_message") ? read(file_group["error_message"]) : "unknown cache error"
-        push!(errors, ProjectCacheFileError(path, message))
-    end
-
-    _write_cache_startup_blob!(index_group, _cache_startup_blob(hierarchy, statuses, errors))
-    return hierarchy
-end
-
-function _write_file_error_group!(
-    files_group,
-    fingerprint::FileFingerprint,
-    source::SourceFile,
-    err,
-)
-    file_group = _replace_group(files_group, _file_group_key(fingerprint.path))
-    _write_fingerprint!(file_group, fingerprint)
-    _write_dataset!(file_group, "source_file_unique_id", source.unique_id; compress=false)
-    measurement_keys = String[]
-    measurements_group = _ensure_group(file_group, "measurements")
-    for measurement in source.measurements
-        measurement_key = _measurement_group_key(measurement.unique_id)
-        push!(measurement_keys, measurement_key)
-        _replace_group(measurements_group, measurement_key)
-    end
-    _write_string_vector!(file_group, "measurement_keys", measurement_keys)
-    _write_dataset!(file_group, "status", "error"; compress=false)
-    _write_dataset!(file_group, "error_type", string(typeof(err)); compress=false)
-    _write_dataset!(file_group, "error_message", sprint(showerror, err); compress=false)
-    return nothing
-end
-
-function _write_file_analysis_failures!(
-    files_group,
-    source::SourceFile,
-    failures::Vector{MeasurementAnalysisFailure},
+"""
+Make one loaded cache index available to cache-aware measurement-data access.
+"""
+function set_active_project_cache!(
+    index::Union{Nothing,ProjectCacheIndex},
 )::Nothing
-    isempty(failures) && return nothing
-    file_group = files_group[_file_group_key(source.fingerprint.path)]
-    _write_dataset!(file_group, "status", "analysis_error"; compress=false)
-    _write_dataset!(
-        file_group,
-        "error_message",
-        join([failure.message for failure in failures], "\n");
-        compress=false,
-    )
+    lock(PROJECT_CACHE_LOCK) do
+        ACTIVE_PROJECT_CACHE[] = index
+    end
     return nothing
 end
 
+"""
+Create or update a cache from a finished source scan. `replace=true` discards all existing payloads.
+Normal updates preserve payloads for unchanged files and remove only data made invalid by changed or
+deleted files.
+"""
 function write_project_cache!(
     identity::ProjectCacheIdentity,
     source::SourceScan;
-    mode::Symbol=:update,
+    replace::Bool=false,
     on_progress::Union{Nothing,Function}=nothing,
-)
-    mode in (:build, :rebuild, :update) || error("Unsupported cache write mode '$mode'")
+)::ProjectCacheIndex
     identity.root_path == source.root_path ||
-        error("Cache root $(identity.root_path) does not match source scan root $(source.root_path)")
-    project_name(source.project) == identity.project_name ||
-        error("Cache project $(identity.project_name) does not match source scan project $(project_name(source.project))")
-    mkpath(dirname(identity.cache_path))
-    @info "Starting project cache write" root = identity.root_path cache = identity.cache_path mode
+        error("Cache root does not match source scan root")
+    identity.project_name == project_name(source.project) ||
+        error("Cache project does not match source scan project")
+
+    new_index = ProjectCacheIndex(identity, source)
     cache_exists = isfile(identity.cache_path)
-    h5_mode = (!cache_exists || mode in (:build, :rebuild)) ? "w" : "r+"
-    processed = 0
-    loaded_measurements = 0
-    fingerprints = _source_fingerprints(source)
-    source_by_path = Dict(file.fingerprint.path => file for file in source.files)
-    analysis_failures = Dict{String,Vector{MeasurementAnalysisFailure}}()
-    for failure in source.analysis_failures
-        push!(get!(analysis_failures, failure.filepath, MeasurementAnalysisFailure[]), failure)
-    end
+    old_index = cache_exists && !replace ? project_cache_index(identity) : nothing
 
-    hierarchy = h5open(identity.cache_path, h5_mode) do h5
-        if cache_exists && mode == :update
-            _validate_meta!(h5, identity)
-        else
-            _write_meta!(h5, identity)
-        end
-        files_group = _ensure_group(h5, "files")
-        cached = _cached_file_fingerprints(h5, identity.cache_path)
-        statuses = cache_exists ? _cached_file_statuses(h5) : Dict{String,String}()
-        raw_paths = Set(keys(fingerprints))
-        deleted_paths = sort!([path for path in keys(cached) if !(path in raw_paths)])
-        write_paths = if !cache_exists || mode in (:build, :rebuild)
-            sort!(collect(keys(fingerprints)))
-        else
-            sort!([
-                path for path in keys(fingerprints)
-                if !haskey(cached, path) ||
-                    !_same_fingerprint(fingerprints[path], cached[path]) ||
-                    get(statuses, path, "missing") in ("error", "analysis_error") ||
-                    haskey(analysis_failures, path)
-            ])
-        end
-        total_changes = length(deleted_paths) + length(write_paths)
-
-        for cached_path in deleted_paths
-            _check_cancel()
-            cached_path in raw_paths && continue
-            key = _file_group_key(cached_path)
-            haskey(files_group, key) && HDF5.delete_object(files_group, key)
-            delete!(statuses, cached_path)
-            processed += 1
-            on_progress !== nothing && on_progress((
-                phase=:cache_update,
-                total_csv=total_changes,
-                processed_csv=processed,
-                loaded_measurements=loaded_measurements,
-                skipped_csv=0,
-                current_path=cached_path,
-            ))
-        end
-
-        for path in write_paths
-            _check_cancel()
-            source_file = source_by_path[path]
-            try
-                measurement_count = _write_file_group!(
-                    files_group,
-                    source_file,
-                    source.project,
-                )
-                loaded_measurements += measurement_count
-                statuses[path] = measurement_count == 0 ? "skipped" : "ok"
-                failures = get(analysis_failures, path, MeasurementAnalysisFailure[])
-                if !isempty(failures)
-                    _write_file_analysis_failures!(files_group, source_file, failures)
-                    statuses[path] = "analysis_error"
-                end
-            catch err
-                err isa JobCancelled && rethrow()
-                _write_file_error_group!(files_group, source_file.fingerprint, source_file, err)
-                statuses[path] = "error"
+    mkpath(dirname(identity.cache_path))
+    with_project_cache_file(identity, !cache_exists || replace ? "w" : "r+") do h5
+        if old_index !== nothing
+            invalid_files = filter(collect(keys(old_index.files))) do path
+                current = get(new_index.files, path, nothing)
+                return current === nothing ||
+                    old_index.files[path].fingerprint != current.fingerprint ||
+                    get(old_index.analysis_errors, path, "") !=
+                        get(new_index.analysis_errors, path, "")
             end
-            processed += 1
-            on_progress !== nothing && on_progress((
-                phase=:cache_update,
-                total_csv=total_changes,
-                processed_csv=processed,
-                loaded_measurements=loaded_measurements,
-                skipped_csv=0,
-                current_path=path,
-            ))
+            for group_name in ("direct", "processed")
+                haskey(h5, group_name) || continue
+                group = h5[group_name]
+                for path in invalid_files
+                    key = cache_object_key(path)
+                    haskey(group, key) && HDF5.delete_object(group, key)
+                end
+            end
         end
-        on_progress !== nothing && on_progress((
-            phase=:cache_finalize,
-            total_csv=1,
-            processed_csv=0,
-            loaded_measurements=loaded_measurements,
-            skipped_csv=0,
-            current_path=identity.cache_path,
-        ))
-        _write_meta!(h5, identity)
-        hierarchy = _hierarchy_from_cache_statuses(source, statuses)
-        _rebuild_indexes!(h5, hierarchy, statuses)
-        on_progress !== nothing && on_progress((
-            phase=:cache_finalize,
-            total_csv=1,
-            processed_csv=1,
-            loaded_measurements=loaded_measurements,
-            skipped_csv=0,
-            current_path=identity.cache_path,
-        ))
-        hierarchy
-    end
-    status = _cache_status_from_fingerprints(identity, fingerprints)
-    errors = _cache_file_errors(identity)
-    @info "Finished project cache write" cache = identity.cache_path cached_files = status.cached_files error_files = status.error_files
-    return ProjectCacheSnapshot(
-        identity,
-        hierarchy,
-        status,
-        errors,
-    )
-end
 
-function _load_project_cache_contents(
-    identity::ProjectCacheIdentity,
-    ;
-    on_progress::Union{Nothing,Function}=nothing,
-)
-    project = _project_by_name(identity.project_name)
-    isfile(identity.cache_path) || throw(ProjectCacheMissingError(identity.cache_path))
-    _check_cancel()
-    snapshot = h5open(identity.cache_path, "r") do h5
-        _validate_meta!(h5, identity)
-        has_device_metadata = _read_cache_has_device_metadata(h5, identity.cache_path)
-        startup = _read_cache_startup_blob(h5, identity.cache_path)
-        measurements = startup.measurements
-        statuses = startup.statuses
-        status = _cache_status_from_cached_statuses(statuses)
-        errors = startup.errors
-        skipped_count = count(==("skipped"), values(statuses))
-        _emit_progress(on_progress;
-            phase=:cache_load,
+        _check_cancel()
+        loaded_measurements = sum(
+            length(file.measurements) for file in values(new_index.files)
+        )
+        file_attributes = HDF5.attributes(h5)
+        haskey(file_attributes, "schema_version") ||
+            (file_attributes["schema_version"] = PROJECT_CACHE_SCHEMA_VERSION)
+        write_serialized_dataset!(
+            h5,
+            PROJECT_CACHE_INDEX_DATASET,
+            new_index;
+            compress=false,
+        )
+        _emit_progress(
+            on_progress;
+            phase=:cache_finalize,
             total_csv=1,
             processed_csv=1,
-            loaded_measurements=length(measurements),
-            skipped_csv=skipped_count,
+            loaded_measurements,
+            skipped_csv=0,
             current_path=identity.cache_path,
         )
-        hierarchy = MeasurementHierarchy(
-            measurements,
-            identity.root_path,
-            has_device_metadata,
-            project,
-            skipped_count,
-        )
-        return ProjectCacheSnapshot(identity, hierarchy, status, errors)
     end
-    _check_cancel()
-    return snapshot
+
+    return new_index
 end
 
 """
-    load_project_cache(identity; on_progress=nothing)
-
-Load a cache snapshot for browsing without touching the source CSV tree.
+Load the complete browser index without scanning or opening any source file.
 """
 function load_project_cache(
-    identity::ProjectCacheIdentity,
-    ;
+    identity::ProjectCacheIdentity;
     on_progress::Union{Nothing,Function}=nothing,
-)
-    return _load_project_cache_contents(identity; on_progress)
+)::ProjectCacheIndex
+    index = project_cache_index(identity)
+    _emit_progress(
+        on_progress;
+        phase=:cache_load,
+        total_csv=1,
+        processed_csv=1,
+        loaded_measurements=length(index.source.hierarchy.all_measurements),
+        skipped_csv=index.source.hierarchy.skipped_count,
+        current_path=identity.cache_path,
+    )
+    return index
 end
 
-function _project_by_name(name::AbstractString)
-    for project in KNOWN_PROJECTS
-        project_name(project) == name && return project
+"""
+Return the cached source entry when the file still exists and is unchanged. Reuse `fingerprints`
+when several measurements belong to the same physical file.
+"""
+function valid_cached_source_file(
+    index::ProjectCacheIndex,
+    measurement::MeasurementInfo,
+    fingerprints::Dict{String,FileFingerprint},
+)::Union{Nothing,SourceFile}
+    path = normpath(abspath(expanduser(measurement.filepath)))
+    isfile(path) || return nothing
+    source_file = get(index.files, path, nothing)
+    source_file === nothing && return nothing
+    current = get!(fingerprints, path) do
+        file_fingerprint(path)
     end
-    throw(ProjectCacheInvalidError("", "unknown project '$name'"))
+    current == source_file.fingerprint || return nothing
+    return source_file
+end
+
+"""
+Read every valid requested payload in one HDF5 operation. Missing or stale entries return `nothing`.
+"""
+function cached_measurement_data(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo};
+    processed::Bool=false,
+)::Vector{Union{Nothing,DataFrame}}
+    data = Union{Nothing,DataFrame}[nothing for _ in measurements]
+    index = ACTIVE_PROJECT_CACHE[]
+    index === nothing && return data
+    identity = index.identity
+    identity.project_name == project_name(project) || return data
+    isfile(identity.cache_path) || return data
+
+    fingerprints = Dict{String,FileFingerprint}()
+    group_name = processed ? "processed" : "direct"
+    with_project_cache_file(identity, "r") do h5
+        haskey(h5, group_name) || return data
+        group = h5[group_name]
+        for (position, measurement) in pairs(measurements)
+            _check_cancel()
+            valid_cached_source_file(index, measurement, fingerprints) === nothing && continue
+            file_key = cache_object_key(measurement.filepath)
+            haskey(group, file_key) || continue
+            file_group = group[file_key]
+            data_key = cache_object_key(measurement.unique_id)
+            haskey(file_group, data_key) || continue
+            value = read_serialized_dataset(
+                file_group,
+                data_key,
+                identity.cache_path,
+            )
+            value isa DataFrame ||
+                throw(ProjectCacheError(
+                    identity.cache_path,
+                    "measurement data has type $(typeof(value))",
+                ))
+            data[position] = value
+        end
+    end
+    return data
+end
+
+"""
+Write valid measurement payloads to the active cache in one HDF5 operation.
+"""
+function write_measurement_data_cache!(
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo},
+    data::Vector{DataFrame};
+    processed::Bool=false,
+)::Nothing
+    length(measurements) == length(data) ||
+        throw(DimensionMismatch("measurements and data must have equal lengths"))
+    isempty(measurements) && return nothing
+    index = ACTIVE_PROJECT_CACHE[]
+    index === nothing && return nothing
+    identity = index.identity
+    identity.project_name == project_name(project) || return nothing
+    isfile(identity.cache_path) || return nothing
+
+    fingerprints = Dict{String,FileFingerprint}()
+    group_name = processed ? "processed" : "direct"
+    with_project_cache_file(identity, "r+") do h5
+        group = haskey(h5, group_name) ? h5[group_name] : create_group(h5, group_name)
+        for (measurement, value) in zip(measurements, data)
+            _check_cancel()
+            valid_cached_source_file(index, measurement, fingerprints) === nothing && continue
+            file_key = cache_object_key(measurement.filepath)
+            file_group = haskey(group, file_key) ? group[file_key] : create_group(group, file_key)
+            write_serialized_dataset!(
+                file_group,
+                cache_object_key(measurement.unique_id),
+                value,
+            )
+        end
+    end
+    return nothing
 end

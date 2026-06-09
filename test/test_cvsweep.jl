@@ -2,6 +2,9 @@ using MeasurementBrowser
 using DataFrames: nrow
 using Test
 
+const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
+const RuO2CVSweepPlot = MeasurementBrowser.RuO2CVSweepPlot
+
 const _CV_FIXTURES = (
     z_comment = "RuO2test_A13_XI_FeCap_B1_20260511_004120_CVSweep.csv",
     g_plain   = "RuO2test_A9_VI_FeCap_A4_20260320_181744_298K_CVSweep.csv",

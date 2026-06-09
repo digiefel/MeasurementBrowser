@@ -2,6 +2,8 @@ using Test
 using DataFrames: nrow
 using MeasurementBrowser
 
+const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
+
 const _WAKEUP_FIXTURE = joinpath(
     @__DIR__,
     "fixtures", "RuO2",
@@ -22,7 +24,7 @@ const _WAKEUP_ACCUM_SECOND = joinpath(
     @test isfile(_WAKEUP_FIXTURE)
     @test detect_kind(RUO2_PROJECT, basename(_WAKEUP_FIXTURE)) == :pund_wakeup
 
-    source = index_source_file(_WAKEUP_FIXTURE)
+    source = MeasurementBrowser.index_source_file(_WAKEUP_FIXTURE)
     @test parse_device_info(RUO2_PROJECT, source).location == ["RuO2test_A11", "XI", "FeCap", "A9"]
 end
 

@@ -3,8 +3,10 @@ using DataFrames
 
 using MeasurementBrowser
 
+const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
+
 @testset "analysis core" begin
-    result = AnalysisResult(
+    result = MeasurementBrowser.AnalysisResult(
         :demo,
         "Demo",
         :device,

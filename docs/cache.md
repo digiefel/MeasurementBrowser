@@ -1,178 +1,96 @@
-# HDF5 Cache
+# Project Cache
 
-The HDF5 cache exists because the source tree can be slow to scan. Opening a project should not have
-to wait for every CSV to be discovered, parsed, interpreted, and analyzed before the browser can show
-useful measurements.
+Source scanning is inherently slow: the package must find every source file, interpret its
+measurements, and finish project analysis before the final measurement tree is known. The cache
+stores the result of that work so the previous tree can appear immediately while a new scan checks
+the filesystem.
 
-The cache is the fast path. It stores enough generated project data to repopulate the browser tree
-without reparsing every CSV on startup. The CSV files remain the source of truth. A cached file entry
-is usable only when its stored source fingerprint still matches the current file on disk.
+The source files remain authoritative. The cache is generated package data, stored outside the
+project, and never exposed to project code.
 
-The intended user experience is: open a project, show cached measurements quickly when they exist,
-scan the filesystem in the background, and repair stale cache entries without user action.
+## Startup
 
-The cache is not source-root metadata and it is not meant to be hand-edited.
+Opening a project starts cache loading and source scanning together.
 
-Current implementation lives in [src/ProjectCache.jl](../src/ProjectCache.jl). Projects do not own
-cache storage files.
+Cache loading reads one compact index containing the previous `SourceScan`. That restores the
+measurement hierarchy, parameters, stats, skipped-file count, source fingerprints, and analysis
+failures without opening source files or walking thousands of HDF5 objects.
 
-## Location and Identity
+The filesystem scan progressively streams measurements into the browser and eventually produces the
+current `SourceScan`. The package compares that scan with the cached index and updates the cache when
+files were added, changed, deleted, or produced a different analysis result.
 
-Cache files live under the first Julia depot:
+## Identity
+
+Each source root has one deterministic cache id:
 
 ```text
-DEPOT_PATH[1]/measurementbrowser/cache/<project>/<cache_id>.h5
+<root-folder>-<path-digest>
 ```
 
-`project_cache_id(root_path)` derives a deterministic id from the normalized project root: a slug of
-the folder name plus a short SHA1 digest of the full path.
+Cache files live under:
 
-`project_cache_identity(cache_id, project, root_path)` binds together the cache id, project name,
-normalized root path, and final cache file path. Cache operations check that the identity project
-and root match the source or cache being used.
-
-## Source Fingerprints
-
-Each cached CSV entry stores a `FileFingerprint`:
-
-```julia
-struct FileFingerprint
-    path::String
-    size_bytes::Int64
-    mtime_ns::Int64
-end
+```text
+DEPOT_PATH[1]/measurementbrowser/cache/<project>/<cache-id>.h5
 ```
 
-The cache treats a source file as fresh only when the normalized path, size, and mtime match the
-stored fingerprint. If any of those differ, the cache entry is stale for that file.
+The cached identity records the cache id, project name, normalized source root, and cache path. A
+cache is accepted only when all identity fields and the schema version match.
 
-## Cache File Structure
+## Contents
 
-Top-level groups:
-
-| Path | Purpose |
-|---|---|
-| `/meta` | cache schema version, project name, cache id, root path, device metadata flag, update time |
-| `/files` | one group per cached source CSV |
-| `/indexes` | compact startup index rebuilt after cache writes |
-
-Each `/files/<file_key>` group stores:
+The HDF5 file contains:
 
 | Entry | Purpose |
 |---|---|
-| `fingerprint` fields | source path, size, mtime |
-| `source_file_unique_id` | source file id used during indexing |
-| `measurement_keys` | ordered keys for measurement groups |
-| `measurements/<measurement_key>` | optional data group for that logical measurement |
-| `measurements/<measurement_key>/data` | optional cached dataframe for that logical measurement |
-| `measurements/<measurement_key>/processed_data` | optional cached processed dataframe for that logical measurement |
-| `status` | `ok`, `skipped`, or `error` |
+| `schema_version` attribute | Rejects old cache layouts before deserialization |
+| `/index` | One uncompressed serialized `ProjectCacheIndex` for fast startup |
+| `/direct/<file>/<measurement>` | Lazily cached data returned by `read_measurement_data` |
+| `/processed/<file>/<measurement>` | Lazily cached data returned by `process_measurement_data` |
 
-Startup cache loading does not walk the per-file measurement groups.
+`ProjectCacheIndex` contains the completed source scan, a path lookup for its `SourceFile` entries,
+and analysis errors grouped by physical source file.
 
-`analysis_error` is a file status for a source file that was found and indexed, but where one or
-more logical measurements failed analysis. The measurements stay visible; the failure is reported
-as cache/source status.
+Direct and processed data are separate because they have different meanings and lifetimes. Both are
+grouped by physical source file, so changing or deleting one file invalidates its payloads with two
+group deletions regardless of how many logical measurements it contains.
 
-`/indexes/startup_blob` stores the browser startup data as one versioned serialized record:
-measurements, source file statuses, file errors, and skipped-file count. Startup uses the blob to
-rebuild the browser tree when a project opens.
+## Freshness
 
-The startup blob is the only cache copy of measurement metadata, including parameters and stats.
-Per-file measurement groups exist so lazily cached dataframes have a stable place to live.
+A cached source file matches the filesystem only when its normalized path, size, and modification
+time match. The final scan comparison reports:
 
-## Loading the Cache
-
-`load_project_cache(identity)` reads cached browser metadata without walking the source CSV tree and
-without walking every cached file group.
-
-It currently reads:
-
-1. `/meta` for validation.
-2. `/meta/has_device_metadata`.
-3. `/indexes/startup_blob`.
-
-It returns a `ProjectCacheSnapshot`, containing:
-
-| Field | Meaning |
+| Count | Meaning |
 |---|---|
-| `identity` | cache identity used for the read |
-| `hierarchy` | `MeasurementHierarchy` rebuilt from cached measurements |
-| `status` | cache status counts |
-| `errors` | per-file cache transform errors |
+| fresh | cached file matches the current scan and has no analysis error |
+| stale | fingerprint or analysis result changed |
+| new | present only in the current scan |
+| deleted | present only in the cache |
+| errors | current source files whose analysis failed |
 
-Startup cache load does not read cached dataframe data. Measurement data is read later when a view
-requests it through `read_measurement_data`.
+Analysis failure does not remove measurements from the tree. It is stored as a valid cache
+difference so one failed file cannot invalidate the rest of the project.
 
-Caches without the current schema version and compact index are out of date. They should be rebuilt.
-Semantic fields do not decide cache validity.
+## Updates
 
-## Writing and Updating the Cache
+A normal update replaces the compact index, preserves payloads for unchanged source files, and
+deletes payload groups for changed, deleted, or newly failing files. A rebuild replaces the complete
+HDF5 file.
 
-`write_project_cache!(identity, source; mode)` writes cache entries from a `SourceScan`.
-
-Update mode is for compatible cache files. A compatible cache has the current schema version and the
-same project/root identity.
-
-Supported modes:
-
-| Mode | Behavior |
-|---|---|
-| `:build` | create a cache from the source scan |
-| `:rebuild` | replace the existing cache contents |
-| `:update` | rewrite only new or stale source files and remove deleted files |
-
-During write, each source file is compared with cached fingerprints. Unchanged files are kept.
-Changed or new files are rewritten. Cached files missing from the source scan are deleted.
-
-After file updates, `/indexes` and `/meta` are rebuilt. The index is the cache startup path;
-per-file groups are for fingerprint checks, cache repair, and lazy measurement-data entries.
-
-Cache build and update do not eagerly write every measurement dataframe. They write the browser tree,
-source fingerprints, measurement metadata, and status. Measurement data is cached when
-`read_measurement_data` has to load it.
-
-## Cache Status
-
-`ProjectCacheStatus` stores count summaries:
-
-| Field | Meaning |
-|---|---|
-| `total_files` | CSV files in the current source scan |
-| `cached_files` | files currently represented in cache |
-| `fresh_files` | source files whose cache fingerprint matches and did not error |
-| `stale_files` | cached files whose source fingerprint changed |
-| `new_files` | source files missing from cache |
-| `deleted_files` | cached files missing from source |
-| `error_files` | cached files with transform errors |
-
-`error_files` includes cache transform errors and analysis errors found during the source scan.
-
-When a cache is loaded without a source scan, the app can count cached entries but cannot know which
-source files are fresh, stale, new, or deleted. That requires filesystem scanning.
+Index writing does not load measurement data. Direct and processed data are cached only when a
+caller requests them.
 
 ## Measurement Data
 
-Views ask for measurement data through `read_measurement_data(project, measurements)`. That is where
-cached measurement data is used. Project code does not read cache storage directly.
+`read_measurement_data(project, measurements)` returns one direct dataframe per measurement, in the
+requested order. It reads all available payloads with one HDF5 open. Cache misses are loaded through
+the project implementation of `load_source_data`, then written back together with one HDF5 open.
 
-Callers that need processed measurement data use `process_measurement_data(project, measurements)`.
-This uses the same cache boundary but stores a separate dataframe entry. Direct data and processed
-data are separate on purpose so cache contents stay easy to inspect and debug.
+`process_measurement_data(project, measurements)` follows the same path for processed data. Missing
+processed entries are computed from direct measurement data and cached separately.
 
-The package returns cached dataframe data only when the cached file fingerprint still matches the
-current source file. If the cache has no data, the file changed, or the cache entry errored,
-`read_measurement_data` opens the source file through `load_source_data`.
+Before reading or writing a payload, the package checks the current source fingerprint against the
+in-memory cache index. Stale payloads are never returned.
 
-When `read_measurement_data` loads source data for a measurement whose cache entry is current, it
-stores the returned dataframe in that measurement's cache entry for later calls.
-
-## UI Behavior
-
-Opening a project starts cache loading and source scanning together. Cache loading may apply a
-cached `MeasurementHierarchy` before the source scan finishes. Source scanning streams interpreted
-measurements as files complete, then applies the final scan result after project stats are computed.
-
-When the final source scan is available, the UI compares source fingerprints with cached
-fingerprints. Missing, stale, deleted, or analysis-error cache entries queue a cache update
-automatically.
+All HDF5 access uses one process-wide lock. Background cache updates therefore cannot overlap plot
+reads or lazy payload writes.

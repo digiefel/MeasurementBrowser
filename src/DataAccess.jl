@@ -1,8 +1,6 @@
 using DataFrames
 
 """
-    load_source_data(project, source_file; measurement=nothing)::DataFrame
-
 Project-implemented reader for one physical source file.
 
 When `measurement` is provided, return the table needed for that logical measurement. This lets a
@@ -18,8 +16,6 @@ function load_source_data(
 end
 
 """
-    read_measurement_data(project, measurements)::Vector{DataFrame}
-
 Package-owned data access for selected measurements.
 
 Returns one `DataFrame` per `MeasurementInfo`, in the same order. Valid cached data is used first.
@@ -30,13 +26,35 @@ function read_measurement_data(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
-    cached_data = _cached_measurements_data(project, measurements)
-    return _fill_measurement_data_cache!(project, measurements, cached_data)
+    isempty(measurements) && return DataFrame[]
+    cached = cached_measurement_data(project, measurements)
+    result = Vector{DataFrame}(undef, length(measurements))
+    missing_measurements = MeasurementInfo[]
+    missing_data = DataFrame[]
+    source_files = Dict{String,SourceFile}()
+    for (index, measurement) in pairs(measurements)
+        _check_cancel()
+        if cached[index] === nothing
+            source_file = get!(source_files, measurement.filepath) do
+                index_source_file(measurement.filepath)
+            end
+            data = load_source_data(
+                project,
+                source_file;
+                measurement,
+            )
+            push!(missing_measurements, measurement)
+            push!(missing_data, data)
+            result[index] = data
+        else
+            result[index] = cached[index]
+        end
+    end
+    write_measurement_data_cache!(project, missing_measurements, missing_data)
+    return result
 end
 
 """
-    process_measurement_data(project, measurements)::Vector{DataFrame}
-
 Package-owned processed data access for selected measurements.
 
 Returns one processed `DataFrame` per `MeasurementInfo`, in the same order. Valid cached processed
@@ -47,16 +65,37 @@ function process_measurement_data(
     project::AbstractProject,
     measurements::Vector{MeasurementInfo},
 )::Vector{DataFrame}
-    cached_data = _cached_measurements_data(project, measurements; processed=true)
-    direct_data = any(isnothing, cached_data) ? read_measurement_data(project, measurements) : DataFrame[]
-    return _fill_measurement_data_cache!(project, measurements, cached_data; processed=true) do index
-        return process_measurement_data(project, measurements[index], direct_data[index])
+    isempty(measurements) && return DataFrame[]
+    cached = cached_measurement_data(project, measurements; processed=true)
+    result = Vector{DataFrame}(undef, length(measurements))
+    missing = findall(isnothing, cached)
+    missing_measurements = measurements[missing]
+    direct_data = read_measurement_data(project, missing_measurements)
+    processed_data = DataFrame[]
+    sizehint!(processed_data, length(missing))
+    for (position, index) in pairs(missing)
+        _check_cancel()
+        data = process_measurement_data(
+            project,
+            measurements[index],
+            direct_data[position],
+        )
+        push!(processed_data, data)
+        result[index] = data
     end
+    for index in eachindex(measurements)
+        cached[index] === nothing || (result[index] = cached[index])
+    end
+    write_measurement_data_cache!(
+        project,
+        missing_measurements,
+        processed_data;
+        processed=true,
+    )
+    return result
 end
 
 """
-    process_measurement_data(project, measurement, data)::DataFrame
-
 Project-implemented conversion from direct measurement data to processed measurement data.
 
 The default returns `data` unchanged.
@@ -66,53 +105,5 @@ function process_measurement_data(
     ::MeasurementInfo,
     data::DataFrame,
 )::DataFrame
-    return data
-end
-
-function _fill_measurement_data_cache!(
-    project::AbstractProject,
-    measurements::Vector{MeasurementInfo},
-    cached_data::Vector{Union{Nothing,DataFrame}},
-    ;
-    processed::Bool=false,
-)::Vector{DataFrame}
-    data = DataFrame[]
-    sizehint!(data, length(measurements))
-    for (index, measurement) in pairs(measurements)
-        _check_cancel()
-        cached = cached_data[index]
-        if cached !== nothing
-            push!(data, cached)
-            continue
-        end
-        source_file = index_source_file(measurement.filepath)
-        loaded = load_source_data(project, source_file; measurement)
-        _write_cached_measurement_data!(project, measurement, loaded; processed)
-        push!(data, loaded)
-    end
-    return data
-end
-
-function _fill_measurement_data_cache!(
-    load_data::Function,
-    project::AbstractProject,
-    measurements::Vector{MeasurementInfo},
-    cached_data::Vector{Union{Nothing,DataFrame}},
-    ;
-    processed::Bool=false,
-)::Vector{DataFrame}
-    data = DataFrame[]
-    sizehint!(data, length(measurements))
-    for (index, measurement) in pairs(measurements)
-        _check_cancel()
-        cached = cached_data[index]
-        if cached !== nothing
-            push!(data, cached)
-            continue
-        end
-        loaded = load_data(index)
-        _write_cached_measurement_data!(project, measurement, loaded; processed)
-        push!(data, loaded)
-    end
     return data
 end

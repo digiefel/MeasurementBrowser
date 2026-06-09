@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using DataFrames: nrow
 using Test
 
 const _CACHE_FIXTURES = (
@@ -12,11 +13,6 @@ function _copy_cache_fixture!(dir::AbstractString, name::AbstractString)
     dst = joinpath(dir, name)
     cp(src, dst)
     return dst
-end
-
-function _remove_cache_file(cache_id::AbstractString)
-    path = MeasurementBrowser.project_cache_path(cache_id, MeasurementBrowser.RUO2_PROJECT)
-    rm(path; force=true)
 end
 
 function _same_dataframe(left, right)
@@ -38,12 +34,11 @@ function _cache_test_ui_state()
 end
 
 @testset "project HDF5 cache" begin
-    cache_id = MeasurementBrowser.new_project_cache_id()
-    @test occursin(r"^\d{8}_\d{6}$", cache_id)
-    @test basename(MeasurementBrowser.project_cache_path(
+    @test basename(MeasurementBrowser.project_cache_identity(
         "20260430_120001",
         MeasurementBrowser.RUO2_PROJECT,
-    )) == "20260430_120001.h5"
+        pwd(),
+    ).cache_path) == "20260430_120001.h5"
     mktempdir() do dir_a
         mktempdir() do dir_b
             id_a = MeasurementBrowser.project_cache_id(dir_a)
@@ -55,49 +50,60 @@ end
 
     mktempdir() do dir
         cache_id = "20260430_120005"
-        _remove_cache_file(cache_id)
+        cache_identity = MeasurementBrowser.project_cache_identity(
+            cache_id,
+            MeasurementBrowser.RUO2_PROJECT,
+            dir,
+        )
         try
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.breakdown)
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
 
             source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
-            identity = project_cache_identity(cache_id, MeasurementBrowser.RUO2_PROJECT, source.root_path)
+            cache_identity = MeasurementBrowser.project_cache_identity(
+                cache_id,
+                MeasurementBrowser.RUO2_PROJECT,
+                source.root_path,
+            )
+            rm(cache_identity.cache_path; force=true)
             progress_events = NamedTuple[]
-            snapshot = write_project_cache!(
-                identity,
+            snapshot = MeasurementBrowser.write_project_cache!(
+                cache_identity,
                 source;
-                mode=:build,
+                replace=true,
                 on_progress=progress -> push!(progress_events, progress),
             )
             @test snapshot.identity.cache_id == cache_id
-            @test snapshot.hierarchy.has_device_metadata == false
-            @test length(snapshot.hierarchy.all_measurements) == 3
-            @test snapshot.hierarchy.skipped_count == 0
-            @test snapshot.status.total_files == 2
-            @test snapshot.status.cached_files == 2
-            @test snapshot.status.fresh_files == 2
-            @test any(event -> event.phase == :cache_update, progress_events)
-            @test last(filter(event -> event.phase == :cache_update, progress_events)).processed_csv == 2
+            @test snapshot.source.hierarchy.has_device_metadata == false
+            @test length(snapshot.source.hierarchy.all_measurements) == 3
+            @test snapshot.source.hierarchy.skipped_count == 0
+            built_status = MeasurementBrowser.cache_status(snapshot, source)
+            @test built_status.total_files == 2
+            @test built_status.cached_files == 2
+            @test built_status.fresh_files == 2
 
             load_progress = NamedTuple[]
-            loaded = load_project_cache(identity; on_progress=progress -> push!(load_progress, progress))
+            loaded = MeasurementBrowser.load_project_cache(
+                cache_identity;
+                on_progress=progress -> push!(load_progress, progress),
+            )
             @test length(load_progress) == 1
             @test only(load_progress).phase == :cache_load
             @test only(load_progress).total_csv == 1
             @test only(load_progress).loaded_measurements == 3
-            @test sort([m.unique_id for m in loaded.hierarchy.all_measurements]) ==
-                sort([m.unique_id for m in snapshot.hierarchy.all_measurements])
+            @test sort([m.unique_id for m in loaded.source.hierarchy.all_measurements]) ==
+                sort([m.unique_id for m in snapshot.source.hierarchy.all_measurements])
 
             pund_measurement = only(filter(
                 m -> m.measurement_kind === :pund,
-                loaded.hierarchy.all_measurements,
+                loaded.source.hierarchy.all_measurements,
             ))
             source_data = only(read_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             ))
-            MeasurementBrowser._set_active_project_cache!(loaded.identity)
-            @test only(MeasurementBrowser._cached_measurements_data(
+            MeasurementBrowser.set_active_project_cache!(loaded)
+            @test only(MeasurementBrowser.cached_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             )) === nothing
@@ -106,13 +112,13 @@ end
                 [pund_measurement],
             ))
             @test _same_dataframe(loaded_data, source_data)
-            cached_data = only(MeasurementBrowser._cached_measurements_data(
+            cached_data = only(MeasurementBrowser.cached_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             ))
             @test cached_data !== nothing
             @test _same_dataframe(cached_data, source_data)
-            @test only(MeasurementBrowser._cached_measurements_data(
+            @test only(MeasurementBrowser.cached_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement];
                 processed=true,
@@ -129,13 +135,13 @@ end
                 "q_centered_pC",
                 "pulse_group_size",
             ])
-            @test only(MeasurementBrowser._cached_measurements_data(
+            @test only(MeasurementBrowser.cached_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement];
                 processed=true,
             )) !== nothing
             @test _same_dataframe(
-                only(MeasurementBrowser._cached_measurements_data(
+                only(MeasurementBrowser.cached_measurement_data(
                     MeasurementBrowser.RUO2_PROJECT,
                     [pund_measurement],
                 )),
@@ -150,7 +156,7 @@ end
 
             sleep(0.05)
             touch(pund_measurement.filepath)
-            @test only(MeasurementBrowser._cached_measurements_data(
+            @test only(MeasurementBrowser.cached_measurement_data(
                 MeasurementBrowser.RUO2_PROJECT,
                 [pund_measurement],
             )) === nothing
@@ -158,7 +164,7 @@ end
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.tlm)
 
             updated_source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
-            status = cache_status(loaded.identity, updated_source)
+            status = MeasurementBrowser.cache_status(loaded, updated_source)
             @test status.total_files == 2
             @test status.cached_files == 2
             @test status.fresh_files == 0
@@ -167,23 +173,20 @@ end
             @test status.deleted_files == 1
 
             update_progress = NamedTuple[]
-            updated = write_project_cache!(
+            updated = MeasurementBrowser.write_project_cache!(
                 loaded.identity,
                 updated_source;
-                mode=:update,
                 on_progress=progress -> push!(update_progress, progress),
             )
-            @test updated.status.total_files == 2
-            @test updated.status.cached_files == 2
-            @test updated.status.fresh_files == 2
-            @test updated.status.stale_files == 0
-            @test updated.status.new_files == 0
-            @test updated.status.deleted_files == 0
-            cache_update_events = filter(event -> event.phase == :cache_update, update_progress)
-            @test last(cache_update_events).processed_csv == 3
-            @test last(cache_update_events).total_csv == 3
+            updated_status = MeasurementBrowser.cache_status(updated, updated_source)
+            @test updated_status.total_files == 2
+            @test updated_status.cached_files == 2
+            @test updated_status.fresh_files == 2
+            @test updated_status.stale_files == 0
+            @test updated_status.new_files == 0
+            @test updated_status.deleted_files == 0
 
-            failed_source = SourceScan(
+            failed_source = MeasurementBrowser.SourceScan(
                 updated_source.root_path,
                 updated_source.project,
                 updated_source.files,
@@ -194,16 +197,16 @@ end
                     "synthetic analysis failure",
                 )],
             )
-            analysis_error_snapshot = write_project_cache!(
+            analysis_error_snapshot = MeasurementBrowser.write_project_cache!(
                 loaded.identity,
                 failed_source;
-                mode=:update,
             )
-            @test analysis_error_snapshot.status.error_files == 1
-            @test only(analysis_error_snapshot.errors).message == "synthetic analysis failure"
+            @test length(analysis_error_snapshot.analysis_errors) == 1
+            @test only(values(analysis_error_snapshot.analysis_errors)) ==
+                "synthetic analysis failure"
         finally
-            MeasurementBrowser._set_active_project_cache!(nothing)
-            _remove_cache_file(cache_id)
+            MeasurementBrowser.set_active_project_cache!(nothing)
+            rm(cache_identity.cache_path; force=true)
         end
     end
 
@@ -211,13 +214,13 @@ end
         mktempdir() do dir
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.tlm)
             source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
-            identity = project_cache_identity(
-                project_cache_id(dir),
+            identity = MeasurementBrowser.project_cache_identity(
+                MeasurementBrowser.project_cache_id(dir),
                 MeasurementBrowser.RUO2_PROJECT,
                 source.root_path,
             )
             try
-                write_project_cache!(identity, source; mode=:build)
+                MeasurementBrowser.write_project_cache!(identity, source; replace=true)
                 _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
 
                 ui_state = _cache_test_ui_state()
@@ -231,7 +234,7 @@ end
                     status = get(ui_state, :cache_status, nothing)
                     if saw_writing &&
                        get(ui_state, :cache_state, :idle) == :ready &&
-                       status isa ProjectCacheStatus &&
+                       status isa MeasurementBrowser.ProjectCacheStatus &&
                        status.cached_files == 2 &&
                        status.new_files == 0
                         break
@@ -243,7 +246,7 @@ end
                 @test saw_writing
                 @test get(ui_state, :source_scan_state, :idle) == :done
                 @test get(ui_state, :cache_state, :idle) == :ready
-                @test status isa ProjectCacheStatus
+                @test status isa MeasurementBrowser.ProjectCacheStatus
                 @test status.cached_files == 2
                 @test status.new_files == 0
             finally

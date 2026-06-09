@@ -12,8 +12,8 @@ end
         _copy_fixture(dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
 
         source = scan_source(dir)
-        @test source isa SourceScan
-        @test source.hierarchy isa MeasurementHierarchy
+        @test source isa MeasurementBrowser.SourceScan
+        @test source.hierarchy isa MeasurementBrowser.MeasurementHierarchy
         @test source.hierarchy.skipped_count == 0
 
         # Progress callback shape

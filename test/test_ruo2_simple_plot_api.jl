@@ -2,6 +2,14 @@ using MeasurementBrowser
 using DataFrames: nrow
 using Test
 
+const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
+const RuO2PUNDPlot = MeasurementBrowser.RuO2PUNDPlot
+const RuO2IVSweepPlot = MeasurementBrowser.RuO2IVSweepPlot
+const RuO2TLM4PointPlot = MeasurementBrowser.RuO2TLM4PointPlot
+const RuO2TLMAnalysisPlot = MeasurementBrowser.RuO2TLMAnalysisPlot
+const RuO2TLMTemperaturePlot = MeasurementBrowser.RuO2TLMTemperaturePlot
+const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
+
 @testset "RuO2 simple plot API" begin
     fixtures_dir = joinpath(@__DIR__, "fixtures", "RuO2")
     pund_path = joinpath(fixtures_dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")

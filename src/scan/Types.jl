@@ -6,6 +6,13 @@ struct FileFingerprint
     mtime_ns::Int64
 end
 
+"""Return true when two fingerprints describe the same source-file version."""
+function Base.:(==)(left::FileFingerprint, right::FileFingerprint)::Bool
+    return left.path == right.path &&
+        left.size_bytes == right.size_bytes &&
+        left.mtime_ns == right.mtime_ns
+end
+
 struct SourceFile
     unique_id::String
     filepath::String

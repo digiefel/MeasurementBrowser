@@ -3,6 +3,8 @@ using Test
 
 using MeasurementBrowser
 
+const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
+
 const _RUO2_FIXTURE_DIR = joinpath(@__DIR__, "fixtures", "RuO2")
 const _RUO2_BREAKDOWN_FIXTURE =
     "Break of oxide 15V [RuO2test_A9_VI_D1D2(1) ; 2025-10-01 16_27_53].csv"
@@ -60,7 +62,7 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
 
         for case in cases
             path = _ruo2_fixture_path(case.file)
-            source = index_source_file(path)
+            source = MeasurementBrowser.index_source_file(path)
             @test source.unique_id == path
             @test detect_kind(RUO2_PROJECT, basename(path)) === case.kind
             @test parse_device_info(RUO2_PROJECT, source).location == case.location
@@ -74,7 +76,7 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
 
     @testset "partial measurement labels" begin
         path = _ruo2_fixture_path(_RUO2_PUND_FIXTURE)
-        measurement = only(MeasurementBrowser.interpret_file(RUO2_PROJECT, index_source_file(path)))
+        measurement = only(MeasurementBrowser.interpret_file(RUO2_PROJECT, MeasurementBrowser.index_source_file(path)))
         @test isempty(measurement.stats)
         @test display_label(RUO2_PROJECT, measurement) isa String
     end

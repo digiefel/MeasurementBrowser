@@ -55,12 +55,12 @@ function _init_cache_state!(ui_state)
     ui_state[:cache_identity] = nothing
     ui_state[:cache_status] = nothing
     ui_state[:cache_source_checked] = false
-    ui_state[:cache_errors] = ProjectCacheFileError[]
+    ui_state[:cache_errors] = Pair{String,String}[]
     ui_state[:cache_seq] = 0
     ui_state[:active_cache_id] = 0
     ui_state[:cache_events] = nothing
     ui_state[:cache_cancel_token] = nothing
-    _set_active_project_cache!(nothing)
+    set_active_project_cache!(nothing)
 end
 
 function _init_tag_state!(ui_state)
@@ -680,27 +680,38 @@ function _apply_scan_snapshot!(ui_state, snapshot)
     _invalidate_figure_script_scan_cache!(ui_state)
 end
 
-function _apply_cache_snapshot!(ui_state, snapshot::ProjectCacheSnapshot)
+function _apply_cache_snapshot!(ui_state, index::ProjectCacheIndex)
+    identity = index.identity
+    hierarchy = index.source.hierarchy
     _apply_scan_snapshot!(ui_state, (
-        hierarchy=snapshot.hierarchy,
-        measurement_index=_build_measurement_index(snapshot.hierarchy.all_measurements),
-        device_metadata_keys=_device_metadata_keys(snapshot.hierarchy.all_measurements),
-        skipped_count=snapshot.hierarchy.skipped_count,
+        hierarchy,
+        measurement_index=_build_measurement_index(hierarchy.all_measurements),
+        device_metadata_keys=_device_metadata_keys(hierarchy.all_measurements),
+        skipped_count=hierarchy.skipped_count,
     ))
-    ui_state[:root_path] = snapshot.identity.root_path
-    ui_state[:project] = _project_by_name(snapshot.identity.project_name)
-    ui_state[:cache_id] = snapshot.identity.cache_id
-    ui_state[:cache_identity] = snapshot.identity
-    _set_active_project_cache!(snapshot.identity)
+    ui_state[:root_path] = identity.root_path
+    ui_state[:project] = index.source.project
+    ui_state[:cache_id] = identity.cache_id
+    ui_state[:cache_identity] = identity
+    set_active_project_cache!(index)
     source = get(ui_state, :source_scan_result, nothing)
-    if source isa SourceScan && source.root_path == snapshot.identity.root_path
-        ui_state[:cache_status] = cache_status(snapshot.identity, source)
+    if source isa SourceScan && source.root_path == identity.root_path
+        ui_state[:cache_status] = cache_status(index, source)
         ui_state[:cache_source_checked] = true
     else
-        ui_state[:cache_status] = snapshot.status
+        cached_files = length(index.files)
+        ui_state[:cache_status] = ProjectCacheStatus(
+            cached_files,
+            cached_files,
+            0,
+            0,
+            0,
+            0,
+            length(index.analysis_errors),
+        )
         ui_state[:cache_source_checked] = false
     end
-    ui_state[:cache_errors] = snapshot.errors
+    ui_state[:cache_errors] = sort!(collect(index.analysis_errors); by=first)
     ui_state[:cache_state] = :ready
     ui_state[:cache_error] = ""
     return nothing
@@ -721,9 +732,8 @@ function _apply_source_scan!(ui_state, source::SourceScan)
     if identity isa ProjectCacheIdentity && identity.root_path == source.root_path
         cache_state = get(ui_state, :cache_state, :idle)
         if cache_state == :ready
-            ui_state[:cache_status] = cache_status(identity, source)
+            ui_state[:cache_status] = cache_status(project_cache_index(identity), source)
             ui_state[:cache_source_checked] = true
-            _set_active_project_cache!(identity)
         elseif !isfile(identity.cache_path) || cache_state == :missing
             ui_state[:cache_status] = ProjectCacheStatus(
                 length(source.files),
@@ -739,7 +749,7 @@ function _apply_source_scan!(ui_state, source::SourceScan)
             ui_state[:cache_source_checked] = false
         end
     else
-        _set_active_project_cache!(nothing)
+        set_active_project_cache!(nothing)
     end
     return nothing
 end
@@ -903,11 +913,11 @@ function _launch_project_reload_job!(
     ui_state[:cache_progress] = _new_scan_progress()
     ui_state[:cache_id] = cache_id
     ui_state[:cache_identity] = identity
-    _set_active_project_cache!(nothing)
+    set_active_project_cache!(nothing)
     ui_state[:cache_state] = :loading
     ui_state[:cache_error] = ""
     ui_state[:cache_status] = nothing
-    ui_state[:cache_errors] = ProjectCacheFileError[]
+    ui_state[:cache_errors] = Pair{String,String}[]
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
@@ -930,7 +940,7 @@ function _launch_project_reload_job!(
         catch err
             if _is_job_cancelled(err)
                 put!(events, (kind=:canceled, cache_id=cache_id_num))
-            elseif err isa ProjectCacheMissingError || err isa ProjectCacheInvalidError
+            elseif err isa ProjectCacheError
                 put!(events, (
                     kind=:cache_missing,
                     cache_id=cache_id_num,
@@ -952,7 +962,8 @@ end
 function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
     identity = get(ui_state, :cache_identity, nothing)
     identity isa ProjectCacheIdentity || error("No project cache is bound to the current project")
-    project = _project_by_name(identity.project_name)
+    project = get(ui_state, :project, nothing)
+    project isa AbstractProject || error("No project is open")
     previous_cache_state = get(ui_state, :cache_state, :idle)
     _cancel_figure_script_job!(ui_state)
     _clear_plot_views!(ui_state)
@@ -1003,7 +1014,7 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
                 write_project_cache!(
                     identity,
                     source;
-                    mode=operation,
+                    replace=full_rebuild,
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
                         cache_id=cache_id_num,
@@ -1082,12 +1093,14 @@ function _poll_cache_events!(ui_state)
             _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :cache_result
             _apply_cache_snapshot!(ui_state, msg.snapshot)
-            get(msg, :persist, false) && _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
+            get(msg, :persist, false) &&
+                _persist_preferences!(ui_state; path=msg.snapshot.identity.root_path)
             _finalize_cache!(ui_state)
             _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :cache_missing
             identity = msg.identity
-            proj = _project_by_name(identity.project_name)
+            proj = get(ui_state, :project, nothing)
+            proj isa AbstractProject || error("No project is open")
             current_root = get(ui_state, :root_path, "")
             if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
                 _begin_scan!(ui_state, identity.root_path, proj, _has_device_metadata(identity.root_path))

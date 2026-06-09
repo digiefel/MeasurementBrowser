@@ -603,14 +603,14 @@ function _render_cache_controls!(ui_state; compact::Bool)
         !isempty(message) && ig.TextWrapped(message)
     end
 
-    cache_errors = get(ui_state, :cache_errors, ProjectCacheFileError[])
+    cache_errors = get(ui_state, :cache_errors, Pair{String,String}[])
     if !isempty(cache_errors)
         ig.Separator()
         ig.TextColored((1.0, 0.35, 0.35, 1.0), "File Errors")
         for (index, file_error) in enumerate(cache_errors)
             index > 20 && break
-            ig.TextWrapped(file_error.path)
-            ig.TextColored((1.0, 0.55, 0.35, 1.0), file_error.message)
+            ig.TextWrapped(first(file_error))
+            ig.TextColored((1.0, 0.55, 0.35, 1.0), last(file_error))
             index < min(length(cache_errors), 20) && ig.Separator()
         end
         length(cache_errors) > 20 && ig.TextDisabled("$(length(cache_errors) - 20) more file errors")

@@ -2,10 +2,13 @@ using MeasurementBrowser
 using Test
 using DataFrames: nrow
 
+const TASE_PROJECT = MeasurementBrowser.TASE_PROJECT
+const TASEFourTerminalIVPlot = MeasurementBrowser.TASEFourTerminalIVPlot
+
 @testset "TASE Analysis" begin
     fixture1 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv")
     fixture2 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv")
-    source1 = index_source_file(fixture1)
+    source1 = MeasurementBrowser.index_source_file(fixture1)
     measurements = [
         only(measurements_for_file(TASE_PROJECT, fixture1)),
         only(measurements_for_file(TASE_PROJECT, fixture2)),
@@ -14,14 +17,14 @@ using DataFrames: nrow
     @test parse_device_info(TASE_PROJECT, source1).location == measurements[1].device_info.location
 
     @testset "available analyses" begin
-        options = available_analyses(TASE_PROJECT, measurements)
+        options = MeasurementBrowser.available_analyses(TASE_PROJECT, measurements)
         @test length(options) == 2
         @test Set(opt.key for opt in options) == Set([:iv_trace_table, :iv_device_summary])
     end
 
     @testset "iv trace table" begin
-        result = run_analysis(TASE_PROJECT, :iv_trace_table, measurements)
-        @test result isa AnalysisResult
+        result = MeasurementBrowser.run_analysis(TASE_PROJECT, :iv_trace_table, measurements)
+        @test result isa MeasurementBrowser.AnalysisResult
         @test result.key == :iv_trace_table
         @test result.row_kind == :iv_point
         @test nrow(result.table) == 6
@@ -32,8 +35,8 @@ using DataFrames: nrow
     end
 
     @testset "iv device summary" begin
-        result = run_analysis(TASE_PROJECT, :iv_device_summary, measurements)
-        @test result isa AnalysisResult
+        result = MeasurementBrowser.run_analysis(TASE_PROJECT, :iv_device_summary, measurements)
+        @test result isa MeasurementBrowser.AnalysisResult
         @test result.key == :iv_device_summary
         @test result.row_kind == :device_measurement
         @test nrow(result.table) == 2
