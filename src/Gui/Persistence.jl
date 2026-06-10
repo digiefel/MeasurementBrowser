@@ -380,7 +380,7 @@ function _project_view_from_ui_state(ui_state)::Union{Nothing,PersistedProjectVi
 end
 
 function _set_plot_kind_from_name!(state, key::Symbol, name::AbstractString)::Nothing
-    kind = _plot_kind_named(name)
+    kind = _plot_kind_from_name(name)
     kind === nothing ? delete!(state, key) : (state[key] = kind)
     return nothing
 end

@@ -40,7 +40,7 @@ end
 #   process_measurement_data(::P, measurement, data) → DataFrame
 #   setup_plot(::P, plot_kind, measurements) → Figure
 #   plot_data!(::P, plot_kind, measurements, figure) → nothing
-#   debug_plot(::P, measurements, loaded; kwargs...) → Union{Figure,Nothing}
+#   debug_plot(::P, measurements, source_data; kwargs...) → Union{Figure,Nothing}
 #   available_analyses(::P, measurements) → Vector{NamedTuple}
 #   run_analysis(::P, key, measurements; kwargs...) → Union{AnalysisResult,Nothing}
 #   draw_analysis_view(result, view) → Union{Figure,Nothing}
@@ -228,31 +228,6 @@ function plot_kinds()::Vector{Type{<:PlotKind}}
     kinds = _append_plot_kinds!(Type{<:PlotKind}[], PlotKind)
     sort!(kinds; by=kind -> String(nameof(kind)))
     return kinds
-end
-
-function _plot_job_data(
-    project::AbstractProject,
-    plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo};
-    debug::Bool=false,
-)
-    return nothing
-end
-
-function _plot_job_figure(
-    project::AbstractProject,
-    plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
-    data;
-    debug::Bool=false,
-    device_params::Vector{Dict{Symbol,Any}}=Dict{Symbol,Any}[],
-)
-    if debug
-        return debug_plot(project, measurements, data; device_params, plot_kind)
-    end
-    fig = setup_plot(project, plot_kind, measurements)
-    plot_data!(project, plot_kind, measurements, fig)
-    return fig
 end
 
 debug_plot(

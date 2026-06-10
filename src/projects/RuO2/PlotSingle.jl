@@ -51,13 +51,18 @@ function load_source_data(
     error("RuO2 source data API is not implemented for $kind")
 end
 
-# this should be moved to PUNDAnalysis or similar once PlotKind is in
-function debug_plot(::RuO2Project, measurements::Vector{MeasurementInfo}, loaded; kwargs...)
+function debug_plot(
+    ::RuO2Project,
+    measurements::Vector{MeasurementInfo},
+    source_data::Vector{DataFrame};
+    kwargs...,
+)
     measurement = only(measurements)
     measurement.measurement_kind in (:pund, :wakeup_pund) ||
         error("RuO2 debug plots are currently only implemented for PUND measurements")
 
-    df = loaded.df
+    df = only(source_data)
+    loaded = _ruo2_plot_data(measurement, df; debug=true)
     time_us = df.time .* 1e6
     current_uA = df.current .* 1e6
     voltage = df.voltage
