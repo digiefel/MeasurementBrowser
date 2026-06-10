@@ -3,13 +3,17 @@ module Workspace
 using DataFrames: DataFrame
 
 import ..Cache:
+    ProjectCacheError,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
+    cache_status,
     cached_measurement_data,
+    load_project_cache,
     project_cache_id,
     project_cache_identity,
-    write_measurement_data_cache!
+    write_measurement_data_cache!,
+    write_project_cache!
 import ..MeasurementIndex:
     FileFingerprint,
     MeasurementHierarchy,
@@ -19,11 +23,16 @@ import ..MeasurementIndex:
     check_cancel,
     file_fingerprint,
     has_device_metadata,
-    index_source_file
+    index_source_file,
+    insert_measurement!,
+    is_job_cancelled,
+    scan_source,
+    with_cancel
 import ..Project:
     AbstractProject,
     load_source_data,
-    process_measurement_data
+    process_measurement_data,
+    project_name
 
 """
 Progress reported by one workspace job.
@@ -144,6 +153,7 @@ function Workspace(
     )
 end
 
+include("Workspace/Operations.jl")
 include("DataAccess.jl")
 
 end

@@ -242,9 +242,8 @@ end
                 saw_writing = false
                 deadline = time() + 10
                 while time() < deadline
-                    MeasurementBrowser._poll_cache_events!(ui_state)
-                    MeasurementBrowser._poll_source_scan_events!(ui_state)
                     workspace = ui_state[:workspace]
+                    MeasurementBrowser.Workspace.poll_workspace!(workspace)
                     saw_writing |= workspace.cache_job.state == :writing
                     status = workspace.cache.status
                     if saw_writing &&
@@ -265,6 +264,7 @@ end
                 @test status isa MeasurementBrowser.ProjectCacheStatus
                 @test status.cached_files == 2
                 @test status.new_files == 0
+                MeasurementBrowser.close_workspace!(workspace)
             finally
                 rm(identity.cache_path; force=true)
             end

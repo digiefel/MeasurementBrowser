@@ -484,16 +484,17 @@ function render_menu_bar(ui_state)
 
             workspace = get(ui_state, :workspace, nothing)
             has_root = workspace isa Workspace.Workspace
-            source_rescan_running = _source_scan_running(ui_state)
+            source_rescan_running =
+                has_root && source_scan_running(workspace)
             rescan_label = source_rescan_running ? "Cancel Rescan" : "Rescan"
             can_rescan = has_root
             !can_rescan && ig.BeginDisabled()
             if ig.MenuItem(rescan_label)
                 if source_rescan_running
-                    _request_source_scan_cancel!(ui_state)
+                    cancel_scan!(workspace)
                 else
                     @info "Rescanning path: $(workspace.root_path)"
-                    _launch_source_scan_job!(ui_state)
+                    scan_source!(workspace)
                 end
             end
             !can_rescan && ig.EndDisabled()
@@ -551,6 +552,9 @@ function render_menu_bar(ui_state)
     end
 end
 
+"""
+Draw source and cache progress, differences, errors, and controls.
+"""
 function _render_cache_controls!(ui_state; compact::Bool)
     workspace = get(ui_state, :workspace, nothing)
     identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
@@ -559,7 +563,8 @@ function _render_cache_controls!(ui_state; compact::Bool)
         workspace.cache_job.state :
         :idle
     model = _cache_toolbar_model(ui_state)
-    running = _cache_action_blocked(ui_state)
+    running = workspace isa Workspace.Workspace &&
+        cache_work_running(workspace)
     activity = _cache_activity_model(ui_state)
 
     if compact
@@ -653,36 +658,35 @@ function _render_cache_controls!(ui_state; compact::Bool)
         workspace.index.source isa SourceScan &&
         cache_state != :error
     can_scan = workspace isa Workspace.Workspace
-    can_press_scan =
-        can_scan && (!_cache_action_blocked(ui_state) || _source_scan_running(ui_state))
+    scan_running = can_scan && source_scan_running(workspace)
 
-    !can_press_scan && ig.BeginDisabled()
-    scan_label = _source_scan_running(ui_state) ? "Cancel Scan" : "Scan Source"
+    !can_scan && ig.BeginDisabled()
+    scan_label = scan_running ? "Cancel Scan" : "Scan Source"
     if ig.Button(scan_label, (-1, 0))
-        if _source_scan_running(ui_state)
-            _request_source_scan_cancel!(ui_state)
+        if scan_running
+            cancel_scan!(workspace)
         else
-            _launch_source_scan_job!(ui_state)
+            scan_source!(workspace)
         end
     end
-    !can_press_scan && ig.EndDisabled()
+    !can_scan && ig.EndDisabled()
 
     (!can_update || running) && ig.BeginDisabled()
     if ig.Button("Update Cache", (-1, 0))
-        _queue_cache_update!(ui_state)
+        update_cache!(workspace)
     end
     (!can_update || running) && ig.EndDisabled()
 
     (!can_build || running) && ig.BeginDisabled()
     build_label = cache_state == :missing ? "Build Cache" : "Rebuild Cache"
     if ig.Button(build_label, (-1, 0))
-        _queue_cache_update!(ui_state; full_rebuild=true)
+        update_cache!(workspace; rebuild=true)
     end
     (!can_build || running) && ig.EndDisabled()
 
     if running
         if ig.Button(activity.cancel_label, (-1, 0))
-            _request_cache_cancel!(ui_state)
+            cancel_cache!(workspace)
         end
     end
 end
@@ -772,6 +776,9 @@ function _window_close_requested()::Bool
     return GLFW.WindowShouldClose(window)
 end
 
+"""
+Initialize browser state and run the CImGui render loop.
+"""
 function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; engine=nothing, spawn=1)
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
@@ -816,8 +823,11 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
             return :imgui_exit_loop
         end
         ui_state[:_frame] += 1
-        _poll_cache_events!(ui_state)
-        _poll_source_scan_events!(ui_state)
+        workspace = get(ui_state, :workspace, nothing)
+        if workspace isa Workspace.Workspace && poll_workspace!(workspace)
+            _refresh_plot_measurement_refs!(ui_state)
+            _invalidate_figure_script_scan_cache!(ui_state)
+        end
         _poll_figure_script_job_events!(ui_state)
         if first_frame[] && !haskey(ui_state, :_gl_info)
             ui_state[:_gl_info] = _collect_gl_info!()
@@ -828,7 +838,7 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
             setup_layout[] = false
             _setup_docking_layout!(dockspace_id)
         end
-        if !_scan_running(ui_state)
+        if !(workspace isa Workspace.Workspace && source_scan_running(workspace))
             _time!(ui_state, :plot_warmup) do
                 _ensure_plot_runtime_warmed!(ui_state)
             end

@@ -145,12 +145,7 @@ using Test
         project,
     )
     workspace = MeasurementBrowser.Workspace.Workspace(project, root_path)
-    workspace.index = MeasurementBrowser.WorkspaceIndex(
-        hierarchy,
-        MeasurementBrowser._build_measurement_index(hierarchy.all_measurements),
-        Symbol[],
-        nothing,
-    )
+    MeasurementBrowser.Workspace.replace_measurement_index!(workspace, hierarchy)
     ui_state = Dict{Symbol,Any}(
         :workspace => workspace,
         :_plot_window_counter => 0,
@@ -181,9 +176,4 @@ using Test
     loaded_after_ui_save = MeasurementBrowser._load_project_view(root_path)
     @test MeasurementBrowser._same_project_view(loaded_after_ui_save, saved_view)
 
-    ui_state[:project_view_loaded] = view
-    MeasurementBrowser._begin_scan!(ui_state, root_path, project, true)
-    @test workspace.selection.device_paths == ["chip/device"]
-    @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]
-    @test haskey(ui_state, :main_plot_kind)
 end

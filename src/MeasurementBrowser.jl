@@ -82,7 +82,18 @@ using .Workspace:
     WorkspaceJob,
     WorkspaceProgress,
     WorkspaceSelection,
-    read_measurement_data
+    cache_work_running,
+    cancel_cache!,
+    cancel_scan!,
+    close_workspace!,
+    open_workspace,
+    poll_workspace!,
+    read_measurement_data,
+    scan_source!,
+    select_measurements!,
+    source_scan_running,
+    track_task!,
+    update_cache!
 
 include("Visualization.jl")
 using .Visualization: PlotKind, plot_kinds
@@ -106,5 +117,6 @@ export measurements_for_file
 export load_source_data, read_measurement_data, process_measurement_data, setup_plot, plot_data!
 export debug_plot
 export project_name, project_description
+export open_workspace, close_workspace!, select_measurements!
 
 end # module MeasurementBrowser

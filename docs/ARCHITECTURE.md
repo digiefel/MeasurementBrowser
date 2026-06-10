@@ -89,6 +89,10 @@ measurements, hierarchy construction, and filesystem scanning. `Cache` owns gene
 `Visualization` defines the shared plotting operations used by projects and the browser.
 `MeasurementBrowser` exports the small project-facing API while keeping these modules internal.
 
+`open_workspace(project, root_path)` creates that owner and immediately starts cache loading and
+source scanning. Project methods may receive the workspace to request measurement data, but project
+code does not manage its cache, jobs, or browser state.
+
 ## On-disk metadata
 
 All metadata lives at the **source root** alongside the CSVs (not inside the repo). Lean, hand-editable text. See [storage](storage.md) for formats.

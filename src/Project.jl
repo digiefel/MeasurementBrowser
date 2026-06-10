@@ -6,7 +6,8 @@ using DataFrames: DataFrame
 Base type implemented by measurement projects.
 
 Project values define source interpretation, data processing, and presentation. Package-owned
-workspace, cache, job, and browser state does not belong in project implementations.
+cache, job, and browser state does not belong in project implementations. A project method may
+receive a workspace when it needs package-managed measurement data.
 """
 abstract type AbstractProject end
 

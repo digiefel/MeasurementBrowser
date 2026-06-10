@@ -40,15 +40,6 @@ function _sanitize_figure_script_output_dir(value::Any)::String
     return String(strip(String(value)))
 end
 
-function _sanitize_cache_id(value::Any)::String
-    value isa AbstractString || return ""
-    stripped = strip(String(value))
-    isempty(stripped) && return ""
-    occursin(r"^[A-Za-z0-9_.-]+$", stripped) ||
-        error("Invalid cache id '$stripped'; expected letters, numbers, '.', '_' or '-'")
-    return stripped
-end
-
 function _parse_recent_projects(prefs::Dict{String,Any})::Vector{Dict{String,String}}
     recents = Dict{String,String}[]
     raw = get(prefs, "recent_projects", Any[])
@@ -63,12 +54,10 @@ function _parse_recent_projects(prefs::Dict{String,Any})::Vector{Dict{String,Str
         pref = get(entry, "project_preference", "auto")
         pref = pref isa AbstractString ? pref : "auto"
         figure_script_output_dir = _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
-        cache_id = _sanitize_cache_id(get(entry, "cache_id", ""))
         push!(recents, Dict{String,String}(
             "path" => _normalize_project_path(path),
             "project_preference" => _sanitize_project_preference(pref),
             "figure_script_output_dir" => figure_script_output_dir,
-            "cache_id" => cache_id,
         ))
     end
 
@@ -80,7 +69,6 @@ function _update_recent_projects(
     path::AbstractString,
     pref::AbstractString,
     figure_script_output_dir::AbstractString,
-    cache_id::AbstractString,
 )::Vector{Dict{String,String}}
     norm_path = _normalize_project_path(path)
     filter!(entry -> get(entry, "path", "") != norm_path, recents)
@@ -88,7 +76,6 @@ function _update_recent_projects(
         "path" => norm_path,
         "project_preference" => String(pref),
         "figure_script_output_dir" => _sanitize_figure_script_output_dir(figure_script_output_dir),
-        "cache_id" => _sanitize_cache_id(cache_id),
     ))
     length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
     return recents
@@ -110,11 +97,12 @@ function _persist_preferences!(
 
     recents = _parse_recent_projects(prefs)
     if path !== nothing && !isempty(path)
-        workspace = get(ui_state, :workspace, nothing)
-        cache_id = workspace isa Workspace.Workspace ?
-            workspace.cache.identity.cache_id :
-            ""
-        _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state), cache_id)
+        _update_recent_projects(
+            recents,
+            path,
+            pref,
+            _current_figure_script_output_dir(ui_state),
+        )
         prefs["recent_projects"] = recents
     end
 
@@ -145,26 +133,6 @@ function _figure_script_output_dir_for_path(ui_state, path::String)::String
     entry = _recent_project_entry_for_path(ui_state, path)
     entry === nothing && return ""
     return _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
-end
-
-function _cache_id_for_path!(ui_state, path::String)::String
-    cache_id = project_cache_id(path)
-    pref = _project_preference_for_path(ui_state, path)
-    recents = get!(ui_state, :recent_projects) do
-        Dict{String,String}[]
-    end
-    _update_recent_projects(
-        recents,
-        path,
-        pref,
-        _figure_script_output_dir_for_path(ui_state, path),
-        cache_id,
-    )
-    prefs = _load_prefs()
-    prefs["recent_projects"] = recents
-    prefs["project"] = pref
-    _save_prefs(prefs)
-    return cache_id
 end
 
 function _persist_current_project_preferences!(ui_state)::Nothing
