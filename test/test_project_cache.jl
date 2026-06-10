@@ -59,7 +59,10 @@ end
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.breakdown)
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
 
-            source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
+            source = MeasurementBrowser.scan_source(
+                dir;
+                project=MeasurementBrowser.RUO2_PROJECT,
+            )
             cache_identity = MeasurementBrowser.project_cache_identity(
                 cache_id,
                 MeasurementBrowser.RUO2_PROJECT,
@@ -163,7 +166,10 @@ end
             rm(joinpath(dir, _CACHE_FIXTURES.breakdown))
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.tlm)
 
-            updated_source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
+            updated_source = MeasurementBrowser.scan_source(
+                dir;
+                project=MeasurementBrowser.RUO2_PROJECT,
+            )
             status = MeasurementBrowser.cache_status(loaded, updated_source)
             @test status.total_files == 2
             @test status.cached_files == 2
@@ -213,7 +219,10 @@ end
     @testset "project open updates stale cache" begin
         mktempdir() do dir
             _copy_cache_fixture!(dir, _CACHE_FIXTURES.tlm)
-            source = scan_source(dir; project=MeasurementBrowser.RUO2_PROJECT)
+            source = MeasurementBrowser.scan_source(
+                dir;
+                project=MeasurementBrowser.RUO2_PROJECT,
+            )
             identity = MeasurementBrowser.project_cache_identity(
                 MeasurementBrowser.project_cache_id(dir),
                 MeasurementBrowser.RUO2_PROJECT,

@@ -1,5 +1,6 @@
-using Dates
-
+"""
+Fingerprint used to decide whether a physical source file has changed.
+"""
 struct FileFingerprint
     path::String
     size_bytes::Int64
@@ -13,6 +14,9 @@ function Base.:(==)(left::FileFingerprint, right::FileFingerprint)::Bool
         left.mtime_ns == right.mtime_ns
 end
 
+"""
+One physical source file and the logical measurements interpreted from it.
+"""
 struct SourceFile
     unique_id::String
     filepath::String
@@ -20,10 +24,14 @@ struct SourceFile
     timestamp::Union{DateTime,Nothing}
     header_summary::Dict{String,String}
     fingerprint::FileFingerprint
-    measurements::Vector
+    measurements::Vector{MeasurementInfo}
 end
 
-function SourceFile(file::SourceFile, measurements::Vector)
+"""Copy indexed file metadata and attach its interpreted measurements."""
+function SourceFile(
+    file::SourceFile,
+    measurements::Vector{MeasurementInfo},
+)::SourceFile
     return SourceFile(
         file.unique_id,
         file.filepath,

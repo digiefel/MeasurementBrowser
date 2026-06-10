@@ -1,5 +1,3 @@
-using DataFrames
-
 """
 Project-implemented reader for one physical source file.
 
@@ -33,7 +31,7 @@ function read_measurement_data(
     missing_data = DataFrame[]
     source_files = Dict{String,SourceFile}()
     for (index, measurement) in pairs(measurements)
-        _check_cancel()
+        check_cancel()
         if cached[index] === nothing
             source_file = get!(source_files, measurement.filepath) do
                 index_source_file(measurement.filepath)
@@ -74,7 +72,7 @@ function process_measurement_data(
     processed_data = DataFrame[]
     sizehint!(processed_data, length(missing))
     for (position, index) in pairs(missing)
-        _check_cancel()
+        check_cancel()
         data = process_measurement_data(
             project,
             measurements[index],
@@ -93,17 +91,4 @@ function process_measurement_data(
         processed=true,
     )
     return result
-end
-
-"""
-Project-implemented conversion from direct measurement data to processed measurement data.
-
-The default returns `data` unchanged.
-"""
-function process_measurement_data(
-    ::AbstractProject,
-    ::MeasurementInfo,
-    data::DataFrame,
-)::DataFrame
-    return data
 end

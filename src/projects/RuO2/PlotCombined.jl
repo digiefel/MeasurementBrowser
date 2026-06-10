@@ -146,14 +146,14 @@ function _ruo2_tlm_temperature_analysis(entries::Vector{NamedTuple})::Union{Noth
                         oxygen_percent=Float64[], oxygen_flow_sccm=Float64[])
     by_site = Dict{String,Vector{NamedTuple}}()
     for entry in entries
-        _check_cancel()
+        check_cancel()
         push!(get!(by_site, entry.site, NamedTuple[]), entry)
     end
     for (site, vec) in by_site
-        _check_cancel()
+        check_cancel()
         temps = unique([entry.tempK for entry in vec])
         for temp in temps
-            _check_cancel()
+            check_cancel()
             subset = filter(entry -> entry.tempK == temp, vec)
             files_data_params = [(entry.path, entry.df, entry.params) for entry in subset]
             combined_df = analyze_tlm_combined(files_data_params)
@@ -346,7 +346,7 @@ function _ruo2_pund_fatigue_analysis(entries::Vector{NamedTuple})::NamedTuple
         rep_count=Int[],
     )
     for trace in traces
-        _check_cancel()
+        check_cancel()
         push!(traces_df, (
             float(trace.cycles),
             collect(trace.x),
@@ -362,7 +362,7 @@ function _ruo2_pund_fatigue_analysis(entries::Vector{NamedTuple})::NamedTuple
         rep_count=Int[],
     )
     for point in pr_points
-        _check_cancel()
+        check_cancel()
         push!(pr_df, (
             float(point.cycles),
             float(point.Pr),

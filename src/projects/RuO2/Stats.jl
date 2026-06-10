@@ -39,7 +39,7 @@ function compute_and_add_measurement_stats!(
         for measurement in device_measurements
             kind = measurement.measurement_kind
             _ruo2_needs_pund_stats(measurement) || continue
-            _check_cancel()
+            check_cancel()
 
             params = measurement.parameters
             stats = measurement.stats

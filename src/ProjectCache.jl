@@ -4,7 +4,7 @@ using Serialization
 using DataFrames: DataFrame
 
 const PROJECT_CACHE_COMPRESSION = 3
-const PROJECT_CACHE_SCHEMA_VERSION = 3
+const PROJECT_CACHE_SCHEMA_VERSION = 4
 const PROJECT_CACHE_INDEX_DATASET = "index"
 const PROJECT_CACHE_LOCK = ReentrantLock()
 
@@ -285,7 +285,7 @@ function write_project_cache!(
             end
         end
 
-        _check_cancel()
+        check_cancel()
         loaded_measurements = sum(
             length(file.measurements) for file in values(new_index.files)
         )
@@ -298,7 +298,7 @@ function write_project_cache!(
             new_index;
             compress=false,
         )
-        _emit_progress(
+        emit_progress(
             on_progress;
             phase=:cache_finalize,
             total_csv=1,
@@ -320,7 +320,7 @@ function load_project_cache(
     on_progress::Union{Nothing,Function}=nothing,
 )::ProjectCacheIndex
     index = project_cache_index(identity)
-    _emit_progress(
+    emit_progress(
         on_progress;
         phase=:cache_load,
         total_csv=1,
@@ -373,7 +373,7 @@ function cached_measurement_data(
         haskey(h5, group_name) || return data
         group = h5[group_name]
         for (position, measurement) in pairs(measurements)
-            _check_cancel()
+            check_cancel()
             valid_cached_source_file(index, measurement, fingerprints) === nothing && continue
             file_key = cache_object_key(measurement.filepath)
             haskey(group, file_key) || continue
@@ -419,7 +419,7 @@ function write_measurement_data_cache!(
     with_project_cache_file(identity, "r+") do h5
         group = haskey(h5, group_name) ? h5[group_name] : create_group(h5, group_name)
         for (measurement, value) in zip(measurements, data)
-            _check_cancel()
+            check_cancel()
             valid_cached_source_file(index, measurement, fingerprints) === nothing && continue
             file_key = cache_object_key(measurement.filepath)
             file_group = haskey(group, file_key) ? group[file_key] : create_group(group, file_key)

@@ -386,11 +386,11 @@ function _load_measurements_from_source_files(
     source_files::Vector{String},
 )
     source_files = _normalize_source_files(root_path, source_files)
-    meta = _load_scan_metadata(String(root_path))
+    meta = load_scan_metadata(String(root_path))
     measurements = MeasurementInfo[]
     for source_file in source_files
         indexed = index_source_file(source_file)
-        _check_cancel()
+        check_cancel()
         items = interpret_measurements(project, indexed, meta)
         isempty(items) && throw(FigureScriptResolutionError(
             "Measurement source file '$source_file' did not produce any measurements for project $(project_name(project))",

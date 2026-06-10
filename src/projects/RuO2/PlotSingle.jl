@@ -27,7 +27,7 @@ function load_source_data(
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
 )::DataFrame
-    _check_cancel()
+    check_cancel()
     kind = measurement === nothing ? detect_kind(RUO2_PROJECT, source_file.filename) : measurement.measurement_kind
     if kind === :pund || kind === :pn
         if is_pund_fatigue_file(source_file.filepath)

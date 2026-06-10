@@ -1,4 +1,10 @@
-function _read_csv_header_summary(path::AbstractString; max_lines::Int=50)
+"""
+Read the small comment/header section used while indexing a CSV source file.
+"""
+function read_csv_header_summary(
+    path::AbstractString;
+    max_lines::Int=50,
+)::Dict{String,String}
     summary = Dict{String,String}()
     open(path, "r") do io
         line_count = 0
@@ -24,13 +30,15 @@ function _read_csv_header_summary(path::AbstractString; max_lines::Int=50)
     return summary
 end
 
-function file_fingerprint(path::AbstractString)
+"""Read the current fingerprint of one physical source file."""
+function file_fingerprint(path::AbstractString)::FileFingerprint
     normalized = normpath(abspath(expanduser(String(path))))
     stat_info = stat(normalized)
     return FileFingerprint(normalized, Int64(stat_info.size), Int64(stat_info.mtime * 1_000_000_000))
 end
 
-function index_source_file(path::AbstractString)
+"""Index one physical source file without reading its measurement data."""
+function index_source_file(path::AbstractString)::SourceFile
     normalized = normpath(abspath(expanduser(String(path))))
     filename = basename(normalized)
     return SourceFile(
@@ -38,9 +46,9 @@ function index_source_file(path::AbstractString)
         normalized,
         filename,
         parse_timestamp(filename),
-        _read_csv_header_summary(normalized),
+        read_csv_header_summary(normalized),
         file_fingerprint(normalized),
-        [],
+        MeasurementInfo[],
     )
 end
 
@@ -49,13 +57,14 @@ function is_source_filename(name::AbstractString)::Bool
     return endswith(lowercase(name), ".csv") && !startswith(name, ".")
 end
 
+"""Visit every visible CSV source file below a root."""
 function walk_source_files(
     root_path::AbstractString;
     on_file::Function,
-)
+)::Nothing
     for (root, _, names) in walkdir(root_path)
         for name in names
-            _check_cancel()
+            check_cancel()
             is_source_filename(name) || continue
             on_file(index_source_file(joinpath(root, name)))
         end
@@ -63,10 +72,11 @@ function walk_source_files(
     return nothing
 end
 
+"""Collect every indexed source file below a root."""
 function collect_source_files(
     root_path::AbstractString;
     on_file::Union{Nothing,Function}=nothing,
-)
+)::Vector{SourceFile}
     source_files = SourceFile[]
     walk_source_files(root_path; on_file=file -> begin
         push!(source_files, file)

@@ -54,7 +54,7 @@ end
 function _tase_iv_trace_table_result(measurements::Vector{MeasurementInfo})
     rows = NamedTuple[]
     for meas in measurements
-        _check_cancel()
+        check_cancel()
         chip, facet, device_type, device_id = _tase_measurement_parts(meas)
         num_wires, wire_diameter_nm = _tase_wire_layout(device_id)
         df = read_tlm_4p(basename(meas.filepath), dirname(meas.filepath))
@@ -93,7 +93,7 @@ end
 function _tase_iv_device_summary_result(measurements::Vector{MeasurementInfo})
     rows = NamedTuple[]
     for meas in measurements
-        _check_cancel()
+        check_cancel()
         chip, facet, device_type, device_id = _tase_measurement_parts(meas)
         num_wires, wire_diameter_nm = _tase_wire_layout(device_id)
         df = read_tlm_4p(basename(meas.filepath), dirname(meas.filepath))

@@ -29,7 +29,7 @@ end
 
 function _sanitize_project_preference(pref::AbstractString)::String
     pref == "auto" && return "auto"
-    for project in KNOWN_PROJECTS
+    for project in PROJECTS
         project_name(project) == pref && return String(pref)
     end
     return "auto"

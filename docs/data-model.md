@@ -1,6 +1,7 @@
 # Data Model
 
-> Types and identity for measurements and the hierarchy tree. Defined in [src/DeviceParser.jl](../src/DeviceParser.jl).
+`MeasurementIndex` defines physical source files, logical measurements, and the device hierarchy.
+Projects interpret indexed source files; package code stores and presents the resulting measurements.
 
 ## Core types
 
@@ -11,15 +12,25 @@ struct DeviceInfo
 end
 
 struct MeasurementInfo
-    id::String                         # filesystem-stable ID
+    unique_id::String                  # stable identity for one logical measurement
     filename::String
     filepath::String
     clean_title::String
-    measurement_kind::Symbol           # :pund, :iv, :breakdown, :tlm4p, :wakeup, :cvsweep
+    measurement_kind::Symbol
     timestamp::Union{DateTime,Nothing}
     device_info::DeviceInfo
-    parameters::Dict{Symbol,Any}       # parsed from filename (voltage_V, frequency_Hz, …)
-    wakeup_pulse_count::Union{Int,Nothing}
+    parameters::Dict{Symbol,Any}       # acquisition settings known while interpreting the file
+    stats::Dict{Symbol,Any}            # values computed after the required context is available
+end
+
+struct SourceFile
+    unique_id::String
+    filepath::String
+    filename::String
+    timestamp::Union{DateTime,Nothing}
+    header_summary::Dict{String,String}
+    fingerprint::FileFingerprint
+    measurements::Vector{MeasurementInfo}
 end
 
 struct HierarchyNode
@@ -53,14 +64,17 @@ Depth is **not** uniform. One branch may be `RuO2test/A9/VI/D1` (4 segments) whi
 Two equivalent representations:
 
 - **Tuple** (used for `index` lookup): `("RuO2test", "A9", "VI", "D1")`.
-- **String** (used in on-disk files): `"RuO2test/A9/VI/D1"` — built by `device_path_key(location)` ([DeviceParser.jl:65](../src/DeviceParser.jl)).
-- **Round-trip**: `device_path_tuple("RuO2test/A9/VI/D1")` parses + validates ([DeviceParser.jl:68](../src/DeviceParser.jl)).
+- **String** (used in on-disk files): `"RuO2test/A9/VI/D1"` — built by `device_path_key(location)`.
+- **Round-trip**: `device_path_tuple("RuO2test/A9/VI/D1")` parses and validates the string form.
 
 The slash-joined string is the canonical identifier in any on-disk metadata file. New metadata systems should reuse it.
 
 ## Path-prefix matching
 
-`device_info.txt` rows are keyed by path; metadata applies to **all descendants whose location is prefixed by that key**, with longer (more specific) keys overriding shorter ones. See [scanning.md](scanning.md) for the merge logic.
+`device_info.txt` rows are keyed by path; metadata applies to **all descendants whose location is prefixed by that key**, with longer (more specific) keys overriding shorter ones.
+
+The on-disk format is documented in [storage.md](storage.md). The scan applies matching parameters
+before measurements enter the hierarchy.
 
 Implication: hierarchical metadata is stored once at the highest applicable level. Inheritance is "lookup-time" — children don't physically carry parent metadata in their structs.
 
@@ -71,19 +85,7 @@ Some single CSVs become multiple `MeasurementInfo` entries during scan:
 - **Breakdown files** → `expand_multi_device` splits multi-device sweeps into per-device entries.
 - **PUND fatigue files** → `expand_pund_fatigue` creates one virtual `:pund` per cycle, storing `parameters[:fatigue_cycle]`.
 
-Virtual measurements share a filepath but get distinct `id`s.
+Virtual measurements share a filepath but have distinct `unique_id` values.
 
-## Detection ordering matters
-
-`detect_measurement_kind` ([DeviceParser.jl](../src/DeviceParser.jl)) checks filename patterns in order. Specific patterns must come **before** general ones — `pund_fatigue` before `pund`, etc. Adding a new kind: insert it at the correct precedence.
-
-## Where to look
-
-| Concern | File |
-|---|---|
-| Type definitions | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 58–106 |
-| Hierarchy construction | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 283–344 |
-| Path key helpers | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 65–74 |
-| `scan_source` | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 630–676 |
-| Metadata merge (path-prefix) | [src/DeviceParser.jl](../src/DeviceParser.jl) lines 477–493 |
-| Fixtures showing tree shape | [test/test_scan_directory_progress.jl](../test/test_scan_directory_progress.jl) |
+Measurement kinds and filename rules belong to project implementations. The package stores the
+resulting `Symbol` without assigning project-specific meaning to it.

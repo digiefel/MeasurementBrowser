@@ -691,7 +691,7 @@ function render_project_window(ui_state)
         pref = get(ui_state, :project_preference, "auto")
         changed = false
 
-        default_project = something(_default_project[])
+        default_project = something(DEFAULT_PROJECT[])
         default_label = "Default ($(project_name(default_project)))"
 
         if ig.RadioButton(default_label, pref == "auto")
@@ -701,7 +701,7 @@ function render_project_window(ui_state)
         ig.SameLine()
         _helpmarker("Use the default project without trying to infer the project from the files in the folder.")
 
-        for p in KNOWN_PROJECTS
+        for p in PROJECTS
             pn = project_name(p)
             if ig.RadioButton(pn, pref == pn)
                 ui_state[:project_preference] = pn

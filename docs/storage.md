@@ -14,7 +14,10 @@ RuO2test/A9/VI/D1,10.0,7.0,exact match wins,true
 RuO2test_A10/VI/25um/D1,25.0,7.0,nested scope,
 ```
 
-**Path-fragment matching** ([DeviceParser.jl](../src/DeviceParser.jl)): a row applies when its slash-separated path exactly matches a contiguous fragment of the parsed device location. Longer matches are merged later, so more specific rows override shorter ones. So `D1` applies to every device path containing a `D1` segment, while `RuO2test/A9/VI/D1` applies to that exact sequence.
+**Path-fragment matching**: a row applies when its slash-separated path exactly matches a
+contiguous fragment of the parsed device location. Longer matches are merged later, so more specific
+rows override shorter ones. `D1` applies to every device path containing a `D1` segment, while
+`RuO2test/A9/VI/D1` applies to that exact sequence.
 
 Field types are inferred (bool / int / float / date / string).
 
@@ -67,7 +70,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 | File | Concern | Read by | Written by |
 |---|---|---|---|
-| `device_info.txt` | Per-path parameters | `_load_scan_metadata` ([DeviceParser.jl](../src/DeviceParser.jl)) | Hand-edited |
+| `device_info.txt` | Per-path parameters | `MeasurementIndex.load_scan_metadata` | Hand-edited |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
 | `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |

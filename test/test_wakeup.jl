@@ -77,7 +77,10 @@ end
     @test isfile(_WAKEUP_ACCUM_FIRST)
     @test isfile(_WAKEUP_ACCUM_SECOND)
 
-    source = scan_source(joinpath(@__DIR__, "fixtures", "RuO2"); project=RUO2_PROJECT)
+    source = MeasurementBrowser.scan_source(
+        joinpath(@__DIR__, "fixtures", "RuO2");
+        project=RUO2_PROJECT,
+    )
     measurements = source.hierarchy.all_measurements
 
     first = only(filter(

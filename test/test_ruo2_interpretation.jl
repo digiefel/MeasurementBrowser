@@ -168,7 +168,7 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
                 cp(_ruo2_fixture_path(name), joinpath(dir, name))
             end
 
-            source = scan_source(dir; project=RUO2_PROJECT)
+            source = MeasurementBrowser.scan_source(dir; project=RUO2_PROJECT)
             measurements = source.hierarchy.all_measurements
             @test length(source.files) == length(fixture_names)
             @test source.hierarchy.skipped_count == 0

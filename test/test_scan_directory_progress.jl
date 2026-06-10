@@ -11,14 +11,18 @@ end
         _copy_fixture(dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
         _copy_fixture(dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
 
-        source = scan_source(dir)
+        source = MeasurementBrowser.scan_source(dir)
         @test source isa MeasurementBrowser.SourceScan
         @test source.hierarchy isa MeasurementBrowser.MeasurementHierarchy
         @test source.hierarchy.skipped_count == 0
 
         # Progress callback shape
         events = NamedTuple[]
-        scan_source(dir; on_progress=(p) -> push!(events, p), count_first=true)
+        MeasurementBrowser.scan_source(
+            dir;
+            on_progress=(p) -> push!(events, p),
+            count_first=true,
+        )
         @test !isempty(events)
         @test any(e -> e.phase == :counting, events)
         @test any(e -> e.phase == :discovering, events)
@@ -33,12 +37,15 @@ end
 
         # Hidden files are not source data.
         write(joinpath(dir, ".hidden_IVSweep.csv"), "")
-        source = scan_source(dir)
+        source = MeasurementBrowser.scan_source(dir)
         @test length(source.files) == 2
 
         # Measurement batches are emitted before scan_source returns its final SourceScan.
         streamed = Vector{MeasurementInfo}[]
-        source = scan_source(dir; on_measurements=(measurements) -> push!(streamed, copy(measurements)))
+        source = MeasurementBrowser.scan_source(
+            dir;
+            on_measurements=(measurements) -> push!(streamed, copy(measurements)),
+        )
         @test !isempty(streamed)
         @test sum(length, streamed) == length(source.hierarchy.all_measurements)
         @test Set(m.unique_id for batch in streamed for m in batch) ==
@@ -46,14 +53,14 @@ end
 
         # One malformed source file is reported without discarding the valid scan.
         write(joinpath(dir, "broken_IVSweep.csv"), "")
-        source = scan_source(dir)
+        source = MeasurementBrowser.scan_source(dir)
         @test length(source.files) == 3
         @test length(source.analysis_failures) == 1
         @test only(source.analysis_failures).filepath == joinpath(dir, "broken_IVSweep.csv")
 
         # Cooperative cancellation
         fired = Ref(false)
-        @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser._with_cancel(
+        @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser.with_cancel(
             () -> begin
                 if fired[]
                     return true
@@ -62,7 +69,7 @@ end
                 return false
             end,
         ) do
-            scan_source(dir; count_first=true)
+            MeasurementBrowser.scan_source(dir; count_first=true)
         end
     end
 end

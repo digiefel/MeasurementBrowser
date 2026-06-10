@@ -9,6 +9,9 @@ Example:
 """
 
 using GLMakie
+
+struct TASEProject <: AbstractProject end
+
 include("TASE/Display.jl")
 include("TASE/Interpretation.jl")
 include("TASE/Analysis.jl")
@@ -31,4 +34,4 @@ project_description(::TASEProject) = "GaN TASE four-terminal IV"
 # ---------------------------------------------------------------------------
 
 const TASE_PROJECT = TASEProject()
-push!(KNOWN_PROJECTS, TASE_PROJECT)
+push!(PROJECTS, TASE_PROJECT)

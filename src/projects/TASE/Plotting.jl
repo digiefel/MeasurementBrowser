@@ -8,7 +8,7 @@ function load_source_data(
     source_file::SourceFile;
     measurement::Union{Nothing,MeasurementInfo}=nothing,
 )::DataFrame
-    _check_cancel()
+    check_cancel()
     if measurement !== nothing && measurement.measurement_kind !== :four_terminal_iv
         error("TASE cannot load measurement data for $(measurement.measurement_kind)")
     end

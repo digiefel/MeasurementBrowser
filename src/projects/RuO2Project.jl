@@ -3,6 +3,9 @@ RuO2Project.jl - Project dispatch methods for RuO2test ferroelectric measurement
 """
 
 using Dates
+
+struct RuO2Project <: AbstractProject end
+
 include("RuO2/Display.jl")
 include("RuO2/CVSweepIO.jl")
 include("RuO2/Interpretation.jl")
@@ -34,5 +37,5 @@ project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
 # ---------------------------------------------------------------------------
 
 const RUO2_PROJECT = RuO2Project()
-push!(KNOWN_PROJECTS, RUO2_PROJECT)
-_default_project[] = RUO2_PROJECT
+push!(PROJECTS, RUO2_PROJECT)
+DEFAULT_PROJECT[] = RUO2_PROJECT
