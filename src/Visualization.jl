@@ -4,7 +4,8 @@ using GLMakie: Figure
 using InteractiveUtils: subtypes
 
 import ..MeasurementIndex: MeasurementInfo
-import ..Project: AbstractProject, project_name
+import ..Project: project_name
+import ..Workspace
 
 """
 Base type for visualizers selectable by the browser and Julia API.
@@ -13,21 +14,27 @@ abstract type PlotKind end
 
 """Create the figure layout required by a visualizer."""
 function setup_plot(
-    project::AbstractProject,
+    workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo},
 )::Figure
-    error("No setup_plot implementation for $(project_name(project)) plot kind '$plot_kind'")
+    error(
+        "No setup_plot implementation for $(project_name(workspace.project)) " *
+        "plot kind '$plot_kind'",
+    )
 end
 
 """Draw selected measurements into an existing figure."""
 function plot_data!(
-    project::AbstractProject,
+    workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    error("No plot_data! implementation for $(project_name(project)) plot kind '$plot_kind'")
+    error(
+        "No plot_data! implementation for $(project_name(workspace.project)) " *
+        "plot kind '$plot_kind'",
+    )
 end
 
 """
@@ -50,7 +57,7 @@ end
 
 """Draw source data directly while bypassing package caches and processed data."""
 function debug_plot(
-    ::AbstractProject,
+    ::Workspace.Workspace,
     measurements::Vector{MeasurementInfo},
     loaded;
     kwargs...,

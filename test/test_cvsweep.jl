@@ -38,10 +38,11 @@ const _CV_FIXTURES = (
     @test length(items) == 1
     @test only(items).measurement_kind == :cvsweep
 
-    data = MeasurementBrowser.read_measurement_data(RUO2_PROJECT, items)
+    workspace = MeasurementBrowser.Workspace.Workspace(RUO2_PROJECT, fixtures_dir)
+    data = MeasurementBrowser.read_measurement_data(workspace, items)
     @test length(data) == 1
     @test nrow(only(data)) == nrow(z_df)
 
-    fig = MeasurementBrowser.setup_plot(RUO2_PROJECT, RuO2CVSweepPlot, items)
-    @test MeasurementBrowser.plot_data!(RUO2_PROJECT, RuO2CVSweepPlot, items, fig) === nothing
+    fig = MeasurementBrowser.setup_plot(workspace, RuO2CVSweepPlot, items)
+    @test MeasurementBrowser.plot_data!(workspace, RuO2CVSweepPlot, items, fig) === nothing
 end

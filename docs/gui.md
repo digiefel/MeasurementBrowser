@@ -8,37 +8,19 @@
 loop. Docking layout is configured once at startup: left side for navigation and information, right
 side for plot-oriented work.
 
-## Current State Shape
+## State boundary
 
-The GUI currently passes a single `ui_state::Dict{Symbol,Any}` by reference through render
-functions. That is an implementation fact, not a long-term architecture decision. App state and
-persistence are active design questions, especially as the browser moves toward GUI/API parity,
-saved workflows, and non-blocking REPL use.
+Render functions still share one `ui_state::Dict{Symbol,Any}`, but it now contains browser state
+only: filters, expanded tree paths, plot windows, figures, dialogs, performance counters, and
+persistence buffers. Its `:workspace` entry is the browser's single reference to the open
+workspace.
 
-Until that is redesigned, treat `ui_state` as transient GUI state. Avoid adding durable project,
-cache, workflow, or figure state there unless there is no clearer owner yet. Initialization is split
-by domain:
+The workspace owns the project, source root, measurement index, selected device and measurement
+identities, loaded cache, direct and processed data memory, and the state of source-scan and cache
+work. Those values must not be copied into separate `ui_state` entries.
 
-- `_init_scan_state!` (scan/progress)
-- `_init_cache_state!` (HDF5 cache)
-- `_init_tag_state!` (Tags)
-- `_init_figure_script_state!` (figure-script export)
-- `_init_plot_state!` (plot windows)
-
-### Key `ui_state` entries you'll touch most
-
-| Key | Type | Purpose |
-|---|---|---|
-| `:selected_device_paths` | `Vector{String}` | Selected paths (canonical, source-of-truth). |
-| `:selected_devices` | `Vector{HierarchyNode}` | Resolved nodes for the above. |
-| `:selected_measurements` | `Vector{MeasurementInfo}` | Filtered down by `_apply_visible_selection!`. |
-| `:plot_figure` | Makie `Figure` or `nothing` | Current single-plot figure. |
-| `:main_plot_kind` | `Type{<:PlotKind}` or missing | Plot kind selected in the main plot toolbar. |
-| `:main_plot_live` | `Bool` | Whether the main plot follows the current browser selection. Defaults to `true`. |
-| `:main_plot_measurements` | `Vector{MeasurementInfo}` | Measurements used by the main plot when Live is disabled. |
-| `:plot_kind_preferences` | `Dict{String,Dict{String,String}}` | Remembered plot kind by project and measurement kind. |
-| `:open_plot_windows` | `Vector{Dict{Symbol,Any}}` | Detached plot windows. Each stores its own plot kind, measurements, Live flag, figure, and error. |
-| `:tag_state` | `Annotations.Tags.TagState` | Catalog + per-key assignments (loaded at project init). |
+Source-scan and cache work each have independent state, progress, errors, cancellation, and task
+ownership. This prevents one operation from overwriting the status shown for the other.
 
 ## Panels
 
@@ -50,12 +32,13 @@ by domain:
 
 ### Selection flow (tree → plot)
 
-1. A tree or future spatial-browser interaction writes canonical paths to `:selected_device_paths`.
-2. The visible-selection pass resolves paths, applies tag-driven visibility, and updates
-   `:selected_measurements`.
-3. Plot windows with `Live` enabled pick up the change next frame and redraw if their plot key changed.
+1. A tree or future spatial-browser interaction writes device paths and measurement ids to
+   `workspace.selection`.
+2. Each frame resolves those stable ids against `workspace.index` and applies tag visibility.
+3. Plot windows with `Live` enabled use that visible selection and redraw when it changes.
 
-**Any new panel that drives selection must write to `:selected_device_paths` and call `_apply_visible_selection!`** — that's how plots stay in sync.
+A new panel changes selection only through the workspace. It does not maintain its own selected
+objects.
 
 ## Plot rendering
 

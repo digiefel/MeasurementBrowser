@@ -18,8 +18,8 @@ using NativeFileDialog: pick_folder, save_file
 # Gui module split into src/Gui/ — see docs/gui.md for the file map.
 # ---------------------------------------------------------------------------
 
-include("Gui/State.jl")
 include("Gui/BadAndStyling.jl")
+include("Gui/State.jl")
 include("Gui/PlotPanel.jl")
 include("Gui/Persistence.jl")
 include("Gui/TreePanel.jl")

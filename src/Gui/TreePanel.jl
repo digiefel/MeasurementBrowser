@@ -38,13 +38,19 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
     ig.SeparatorText("Device Selection")
     _render_tag_state_error!(ui_state)
 
-    root = get(ui_state, :hierarchy_root, nothing)
-    meta_keys = get(ui_state, :device_metadata_keys, Symbol[])
+    workspace = get(ui_state, :workspace, nothing)
+    root = workspace isa Workspace.Workspace ? workspace.index.hierarchy.root : nothing
+    meta_keys = workspace isa Workspace.Workspace ?
+        workspace.index.device_metadata_keys :
+        Symbol[]
+    selected_devices, _, _ = _project_visible_selection(ui_state)
 
     visible_devices = HierarchyNode[]
     visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
     expanded_device_path_set = Set(get(ui_state, :expanded_device_paths, String[]))
-    selected_device_path_set = Set(get(ui_state, :selected_device_paths, String[]))
+    selected_device_path_set = workspace isa Workspace.Workspace ?
+        Set(workspace.selection.device_paths) :
+        Set{String}()
     all_device_count = 0
     filter_active = ig.ImGuiTextFilter_IsActive(filter_tree)
 
@@ -119,13 +125,12 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
         end
 
         _render_selection_toolbar!(
-            length(get(ui_state, :selected_devices, HierarchyNode[])),
+            length(selected_devices),
             length(visible_devices),
             all_device_count,
             filter_tree,
             () -> begin
-                ui_state[:selected_device_paths] = copy(visible_device_keys())
-                _apply_visible_selection!(ui_state)
+                workspace.selection.device_paths = copy(visible_device_keys())
             end;
             item_label="devices", filter_id="##tree_filter"
         )
@@ -208,18 +213,16 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                     io = ig.GetIO()
                     shift_held = unsafe_load(io.KeyShift)
                     ctrl_held = unsafe_load(io.KeyCtrl)
-                    selected_device_paths = copy(get(ui_state, :selected_device_paths, String[]))
+                    selected_device_paths = copy(workspace.selection.device_paths)
                     _update_multi_selection!(selected_device_paths, leaf_device_key, visible_device_keys(), shift_held, ctrl_held)
-                    ui_state[:selected_device_paths] = selected_device_paths
-                    _apply_visible_selection!(ui_state)
-                elseif !isempty(get(ui_state, :selected_device_paths, String[]))
-                    ui_state[:selected_device_paths] = String[]
-                    _apply_visible_selection!(ui_state)
+                    workspace.selection.device_paths = selected_device_paths
+                elseif !isempty(workspace.selection.device_paths)
+                    empty!(workspace.selection.device_paths)
                 end
             end
 
             if is_leaf && ig.BeginPopupContextItem()
-                target_nodes = _selection_targets(get(ui_state, :selected_devices, HierarchyNode[]), node)
+                target_nodes = _selection_targets(selected_devices, node)
                 target_keys = [device_key(target) for target in target_nodes]
                 selected_count = length(target_keys)
                 selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
@@ -398,49 +401,49 @@ function _collect_leaf_nodes!(devices::Vector{HierarchyNode}, node::HierarchyNod
 end
 
 function _all_devices(ui_state)
-    root = get(ui_state, :hierarchy_root, nothing)
-    root === nothing && return HierarchyNode[]
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return HierarchyNode[]
+    root = workspace.index.hierarchy.root
 
     devices = HierarchyNode[]
     _collect_leaf_nodes!(devices, root)
     return devices
 end
 
-function _selected_measurements(ui_state)
-    haskey(ui_state, :selected_all_measurements) ||
-        error("UI selection state is missing selected_all_measurements")
-    return ui_state[:selected_all_measurements]
-end
-
 # Right panel (measurements list) rendering
 function _render_measurements_panel(ui_state, filter_meas)
-    proj = ui_state[:project]
     ig.BeginChild("Measurements", (0, 0), true)
     ig.SeparatorText("Measurement Selection")
+    workspace = get(ui_state, :workspace, nothing)
+    if !(workspace isa Workspace.Workspace)
+        ig.TextDisabled("Open a project folder to browse measurements")
+        ig.EndChild()
+        return nothing
+    end
+    proj = workspace.project
 
-    selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-    all_measurements = _selected_measurements(ui_state)
+    selected_devices, selected_measurements, selected_path =
+        _project_visible_selection(ui_state)
+    all_measurements = _measurements_of_selected_devices(ui_state)
     visible_measurements = _visible_measurements(ui_state, proj, all_measurements, filter_meas)
-    haskey(ui_state, :selected_measurement_id_set) ||
-        error("UI selection state is missing selected_measurement_id_set")
-    selected_measurement_id_set = ui_state[:selected_measurement_id_set]
+    selected_measurement_id_set = Set(workspace.selection.measurement_ids)
     registry_ready = _tag_state_ready(ui_state)
 
     _render_selection_toolbar!(
-        length(get(ui_state, :selected_measurements, MeasurementInfo[])),
+        length(selected_measurements),
         length(visible_measurements),
         length(all_measurements),
         filter_meas,
         () -> begin
-            ui_state[:selected_measurement_ids] = [measurement.unique_id for measurement in visible_measurements]
-            _apply_visible_selection!(ui_state)
+            workspace.selection.measurement_ids =
+                [measurement.unique_id for measurement in visible_measurements]
         end;
         item_label="measurements", filter_id="##measurements_filter"
     )
 
     if !isempty(selected_devices)
         if length(selected_devices) == 1
-            sel_name = join(get(ui_state, :selected_path, [""]), "/")
+            sel_name = join(selected_path, "/")
             ig.Text("Measurements for $sel_name")
             ig.Separator()
         else
@@ -493,7 +496,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                             io = ig.GetIO()
                             shift_held = unsafe_load(io.KeyShift)
                             ctrl_held = unsafe_load(io.KeyCtrl)
-                            selected_measurement_ids = copy(get(ui_state, :selected_measurement_ids, String[]))
+                            selected_measurement_ids = copy(workspace.selection.measurement_ids)
                             visible_measurement_ids = [visible.unique_id for visible in visible_measurements]
                             _update_multi_selection!(
                                 selected_measurement_ids,
@@ -502,8 +505,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                                 shift_held,
                                 ctrl_held,
                             )
-                            ui_state[:selected_measurement_ids] = selected_measurement_ids
-                            _apply_visible_selection!(ui_state)
+                            workspace.selection.measurement_ids = selected_measurement_ids
                         end
                         if get(ui_state, :scroll_to_measurement_id, "") == measurement.unique_id
                             ig.SetScrollHereY(0.5)
@@ -512,7 +514,8 @@ function _render_measurements_panel(ui_state, filter_meas)
                         bad_text_pushed && ig.PopStyleColor()
 
                         if ig.BeginPopupContextItem()
-                            target_measurements = _selection_targets(get(ui_state, :selected_measurements, MeasurementInfo[]), measurement)
+                            target_measurements =
+                                _selection_targets(selected_measurements, measurement)
                             target_ids = [target.unique_id for target in target_measurements]
                             selected_count = length(target_ids)
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count measurements")
@@ -555,6 +558,7 @@ function _render_measurements_panel(ui_state, filter_meas)
         ig.TextDisabled("No measurements match filter")
     end
     ig.EndChild()
+    return nothing
 end
 
 function render_selection_window(ui_state)

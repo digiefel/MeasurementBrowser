@@ -52,11 +52,4 @@ available_analyses(::AbstractProject, measurements)::Vector{NamedTuple} = NamedT
 """Run one project analysis selected by its stable key."""
 run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
 
-"""Return direct data unchanged when a project defines no additional processing."""
-process_measurement_data(
-    ::AbstractProject,
-    measurement,
-    data::DataFrame,
-)::DataFrame = data
-
 end

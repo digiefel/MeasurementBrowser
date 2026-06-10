@@ -16,12 +16,10 @@ function _load_tag_state_for_root!(ui_state, root_path::String)
     try
         ui_state[:tag_state] = Annotations.Tags.load(root_path)
         ui_state[:tag_state_error] = ""
-        _apply_visible_selection!(ui_state)
     catch err
         if err isa Annotations.Tags.TagsParseError || err isa IOError
             ui_state[:tag_state] = nothing
             ui_state[:tag_state_error] = sprint(showerror, err)
-            _apply_visible_selection!(ui_state)
             return
         end
         rethrow()
@@ -110,13 +108,14 @@ Resolve the current selected devices and measurements after applying tag visibil
 The persisted selection ids are left untouched; this returns only the currently visible subset.
 """
 function _project_visible_selection(ui_state)
-    hierarchy = get(ui_state, :scan_hierarchy, nothing)
-    if hierarchy === nothing
+    workspace = get(ui_state, :workspace, nothing)
+    if !(workspace isa Workspace.Workspace)
         return HierarchyNode[], MeasurementInfo[], String[]
     end
+    hierarchy = workspace.index.hierarchy
 
     selected_devices = HierarchyNode[]
-    for path_key in get(ui_state, :selected_device_paths, String[])
+    for path_key in workspace.selection.device_paths
         node = get(hierarchy.index, device_path_tuple(path_key), nothing)
         node === nothing && continue
         node.kind == :leaf || error("Selected device path '$path_key' does not point to a leaf device")
@@ -125,9 +124,9 @@ function _project_visible_selection(ui_state)
     end
 
     visible_device_keys = Set(_device_path_key(node) for node in selected_devices)
-    measurement_index = get(ui_state, :measurement_index, Dict{String,MeasurementInfo}())
+    measurement_index = workspace.index.measurements
     selected_measurements = MeasurementInfo[]
-    for measurement_id in get(ui_state, :selected_measurement_ids, String[])
+    for measurement_id in workspace.selection.measurement_ids
         measurement = get(measurement_index, measurement_id, nothing)
         measurement === nothing && continue
         device_path_key(measurement.device_info) in visible_device_keys || continue
@@ -139,12 +138,10 @@ function _project_visible_selection(ui_state)
 end
 
 """
-Synchronize derived selection fields in `ui_state` with tag visibility and panel ordering.
-The combined measurement list is globally chronological even when several devices are selected.
+Return every measurement belonging to the selected visible devices, ordered by time.
 """
-function _apply_visible_selection!(ui_state)
-    selected_devices, selected_measurements, selected_path = _project_visible_selection(ui_state)
-
+function _measurements_of_selected_devices(ui_state)::Vector{MeasurementInfo}
+    selected_devices, _, _ = _project_visible_selection(ui_state)
     all_measurements = MeasurementInfo[]
     sizehint!(all_measurements, sum(length(device.measurements) for device in selected_devices; init=0))
     for device in selected_devices
@@ -153,12 +150,7 @@ function _apply_visible_selection!(ui_state)
         end
     end
     sort!(all_measurements, by=measurement_timestamp_key)
-
-    ui_state[:selected_devices] = selected_devices
-    ui_state[:selected_measurements] = selected_measurements
-    ui_state[:selected_all_measurements] = all_measurements
-    ui_state[:selected_measurement_id_set] = Set(get(ui_state, :selected_measurement_ids, String[]))
-    ui_state[:selected_path] = selected_path
+    return all_measurements
 end
 
 """
@@ -179,8 +171,7 @@ function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
     isempty(unique_keys) && return false
     _tag_state_ready(ui_state) || return false
 
-    root_path = get(ui_state, :root_path, "")
-    isempty(root_path) && error("Cannot update tag state without an active project root")
+    workspace = ui_state[:workspace]::Workspace.Workspace
 
     tag_state = _tag_state_or_error(ui_state)
     _ensure_bad_catalog_entry!(tag_state)
@@ -198,8 +189,7 @@ function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
         end
     end
 
-    Annotations.Tags.save(root_path, tag_state)
-    _apply_visible_selection!(ui_state)
+    Annotations.Tags.save(workspace.root_path, tag_state)
     return true
 end
 
@@ -212,8 +202,7 @@ function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::
     isempty(unique_ids) && return false
     _tag_state_ready(ui_state) || return false
 
-    root_path = get(ui_state, :root_path, "")
-    isempty(root_path) && error("Cannot update tag state without an active project root")
+    workspace = ui_state[:workspace]::Workspace.Workspace
 
     tag_state = _tag_state_or_error(ui_state)
     _ensure_bad_catalog_entry!(tag_state)
@@ -231,8 +220,7 @@ function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::
         end
     end
 
-    Annotations.Tags.save(root_path, tag_state)
-    _apply_visible_selection!(ui_state)
+    Annotations.Tags.save(workspace.root_path, tag_state)
     return true
 end
 

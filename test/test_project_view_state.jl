@@ -144,26 +144,21 @@ using Test
         true,
         project,
     )
+    workspace = MeasurementBrowser.Workspace.Workspace(project, root_path)
+    workspace.index = MeasurementBrowser.WorkspaceIndex(
+        hierarchy,
+        MeasurementBrowser._build_measurement_index(hierarchy.all_measurements),
+        Symbol[],
+        nothing,
+    )
     ui_state = Dict{Symbol,Any}(
-        :root_path => root_path,
-        :project => project,
-        :scan_hierarchy => hierarchy,
-        :hierarchy_root => hierarchy.root,
-        :all_measurements => hierarchy.all_measurements,
-        :measurement_index => MeasurementBrowser._build_measurement_index(hierarchy.all_measurements),
-        :selected_device_paths => String[],
-        :selected_measurement_ids => String[],
-        :selected_devices => MeasurementBrowser.HierarchyNode[],
-        :selected_measurements => MeasurementBrowser.MeasurementInfo[],
-        :selected_all_measurements => MeasurementBrowser.MeasurementInfo[],
-        :selected_measurement_id_set => Set{String}(),
-        :selected_path => String[],
+        :workspace => workspace,
         :_plot_window_counter => 0,
     )
 
     MeasurementBrowser._apply_project_view!(ui_state, view)
-    @test ui_state[:selected_device_paths] == ["chip/device"]
-    @test ui_state[:selected_measurement_ids] == ["measurement-1", "measurement-2"]
+    @test workspace.selection.device_paths == ["chip/device"]
+    @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]
     @test ui_state[:tree_filter] == "tlm"
     @test ui_state[:measurement_filter] == "298K"
     @test ui_state[:plot_kind_by_measurement_kind] == Dict("iv_sweep" => "RuO2IVSweepPlot")
@@ -188,7 +183,7 @@ using Test
 
     ui_state[:project_view_loaded] = view
     MeasurementBrowser._begin_scan!(ui_state, root_path, project, true)
-    @test ui_state[:selected_device_paths] == ["chip/device"]
-    @test ui_state[:selected_measurement_ids] == ["measurement-1", "measurement-2"]
+    @test workspace.selection.device_paths == ["chip/device"]
+    @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]
     @test haskey(ui_state, :main_plot_kind)
 end

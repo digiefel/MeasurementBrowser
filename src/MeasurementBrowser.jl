@@ -60,13 +60,6 @@ include("AnalysisResult.jl")
 """Draw one view from the deprecated analysis-result API."""
 draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
 
-include("Visualization.jl")
-using .Visualization: PlotKind, plot_kinds
-import .Visualization:
-    debug_plot,
-    plot_data!,
-    setup_plot
-
 include("Cache.jl")
 using .Cache:
     ProjectCacheError,
@@ -79,12 +72,24 @@ using .Cache:
     project_cache_id,
     project_cache_identity,
     project_cache_index,
-    set_active_project_cache!,
     write_measurement_data_cache!,
     write_project_cache!
 
 include("Workspace.jl")
-using .Workspace: read_measurement_data
+using .Workspace:
+    WorkspaceCache,
+    WorkspaceIndex,
+    WorkspaceJob,
+    WorkspaceProgress,
+    WorkspaceSelection,
+    read_measurement_data
+
+include("Visualization.jl")
+using .Visualization: PlotKind, plot_kinds
+import .Visualization:
+    debug_plot,
+    plot_data!,
+    setup_plot
 
 include("projects/RuO2Project.jl")
 include("projects/TASEProject.jl")

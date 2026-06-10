@@ -1,7 +1,15 @@
 function render_info_window(ui_state)
-    proj = ui_state[:project]
-    selected_devices = get(ui_state, :selected_devices, HierarchyNode[])
-    selected_measurements = get(ui_state, :selected_measurements, MeasurementInfo[])
+    workspace = get(ui_state, :workspace, nothing)
+    if !(workspace isa Workspace.Workspace)
+        if ig.Begin("Information Panel")
+            ig.TextDisabled("Open a project folder to inspect measurements")
+        end
+        ig.End()
+        return nothing
+    end
+    proj = workspace.project
+    selected_devices, selected_measurements, selected_path =
+        _project_visible_selection(ui_state)
     if ig.Begin("Information Panel")
         flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_ScrollY
         ig.BeginTable("info_cols", 2, flags)
@@ -13,7 +21,7 @@ function render_info_window(ui_state)
 
         if length(selected_devices) == 1
             meas_vec = selected_devices[1].measurements
-            sel_name = join(get(ui_state, :selected_path, [""]), "/")
+            sel_name = join(selected_path, "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
             stats = begin
@@ -108,14 +116,11 @@ function _figure_script_output_path(ui_state)
 end
 
 function _write_figure_script_from_ui!(ui_state; overwrite::Bool=false)
-    root_path = get(ui_state, :root_path, "")
-    isempty(root_path) && throw(FigureScriptValidationError("Open a project folder before generating a figure script"))
-    project = get(ui_state, :project, nothing)
-    project isa AbstractProject || error("Figure script generation requires an active project")
+    workspace = ui_state[:workspace]::Workspace.Workspace
     path = write_figure_script(
         _buffer_string(ui_state[:figure_script_output_dir_buffer]),
-        root_path,
-        project,
+        workspace.root_path,
+        workspace.project,
         _buffer_string(ui_state[:figure_script_name_buffer]),
         copy(_figure_script_groups(ui_state)),
         _current_scan_measurements(ui_state);
@@ -138,7 +143,8 @@ end
 function render_figure_script_window(ui_state)
     get(ui_state, :show_figure_script_window, false) || return
 
-    proj = ui_state[:project]
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    proj = workspace.project
     selected_measurements = _selected_measurements_in_panel_order(ui_state)
     selected_count = length(selected_measurements)
     job_running = _figure_script_job_running(ui_state)
@@ -338,8 +344,10 @@ end
 # Modal for missing device metadata (shown each scan when missing)
 # ------------------------------------------------------------------
 function render_device_info_modal(ui_state)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
     # Reset dismissal when root path changes
-    current_root = get(ui_state, :root_path, "")
+    current_root = workspace.root_path
     if get(ui_state, :_modal_last_root_path, "") != current_root
         ui_state[:_modal_last_root_path] = current_root
         ui_state[:dev_info_modal] = true
@@ -350,7 +358,8 @@ function render_device_info_modal(ui_state)
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
 
     # Show modal if: missing metadata and user hasn't dismissed it this scan
-    if get(ui_state, :dev_info_modal, true) && !get(ui_state, :has_device_metadata, true)
+    if get(ui_state, :dev_info_modal, true) &&
+       !workspace.index.hierarchy.has_device_metadata
         ig.OpenPopup("Device Metadata Missing")
     end
 

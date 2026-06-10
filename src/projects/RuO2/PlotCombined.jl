@@ -38,7 +38,7 @@ function _ruo2_tlm_analysis_info(
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2TLMAnalysisPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -57,7 +57,7 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2TLMAnalysisPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
@@ -72,7 +72,7 @@ function plot_data!(
     ax2 = only(axes_norm)
     info_ax = only(axes_info)
 
-    data = read_measurement_data(project, measurements)
+    data = read_measurement_data(workspace, measurements)
     files_data_params = _ruo2_tlm_files_data_params(measurements, data)
     analysis_df = analyze_tlm_combined(files_data_params)
     nrow(analysis_df) == 0 && return nothing
@@ -211,7 +211,7 @@ function _ruo2_tlm_temperature_analysis(entries::Vector{NamedTuple})::Union{Noth
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2TLMTemperaturePlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -220,12 +220,12 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2TLMTemperaturePlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    data = read_measurement_data(project, measurements)
+    data = read_measurement_data(workspace, measurements)
     entries = _ruo2_tlm_temperature_entries(measurements, data)
     analyzed = _ruo2_tlm_temperature_analysis(entries)
     analyzed === nothing && return nothing
@@ -379,7 +379,7 @@ function _ruo2_pund_fatigue_analysis(entries::Vector{NamedTuple})::NamedTuple
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2PUNDFatiguePlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -388,12 +388,12 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2PUNDFatiguePlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
 )::Nothing
-    data = read_measurement_data(project, measurements)
+    data = read_measurement_data(workspace, measurements)
     entries = _ruo2_pund_fatigue_entries(measurements, data)
     analyzed = _ruo2_pund_fatigue_analysis(entries)
     return _draw_ruo2_pund_fatigue!(figure, analyzed)

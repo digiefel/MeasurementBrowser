@@ -56,8 +56,9 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
         tlm_measurement(100.0, 350.0),
         tlm_measurement(50.0, 350.0),
     ]
+    workspace = MeasurementBrowser.Workspace.Workspace(RUO2_PROJECT, fixtures_dir)
 
-    pund_data = only(process_measurement_data(RUO2_PROJECT, [pund]))
+    pund_data = only(process_measurement_data(workspace, [pund]))
     @test all(name in names(pund_data) for name in [
         "time_us",
         "current_uA",
@@ -68,16 +69,16 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
     ])
     @test nrow(pund_data) > 0
 
-    iv_data = only(process_measurement_data(RUO2_PROJECT, [iv]))
+    iv_data = only(process_measurement_data(workspace, [iv]))
     @test names(iv_data) == ["v", "i_abs", "i_positive"]
     @test nrow(iv_data) > 0
 
-    tlm_device_iv_data = only(process_measurement_data(RUO2_PROJECT, [tlm_device_iv]))
+    tlm_device_iv_data = only(process_measurement_data(workspace, [tlm_device_iv]))
     @test tlm_device_iv.measurement_kind === :iv
     @test maximum(abs, tlm_device_iv_data.v) ≈ 0.001
     @test maximum(tlm_device_iv_data.i_abs) < 1e-6
 
-    tlm_data = only(process_measurement_data(RUO2_PROJECT, [tlm]))
+    tlm_data = only(process_measurement_data(workspace, [tlm]))
     @test all(name in names(tlm_data) for name in [
         "current_uA",
         "voltage_mV",
@@ -89,32 +90,32 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
     ])
     @test nrow(tlm_data) > 0
 
-    pund_fig = setup_plot(RUO2_PROJECT, RuO2PUNDPlot, [pund, pund])
-    @test plot_data!(RUO2_PROJECT, RuO2PUNDPlot, [pund, pund], pund_fig) === nothing
+    pund_fig = setup_plot(workspace, RuO2PUNDPlot, [pund, pund])
+    @test plot_data!(workspace, RuO2PUNDPlot, [pund, pund], pund_fig) === nothing
 
-    iv_fig = setup_plot(RUO2_PROJECT, RuO2IVSweepPlot, [iv, iv])
-    @test plot_data!(RUO2_PROJECT, RuO2IVSweepPlot, [iv, iv], iv_fig) === nothing
-    tlm_device_iv_fig = setup_plot(RUO2_PROJECT, RuO2IVSweepPlot, [tlm_device_iv])
+    iv_fig = setup_plot(workspace, RuO2IVSweepPlot, [iv, iv])
+    @test plot_data!(workspace, RuO2IVSweepPlot, [iv, iv], iv_fig) === nothing
+    tlm_device_iv_fig = setup_plot(workspace, RuO2IVSweepPlot, [tlm_device_iv])
     @test plot_data!(
-        RUO2_PROJECT,
+        workspace,
         RuO2IVSweepPlot,
         [tlm_device_iv],
         tlm_device_iv_fig,
     ) === nothing
 
-    tlm_fig = setup_plot(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm, tlm])
-    @test plot_data!(RUO2_PROJECT, RuO2TLM4PointPlot, [tlm, tlm], tlm_fig) === nothing
+    tlm_fig = setup_plot(workspace, RuO2TLM4PointPlot, [tlm, tlm])
+    @test plot_data!(workspace, RuO2TLM4PointPlot, [tlm, tlm], tlm_fig) === nothing
 
-    tlm_analysis_fig = setup_plot(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements)
+    tlm_analysis_fig = setup_plot(workspace, RuO2TLMAnalysisPlot, tlm_analysis_measurements)
     @test_logs (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") begin
-        @test plot_data!(RUO2_PROJECT, RuO2TLMAnalysisPlot, tlm_analysis_measurements, tlm_analysis_fig) === nothing
+        @test plot_data!(workspace, RuO2TLMAnalysisPlot, tlm_analysis_measurements, tlm_analysis_fig) === nothing
     end
 
-    tlm_temperature_fig = setup_plot(RUO2_PROJECT, RuO2TLMTemperaturePlot, tlm_temperature_measurements)
+    tlm_temperature_fig = setup_plot(workspace, RuO2TLMTemperaturePlot, tlm_temperature_measurements)
     @test_logs (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") begin
-        @test plot_data!(RUO2_PROJECT, RuO2TLMTemperaturePlot, tlm_temperature_measurements, tlm_temperature_fig) === nothing
+        @test plot_data!(workspace, RuO2TLMTemperaturePlot, tlm_temperature_measurements, tlm_temperature_fig) === nothing
     end
 
-    fatigue_fig = setup_plot(RUO2_PROJECT, RuO2PUNDFatiguePlot, fatigue)
-    @test plot_data!(RUO2_PROJECT, RuO2PUNDFatiguePlot, fatigue, fatigue_fig) === nothing
+    fatigue_fig = setup_plot(workspace, RuO2PUNDFatiguePlot, fatigue)
+    @test plot_data!(workspace, RuO2PUNDFatiguePlot, fatigue, fatigue_fig) === nothing
 end

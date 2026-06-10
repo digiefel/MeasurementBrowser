@@ -23,8 +23,6 @@ end
 
 function _cache_test_ui_state()
     ui_state = Dict{Symbol,Any}()
-    MeasurementBrowser._init_scan_state!(ui_state)
-    MeasurementBrowser._init_cache_state!(ui_state)
     MeasurementBrowser._init_tag_state!(ui_state)
     MeasurementBrowser._init_figure_script_state!(ui_state)
     MeasurementBrowser._init_plot_state!(ui_state)
@@ -101,33 +99,41 @@ end
                 m -> m.measurement_kind === :pund,
                 loaded.source.hierarchy.all_measurements,
             ))
-            source_data = only(read_measurement_data(
+            source_workspace = MeasurementBrowser.Workspace.Workspace(
                 MeasurementBrowser.RUO2_PROJECT,
+                dir,
+            )
+            source_data = only(read_measurement_data(
+                source_workspace,
                 [pund_measurement],
             ))
-            MeasurementBrowser.set_active_project_cache!(loaded)
-            @test only(MeasurementBrowser.cached_measurement_data(
+            cached_workspace = MeasurementBrowser.Workspace.Workspace(
                 MeasurementBrowser.RUO2_PROJECT,
+                dir,
+            )
+            cached_workspace.cache.index = loaded
+            @test only(MeasurementBrowser.cached_measurement_data(
+                loaded,
                 [pund_measurement],
             )) === nothing
             loaded_data = only(read_measurement_data(
-                MeasurementBrowser.RUO2_PROJECT,
+                cached_workspace,
                 [pund_measurement],
             ))
             @test _same_dataframe(loaded_data, source_data)
             cached_data = only(MeasurementBrowser.cached_measurement_data(
-                MeasurementBrowser.RUO2_PROJECT,
+                loaded,
                 [pund_measurement],
             ))
             @test cached_data !== nothing
             @test _same_dataframe(cached_data, source_data)
             @test only(MeasurementBrowser.cached_measurement_data(
-                MeasurementBrowser.RUO2_PROJECT,
+                loaded,
                 [pund_measurement];
                 processed=true,
             )) === nothing
             processed_data = only(process_measurement_data(
-                MeasurementBrowser.RUO2_PROJECT,
+                cached_workspace,
                 [pund_measurement],
             ))
             @test all(name in names(processed_data) for name in [
@@ -139,13 +145,13 @@ end
                 "pulse_group_size",
             ])
             @test only(MeasurementBrowser.cached_measurement_data(
-                MeasurementBrowser.RUO2_PROJECT,
+                loaded,
                 [pund_measurement];
                 processed=true,
             )) !== nothing
             @test _same_dataframe(
                 only(MeasurementBrowser.cached_measurement_data(
-                    MeasurementBrowser.RUO2_PROJECT,
+                    loaded,
                     [pund_measurement],
                 )),
                 source_data,
@@ -160,7 +166,7 @@ end
             sleep(0.05)
             touch(pund_measurement.filepath)
             @test only(MeasurementBrowser.cached_measurement_data(
-                MeasurementBrowser.RUO2_PROJECT,
+                loaded,
                 [pund_measurement],
             )) === nothing
             rm(joinpath(dir, _CACHE_FIXTURES.breakdown))
@@ -211,7 +217,6 @@ end
             @test only(values(analysis_error_snapshot.analysis_errors)) ==
                 "synthetic analysis failure"
         finally
-            MeasurementBrowser.set_active_project_cache!(nothing)
             rm(cache_identity.cache_path; force=true)
         end
     end
@@ -239,10 +244,11 @@ end
                 while time() < deadline
                     MeasurementBrowser._poll_cache_events!(ui_state)
                     MeasurementBrowser._poll_source_scan_events!(ui_state)
-                    saw_writing |= get(ui_state, :cache_state, :idle) == :writing
-                    status = get(ui_state, :cache_status, nothing)
+                    workspace = ui_state[:workspace]
+                    saw_writing |= workspace.cache_job.state == :writing
+                    status = workspace.cache.status
                     if saw_writing &&
-                       get(ui_state, :cache_state, :idle) == :ready &&
+                       workspace.cache_job.state == :ready &&
                        status isa MeasurementBrowser.ProjectCacheStatus &&
                        status.cached_files == 2 &&
                        status.new_files == 0
@@ -251,10 +257,11 @@ end
                     sleep(0.02)
                 end
 
-                status = get(ui_state, :cache_status, nothing)
+                workspace = ui_state[:workspace]
+                status = workspace.cache.status
                 @test saw_writing
-                @test get(ui_state, :source_scan_state, :idle) == :done
-                @test get(ui_state, :cache_state, :idle) == :ready
+                @test workspace.scan.state == :done
+                @test workspace.cache_job.state == :ready
                 @test status isa MeasurementBrowser.ProjectCacheStatus
                 @test status.cached_files == 2
                 @test status.new_files == 0

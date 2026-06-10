@@ -437,14 +437,15 @@ function _figure_script_plot_kind(::RuO2Project, measurement::MeasurementInfo)::
 end
 
 function _build_figure_measurements(
-    project::AbstractProject,
+    workspace::Workspace.Workspace,
     measurements::Vector{MeasurementInfo},
 )
+    project = workspace.project
     records = FigureMeasurement[]
     for measurement in measurements
         parameters = _measurement_parameters(measurement)
         plot_kind = _figure_script_plot_kind(project, measurement)
-        df = only(read_measurement_data(project, [measurement]))
+        df = only(read_measurement_data(workspace, [measurement]))
         loaded = _ruo2_plot_data(measurement, df)
         analyzed = _analyze_ruo2_file_plot(
             project,
@@ -472,7 +473,8 @@ function prepare_figure_script_data(
     normalized_source_files = _normalize_source_files(root_path, source_files)
     measurements = _load_measurements_from_source_files(root_path, project, normalized_source_files)
     _group_matches(groups, measurements)
-    records = _build_figure_measurements(project, measurements)
+    workspace = Workspace.Workspace(project, root_path)
+    records = _build_figure_measurements(workspace, measurements)
 
     group_map = Dict(group.name => group for group in groups)
     match_indices = Dict{String,Vector{Int}}()

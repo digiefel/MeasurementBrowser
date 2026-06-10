@@ -93,7 +93,8 @@ function _draw_plot_view!(
     measurements::Vector{MeasurementInfo},
     plot_kind::Type{<:PlotKind},
 )::Nothing
-    project = ui_state[:project]
+    workspace = ui_state[:workspace]
+    project = workspace.project
     debug = get(ui_state, :debug_plot_mode, false)
     started_ns = time_ns()
     draw_alloc = 0
@@ -106,10 +107,10 @@ function _draw_plot_view!(
                 for measurement in measurements
                     push!(source_data, load_source_data(project, index_source_file(measurement.filepath); measurement))
                 end
-                debug_plot(project, measurements, source_data; plot_kind)
+                debug_plot(workspace, measurements, source_data; plot_kind)
             else
-                fig = setup_plot(project, plot_kind, measurements)
-                plot_data!(project, plot_kind, measurements, fig)
+                fig = setup_plot(workspace, plot_kind, measurements)
+                plot_data!(workspace, plot_kind, measurements, fig)
                 fig
             end
         end
@@ -162,7 +163,13 @@ function _render_plot_view!(
     plot_kind = _plot_kind_from_state(view, plot_kind_key)
     status = isempty(measurements) ? :empty : plot_kind === nothing ? :needs_kind : :ready
     plot_key = status == :ready ?
-        _plot_key(ui_state[:project], view_id, plot_kind, measurements, get(ui_state, :debug_plot_mode, false)) :
+        _plot_key(
+            (ui_state[:workspace]::Workspace.Workspace).project,
+            view_id,
+            plot_kind,
+            measurements,
+            get(ui_state, :debug_plot_mode, false),
+        ) :
         nothing
 
     if status == :ready && get(view, :_last_plot_key, nothing) != plot_key
@@ -338,7 +345,7 @@ end
 
 """Render the main plot window."""
 function render_plot_window(ui_state::Dict{Symbol,Any})::Nothing
-    selected = get(ui_state, :selected_measurements, MeasurementInfo[])
+    _, selected, _ = _project_visible_selection(ui_state)
     measurements = get(ui_state, :main_plot_live, true) === true ? selected : get(ui_state, :main_plot_measurements, selected)
     measurements isa Vector{MeasurementInfo} || (measurements = MeasurementInfo[])
     get(ui_state, :main_plot_live, true) === true && (ui_state[:main_plot_measurements] = copy(measurements))
@@ -380,7 +387,7 @@ end
 function render_additional_plot_windows(ui_state::Dict{Symbol,Any})::Nothing
     open_plots = get(ui_state, :open_plot_windows, nothing)
     open_plots === nothing && return nothing
-    selected = get(ui_state, :selected_measurements, MeasurementInfo[])
+    _, selected, _ = _project_visible_selection(ui_state)
     kept = Vector{Dict{Symbol,Any}}()
 
     for entry in open_plots

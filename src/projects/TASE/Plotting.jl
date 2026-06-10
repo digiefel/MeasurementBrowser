@@ -18,7 +18,7 @@ function load_source_data(
 end
 
 function setup_plot(
-    ::TASEProject,
+    ::Workspace.Workspace{TASEProject},
     plot_kind::Type{TASEFourTerminalIVPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -30,7 +30,7 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::TASEProject,
+    workspace::Workspace.Workspace{TASEProject},
     plot_kind::Type{TASEFourTerminalIVPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
@@ -38,7 +38,7 @@ function plot_data!(
     axes = contents(figure[1, 1])
     isempty(axes) && error("TASE plot figure has no axis")
     ax = only(axes)
-    data = read_measurement_data(project, measurements)
+    data = read_measurement_data(workspace, measurements)
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
         label = measurement.clean_title

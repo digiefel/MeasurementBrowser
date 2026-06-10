@@ -1,9 +1,12 @@
 function _cache_activity_model(ui_state)
-    state = get(ui_state, :cache_state, :idle)
-    progress = get(ui_state, :cache_progress, _new_scan_progress())
-    total = get(progress, :total_csv, 0)
-    processed = get(progress, :processed_csv, 0)
-    loaded = get(progress, :loaded_measurements, 0)
+    workspace = get(ui_state, :workspace, nothing)
+    state = workspace isa Workspace.Workspace ? workspace.cache_job.state : :idle
+    progress = workspace isa Workspace.Workspace ?
+        workspace.cache_job.progress :
+        WorkspaceProgress()
+    total = progress.total_files
+    processed = progress.processed_files
+    loaded = progress.loaded_measurements
     fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
     if state == :loading
@@ -18,13 +21,13 @@ function _cache_activity_model(ui_state)
             cancel_label="Cancel Reload",
         )
     elseif state == :writing
-        phase = get(progress, :phase, :idle)
+        phase = progress.phase
         progress_text = phase == :cache_finalize ?
             "Finalizing cache metadata and indexes" :
             total > 0 ?
             @sprintf("Processed %d/%d cache entries, cached %d measurements", processed, total, loaded) :
             @sprintf("Cached %d measurements", loaded)
-        operation = get(ui_state, :cache_operation, :update)
+        operation = workspace.cache.operation
         title = phase == :cache_finalize ? "Cache: Finalizing" :
             operation == :build ? "Cache: Building" :
             operation == :rebuild ? "Cache: Rebuilding" : "Cache: Updating"
@@ -56,7 +59,7 @@ function _cache_activity_model(ui_state)
     elseif state == :error
         return (
             title="Error",
-            detail=get(ui_state, :cache_error, "Cache job failed."),
+            detail=workspace.cache_job.error,
             progress="Failed",
             fraction,
             cancel_label="Cancel",
@@ -79,9 +82,12 @@ function _cache_activity_model(ui_state)
     )
 end
 
-function _progress_fraction(progress)
-    total = get(progress, :total_csv, 0)
-    processed = get(progress, :processed_csv, 0)
+"""
+Return completed work as a value between zero and one.
+"""
+function _progress_fraction(progress::WorkspaceProgress)::Float32
+    total = progress.total_files
+    processed = progress.processed_files
     total <= 0 && return 0.0f0
     return Float32(clamp(processed / total, 0, 1))
 end
@@ -92,24 +98,26 @@ function _render_progress_indicator!(ui_state, item)
 end
 
 function _source_rescan_progress_model(ui_state)
-    source_state = get(ui_state, :source_scan_state, :idle)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    source_state = workspace.scan.state
     if !(source_state in (:counting, :discovering, :scanning, :analyzing, :canceling, :done, :canceled, :error))
         return nothing
     end
     if source_state == :error
         return (
             title="Rescan: Error",
-            progress=get(ui_state, :source_scan_error, "Source scan failed."),
+            progress=workspace.scan.error,
             fraction=0.0f0,
             show_bar=false,
         )
     end
 
-    progress = get(ui_state, :source_scan_progress, _new_scan_progress())
-    total = get(progress, :total_csv, 0)
-    processed = get(progress, :processed_csv, 0)
-    loaded = get(progress, :loaded_measurements, 0)
-    skipped = get(progress, :skipped_csv, 0)
+    progress = workspace.scan.progress
+    total = progress.total_files
+    processed = progress.processed_files
+    loaded = progress.loaded_measurements
+    skipped = progress.skipped_files
     text = if source_state == :canceling
         "Canceling source scan..."
     elseif source_state == :canceled
@@ -150,7 +158,10 @@ end
 
 function _cache_progress_models(ui_state)
     models = NamedTuple[]
-    cache_state = get(ui_state, :cache_state, :idle)
+    workspace = get(ui_state, :workspace, nothing)
+    cache_state = workspace isa Workspace.Workspace ?
+        workspace.cache_job.state :
+        :idle
     if cache_state in (:loading, :writing, :canceling)
         activity = _cache_activity_model(ui_state)
         push!(models, (
@@ -174,9 +185,12 @@ function _source_progress_models(ui_state)
 end
 
 function _cache_toolbar_model(ui_state)
-    identity = get(ui_state, :cache_identity, nothing)
-    status = get(ui_state, :cache_status, nothing)
-    cache_state = get(ui_state, :cache_state, :idle)
+    workspace = get(ui_state, :workspace, nothing)
+    identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
+    status = workspace isa Workspace.Workspace ? workspace.cache.status : nothing
+    cache_state = workspace isa Workspace.Workspace ?
+        workspace.cache_job.state :
+        :idle
     activity = _cache_activity_model(ui_state)
 
     if identity === nothing
@@ -198,7 +212,7 @@ function _cache_toolbar_model(ui_state)
             detail="Reading cached measurements from the HDF5 file.",
         )
     elseif cache_state == :missing
-        message = get(ui_state, :cache_error, "")
+        message = workspace.cache_job.error
         return (
             label="Cache: Missing",
             color=(0.82, 0.48, 0.12, 1.0),
@@ -208,7 +222,7 @@ function _cache_toolbar_model(ui_state)
         return (
             label="Cache: Error",
             color=(0.72, 0.18, 0.18, 1.0),
-            detail=get(ui_state, :cache_error, "Cache error"),
+            detail=workspace.cache_job.error,
         )
     elseif cache_state == :canceled
         return (
@@ -217,7 +231,7 @@ function _cache_toolbar_model(ui_state)
             detail="Cache update was canceled.",
         )
     elseif status isa ProjectCacheStatus
-        if !get(ui_state, :cache_source_checked, true)
+        if !workspace.cache.source_checked
             return (
                 label="Cache: Loaded",
                 color=(0.20, 0.58, 0.30, 1.0),
@@ -254,16 +268,11 @@ function _cache_toolbar_model(ui_state)
 end
 
 function _source_scan_matches_cache(ui_state, identity::ProjectCacheIdentity)
-    source = get(ui_state, :source_scan_result, nothing)
+    workspace = get(ui_state, :workspace, nothing)
+    source = workspace isa Workspace.Workspace ? workspace.index.source : nothing
     return source isa SourceScan &&
         source.root_path == identity.root_path &&
         project_name(source.project) == identity.project_name
-end
-
-function _cache_build_label(ui_state, identity::ProjectCacheIdentity, cache_state::Symbol)
-    has_source = _source_scan_matches_cache(ui_state, identity)
-    verb = cache_state == :missing ? "Build" : "Rebuild"
-    return has_source ? "$(verb) Cache" : "Scan and $(verb) Cache"
 end
 
 function _cache_button_hover_color(color)
@@ -473,7 +482,8 @@ function render_menu_bar(ui_state)
                 ig.EndMenu()
             end
 
-            has_root = haskey(ui_state, :root_path) && !isempty(ui_state[:root_path])
+            workspace = get(ui_state, :workspace, nothing)
+            has_root = workspace isa Workspace.Workspace
             source_rescan_running = _source_scan_running(ui_state)
             rescan_label = source_rescan_running ? "Cancel Rescan" : "Rescan"
             can_rescan = has_root
@@ -482,11 +492,8 @@ function render_menu_bar(ui_state)
                 if source_rescan_running
                     _request_source_scan_cancel!(ui_state)
                 else
-                    proj = haskey(ui_state, :project) ?
-                        ui_state[:project] :
-                        _project_for_preference(get(ui_state, :project_preference, "auto"))
-                    @info "Rescanning path: $(ui_state[:root_path])"
-                    _launch_source_scan_job!(ui_state, ui_state[:root_path], proj)
+                    @info "Rescanning path: $(workspace.root_path)"
+                    _launch_source_scan_job!(ui_state)
                 end
             end
             !can_rescan && ig.EndDisabled()
@@ -504,7 +511,6 @@ function render_menu_bar(ui_state)
         !bad_visibility_toggle_enabled && ig.BeginDisabled()
         if ig.MenuItem("Show Bad", C_NULL, show_bad_effective)
             ui_state[:show_bad] = !get(ui_state, :show_bad, true)
-            _apply_visible_selection!(ui_state)
         end
         if !bad_visibility_toggle_enabled
             ig.EndDisabled()
@@ -513,14 +519,16 @@ function render_menu_bar(ui_state)
                 ig.EndTooltip()
             end
         end
-        has_measurement_selection = !isempty(get(ui_state, :selected_measurements, MeasurementInfo[]))
+        _, selected_measurements, _ = _project_visible_selection(ui_state)
+        has_measurement_selection = !isempty(selected_measurements)
         can_open_figure_scripts = has_measurement_selection ||
                                   !isempty(_figure_script_groups(ui_state)) ||
                                   get(ui_state, :show_figure_script_window, false)
         !can_open_figure_scripts && ig.BeginDisabled()
         if ig.MenuItem("Figure Script", C_NULL, get(ui_state, :show_figure_script_window, false))
             ui_state[:show_figure_script_window] = !get(ui_state, :show_figure_script_window, false)
-            ui_state[:figure_script_root_path] = get(ui_state, :root_path, "")
+            ui_state[:figure_script_root_path] =
+                workspace isa Workspace.Workspace ? workspace.root_path : ""
         end
         if !can_open_figure_scripts
             ig.EndDisabled()
@@ -544,9 +552,12 @@ function render_menu_bar(ui_state)
 end
 
 function _render_cache_controls!(ui_state; compact::Bool)
-    identity = get(ui_state, :cache_identity, nothing)
-    status = get(ui_state, :cache_status, nothing)
-    cache_state = get(ui_state, :cache_state, :idle)
+    workspace = get(ui_state, :workspace, nothing)
+    identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
+    status = workspace isa Workspace.Workspace ? workspace.cache.status : nothing
+    cache_state = workspace isa Workspace.Workspace ?
+        workspace.cache_job.state :
+        :idle
     model = _cache_toolbar_model(ui_state)
     running = _cache_action_blocked(ui_state)
     activity = _cache_activity_model(ui_state)
@@ -599,11 +610,13 @@ function _render_cache_controls!(ui_state; compact::Bool)
             "Errors: $(status.error_files)",
         )
     elseif cache_state == :error
-        message = get(ui_state, :cache_error, "")
+        message = workspace.cache_job.error
         !isempty(message) && ig.TextWrapped(message)
     end
 
-    cache_errors = get(ui_state, :cache_errors, Pair{String,String}[])
+    cache_errors = workspace isa Workspace.Workspace ?
+        workspace.cache.errors :
+        Pair{String,String}[]
     if !isempty(cache_errors)
         ig.Separator()
         ig.TextColored((1.0, 0.35, 0.35, 1.0), "File Errors")
@@ -632,13 +645,16 @@ function _render_cache_controls!(ui_state; compact::Bool)
     has_identity = identity isa ProjectCacheIdentity
     can_update = has_identity &&
         status isa ProjectCacheStatus &&
-        get(ui_state, :cache_source_checked, false) &&
+        workspace.cache.source_checked &&
         cache_state != :missing &&
         cache_state != :error &&
         (status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0)
-    can_build = has_identity && cache_state != :error
-    can_scan = haskey(ui_state, :root_path) && !isempty(get(ui_state, :root_path, ""))
-    can_press_scan = can_scan && !_cache_action_blocked(ui_state)
+    can_build = has_identity &&
+        workspace.index.source isa SourceScan &&
+        cache_state != :error
+    can_scan = workspace isa Workspace.Workspace
+    can_press_scan =
+        can_scan && (!_cache_action_blocked(ui_state) || _source_scan_running(ui_state))
 
     !can_press_scan && ig.BeginDisabled()
     scan_label = _source_scan_running(ui_state) ? "Cancel Scan" : "Scan Source"
@@ -646,10 +662,7 @@ function _render_cache_controls!(ui_state; compact::Bool)
         if _source_scan_running(ui_state)
             _request_source_scan_cancel!(ui_state)
         else
-            proj = haskey(ui_state, :project) ?
-                ui_state[:project] :
-                _project_for_preference(get(ui_state, :project_preference, "auto"))
-            _launch_source_scan_job!(ui_state, ui_state[:root_path], proj)
+            _launch_source_scan_job!(ui_state)
         end
     end
     !can_press_scan && ig.EndDisabled()
@@ -661,7 +674,7 @@ function _render_cache_controls!(ui_state; compact::Bool)
     (!can_update || running) && ig.EndDisabled()
 
     (!can_build || running) && ig.BeginDisabled()
-    build_label = has_identity ? _cache_build_label(ui_state, identity, cache_state) : "Build Cache"
+    build_label = cache_state == :missing ? "Build Cache" : "Rebuild Cache"
     if ig.Button(build_label, (-1, 0))
         _queue_cache_update!(ui_state; full_rebuild=true)
     end
@@ -679,8 +692,9 @@ function render_project_window(ui_state)
 
     open_ref = Ref(true)
     if ig.Begin("Project Settings###project_window", open_ref, ig.ImGuiWindowFlags_AlwaysAutoResize)
-        if haskey(ui_state, :project)
-            proj = ui_state[:project]
+        workspace = get(ui_state, :workspace, nothing)
+        if workspace isa Workspace.Workspace
+            proj = workspace.project
             ig.Text("Active: $(project_name(proj))")
         else
             ig.TextDisabled("No folder loaded yet")
@@ -712,9 +726,12 @@ function render_project_window(ui_state)
         end
 
         if changed
-            current_root = get(ui_state, :root_path, "")
-            _persist_preferences!(ui_state; path=isempty(current_root) ? nothing : current_root)
-            if !isempty(current_root)
+            current_root = workspace isa Workspace.Workspace ? workspace.root_path : ""
+            _persist_preferences!(
+                ui_state;
+                path=isempty(current_root) ? nothing : current_root,
+            )
+            if workspace isa Workspace.Workspace
                 @info "Project preference changed to '$(ui_state[:project_preference])' - reloading cache"
                 _open_project_path!(ui_state, current_root)
             end
@@ -758,8 +775,6 @@ end
 function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; engine=nothing, spawn=1)
     ig.set_backend(:GlfwOpenGL3)
     ui_state = Dict{Symbol,Any}()
-    _init_scan_state!(ui_state)
-    _init_cache_state!(ui_state)
     _init_tag_state!(ui_state)
     _init_figure_script_state!(ui_state)
     _init_plot_state!(ui_state)

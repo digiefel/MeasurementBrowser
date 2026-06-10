@@ -110,7 +110,10 @@ function _persist_preferences!(
 
     recents = _parse_recent_projects(prefs)
     if path !== nothing && !isempty(path)
-        cache_id = string(get(ui_state, :cache_id, ""))
+        workspace = get(ui_state, :workspace, nothing)
+        cache_id = workspace isa Workspace.Workspace ?
+            workspace.cache.identity.cache_id :
+            ""
         _update_recent_projects(recents, path, pref, _current_figure_script_output_dir(ui_state), cache_id)
         prefs["recent_projects"] = recents
     end
@@ -165,9 +168,9 @@ function _cache_id_for_path!(ui_state, path::String)::String
 end
 
 function _persist_current_project_preferences!(ui_state)::Nothing
-    current_root = get(ui_state, :root_path, "")
-    isempty(current_root) && return nothing
-    _persist_preferences!(ui_state; path=current_root)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    _persist_preferences!(ui_state; path=workspace.root_path)
     return nothing
 end
 
@@ -302,7 +305,9 @@ _measurement_ids(measurements)::Vector{String} =
     [measurement.unique_id for measurement in measurements if measurement isa MeasurementInfo]
 
 function _measurements_for_ids(ui_state, ids::Vector{String})::Vector{MeasurementInfo}
-    index = get(ui_state, :measurement_index, Dict{String,MeasurementInfo}())
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return MeasurementInfo[]
+    index = workspace.index.measurements
     return [index[id] for id in ids if haskey(index, id)]
 end
 
@@ -344,10 +349,8 @@ function _persisted_plot_view(entry)::PersistedPlotView
 end
 
 function _project_view_from_ui_state(ui_state)::Union{Nothing,PersistedProjectView}
-    root_path = get(ui_state, :root_path, "")
-    isempty(root_path) && return nothing
-    project = get(ui_state, :project, nothing)
-    project isa AbstractProject || return nothing
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
 
     open_plots = get(ui_state, :open_plot_windows, Dict{Symbol,Any}[])
     main_plot_state = Dict{Symbol,Any}(
@@ -357,14 +360,14 @@ function _project_view_from_ui_state(ui_state)::Union{Nothing,PersistedProjectVi
     )
 
     return PersistedProjectView(
-        project=project_name(project),
+        project=project_name(workspace.project),
         tree=PersistedTreeView(
             expanded=copy(get(ui_state, :expanded_device_paths, String[])),
-            selected=copy(get(ui_state, :selected_device_paths, String[])),
+            selected=copy(workspace.selection.device_paths),
             filter=String(get(ui_state, :tree_filter, "")),
         ),
         measurements=PersistedMeasurementsView(
-            selected=copy(get(ui_state, :selected_measurement_ids, String[])),
+            selected=copy(workspace.selection.measurement_ids),
             filter=String(get(ui_state, :measurement_filter, "")),
         ),
         plot_kinds=copy(get(ui_state, :plot_kind_by_measurement_kind, Dict{String,String}())),
@@ -412,9 +415,10 @@ function _restore_plot_windows!(ui_state, views::Vector{PersistedPlotView})::Not
 end
 
 function _apply_project_view!(ui_state, view::PersistedProjectView)::Nothing
+    workspace = ui_state[:workspace]::Workspace.Workspace
     ui_state[:expanded_device_paths] = copy(view.tree.expanded)
-    ui_state[:selected_device_paths] = copy(view.tree.selected)
-    ui_state[:selected_measurement_ids] = copy(view.measurements.selected)
+    workspace.selection.device_paths = copy(view.tree.selected)
+    workspace.selection.measurement_ids = copy(view.measurements.selected)
     ui_state[:tree_filter] = view.tree.filter
     ui_state[:measurement_filter] = view.measurements.filter
     ui_state[:plot_kind_by_measurement_kind] = copy(view.plot_kinds)
@@ -426,7 +430,6 @@ function _apply_project_view!(ui_state, view::PersistedProjectView)::Nothing
     delete!(ui_state, :_last_plot_key)
     _restore_plot_windows!(ui_state, view.plot_windows)
     _reset_project_filter_widgets!(ui_state)
-    _apply_visible_selection!(ui_state)
     return nothing
 end
 
@@ -435,7 +438,8 @@ function _save_project_view_if_changed!(ui_state)::Nothing
     view === nothing && return nothing
     saved = get(ui_state, :project_view_saved, nothing)
     saved isa PersistedProjectView && _same_project_view(saved, view) && return nothing
-    _save_project_view(get(ui_state, :root_path, ""), view)
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    _save_project_view(workspace.root_path, view)
     ui_state[:project_view_saved] = view
     return nothing
 end

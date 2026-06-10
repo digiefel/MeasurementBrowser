@@ -11,56 +11,22 @@ function _open_project_path!(ui_state, path::String; persist=true)
     ui_state[:project_preference] = _project_preference_for_path(ui_state, norm_path)
     proj = _project_for_preference(ui_state[:project_preference])
     cache_id = _cache_id_for_path!(ui_state, norm_path)
+    _request_background_jobs_cancel!(ui_state)
+    _wait_for_background_jobs!(ui_state)
     _load_project_view!(ui_state, norm_path, proj)
     _load_tag_state_for_root!(ui_state, norm_path)
-    _launch_project_reload_job!(ui_state, norm_path, proj, cache_id; persist)
-    _launch_source_scan_job!(ui_state, norm_path, proj; persist=false, replace=true)
+    _begin_scan!(ui_state, norm_path, proj, has_device_metadata(norm_path))
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace.cache.identity = project_cache_identity(cache_id, proj, norm_path)
+    _launch_cache_load_job!(ui_state; persist)
+    _launch_source_scan_job!(ui_state; persist=false)
+    return nothing
 end
 
 function _project_status_text(ui_state)
-    if haskey(ui_state, :project)
-        return "Active: $(project_name(ui_state[:project]))"
-    end
-    return "No project loaded"
-end
-
-function _new_scan_progress()
-    return Dict{Symbol,Any}(
-        :phase => :idle,
-        :total_csv => 0,
-        :processed_csv => 0,
-        :loaded_measurements => 0,
-        :skipped_csv => 0,
-        :current_path => "",
-    )
-end
-
-function _init_scan_state!(ui_state)
-    ui_state[:source_scan_state] = :idle
-    ui_state[:source_scan_progress] = _new_scan_progress()
-    ui_state[:source_scan_error] = ""
-    ui_state[:source_scan_seq] = 0
-    ui_state[:active_source_scan_id] = 0
-    ui_state[:source_scan_events] = nothing
-    ui_state[:source_scan_cancel_token] = nothing
-    ui_state[:source_scan_path] = ""
-    ui_state[:source_scan_result] = nothing
-end
-
-function _init_cache_state!(ui_state)
-    ui_state[:cache_state] = :idle
-    ui_state[:cache_progress] = _new_scan_progress()
-    ui_state[:cache_error] = ""
-    ui_state[:cache_id] = ""
-    ui_state[:cache_identity] = nothing
-    ui_state[:cache_status] = nothing
-    ui_state[:cache_source_checked] = false
-    ui_state[:cache_errors] = Pair{String,String}[]
-    ui_state[:cache_seq] = 0
-    ui_state[:active_cache_id] = 0
-    ui_state[:cache_events] = nothing
-    ui_state[:cache_cancel_token] = nothing
-    set_active_project_cache!(nothing)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return "No project loaded"
+    return "Active: $(project_name(workspace.project))"
 end
 
 function _init_tag_state!(ui_state)
@@ -68,14 +34,6 @@ function _init_tag_state!(ui_state)
     ui_state[:tag_state] = nothing
     ui_state[:tag_state_error] = ""
     ui_state[:expanded_device_paths] = String[]
-    ui_state[:selected_device_paths] = String[]
-    ui_state[:selected_measurement_ids] = String[]
-    ui_state[:selected_devices] = HierarchyNode[]
-    ui_state[:selected_measurements] = MeasurementInfo[]
-    ui_state[:selected_all_measurements] = MeasurementInfo[]
-    ui_state[:selected_measurement_id_set] = Set{String}()
-    ui_state[:selected_path] = String[]
-    ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
 end
 
 function _init_plot_state!(ui_state)
@@ -92,10 +50,12 @@ function select_source_file!(
     ui_state::Dict{Symbol,Any},
     filepath::AbstractString,
 )::Bool
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return false
     path = String(filepath)
     measurements = [
         measurement
-        for measurement in get(ui_state, :all_measurements, MeasurementInfo[])
+        for measurement in workspace.index.hierarchy.all_measurements
         if measurement.filepath == path
     ]
     isempty(measurements) && return false
@@ -112,11 +72,11 @@ function select_source_file!(
     end
 
     ui_state[:expanded_device_paths] = expanded_paths
-    ui_state[:selected_device_paths] = device_paths
-    ui_state[:selected_measurement_ids] = [measurement.unique_id for measurement in measurements]
+    workspace.selection.device_paths = device_paths
+    workspace.selection.measurement_ids =
+        [measurement.unique_id for measurement in measurements]
     ui_state[:scroll_to_device_path] = first(device_paths)
     ui_state[:scroll_to_measurement_id] = first(measurements).unique_id
-    _apply_visible_selection!(ui_state)
     return true
 end
 
@@ -166,33 +126,36 @@ function _init_figure_script_state!(ui_state)
 end
 
 function _remember_background_task!(ui_state, task::Task)::Task
-    tasks = get!(ui_state, :background_tasks) do
-        Task[]
-    end
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    tasks = workspace.background_tasks
     filter!(!istaskdone, tasks)
     push!(tasks, task)
     return task
 end
 
-function _request_cancel_token!(ui_state, key::Symbol)::Nothing
-    token = get(ui_state, key, nothing)
+"""
+Request cancellation of one running workspace operation.
+"""
+function _request_job_cancel!(job::WorkspaceJob)::Nothing
+    token = job.cancel_token
     token === nothing && return nothing
     Base.Threads.atomic_xchg!(token, true)
+    job.state = :canceling
     return nothing
 end
 
 function _request_background_jobs_cancel!(ui_state)::Nothing
-    ui_state[:shutting_down] = true
-    _request_cancel_token!(ui_state, :source_scan_cancel_token)
-    _request_cancel_token!(ui_state, :cache_cancel_token)
-    _source_scan_running(ui_state) && (ui_state[:source_scan_state] = :canceling)
-    _cache_action_blocked(ui_state) && (ui_state[:cache_state] = :canceling)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    _source_scan_running(ui_state) && _request_job_cancel!(workspace.scan)
+    _cache_action_blocked(ui_state) && _request_job_cancel!(workspace.cache_job)
     return nothing
 end
 
 function _wait_for_background_jobs!(ui_state)::Nothing
-    tasks = get(ui_state, :background_tasks, Task[])
-    tasks isa Vector{Task} || return nothing
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    tasks = workspace.background_tasks
     while true
         filter!(!istaskdone, tasks)
         isempty(tasks) && return nothing
@@ -202,6 +165,7 @@ end
 
 function _shutdown_background_jobs!(ui_state)::Nothing
     get(ui_state, :shutdown_complete, false) && return nothing
+    ui_state[:shutting_down] = true
     _request_background_jobs_cancel!(ui_state)
     _wait_for_background_jobs!(ui_state)
     ui_state[:shutdown_complete] = true
@@ -209,13 +173,11 @@ function _shutdown_background_jobs!(ui_state)::Nothing
 end
 
 function _clear_selection!(ui_state)
-    ui_state[:selected_device_paths] = String[]
-    ui_state[:selected_measurement_ids] = String[]
-    ui_state[:selected_devices] = HierarchyNode[]
-    ui_state[:selected_measurements] = MeasurementInfo[]
-    ui_state[:selected_all_measurements] = MeasurementInfo[]
-    ui_state[:selected_measurement_id_set] = Set{String}()
-    ui_state[:selected_path] = String[]
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    empty!(workspace.selection.device_paths)
+    empty!(workspace.selection.measurement_ids)
+    return nothing
 end
 
 function _figure_script_groups(ui_state)
@@ -315,6 +277,7 @@ function _figure_script_job_request(
     completion_message::AbstractString,
 )
     operation in (:create, :replace) || error("Unsupported figure-script job operation '$operation'")
+    workspace = ui_state[:workspace]::Workspace.Workspace
     return Dict{Symbol,Any}(
         :operation => operation,
         :groups => copy(groups),
@@ -322,8 +285,8 @@ function _figure_script_job_request(
         :all_measurements => all_measurements,
         :group_name => String(group_name),
         :group_index => group_index,
-        :scan_id => get(ui_state, :source_scan_seq, 0),
-        :root_path => get(ui_state, :root_path, ""),
+        :scan_id => workspace.scan.id,
+        :root_path => workspace.root_path,
         :tag_state => get(ui_state, :tag_state, nothing),
         :status_message => String(status_message),
         :completion_message => String(completion_message),
@@ -406,8 +369,9 @@ function _poll_figure_script_job_events!(ui_state)
 
         if msg.kind == :done
             _record_figure_script_job_profile!(ui_state, msg.operation, msg.profile)
-            if msg.scan_id == get(ui_state, :source_scan_seq, 0) &&
-               msg.root_path == get(ui_state, :root_path, "")
+            workspace = ui_state[:workspace]::Workspace.Workspace
+            if msg.scan_id == workspace.scan.id &&
+               msg.root_path == workspace.root_path
                 ui_state[:figure_script_groups] = msg.groups
                 _invalidate_figure_script_group_matches!(ui_state)
                 _set_selected_figure_script_group!(ui_state, msg.selected_index)
@@ -439,7 +403,9 @@ function _reset_figure_script_state!(ui_state, root_path::AbstractString="")
 end
 
 function _current_scan_measurements(ui_state)
-    return get(ui_state, :all_measurements, MeasurementInfo[])
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return MeasurementInfo[]
+    return workspace.index.hierarchy.all_measurements
 end
 
 function _invalidate_figure_script_group_matches!(ui_state)
@@ -490,14 +456,15 @@ end
 
 function _selected_measurements_in_panel_order(ui_state)
     filter_meas = get(ui_state, :_imgui_text_filter_meas, nothing)
-    all_measurements = _selected_measurements(ui_state)
+    all_measurements = _measurements_of_selected_devices(ui_state)
     visible_measurements = if filter_meas === nothing
         all_measurements
     else
-        proj = ui_state[:project]
-        _visible_measurements(ui_state, proj, all_measurements, filter_meas)
+        workspace = ui_state[:workspace]::Workspace.Workspace
+        _visible_measurements(ui_state, workspace.project, all_measurements, filter_meas)
     end
-    selected_ids = Set(get(ui_state, :selected_measurement_ids, String[]))
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    selected_ids = Set(workspace.selection.measurement_ids)
     return [measurement for measurement in visible_measurements if measurement.unique_id in selected_ids]
 end
 
@@ -609,25 +576,30 @@ function _scan_running(ui_state)
 end
 
 function _cache_action_blocked(ui_state)
-    return get(ui_state, :cache_state, :idle) in (:loading, :writing, :canceling)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return false
+    return workspace.cache_job.state in (:loading, :writing, :canceling)
 end
 
 function _source_scan_running(ui_state)
-    return get(ui_state, :source_scan_state, :idle) in (:counting, :discovering, :scanning, :analyzing, :canceling)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return false
+    return workspace.scan.state in
+        (:counting, :discovering, :scanning, :analyzing, :canceling)
 end
 
 function _request_cache_cancel!(ui_state)
-    token = get(ui_state, :cache_cancel_token, nothing)
-    token === nothing && return
-    Base.Threads.atomic_xchg!(token, true)
-    ui_state[:cache_state] = :canceling
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    _request_job_cancel!(workspace.cache_job)
+    return nothing
 end
 
 function _request_source_scan_cancel!(ui_state)
-    token = get(ui_state, :source_scan_cancel_token, nothing)
-    token === nothing && return
-    Base.Threads.atomic_xchg!(token, true)
-    ui_state[:source_scan_state] = :canceling
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    _request_job_cancel!(workspace.scan)
+    return nothing
 end
 
 function _begin_scan!(
@@ -636,9 +608,13 @@ function _begin_scan!(
     proj::AbstractProject,
     device_metadata_available::Bool=has_device_metadata(path),
 )
-    current_project = get(ui_state, :project, nothing)
+    current_workspace = get(ui_state, :workspace, nothing)
+    current_project = current_workspace isa Workspace.Workspace ?
+        current_workspace.project :
+        nothing
     same_project =
-        get(ui_state, :root_path, "") == path &&
+        current_workspace isa Workspace.Workspace &&
+        current_workspace.root_path == path &&
         current_project isa AbstractProject &&
         project_name(current_project) == project_name(proj)
 
@@ -657,24 +633,25 @@ function _begin_scan!(
         ui_state[:figure_script_root_path] = path
     end
 
+    workspace = same_project ?
+        current_workspace :
+        Workspace.Workspace(proj, path)
     hierarchy = MeasurementHierarchy(path, device_metadata_available, proj, 0)
-    ui_state[:scan_hierarchy] = hierarchy
-    ui_state[:hierarchy_root] = hierarchy.root
-    ui_state[:all_measurements] = hierarchy.all_measurements
-    ui_state[:root_path] = path
-    ui_state[:has_device_metadata] = device_metadata_available
-    ui_state[:project] = proj
-    ui_state[:skipped_count] = 0
-    ui_state[:device_metadata_keys] = Symbol[]
-    ui_state[:measurement_index] = Dict{String,MeasurementInfo}()
+    workspace.index = WorkspaceIndex(
+        hierarchy,
+        Dict{String,MeasurementInfo}(),
+        Symbol[],
+        nothing,
+    )
+    ui_state[:workspace] = workspace
     if !same_project
         view = get(ui_state, :project_view_loaded, PersistedProjectView(project=project_name(proj)))
         _apply_project_view!(ui_state, view)
     else
-        _apply_visible_selection!(ui_state)
         _refresh_plot_measurement_refs!(ui_state)
     end
     _invalidate_figure_script_scan_cache!(ui_state)
+    return nothing
 end
 
 function _build_measurement_index(measurements::Vector{MeasurementInfo})
@@ -699,42 +676,40 @@ function _device_metadata_keys(measurements::Vector{MeasurementInfo})
     return sort!(collect(metadata_keys); by=String)
 end
 
-function _apply_scan_snapshot!(ui_state, snapshot)
-    hierarchy = snapshot.hierarchy
-    ui_state[:scan_hierarchy] = hierarchy
-    ui_state[:hierarchy_root] = hierarchy.root
-    ui_state[:all_measurements] = hierarchy.all_measurements
-    ui_state[:measurement_index] = snapshot.measurement_index
-    ui_state[:device_metadata_keys] = snapshot.device_metadata_keys
-    ui_state[:skipped_count] = snapshot.skipped_count
-    ui_state[:has_device_metadata] =
-        hierarchy.has_device_metadata || has_device_metadata(hierarchy.root_path)
-    _apply_visible_selection!(ui_state)
+"""
+Replace the workspace index with one complete hierarchy and refresh browser references.
+"""
+function _apply_scan_snapshot!(
+    ui_state,
+    hierarchy::MeasurementHierarchy,
+)::Nothing
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace.index = WorkspaceIndex(
+        hierarchy,
+        _build_measurement_index(hierarchy.all_measurements),
+        _device_metadata_keys(hierarchy.all_measurements),
+        workspace.index.source,
+    )
     _refresh_plot_measurement_refs!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
+    return nothing
 end
 
 function _apply_cache_snapshot!(ui_state, index::ProjectCacheIndex)
+    workspace = ui_state[:workspace]::Workspace.Workspace
     identity = index.identity
-    hierarchy = index.source.hierarchy
-    _apply_scan_snapshot!(ui_state, (
-        hierarchy,
-        measurement_index=_build_measurement_index(hierarchy.all_measurements),
-        device_metadata_keys=_device_metadata_keys(hierarchy.all_measurements),
-        skipped_count=hierarchy.skipped_count,
-    ))
-    ui_state[:root_path] = identity.root_path
-    ui_state[:project] = index.source.project
-    ui_state[:cache_id] = identity.cache_id
-    ui_state[:cache_identity] = identity
-    set_active_project_cache!(index)
-    source = get(ui_state, :source_scan_result, nothing)
+    identity.root_path == workspace.root_path ||
+        error("Loaded cache belongs to $(identity.root_path), not $(workspace.root_path)")
+    workspace.cache.identity = identity
+    workspace.cache.index = index
+    source = workspace.index.source
+    source === nothing && _apply_scan_snapshot!(ui_state, index.source.hierarchy)
     if source isa SourceScan && source.root_path == identity.root_path
-        ui_state[:cache_status] = cache_status(index, source)
-        ui_state[:cache_source_checked] = true
+        workspace.cache.status = cache_status(index, source)
+        workspace.cache.source_checked = true
     else
         cached_files = length(index.files)
-        ui_state[:cache_status] = ProjectCacheStatus(
+        workspace.cache.status = ProjectCacheStatus(
             cached_files,
             cached_files,
             0,
@@ -743,35 +718,30 @@ function _apply_cache_snapshot!(ui_state, index::ProjectCacheIndex)
             0,
             length(index.analysis_errors),
         )
-        ui_state[:cache_source_checked] = false
+        workspace.cache.source_checked = false
     end
-    ui_state[:cache_errors] = sort!(collect(index.analysis_errors); by=first)
-    ui_state[:cache_state] = :ready
-    ui_state[:cache_error] = ""
+    workspace.cache.errors = sort!(collect(index.analysis_errors); by=first)
+    workspace.cache_job.state = :ready
+    workspace.cache_job.error = ""
     return nothing
 end
 
 function _apply_source_scan!(ui_state, source::SourceScan)
-    ui_state[:source_scan_result] = source
-    _apply_scan_snapshot!(ui_state, (
-        hierarchy=source.hierarchy,
-        measurement_index=_build_measurement_index(source.hierarchy.all_measurements),
-        device_metadata_keys=_device_metadata_keys(source.hierarchy.all_measurements),
-        skipped_count=source.hierarchy.skipped_count,
-    ))
-    ui_state[:root_path] = source.root_path
-    ui_state[:project] = source.project
-    ui_state[:has_device_metadata] = source.hierarchy.has_device_metadata
-    identity = get(ui_state, :cache_identity, nothing)
-    if identity isa ProjectCacheIdentity && identity.root_path == source.root_path
-        ui_state[:cache_errors] =
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    source.root_path == workspace.root_path ||
+        error("Source scan belongs to $(source.root_path), not $(workspace.root_path)")
+    workspace.index.source = source
+    _apply_scan_snapshot!(ui_state, source.hierarchy)
+    identity = workspace.cache.identity
+    if identity.root_path == source.root_path
+        workspace.cache.errors =
             sort!(collect(ProjectCacheIndex(identity, source).analysis_errors); by=first)
-        cache_state = get(ui_state, :cache_state, :idle)
+        cache_state = workspace.cache_job.state
         if cache_state == :ready
-            ui_state[:cache_status] = cache_status(project_cache_index(identity), source)
-            ui_state[:cache_source_checked] = true
+            workspace.cache.status = cache_status(workspace.cache.index, source)
+            workspace.cache.source_checked = true
         elseif !isfile(identity.cache_path) || cache_state == :missing
-            ui_state[:cache_status] = ProjectCacheStatus(
+            workspace.cache.status = ProjectCacheStatus(
                 length(source.files),
                 0,
                 0,
@@ -780,12 +750,12 @@ function _apply_source_scan!(ui_state, source::SourceScan)
                 0,
                 0,
             )
-            ui_state[:cache_source_checked] = true
+            workspace.cache.source_checked = true
         else
-            ui_state[:cache_source_checked] = false
+            workspace.cache.source_checked = false
         end
     else
-        set_active_project_cache!(nothing)
+        workspace.cache.index = nothing
     end
     return nothing
 end
@@ -796,22 +766,23 @@ end
 
 function _maybe_update_cache_from_source!(ui_state)::Nothing
     _cache_action_blocked(ui_state) && return nothing
-    source = get(ui_state, :source_scan_result, nothing)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    source = workspace.index.source
     source isa SourceScan || return nothing
-    identity = get(ui_state, :cache_identity, nothing)
-    identity isa ProjectCacheIdentity || return nothing
+    identity = workspace.cache.identity
     identity.root_path == source.root_path || return nothing
     project_name(source.project) == identity.project_name || return nothing
 
-    cache_state = get(ui_state, :cache_state, :idle)
+    cache_state = workspace.cache_job.state
     if cache_state == :missing
         _launch_cache_update_job!(ui_state; full_rebuild=true)
         return nothing
     end
 
-    status = get(ui_state, :cache_status, nothing)
+    status = workspace.cache.status
     status isa ProjectCacheStatus || return nothing
-    get(ui_state, :cache_source_checked, false) || return nothing
+    workspace.cache.source_checked || return nothing
     _cache_status_needs_update(status) || return nothing
     _launch_cache_update_job!(ui_state)
     return nothing
@@ -819,12 +790,11 @@ end
 
 function _append_measurements!(ui_state, measurements::Vector{MeasurementInfo})
     isempty(measurements) && return nothing
-    hierarchy = get(ui_state, :scan_hierarchy, nothing)
-    hierarchy isa MeasurementHierarchy || return nothing
-    measurement_index = get!(ui_state, :measurement_index) do
-        Dict{String,MeasurementInfo}()
-    end
-    metadata_keys = Set(get(ui_state, :device_metadata_keys, Symbol[]))
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    hierarchy = workspace.index.hierarchy
+    measurement_index = workspace.index.measurements
+    metadata_keys = Set(workspace.index.device_metadata_keys)
     appended = false
     for measurement in measurements
         haskey(measurement_index, measurement.unique_id) && continue
@@ -835,58 +805,36 @@ function _append_measurements!(ui_state, measurements::Vector{MeasurementInfo})
     end
     appended || return nothing
     sort!(hierarchy)
-    ui_state[:scan_hierarchy] = hierarchy
-    ui_state[:hierarchy_root] = hierarchy.root
-    ui_state[:all_measurements] = hierarchy.all_measurements
-    ui_state[:measurement_index] = measurement_index
-    ui_state[:device_metadata_keys] = sort!(collect(metadata_keys); by=String)
-    _apply_visible_selection!(ui_state)
+    workspace.index.device_metadata_keys = sort!(collect(metadata_keys); by=String)
     _refresh_plot_measurement_refs!(ui_state)
     _invalidate_figure_script_scan_cache!(ui_state)
     return nothing
 end
 
 function _launch_source_scan_job!(
-    ui_state,
-    path::String,
-    proj::AbstractProject;
+    ui_state;
     persist::Bool=true,
-    replace::Bool=false,
 )
-    if _source_scan_running(ui_state)
-        _request_source_scan_cancel!(ui_state)
-        replace || return
-    end
-
-    norm_path = _normalize_project_path(path)
-    cache_id = get(ui_state, :cache_id, "")
-    if isempty(cache_id)
-        cache_id = _cache_id_for_path!(ui_state, norm_path)
-    end
-    identity = project_cache_identity(cache_id, proj, norm_path)
-    ui_state[:cache_id] = cache_id
-    ui_state[:cache_identity] = identity
-    _load_tag_state_for_root!(ui_state, norm_path)
-    ui_state[:source_scan_seq] = get(ui_state, :source_scan_seq, 0) + 1
-    scan_id = ui_state[:source_scan_seq]
-    ui_state[:active_source_scan_id] = scan_id
-    ui_state[:source_scan_path] = norm_path
-    ui_state[:source_scan_state] = :discovering
-    ui_state[:source_scan_progress] = _new_scan_progress()
-    ui_state[:source_scan_error] = ""
-    _begin_scan!(ui_state, norm_path, proj, has_device_metadata(norm_path))
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    _source_scan_running(ui_state) && return nothing
+    job = workspace.scan
+    job.id += 1
+    scan_id = job.id
+    job.state = :discovering
+    job.progress = WorkspaceProgress()
+    job.error = ""
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
-    ui_state[:source_scan_events] = events
-    ui_state[:source_scan_cancel_token] = cancel_token
+    job.events = events
+    job.cancel_token = cancel_token
 
     task = Base.Threads.@spawn begin
         try
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
-                    norm_path;
-                    project=proj,
+                    workspace.root_path;
+                    project=workspace.project,
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
                         scan_id=scan_id,
@@ -902,7 +850,6 @@ function _launch_source_scan_job!(
             put!(events, (
                 kind=:source_scan_result,
                 scan_id=scan_id,
-                identity=identity,
                 source=source,
                 persist=persist,
             ))
@@ -916,54 +863,37 @@ function _launch_source_scan_job!(
             close(events)
         end
     end
+    job.task = task
     _remember_background_task!(ui_state, task)
     return nothing
 end
 
-function _launch_project_reload_job!(
-    ui_state,
-    path::String,
-    proj::AbstractProject,
-    cache_id::String;
+"""
+Start loading the current workspace cache and stream its result back to the browser.
+"""
+function _launch_cache_load_job!(
+    ui_state;
     persist::Bool=true,
-)
-    if _source_scan_running(ui_state)
-        _request_source_scan_cancel!(ui_state)
-    end
-    if _cache_action_blocked(ui_state)
-        _request_cache_cancel!(ui_state)
-    end
-
-    identity = project_cache_identity(cache_id, proj, path)
-    current_root = get(ui_state, :root_path, "")
-    if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
-        _begin_scan!(
-            ui_state,
-            identity.root_path,
-            proj,
-            has_device_metadata(identity.root_path),
-        )
-    else
-        ui_state[:root_path] = identity.root_path
-        ui_state[:project] = proj
-    end
-
-    cache_id_num = get(ui_state, :cache_seq, 0) + 1
-    ui_state[:cache_seq] = cache_id_num
-    ui_state[:active_cache_id] = cache_id_num
-    ui_state[:cache_progress] = _new_scan_progress()
-    ui_state[:cache_id] = cache_id
-    ui_state[:cache_identity] = identity
-    set_active_project_cache!(nothing)
-    ui_state[:cache_state] = :loading
-    ui_state[:cache_error] = ""
-    ui_state[:cache_status] = nothing
-    ui_state[:cache_errors] = Pair{String,String}[]
+)::Nothing
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    _cache_action_blocked(ui_state) && return nothing
+    identity = workspace.cache.identity
+    job = workspace.cache_job
+    job.id += 1
+    cache_id = job.id
+    job.state = :loading
+    job.progress = WorkspaceProgress()
+    job.error = ""
+    workspace.cache.index = nothing
+    workspace.cache.status = nothing
+    workspace.cache.source_checked = false
+    empty!(workspace.cache.errors)
+    workspace.cache.operation = :load
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
-    ui_state[:cache_events] = events
-    ui_state[:cache_cancel_token] = cancel_token
+    job.events = events
+    job.cancel_token = cancel_token
 
     task = Base.Threads.@spawn begin
         try
@@ -972,85 +902,60 @@ function _launch_project_reload_job!(
                     identity;
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
-                        cache_id=cache_id_num,
+                        cache_id,
                         progress=progress,
                     )),
                 )
             end
-            put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=persist))
+            put!(events, (kind=:cache_result, cache_id, snapshot, persist))
         catch err
             if is_job_cancelled(err)
-                put!(events, (kind=:canceled, cache_id=cache_id_num))
+                put!(events, (kind=:canceled, cache_id))
             elseif err isa ProjectCacheError
                 put!(events, (
                     kind=:cache_missing,
-                    cache_id=cache_id_num,
-                    identity=identity,
+                    cache_id,
+                    identity,
                     error=sprint(showerror, err),
-                    persist=persist,
+                    persist,
                 ))
             else
-                put!(events, (kind=:error, cache_id=cache_id_num, error=err, bt=catch_backtrace()))
+                put!(events, (kind=:error, cache_id, error=err, bt=catch_backtrace()))
             end
         finally
             close(events)
         end
     end
+    job.task = task
     _remember_background_task!(ui_state, task)
     return nothing
 end
 
 function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
-    identity = get(ui_state, :cache_identity, nothing)
-    identity isa ProjectCacheIdentity || error("No project cache is bound to the current project")
-    project = get(ui_state, :project, nothing)
-    project isa AbstractProject || error("No project is open")
-    previous_cache_state = get(ui_state, :cache_state, :idle)
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    identity = workspace.cache.identity
+    source = workspace.index.source
+    source isa SourceScan || error("Complete the source scan before updating the cache")
+    previous_cache_state = workspace.cache_job.state
     _cancel_figure_script_job!(ui_state)
     _clear_plot_views!(ui_state)
 
-    cache_id_num = get(ui_state, :cache_seq, 0) + 1
-    ui_state[:cache_seq] = cache_id_num
-    ui_state[:active_cache_id] = cache_id_num
-    ui_state[:cache_progress] = _new_scan_progress()
-    ui_state[:cache_state] = :writing
+    job = workspace.cache_job
+    job.id += 1
+    cache_id = job.id
+    job.progress = WorkspaceProgress()
+    job.state = :writing
+    job.error = ""
     operation = full_rebuild ? (previous_cache_state == :missing ? :build : :rebuild) : :update
-    ui_state[:cache_operation] = operation
-    ui_state[:cache_error] = ""
+    workspace.cache.operation = operation
 
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
-    ui_state[:cache_events] = events
-    ui_state[:cache_cancel_token] = cancel_token
-    existing_source = get(ui_state, :source_scan_result, nothing)
-    if !(existing_source isa SourceScan) ||
-       existing_source.root_path != identity.root_path ||
-       project_name(existing_source.project) != identity.project_name
-        existing_source = nothing
-    end
+    job.events = events
+    job.cancel_token = cancel_token
 
     task = Base.Threads.@spawn begin
         try
-            source = existing_source
-            if source === nothing
-                source = with_cancel(() -> cancel_token[]) do
-                    scan_source(
-                        identity.root_path;
-                        project,
-                        on_progress=(progress) -> put!(events, (
-                            kind=:source_progress,
-                            cache_id=cache_id_num,
-                            progress=progress,
-                        )),
-                        on_measurements=(measurements) -> put!(events, (
-                            kind=:source_measurements,
-                            cache_id=cache_id_num,
-                            measurements=measurements,
-                        )),
-                    )
-                end
-                put!(events, (kind=:source_scan_result, cache_id=cache_id_num, source=source))
-            end
             snapshot = with_cancel(() -> cancel_token[]) do
                 write_project_cache!(
                     identity,
@@ -1058,23 +963,25 @@ function _launch_cache_update_job!(ui_state; full_rebuild::Bool=false)
                     replace=full_rebuild,
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
-                        cache_id=cache_id_num,
+                        cache_id,
                         progress=progress,
                     )),
                 )
             end
-            put!(events, (kind=:cache_result, cache_id=cache_id_num, snapshot=snapshot, persist=true))
+            put!(events, (kind=:cache_result, cache_id, snapshot, persist=true))
         catch err
             if is_job_cancelled(err)
-                put!(events, (kind=:canceled, cache_id=cache_id_num))
+                put!(events, (kind=:canceled, cache_id))
             else
-                put!(events, (kind=:error, cache_id=cache_id_num, error=err, bt=catch_backtrace()))
+                put!(events, (kind=:error, cache_id, error=err, bt=catch_backtrace()))
             end
         finally
             close(events)
         end
     end
+    job.task = task
     _remember_background_task!(ui_state, task)
+    return nothing
 end
 
 function _queue_cache_update!(ui_state; full_rebuild::Bool=false)
@@ -1086,52 +993,34 @@ function _queue_cache_update!(ui_state; full_rebuild::Bool=false)
 end
 
 function _finalize_source_scan!(ui_state)
-    ui_state[:source_scan_events] = nothing
-    ui_state[:source_scan_cancel_token] = nothing
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace.scan.events = nothing
+    workspace.scan.cancel_token = nothing
+    workspace.scan.task = nothing
+    return nothing
 end
 
 function _finalize_cache!(ui_state)
-    ui_state[:cache_events] = nothing
-    ui_state[:cache_cancel_token] = nothing
+    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace.cache_job.events = nothing
+    workspace.cache_job.cancel_token = nothing
+    workspace.cache_job.task = nothing
+    return nothing
 end
 
 function _poll_cache_events!(ui_state)
-    events = get(ui_state, :cache_events, nothing)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    job = workspace.cache_job
+    events = job.events
     events === nothing && return
 
-    pending_measurements = MeasurementInfo[]
     while isready(events)
         msg = take!(events)
-        msg.cache_id == get(ui_state, :active_cache_id, 0) || continue
+        msg.cache_id == job.id || continue
 
         if msg.kind == :progress
-            p = msg.progress
-            progress_dict = Dict{Symbol,Any}(
-                :phase => p.phase,
-                :total_csv => p.total_csv,
-                :processed_csv => p.processed_csv,
-                :loaded_measurements => p.loaded_measurements,
-                :skipped_csv => p.skipped_csv,
-                :current_path => p.current_path,
-            )
-            ui_state[:cache_progress] = progress_dict
-        elseif msg.kind == :source_progress
-            p = msg.progress
-            ui_state[:source_scan_progress] = Dict{Symbol,Any}(
-                :phase => p.phase,
-                :total_csv => p.total_csv,
-                :processed_csv => p.processed_csv,
-                :loaded_measurements => p.loaded_measurements,
-                :skipped_csv => p.skipped_csv,
-                :current_path => p.current_path,
-            )
-            ui_state[:source_scan_state] = p.phase
-        elseif msg.kind == :source_measurements
-            append!(pending_measurements, msg.measurements)
-        elseif msg.kind == :source_scan_result
-            _apply_source_scan!(ui_state, msg.source)
-            ui_state[:source_scan_state] = :done
-            _maybe_update_cache_from_source!(ui_state)
+            job.progress = WorkspaceProgress(msg.progress)
         elseif msg.kind == :cache_result
             _apply_cache_snapshot!(ui_state, msg.snapshot)
             get(msg, :persist, false) &&
@@ -1140,94 +1029,74 @@ function _poll_cache_events!(ui_state)
             _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :cache_missing
             identity = msg.identity
-            proj = get(ui_state, :project, nothing)
-            proj isa AbstractProject || error("No project is open")
-            current_root = get(ui_state, :root_path, "")
-            if current_root != identity.root_path || !haskey(ui_state, :scan_hierarchy)
-                _begin_scan!(
-                    ui_state,
-                    identity.root_path,
-                    proj,
-                    has_device_metadata(identity.root_path),
-                )
-            end
-            ui_state[:cache_id] = identity.cache_id
-            ui_state[:cache_identity] = identity
-            ui_state[:cache_state] = :missing
-            ui_state[:cache_error] = msg.error
+            identity.root_path == workspace.root_path ||
+                error("Missing cache result belongs to another workspace")
+            workspace.cache.identity = identity
+            job.state = :missing
+            job.error = msg.error
             msg.persist && _persist_preferences!(ui_state; path=identity.root_path)
             _finalize_cache!(ui_state)
             _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :canceled
-            ui_state[:cache_state] = :canceled
+            job.state = :canceled
             _finalize_cache!(ui_state)
         elseif msg.kind == :error
-            ui_state[:cache_state] = :error
-            ui_state[:cache_error] = "Cache job failed. See the console for full details."
-            identity = get(ui_state, :cache_identity, nothing)
+            job.state = :error
+            job.error = "Cache job failed. See the console for full details."
+            identity = workspace.cache.identity
             @error(
                 "Cache job failed",
-                cache_path=identity isa ProjectCacheIdentity ? identity.cache_path : "",
-                operation=get(ui_state, :cache_operation, :load),
+                cache_path=identity.cache_path,
+                operation=workspace.cache.operation,
                 exception=(msg.error, msg.bt),
             )
             _finalize_cache!(ui_state)
         end
     end
-    _append_measurements!(ui_state, pending_measurements)
+    return nothing
 end
 
 function _poll_source_scan_events!(ui_state)
-    events = get(ui_state, :source_scan_events, nothing)
+    workspace = get(ui_state, :workspace, nothing)
+    workspace isa Workspace.Workspace || return nothing
+    job = workspace.scan
+    events = job.events
     events === nothing && return
 
     pending_measurements = MeasurementInfo[]
     while isready(events)
         msg = take!(events)
-        msg.scan_id == get(ui_state, :active_source_scan_id, 0) || continue
+        msg.scan_id == job.id || continue
 
         if msg.kind == :progress
-            p = msg.progress
-            progress_dict = Dict{Symbol,Any}(
-                :phase => p.phase,
-                :total_csv => p.total_csv,
-                :processed_csv => p.processed_csv,
-                :loaded_measurements => p.loaded_measurements,
-                :skipped_csv => p.skipped_csv,
-                :current_path => p.current_path,
-            )
-            ui_state[:source_scan_progress] = progress_dict
-            ui_state[:source_scan_state] = p.phase
+            job.progress = WorkspaceProgress(msg.progress)
+            job.state = msg.progress.phase
         elseif msg.kind == :measurements
             append!(pending_measurements, msg.measurements)
         elseif msg.kind == :source_scan_result
-            ui_state[:cache_identity] = msg.identity
-            ui_state[:cache_id] = msg.identity.cache_id
             _apply_source_scan!(ui_state, msg.source)
-            ui_state[:source_scan_state] = :done
-            msg.persist && _persist_preferences!(ui_state; path=msg.identity.root_path)
+            job.state = :done
+            msg.persist && _persist_preferences!(ui_state; path=workspace.root_path)
             _finalize_source_scan!(ui_state)
             _maybe_update_cache_from_source!(ui_state)
         elseif msg.kind == :canceled
-            ui_state[:source_scan_state] = :canceled
+            job.state = :canceled
             _finalize_source_scan!(ui_state)
         elseif msg.kind == :error
-            ui_state[:source_scan_state] = :error
-            ui_state[:source_scan_error] =
-                "Source scan failed. See the console for full details."
-            progress = get(ui_state, :source_scan_progress, _new_scan_progress())
-            project = get(ui_state, :project, nothing)
+            job.state = :error
+            job.error = "Source scan failed. See the console for full details."
             @error(
                 "Source scan job failed",
-                project=project isa AbstractProject ? project_name(project) : "",
-                root=get(ui_state, :root_path, ""),
-                current_file=get(progress, :current_path, ""),
+                project=project_name(workspace.project),
+                root=workspace.root_path,
+                current_file=job.progress.current_path,
                 exception=(msg.error, msg.bt),
             )
             _finalize_source_scan!(ui_state)
         end
     end
     _append_measurements!(ui_state, pending_measurements)
+    return nothing
 end
 
 # Timing & allocation utilities

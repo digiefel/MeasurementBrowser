@@ -113,7 +113,8 @@ end
 
     pn_item   = first(filter(m -> m.measurement_kind === :wakeup_pn,   expanded))
     pund_item = first(filter(m -> m.measurement_kind === :wakeup_pund, expanded))
-    data = MeasurementBrowser.read_measurement_data(RUO2_PROJECT, [pn_item, pund_item])
+    workspace = MeasurementBrowser.Workspace.Workspace(RUO2_PROJECT, dirname(_WAKEUP_FIXTURE))
+    data = MeasurementBrowser.read_measurement_data(workspace, [pn_item, pund_item])
 
     @test length(data) == 2
     @test all(df -> nrow(df) > 0, data)

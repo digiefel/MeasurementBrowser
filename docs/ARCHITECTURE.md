@@ -50,10 +50,10 @@ source-root metadata, computes project stats, and builds the hierarchy described
 [data-model.md](data-model.md). The cache described in [cache.md](cache.md) can restore that
 hierarchy quickly while source scanning continues in the background.
 
-When a view needs measurement data, it goes through `read_measurement_data(project, measurements)`.
-That package-owned path returns cached dataframe data when it is valid and falls back to the
-project's `load_source_data` when the cache is missing or stale. GUI selection, background jobs, and
-Makie embedding are described in [gui.md](gui.md).
+When a view needs measurement data, it goes through
+`read_measurement_data(workspace, measurements)`. The workspace returns data already held in memory,
+then valid cached data, then asks the project to load missing data from its source file. GUI
+selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 ## Ownership Boundaries
 
@@ -66,13 +66,17 @@ Project code owns:
 - computing project-specific stats or processed data
 - defining project-specific visualizers when generic ones are not enough
 
-Package code owns:
+The workspace owns:
 
-- opened-project state
+- the open project and source root
+- the progressively populated measurement index
+- selection identities
 - cache identity, freshness, storage, and repair
-- source scanning and background jobs
-- hierarchy, selection, and GUI state
-- generic visualizers, plot windows, workflow persistence, and figure composition
+- source scanning, cache work, progress, errors, and cancellation
+- direct and processed data already loaded in memory
+
+The browser owns windows, controls, filters, and temporary rendering state. Other package modules
+own generic visualizers, workflow persistence, and figure composition.
 
 Project code should not know whether data came from memory, cache, or source files. Package code
 should not know the experimental meaning of a project file beyond the project-facing functions it
@@ -81,9 +85,9 @@ calls.
 The package expresses that boundary through focused internal modules. `Project` defines the methods
 implemented by a measurement project. `MeasurementIndex` owns source-file records, logical
 measurements, hierarchy construction, and filesystem scanning. `Cache` owns generated HDF5 state.
-`Workspace` owns cache-aware measurement data access. `Visualization` defines the shared plotting
-operations used by projects and the browser. `MeasurementBrowser` exports the small project-facing
-API while keeping these modules internal.
+`Workspace` owns one open source root, its index, selection, cache, loaded data, and background work.
+`Visualization` defines the shared plotting operations used by projects and the browser.
+`MeasurementBrowser` exports the small project-facing API while keeping these modules internal.
 
 ## On-disk metadata
 

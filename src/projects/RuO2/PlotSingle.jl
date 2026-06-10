@@ -52,7 +52,7 @@ function load_source_data(
 end
 
 function debug_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     measurements::Vector{MeasurementInfo},
     source_data::Vector{DataFrame};
     kwargs...,
@@ -313,10 +313,10 @@ function _process_ruo2_tlm_data(measurement::MeasurementInfo, data::DataFrame)::
 end
 
 function process_measurement_data(
-    ::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     measurement::MeasurementInfo,
-    data::DataFrame,
 )::DataFrame
+    data = only(read_measurement_data(workspace, [measurement]))
     measurement.measurement_kind in (:pund, :pn, :wakeup_pn, :wakeup_pund) &&
         return _process_ruo2_pund_data(measurement, data)
     measurement.measurement_kind in (:iv, :breakdown) && return _process_ruo2_iv_data(data)
@@ -325,7 +325,7 @@ function process_measurement_data(
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2PUNDPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -341,7 +341,7 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2PUNDPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
@@ -358,7 +358,7 @@ function plot_data!(
     ax_q = only(axes_q)
     linkxaxes!(ax_time, ax_voltage)
 
-    data = process_measurement_data(project, measurements)
+    data = process_measurement_data(workspace, measurements)
     colors = cgrad(:tab10, max(length(data), 1); categorical=true)
     plotted_q_labels = length(measurements) == 1
     for (index, (measurement, df)) in enumerate(zip(measurements, data))
@@ -409,7 +409,7 @@ function _ruo2_tlm_title(measurement::MeasurementInfo)::String
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2IVSweepPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -421,7 +421,7 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2IVSweepPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
@@ -430,7 +430,7 @@ function plot_data!(
     isempty(axes) && error("RuO2 IV sweep plot figure has no axis")
     ax = only(axes)
 
-    data = process_measurement_data(project, measurements)
+    data = process_measurement_data(workspace, measurements)
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
         label = length(measurements) == 1 ? nothing : measurement.clean_title
@@ -446,7 +446,7 @@ function plot_data!(
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2TLM4PointPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -471,7 +471,7 @@ function _ruo2_tlm_fit_line(df::DataFrame)::Tuple{Vector{Float64},Vector{Float64
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2TLM4PointPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
@@ -483,7 +483,7 @@ function plot_data!(
     ax_iv = only(axes_iv)
     ax_r = only(axes_r)
 
-    data = process_measurement_data(project, measurements)
+    data = process_measurement_data(workspace, measurements)
     colors = cgrad(:tab10, max(length(data), 1); categorical=true)
     for (index, (measurement, df)) in enumerate(zip(measurements, data))
         nrow(df) == 0 && continue
@@ -532,7 +532,7 @@ function plot_data!(
 end
 
 function setup_plot(
-    ::RuO2Project,
+    ::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2CVSweepPlot},
     measurements::Vector{MeasurementInfo},
 )::Figure
@@ -546,7 +546,7 @@ function setup_plot(
 end
 
 function plot_data!(
-    project::RuO2Project,
+    workspace::Workspace.Workspace{RuO2Project},
     plot_kind::Type{RuO2CVSweepPlot},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
@@ -558,7 +558,7 @@ function plot_data!(
     ax_c = only(axes_c)
     ax_z = only(axes_z)
 
-    data = read_measurement_data(project, measurements)
+    data = read_measurement_data(workspace, measurements)
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
         frequencies_Hz = sort(unique(df.frequency_Hz))

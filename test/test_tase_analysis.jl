@@ -54,11 +54,12 @@ const TASEFourTerminalIVPlot = MeasurementBrowser.TASEFourTerminalIVPlot
     end
 
     @testset "plot data api" begin
-        data = read_measurement_data(TASE_PROJECT, measurements)
+        workspace = MeasurementBrowser.Workspace.Workspace(TASE_PROJECT, dirname(fixture1))
+        data = read_measurement_data(workspace, measurements)
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)
 
-        fig = setup_plot(TASE_PROJECT, TASEFourTerminalIVPlot, measurements)
-        @test plot_data!(TASE_PROJECT, TASEFourTerminalIVPlot, measurements, fig) === nothing
+        fig = setup_plot(workspace, TASEFourTerminalIVPlot, measurements)
+        @test plot_data!(workspace, TASEFourTerminalIVPlot, measurements, fig) === nothing
     end
 end

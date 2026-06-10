@@ -70,7 +70,8 @@ const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
             MeasurementBrowser.read_pund_fatigue_file(fixture),
             Int(selected_count),
         )
-        data = MeasurementBrowser.read_measurement_data(RUO2_PROJECT, [selected])
+        workspace = MeasurementBrowser.Workspace.Workspace(RUO2_PROJECT, dirname(fixture))
+        data = MeasurementBrowser.read_measurement_data(workspace, [selected])
 
         @test length(data) == 1
         @test only(data) == expected_df

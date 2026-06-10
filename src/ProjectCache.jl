@@ -45,8 +45,6 @@ struct ProjectCacheIndex
     analysis_errors::Dict{String,String}
 end
 
-const ACTIVE_PROJECT_CACHE = Ref{Union{Nothing,ProjectCacheIndex}}(nothing)
-
 """
 Return the deterministic cache id for a source root.
 
@@ -234,18 +232,6 @@ function cache_status(
 end
 
 """
-Make one loaded cache index available to cache-aware measurement-data access.
-"""
-function set_active_project_cache!(
-    index::Union{Nothing,ProjectCacheIndex},
-)::Nothing
-    lock(PROJECT_CACHE_LOCK) do
-        ACTIVE_PROJECT_CACHE[] = index
-    end
-    return nothing
-end
-
-"""
 Create or update a cache from a finished source scan. `replace=true` discards all existing payloads.
 Normal updates preserve payloads for unchanged files and remove only data made invalid by changed or
 deleted files.
@@ -356,15 +342,13 @@ end
 Read every valid requested payload in one HDF5 operation. Missing or stale entries return `nothing`.
 """
 function cached_measurement_data(
-    project::AbstractProject,
+    index::Union{Nothing,ProjectCacheIndex},
     measurements::Vector{MeasurementInfo};
     processed::Bool=false,
 )::Vector{Union{Nothing,DataFrame}}
     data = Union{Nothing,DataFrame}[nothing for _ in measurements]
-    index = ACTIVE_PROJECT_CACHE[]
     index === nothing && return data
     identity = index.identity
-    identity.project_name == project_name(project) || return data
     isfile(identity.cache_path) || return data
 
     fingerprints = Dict{String,FileFingerprint}()
@@ -397,10 +381,10 @@ function cached_measurement_data(
 end
 
 """
-Write valid measurement payloads to the active cache in one HDF5 operation.
+Write valid measurement payloads to the specified loaded cache in one HDF5 operation.
 """
 function write_measurement_data_cache!(
-    project::AbstractProject,
+    index::Union{Nothing,ProjectCacheIndex},
     measurements::Vector{MeasurementInfo},
     data::Vector{DataFrame};
     processed::Bool=false,
@@ -408,10 +392,8 @@ function write_measurement_data_cache!(
     length(measurements) == length(data) ||
         throw(DimensionMismatch("measurements and data must have equal lengths"))
     isempty(measurements) && return nothing
-    index = ACTIVE_PROJECT_CACHE[]
     index === nothing && return nothing
     identity = index.identity
-    identity.project_name == project_name(project) || return nothing
     isfile(identity.cache_path) || return nothing
 
     fingerprints = Dict{String,FileFingerprint}()
