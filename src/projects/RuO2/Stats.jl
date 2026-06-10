@@ -57,6 +57,14 @@ function compute_and_add_measurement_stats!(
                     wakeup_splits=wakeup_splits,
                 )
             catch err
+                bt = catch_backtrace()
+                @error(
+                    "Measurement analysis failed",
+                    project=project_name(RUO2_PROJECT),
+                    file=measurement.filepath,
+                    measurement=measurement.unique_id,
+                    exception=(err, bt),
+                )
                 push!(failures, MeasurementAnalysisFailure(
                     measurement.filepath,
                     measurement.unique_id,

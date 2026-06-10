@@ -187,6 +187,10 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 ig.SetNextItemOpen(path_key in expanded_device_path_set, ig.ImGuiCond_Always)
             end
             opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
+            if is_leaf && get(ui_state, :scroll_to_device_path, "") == leaf_device_key
+                ig.SetScrollHereY(0.5)
+                delete!(ui_state, :scroll_to_device_path)
+            end
             if !is_leaf && !filter_active && ig.IsItemToggledOpen()
                 expanded_device_paths = copy(get(ui_state, :expanded_device_paths, String[]))
                 if opened
@@ -501,6 +505,10 @@ function _render_measurements_panel(ui_state, filter_meas)
                             ui_state[:selected_measurement_ids] = selected_measurement_ids
                             _apply_visible_selection!(ui_state)
                         end
+                        if get(ui_state, :scroll_to_measurement_id, "") == measurement.unique_id
+                            ig.SetScrollHereY(0.5)
+                            delete!(ui_state, :scroll_to_measurement_id)
+                        end
                         bad_text_pushed && ig.PopStyleColor()
 
                         if ig.BeginPopupContextItem()
@@ -551,6 +559,7 @@ end
 
 function render_selection_window(ui_state)
     ui_state[:_node_count] = 0
+    pop!(ui_state, :reset_project_filters, false) && _reset_project_filter_widgets!(ui_state)
     filter_tree = _imgui_text_filter_for_state!(ui_state, :_imgui_text_filter_tree, :tree_filter)
     filter_meas = _imgui_text_filter_for_state!(ui_state, :_imgui_text_filter_meas, :measurement_filter)
 

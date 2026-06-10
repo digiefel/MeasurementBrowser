@@ -21,11 +21,11 @@ function detect_kind(::RuO2Project, filename::String)::Symbol
         return :pund
     elseif occursin("cvsweep", lower)
         return :cvsweep
-    elseif occursin("tlm_4p", lower) || occursin("tlm", lower)
-        return :tlm4p
     elseif occursin("i_v sweep", lower) || occursin("iv sweep", lower) ||
            occursin("ivsweep", lower) || occursin("fourterminaliv", lower)
         return :iv
+    elseif occursin("tlm_4p", lower) || occursin("tlm", lower)
+        return :tlm4p
     elseif occursin("break", lower) || occursin("breakdown", lower)
         return :breakdown
     else

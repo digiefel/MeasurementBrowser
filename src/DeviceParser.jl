@@ -501,7 +501,7 @@ function _count_csv(root_path::String; on_progress::Union{Nothing,Function}=noth
     for (root, _, files) in walkdir(root_path)
         for file in files
             _check_cancel()
-            endswith(lowercase(file), ".csv") || continue
+            is_source_filename(file) || continue
             total += 1
             _emit_progress(on_progress;
                 phase=:counting,
@@ -695,6 +695,7 @@ function _interpret_source_files(
     progress_lock = ReentrantLock()
     worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
     cancel_requested = get(task_local_storage(), _CANCEL_CALLBACK_KEY, nothing)
+    failures = MeasurementAnalysisFailure[]
 
     @sync for (index, file) in pairs(files)
         _check_cancel()
@@ -709,7 +710,26 @@ function _interpret_source_files(
             try
                 _with_cancel(cancel_requested) do
                     _check_cancel()
-                    measurements = interpret_measurements(project, file, meta)
+                    measurements = try
+                        interpret_measurements(project, file, meta)
+                    catch err
+                        _is_job_cancelled(err) && rethrow()
+                        bt = catch_backtrace()
+                        @error(
+                            "Source file interpretation failed",
+                            project=project_name(project),
+                            file=file.filepath,
+                            exception=(err, bt),
+                        )
+                        lock(progress_lock) do
+                            push!(failures, MeasurementAnalysisFailure(
+                                file.filepath,
+                                "",
+                                sprint(showerror, err),
+                            ))
+                        end
+                        MeasurementInfo[]
+                    end
                     _check_cancel()
                     scanned = SourceFile(file, measurements)
                     on_result(index, scanned)
@@ -746,6 +766,7 @@ function _interpret_source_files(
         loaded_measurements=loaded_measurements[],
         skipped_csv=skipped_csv[],
         total_csv=length(files),
+        failures,
     )
 end
 
@@ -854,7 +875,8 @@ function scan_source(
     )
     _check_cancel()
     hierarchy = MeasurementHierarchy(measurements, root, meta !== nothing, proj, summary.skipped_csv)
-    return SourceScan(root, proj, scanned_files, hierarchy, analysis_failures)
+    append!(summary.failures, analysis_failures)
+    return SourceScan(root, proj, scanned_files, hierarchy, summary.failures)
 end
 
 """Collect generic device-summary fields for the information panel."""

@@ -14,6 +14,8 @@ const _RUO2_TLM_FIXTURE =
     "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv"
 const _RUO2_IV_FIXTURE =
     "RuO2test_A11_XI_FeCapBD_A1A2_20260509_184021_IVSweep.csv"
+const _RUO2_TLM_DEVICE_IV_FIXTURE =
+    "RuO2test_A11_XI_TLM_L100W4_20260609_183048_14K_IVSweep.csv"
 const _RUO2_FECAP_BD_FIXTURE =
     "RuO2test_A10_VI_FeCap_BD_A1A2_20251128_175954_OxideBreakdown.csv"
 const _RUO2_CV_FIXTURE =
@@ -45,6 +47,12 @@ _ruo2_fixture_path(name::AbstractString) = joinpath(_RUO2_FIXTURE_DIR, name)
                 kind=:iv,
                 location=["RuO2test_A11", "XI", "FeCapBD", "A1A2"],
                 timestamp=DateTime(2026, 5, 9, 18, 40, 21),
+            ),
+            (
+                file=_RUO2_TLM_DEVICE_IV_FIXTURE,
+                kind=:iv,
+                location=["RuO2test_A11", "XI", "TLM", "L100W4"],
+                timestamp=DateTime(2026, 6, 9, 18, 30, 48),
             ),
             (
                 file=_RUO2_FECAP_BD_FIXTURE,

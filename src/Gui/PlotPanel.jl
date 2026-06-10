@@ -67,40 +67,6 @@ function _measurement_plot_window_entry(ui_state::Dict{Symbol,Any}, measurement:
     )
 end
 
-"""Return the plot error text shown in the GUI and console."""
-function _plot_error_text(
-    project::AbstractProject,
-    plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
-    err,
-    bt;
-    phase::AbstractString,
-)::String
-    lines = String[
-        "Plot failed while $phase: $(sprint(showerror, err))",
-        "Project: $(project_name(project))",
-        "Plot: $(nameof(plot_kind))",
-        "Measurements: $(length(measurements))",
-    ]
-    for measurement in first(measurements, min(3, length(measurements)))
-        push!(lines, "Measurement: $(measurement.clean_title) ($(measurement.measurement_kind))")
-        push!(lines, "File: $(measurement.filepath)")
-    end
-    length(measurements) > 3 && push!(lines, "More files: $(length(measurements) - 3)")
-    if bt !== nothing
-        stack_lines = String[]
-        for frame in stacktrace(bt)
-            file = String(frame.file)
-            if !(occursin("GlfwOpenGLBackend", file) || occursin("CImGui", file) || occursin("GLFW", file) || endswith(file, "client.jl"))
-                push!(stack_lines, "  $(frame.func) at $(basename(file)):$(frame.line)")
-                length(stack_lines) >= 10 && break
-            end
-        end
-        isempty(stack_lines) || push!(lines, "Stack:\n" * join(stack_lines, "\n"))
-    end
-    return join(lines, "\n")
-end
-
 """Forget generated plot figures so the next render builds them again."""
 function _clear_plot_views!(ui_state::Dict{Symbol,Any})::Nothing
     for key in (:plot_figure, :_last_plot_key, :plot_error, :plot_export_error)
@@ -154,13 +120,28 @@ function _draw_plot_view!(
         view[:debug] = debug
         delete!(view, :plot_error)
     catch err
+        bt = catch_backtrace()
         _append_perf_sample!(ui_state, :plot_draw, (time_ns() - started_ns) / 1e6, draw_alloc)
-        message = _plot_error_text(project, plot_kind, measurements, err, catch_backtrace(); phase="drawing")
         delete!(view, figure_key)
         view[:_last_plot_key] = plot_key
-        view[:plot_error] = message
+        summary = first(split(sprint(showerror, err), '\n'; limit=2))
+        view[:plot_error] = "Plot failed: $summary. See the console for full details."
         view[:debug] = debug
-        @error "Plot drawing failed\n$message"
+        measurement_context = join(
+            [
+                "$(measurement.clean_title) ($(measurement.measurement_kind))\n" *
+                "  $(measurement.filepath)"
+                for measurement in measurements
+            ],
+            "\n",
+        )
+        @error(
+            "Plot drawing failed\n" *
+            "Project: $(project_name(project))\n" *
+            "Plot: $(nameof(plot_kind))\n" *
+            "Measurements: $(length(measurements))\n$measurement_context",
+            exception=(err, bt),
+        )
     end
     return nothing
 end
@@ -207,18 +188,10 @@ function _render_plot_view!(
     return nothing
 end
 
-"""Show a compact error line with the full error in a tooltip."""
-function _render_plot_error(message)::Nothing
+"""Show a short plot error and direct detailed diagnostics to the console."""
+function _render_plot_error(message::AbstractString)::Nothing
     isempty(message) && return nothing
-    summary = first(split(String(message), '\n'))
-    length(summary) > 140 && (summary = first(summary, 137) * "...")
-    ig.TextDisabled(summary)
-    if ig.BeginItemTooltip()
-        ig.PushTextWrapPos(ig.GetFontSize() * 45.0)
-        ig.TextUnformatted(String(message))
-        ig.PopTextWrapPos()
-        ig.EndTooltip()
-    end
+    ig.TextWrapped(message)
     return nothing
 end
 
@@ -285,9 +258,14 @@ function _render_plot_toolbar!(ui_state::Dict{Symbol,Any}, state::Dict{Symbol,An
                 Makie.save(path, figure)
                 delete!(state, :plot_export_error)
             catch err
-                message = "Export failed for $path: $(sprint(showerror, err))"
-                state[:plot_export_error] = message
-                @error "Plot export failed\n$message"
+                bt = catch_backtrace()
+                summary = first(split(sprint(showerror, err), '\n'; limit=2))
+                state[:plot_export_error] =
+                    "Export failed: $summary. See the console for full details."
+                @error(
+                    "Plot export failed\nOutput: $path",
+                    exception=(err, bt),
+                )
             end
         end
     end

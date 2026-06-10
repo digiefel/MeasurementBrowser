@@ -31,6 +31,11 @@ end
         @test maximum(e -> e.processed_csv, scanning_events) == 2
         @test all(e -> e.total_csv == 2, scanning_events)
 
+        # Hidden files are not source data.
+        write(joinpath(dir, ".hidden_IVSweep.csv"), "")
+        source = scan_source(dir)
+        @test length(source.files) == 2
+
         # Measurement batches are emitted before scan_source returns its final SourceScan.
         streamed = Vector{MeasurementInfo}[]
         source = scan_source(dir; on_measurements=(measurements) -> push!(streamed, copy(measurements)))
@@ -38,6 +43,13 @@ end
         @test sum(length, streamed) == length(source.hierarchy.all_measurements)
         @test Set(m.unique_id for batch in streamed for m in batch) ==
               Set(m.unique_id for m in source.hierarchy.all_measurements)
+
+        # One malformed source file is reported without discarding the valid scan.
+        write(joinpath(dir, "broken_IVSweep.csv"), "")
+        source = scan_source(dir)
+        @test length(source.files) == 3
+        @test length(source.analysis_failures) == 1
+        @test only(source.analysis_failures).filepath == joinpath(dir, "broken_IVSweep.csv")
 
         # Cooperative cancellation
         fired = Ref(false)

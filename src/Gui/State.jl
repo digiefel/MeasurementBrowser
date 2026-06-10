@@ -87,6 +87,39 @@ function _init_plot_state!(ui_state)
     ui_state[:plot_kind_by_measurement_kind] = Dict{String,String}()
 end
 
+"""Select and reveal every measurement produced by one source file."""
+function select_source_file!(
+    ui_state::Dict{Symbol,Any},
+    filepath::AbstractString,
+)::Bool
+    path = String(filepath)
+    measurements = [
+        measurement
+        for measurement in get(ui_state, :all_measurements, MeasurementInfo[])
+        if measurement.filepath == path
+    ]
+    isempty(measurements) && return false
+
+    device_paths =
+        unique([device_path_key(measurement.device_info) for measurement in measurements])
+    expanded_paths = copy(get(ui_state, :expanded_device_paths, String[]))
+    for device_path in device_paths
+        parts = split(device_path, '/')
+        for depth in 1:(length(parts) - 1)
+            parent_path = join(parts[1:depth], '/')
+            parent_path in expanded_paths || push!(expanded_paths, parent_path)
+        end
+    end
+
+    ui_state[:expanded_device_paths] = expanded_paths
+    ui_state[:selected_device_paths] = device_paths
+    ui_state[:selected_measurement_ids] = [measurement.unique_id for measurement in measurements]
+    ui_state[:scroll_to_device_path] = first(device_paths)
+    ui_state[:scroll_to_measurement_id] = first(measurements).unique_id
+    _apply_visible_selection!(ui_state)
+    return true
+end
+
 const _FIGURE_SCRIPT_NAME_BUFFER_SIZE = 192
 const _FIGURE_GROUP_NAME_BUFFER_SIZE = 192
 const _FIGURE_OUTPUT_DIR_BUFFER_SIZE = 512
@@ -730,6 +763,8 @@ function _apply_source_scan!(ui_state, source::SourceScan)
     ui_state[:has_device_metadata] = source.hierarchy.has_device_metadata
     identity = get(ui_state, :cache_identity, nothing)
     if identity isa ProjectCacheIdentity && identity.root_path == source.root_path
+        ui_state[:cache_errors] =
+            sort!(collect(ProjectCacheIndex(identity, source).analysis_errors); by=first)
         cache_state = get(ui_state, :cache_state, :idle)
         if cache_state == :ready
             ui_state[:cache_status] = cache_status(project_cache_index(identity), source)
@@ -1117,8 +1152,14 @@ function _poll_cache_events!(ui_state)
             _finalize_cache!(ui_state)
         elseif msg.kind == :error
             ui_state[:cache_state] = :error
-            ui_state[:cache_error] = sprint(showerror, msg.error, msg.bt)
-            @error "Cache job failed" exception = (msg.error, msg.bt)
+            ui_state[:cache_error] = "Cache job failed. See the console for full details."
+            identity = get(ui_state, :cache_identity, nothing)
+            @error(
+                "Cache job failed",
+                cache_path=identity isa ProjectCacheIdentity ? identity.cache_path : "",
+                operation=get(ui_state, :cache_operation, :load),
+                exception=(msg.error, msg.bt),
+            )
             _finalize_cache!(ui_state)
         end
     end
@@ -1161,8 +1202,17 @@ function _poll_source_scan_events!(ui_state)
             _finalize_source_scan!(ui_state)
         elseif msg.kind == :error
             ui_state[:source_scan_state] = :error
-            ui_state[:source_scan_error] = sprint(showerror, msg.error, msg.bt)
-            @error "Source scan job failed" exception = (msg.error, msg.bt)
+            ui_state[:source_scan_error] =
+                "Source scan failed. See the console for full details."
+            progress = get(ui_state, :source_scan_progress, _new_scan_progress())
+            project = get(ui_state, :project, nothing)
+            @error(
+                "Source scan job failed",
+                project=project isa AbstractProject ? project_name(project) : "",
+                root=get(ui_state, :root_path, ""),
+                current_file=get(progress, :current_path, ""),
+                exception=(msg.error, msg.bt),
+            )
             _finalize_source_scan!(ui_state)
         end
     end

@@ -607,10 +607,22 @@ function _render_cache_controls!(ui_state; compact::Bool)
     if !isempty(cache_errors)
         ig.Separator()
         ig.TextColored((1.0, 0.35, 0.35, 1.0), "File Errors")
+        ig.TextDisabled("Select a file to show its measurements")
         for (index, file_error) in enumerate(cache_errors)
             index > 20 && break
-            ig.TextWrapped(first(file_error))
-            ig.TextColored((1.0, 0.55, 0.35, 1.0), last(file_error))
+            filepath, message = file_error
+            ig.PushID(filepath)
+            if ig.TextLink(basename(filepath)) && select_source_file!(ui_state, filepath)
+                ui_state[:tree_filter] = ""
+                ui_state[:measurement_filter] = ""
+                ui_state[:reset_project_filters] = true
+            end
+            if ig.BeginItemTooltip()
+                ig.TextUnformatted(filepath)
+                ig.EndTooltip()
+            end
+            ig.TextWrapped(first(split(message, '\n'; limit=2)))
+            ig.PopID()
             index < min(length(cache_errors), 20) && ig.Separator()
         end
         length(cache_errors) > 20 && ig.TextDisabled("$(length(cache_errors) - 20) more file errors")

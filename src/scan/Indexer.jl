@@ -44,6 +44,11 @@ function index_source_file(path::AbstractString)
     )
 end
 
+"""Return whether a directory entry is a visible CSV source file."""
+function is_source_filename(name::AbstractString)::Bool
+    return endswith(lowercase(name), ".csv") && !startswith(name, ".")
+end
+
 function walk_source_files(
     root_path::AbstractString;
     on_file::Function,
@@ -51,7 +56,7 @@ function walk_source_files(
     for (root, _, names) in walkdir(root_path)
         for name in names
             _check_cancel()
-            endswith(lowercase(name), ".csv") || continue
+            is_source_filename(name) || continue
             on_file(index_source_file(joinpath(root, name)))
         end
     end
