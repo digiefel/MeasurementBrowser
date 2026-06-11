@@ -69,8 +69,8 @@ using ..MeasurementBrowser:
     figure_script_path,
     write_figure_script
 
-include("MakieIntegration.jl")
-using .MakieImguiIntegration
+include("Browser/MakieIntegration.jl")
+using .MakieImguiIntegration: MakieFigure
 
 include("Gui/BrowserState.jl")
 include("Gui/BadAndStyling.jl")

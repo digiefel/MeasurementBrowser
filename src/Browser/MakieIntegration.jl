@@ -1,10 +1,4 @@
-# NOTE: This file is yanked from CImGui.jl
-# For some reason, it has terrible performance.
-# Let's see if we can improve it.
 module MakieImguiIntegration
-
-import Printf: @sprintf
-import Statistics: mean, std
 
 import CImGui as ig
 import ModernGL as gl
@@ -12,38 +6,30 @@ import GLFW
 import GLMakie
 import GLMakie.Makie as Makie
 
-export MakieFigure, ImMakieWindow, ImMakieFigure, destroy_context
-
-# Represents a single Figure to be shown as an ImGui image texture
+"""GLFW window adapter required by a GLMakie screen embedded in CImGui."""
 struct ImMakieWindow
-    glfw_window::GLFW.Window # Only needed for supporting GLMakie requirements
+    glfw_window::GLFW.Window
 end
 
+"""One embedded Makie figure, its reusable screen, and pointer-gesture state."""
 mutable struct ImMakieFigure
     figure::GLMakie.Figure
     screen::GLMakie.Screen{ImMakieWindow}
-
-    render_times::Vector{Float32}
-    times_idx::Int
     was_dragging::Bool
     was_ctrl_left_click::Bool
-
-    function ImMakieFigure(figure, screen)
-        self = new(figure, screen, zeros(Float32, 20), 1, false, false)
-    end
 end
 
-const makie_context = Dict{ig.ImGuiID,ImMakieFigure}()
+const MAKIE_CONTEXT = Dict{ig.ImGuiID,ImMakieFigure}()
 
-function destroy_context()
-    for imfigure in values(makie_context)
-        if !isnothing(imfigure.figure)
-            empty!(imfigure.figure)
-        end
+"""Destroy every Makie screen owned by the browser render context."""
+function destroy_context!()::Nothing
+    for imfigure in values(MAKIE_CONTEXT)
+        empty!(imfigure.figure)
         GLMakie.destroy!(imfigure.screen)
     end
 
-    empty!(makie_context)
+    empty!(MAKIE_CONTEXT)
+    return nothing
 end
 
 Base.isopen(window::ImMakieWindow) = isopen(window.glfw_window)
@@ -55,17 +41,12 @@ GLMakie.framebuffer_size(window::ImMakieWindow) = GLMakie.framebuffer_size(windo
 GLMakie.scale_factor(window::ImMakieWindow) = GLMakie.scale_factor(window.glfw_window)
 GLMakie.was_destroyed(window::ImMakieWindow) = GLMakie.was_destroyed(window.glfw_window)
 
-# ShaderAbstractions support
 GLMakie.ShaderAbstractions.native_switch_context!(x::ImMakieWindow) = GLFW.MakeContextCurrent(x.glfw_window)
 GLMakie.ShaderAbstractions.native_context_alive(x::ImMakieWindow) = GLFW.is_initialized() && x.glfw_window != C_NULL
 
-# This is called by GLMakie.display() to set up connections to GLFW for
-# mouse/keyboard events etc. We disable it explicitly because we deliver the
-# events in an immediate-mode fashion within MakieFigure().
+# CImGui forwards input directly below, so GLMakie's normal GLFW event connection must stay disabled.
 GLMakie.connect_screen(::GLMakie.Scene, ::GLMakie.Screen{ImMakieWindow}) = nothing
 
-
-# Also disable the corresponding disconnection methods
 for f in (Makie.window_area, Makie.window_open,
     Makie.mouse_buttons, Makie.mouse_position,
     Makie.scroll,
@@ -76,49 +57,22 @@ for f in (Makie.window_area, Makie.window_open,
     GLMakie.disconnect!(::GLMakie.Screen{ImMakieWindow}, ::typeof(f)) = nothing
 end
 
-function draw_figure_tooltip(cursor_pos, image_size)
-    help_str = "(?)"
-    text_size = ig.CalcTextSize(help_str)
-    text_pos = ig.ImVec2(cursor_pos.x + image_size[1] - text_size.x, cursor_pos.y)
-    ig.AddText(ig.GetWindowDrawList(), text_pos, ig.IM_COL32(128, 128, 128, 255), help_str)
-    text_max = ig.ImVec2(text_pos.x + text_size.x, text_pos.y + text_size.y)
-    hovering = ig.IsMouseHoveringRect(text_pos, text_max)
-
-    if hovering && ig.BeginTooltip()
-        ig.PushTextWrapPos(ig.GetFontSize() * 35.0)
-        ig.TextUnformatted("""
-            Controls:
-            - Scroll to zoom
-            - Click and drag to rectangle select a region to zoom to
-            - Right click and drag to pan
-            - {x/y} and scroll to zoom along the X/Y axes
-            - Ctrl + left click to reset the limits
-
-            And right-click for plot settings.
-            """)
-        ig.PopTextWrapPos()
-        ig.EndTooltip()
-    end
-end
-
-function draw_figure_stats(cursor_pos, imfigure)
-    n_samples = length(imfigure.render_times)
-    mean_time = mean(imfigure.render_times)
-    std_time = std(imfigure.render_times)
-    text = @sprintf("Avg. of last %i render times: %.5f ± %.5fs",
-        n_samples, mean_time, std_time)
-    ig.AddText(ig.GetWindowDrawList(), cursor_pos, ig.IM_COL32_WHITE, text)
-end
-
-function _texture_display_size(texture_size, px_per_unit)
+"""Convert framebuffer pixels into the logical size expected by CImGui."""
+function _texture_display_size(
+    texture_size::Tuple{Int,Int},
+    px_per_unit::Real,
+)::Tuple{Float64,Float64}
     scale = Float64(px_per_unit)
     scale > 0 || return (Float64(texture_size[1]), Float64(texture_size[2]))
     return (Float64(texture_size[1]) / scale, Float64(texture_size[2]) / scale)
 end
 
-function _imgui_mouse_to_makie(pos, origin, image_size)
-    # ImGui reports screen positions from the top-left of the drawn image.
-    # Makie scene mouse coordinates use the GL-style bottom-left origin.
+"""Convert CImGui's top-left mouse coordinates to Makie's bottom-left coordinates."""
+function _imgui_mouse_to_makie(
+    pos::ig.ImVec2,
+    origin::ig.ImVec2,
+    image_size::Tuple{Float64,Float64},
+)::Tuple{Float64,Float64}
     return (Float64(pos.x - origin.x), Float64(image_size[2] - (pos.y - origin.y)))
 end
 
@@ -128,72 +82,82 @@ _makie_button_for_imgui_right(ctrl_left_as_right, was_ctrl_left_click=false) =
 _should_open_axis_popup(was_dragging, was_ctrl_left_click, ctrl_left_as_right) =
     !(was_dragging || was_ctrl_left_click || ctrl_left_as_right)
 
-function draw_axisscale_buttons(scale, ticks, idx)
-    if ig.RadioButton("linear##$(idx)", scale[] === identity)
+"""Render the scale choices for one Makie axis direction."""
+function _draw_axis_scale_buttons!(scale, index::Int)::Nothing
+    if ig.RadioButton("linear##$(index)", scale[] === identity)
         scale[] = identity
     end
     ig.SameLine()
-    if ig.RadioButton("pseudolog10##$(idx)", scale[] === Makie.pseudolog10)
+    if ig.RadioButton("pseudolog10##$(index)", scale[] === Makie.pseudolog10)
         scale[] = Makie.pseudolog10
-        # ticks[] = Makie.LogTicks(Makie.LinearTicks(5))
     end
     ig.SameLine()
-    if ig.RadioButton("log10##$(idx)", scale[] === log10)
+    if ig.RadioButton("log10##$(index)", scale[] === log10)
         scale[] = log10
     end
+    return nothing
 end
 
-function draw_popup(axis)
+"""Render the context menu for one hovered Makie axis."""
+function _draw_axis_popup!(axis::Makie.Axis)::Nothing
     if ig.BeginPopupContextItem()
         ig.Text("Axis settings")
         ig.Separator()
 
         ig.Text("X scale:")
         ig.SameLine()
-        draw_axisscale_buttons(axis.xscale, axis.xticks, 1)
+        _draw_axis_scale_buttons!(axis.xscale, 1)
 
         ig.Text("Y scale:")
         ig.SameLine()
-        draw_axisscale_buttons(axis.yscale, axis.yticks, 2)
+        _draw_axis_scale_buttons!(axis.yscale, 2)
 
         ig.EndPopup()
     end
+    return nothing
 end
 
-function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, auto_resize_y=false, tooltip=true, stats=false)
+"""
+Render one Makie figure as an interactive CImGui image.
+
+Screens are reused by `title_id`; replacing the figure preserves the OpenGL context.
+"""
+function MakieFigure(
+    title_id::String,
+    figure::GLMakie.Figure;
+    auto_resize_x::Bool=true,
+    auto_resize_y::Bool=false,
+)::Bool
     ig.PushID(title_id)
     id = ig.GetID(title_id)
 
-    if haskey(makie_context, id)
-        imf = makie_context[id]
-        if imf.figure !== f
+    if haskey(MAKIE_CONTEXT, id)
+        imf = MAKIE_CONTEXT[id]
+        if imf.figure !== figure
             # Reuse the existing screen, but only clear the previous figure
             # after GLMakie has detached it from the screen. Clearing it before
             # display(screen, f) prevents GLMakie from walking the old scene and
             # releasing its render objects.
             old_figure = imf.figure
-            scene = Makie.get_scene(f)
+            scene = Makie.get_scene(figure)
             scene.events.window_open[] = true
-            display(imf.screen, f)
-            if !isnothing(old_figure)
-                empty!(old_figure)
-            end
-            imf.figure = f
-            imf.times_idx = 1
+            display(imf.screen, figure)
+            empty!(old_figure)
+            imf.figure = figure
             @debug "replaced figure for " id
         end
     else
         window = ig.current_window()
         makie_window = ImMakieWindow(window)
         screen = GLMakie.Screen(; window=makie_window, start_renderloop=false)
-        makie_context[id] = ImMakieFigure(f, screen)
-        scene = Makie.get_scene(f)
+        MAKIE_CONTEXT[id] = ImMakieFigure(figure, screen, false, false)
+        scene = Makie.get_scene(figure)
         scene.events.window_open[] = true
-        display(screen, f)
+        display(screen, figure)
         @debug "created context for " id
     end
 
-    imfigure = makie_context[id]
+    imfigure = MAKIE_CONTEXT[id]
     scene = Makie.get_scene(imfigure.figure)
 
     region_avail = ig.GetContentRegionAvail()
@@ -204,16 +168,12 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
 
     if scene_size != new_size && all(new_size .> 0)
         scene.events.window_area[] = GLMakie.Rect2i(0, 0, Int(new_size[1]), Int(new_size[2]))
-        resize!(f, new_size[1], new_size[2])
+        resize!(figure, new_size[1], new_size[2])
     end
 
-    GLMakie.poll_updates(imfigure.screen) # added to tell Makie to actually process the events
+    GLMakie.poll_updates(imfigure.screen)
     do_render = GLMakie.requires_update(imfigure.screen)
-    if do_render
-        @debug "rendering frame"
-        idx = mod1(imfigure.times_idx, length(imfigure.render_times))
-        imfigure.render_times[idx] = @elapsed GLMakie.render_frame(imfigure.screen; resize_buffers=false)
-    end
+    do_render && GLMakie.render_frame(imfigure.screen; resize_buffers=false)
 
     # The color texture is what we need to render as an image. We add it to the
     # drawlist and then create an InvisibleButton of the same size to create a
@@ -230,14 +190,6 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
         (cursor_pos.x + image_size[1], cursor_pos.y + image_size[2]),
         (0, 1), (1, 0))
 
-    # Draw tooltip
-    if tooltip
-        draw_figure_tooltip(cursor_pos, image_size)
-    end
-    if stats
-        draw_figure_stats(cursor_pos, imfigure)
-    end
-
     ig.InvisibleButton("figure_image", image_size)
 
     # Update the scene events
@@ -250,7 +202,6 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
 
     io = ig.GetIO()
     if ig.IsItemHovered()
-        # Update the mouse position
         pos = ig.GetMousePos()
         new_pos = _imgui_mouse_to_makie(pos, cursor_pos, image_size)
         if new_pos != scene.events.mouseposition[]
@@ -260,8 +211,7 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
 
         ctrl_left_as_right = _ctrl_left_as_right_click(io)
 
-        # Update pressed and released keys. Makie mouse gestures consult modifier
-        # state, so this must happen before forwarding mouse button events.
+        # Makie gestures read modifier state when the mouse event arrives.
         for (igkey, glfwkey) in ((ig.lib.ImGuiKey_X, Int(GLFW.KEY_X)),
             (ig.lib.ImGuiKey_Y, Int(GLFW.KEY_Y)),
             (ig.lib.ImGuiKey_LeftCtrl, Int(GLFW.KEY_LEFT_CONTROL)))
@@ -277,9 +227,7 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
             end
         end
 
-        # Update the mouse buttons. On macOS, ImGui may report Ctrl+left-click
-        # as a right click. Makie's default reset gesture is Ctrl+left-click, so
-        # translate that converted event back before forwarding it.
+        # macOS may report Ctrl+left-click as right-click; translate it back for Makie.
         if ig.IsKeyPressed(ig.ImGuiKey_MouseLeft)
             scene.events.mousebutton[] = Makie.MouseButtonEvent(Makie.Mouse.left, Makie.Mouse.press)
             @debug "mouse button pressed event", scene.events.mousebutton
@@ -300,12 +248,10 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
             @debug "mouse button released event", scene.events.mousebutton
         end
 
-        # Record if the mouse is dragging
         if !imfigure.was_ctrl_left_click && ig.IsMouseDragging(ig.lib.ImGuiMouseButton_Right)
             imfigure.was_dragging = true
         end
 
-        # Update the scroll rate
         wheel_y = unsafe_load(io.MouseWheel)
         wheel_x = unsafe_load(io.MouseWheelH)
         if (wheel_x, wheel_y) != scene.events.scroll[]
@@ -318,18 +264,15 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
         @debug "mouse button released event", scene.events.mousebutton
     end
 
-    # Always clear the dragging field when a new potential drag (right-click) is
-    # started.
     ctrl_left_as_right = _ctrl_left_as_right_click(ig.GetIO())
     if !ctrl_left_as_right && ig.IsMouseClicked(ig.lib.ImGuiMouseButton_Right)
         imfigure.was_dragging = false
     end
 
-    # Only display the popup if we're not dragging
     if _should_open_axis_popup(imfigure.was_dragging, imfigure.was_ctrl_left_click, ctrl_left_as_right)
-        for x in f.content
-            if x isa Makie.Axis && GLMakie.is_mouseinside(x)
-                draw_popup(x)
+        for content in figure.content
+            if content isa Makie.Axis && GLMakie.is_mouseinside(content)
+                _draw_axis_popup!(content)
             end
         end
     end
@@ -339,23 +282,20 @@ function MakieFigure(title_id::String, f::GLMakie.Figure; auto_resize_x=true, au
     return do_render
 end
 
-function theme_imgui()
+"""Return the Makie theme used by figures embedded in CImGui."""
+function _imgui_theme()::Makie.Attributes
     theme = Makie.theme_light()
-    # theme = Makie.theme_dark()
     theme.Legend.framevisible = true
-    # theme.Legend.backgroundcolor = Makie.RGBAf(0, 0, 0, 0.75)
     theme.Legend.padding = (5, 5, 5, 5)
-    # theme.textcolor = :gray90
-
-    # For some reason FXAA causes artifacts with the dark theme
     theme.GLMakie = Makie.Attributes(fxaa=false)
 
     return theme
 end
 
-function __init__()
-    ig.atrenderexit(destroy_context)
-    Makie.set_theme!(theme_imgui())
+function __init__()::Nothing
+    ig.atrenderexit(destroy_context!)
+    Makie.set_theme!(_imgui_theme())
+    return nothing
 end
 
 end

@@ -260,7 +260,6 @@ function _render_plot_body!(
                 view.figure;
                 auto_resize_x=true,
                 auto_resize_y=true,
-                tooltip=false,
             )
         end
     elseif status == :needs_kind
@@ -367,8 +366,6 @@ function _ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
             plots.warmup_figure;
             auto_resize_x=false,
             auto_resize_y=false,
-            tooltip=false,
-            stats=false,
         )
         plots.runtime_warmed = true
     end
