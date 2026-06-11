@@ -221,7 +221,7 @@ function _cache_toolbar_model(state::BrowserState)::NamedTuple
             detail="Cache update was canceled.",
         )
     elseif status isa ProjectCacheStatus
-        if !workspace.cache.source_checked
+        if !(workspace.index.source isa SourceScan)
             return (
                 label="Cache: Loaded",
                 color=(0.20, 0.58, 0.30, 1.0),
@@ -611,7 +611,7 @@ function _render_cache_controls!(
     end
 
     cache_errors = workspace isa Workspace.Workspace ?
-        workspace.cache.errors :
+        sort!(collect(workspace.index.analysis_errors); by=first) :
         Pair{String,String}[]
     if !isempty(cache_errors)
         ig.Separator()
@@ -641,7 +641,7 @@ function _render_cache_controls!(
     has_identity = identity isa ProjectCacheIdentity
     can_update = has_identity &&
         status isa ProjectCacheStatus &&
-        workspace.cache.source_checked &&
+        workspace.index.source isa SourceScan &&
         cache_state != :missing &&
         cache_state != :error &&
         (status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0)

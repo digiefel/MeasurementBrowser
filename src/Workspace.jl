@@ -83,6 +83,7 @@ mutable struct WorkspaceIndex
     measurements::Dict{String,MeasurementInfo}
     device_metadata_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
+    analysis_errors::Dict{String,String}
 end
 
 """
@@ -100,8 +101,6 @@ mutable struct WorkspaceCache
     identity::ProjectCacheIdentity
     index::Union{Nothing,ProjectCacheIndex}
     status::Union{Nothing,ProjectCacheStatus}
-    source_checked::Bool
-    errors::Vector{Pair{String,String}}
     operation::Symbol
 end
 
@@ -140,9 +139,10 @@ function Workspace(
             Dict{String,MeasurementInfo}(),
             Symbol[],
             nothing,
+            Dict{String,String}(),
         ),
         WorkspaceSelection(),
-        WorkspaceCache(identity, nothing, nothing, false, Pair{String,String}[], :load),
+        WorkspaceCache(identity, nothing, nothing, :load),
         WorkspaceJob(),
         WorkspaceJob(),
         Dict{String,Tuple{FileFingerprint,DataFrame}}(),

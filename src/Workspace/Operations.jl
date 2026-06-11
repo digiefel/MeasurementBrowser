@@ -150,8 +150,6 @@ function load_cache!(workspace::Workspace)::Nothing
     job.error = ""
     workspace.cache.index = nothing
     workspace.cache.status = nothing
-    workspace.cache.source_checked = false
-    empty!(workspace.cache.errors)
     workspace.cache.operation = :load
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
@@ -278,6 +276,7 @@ function replace_measurement_index!(
         measurements,
         sort!(collect(metadata_keys); by=String),
         workspace.index.source,
+        workspace.index.analysis_errors,
     )
     return nothing
 end
@@ -333,7 +332,6 @@ function apply_cache_index!(
 
     if source isa SourceScan
         workspace.cache.status = cache_status(index, source)
-        workspace.cache.source_checked = true
     else
         cached_files = length(index.files)
         workspace.cache.status = ProjectCacheStatus(
@@ -345,9 +343,8 @@ function apply_cache_index!(
             0,
             length(index.analysis_errors),
         )
-        workspace.cache.source_checked = false
+        workspace.index.analysis_errors = copy(index.analysis_errors)
     end
-    workspace.cache.errors = sort!(collect(index.analysis_errors); by=first)
     workspace.cache_job.state = :ready
     workspace.cache_job.error = ""
     return index_changed
@@ -365,13 +362,11 @@ function apply_source_scan!(
     workspace.index.source = source
     replace_measurement_index!(workspace, source.hierarchy)
     identity = workspace.cache.identity
-    workspace.cache.errors =
-        sort!(collect(ProjectCacheIndex(identity, source).analysis_errors); by=first)
+    workspace.index.analysis_errors = ProjectCacheIndex(identity, source).analysis_errors
 
     cache_state = workspace.cache_job.state
     if cache_state == :ready
         workspace.cache.status = cache_status(workspace.cache.index, source)
-        workspace.cache.source_checked = true
     elseif !isfile(identity.cache_path) || cache_state == :missing
         workspace.cache.status = ProjectCacheStatus(
             length(source.files),
@@ -382,9 +377,6 @@ function apply_source_scan!(
             0,
             0,
         )
-        workspace.cache.source_checked = true
-    else
-        workspace.cache.source_checked = false
     end
     return nothing
 end
@@ -401,7 +393,6 @@ function repair_cache_if_needed!(workspace::Workspace)::Nothing
     end
     status = workspace.cache.status
     status isa ProjectCacheStatus || return nothing
-    workspace.cache.source_checked || return nothing
     if status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0
         update_cache!(workspace)
     end

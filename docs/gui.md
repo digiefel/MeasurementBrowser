@@ -4,7 +4,7 @@
 
 ## Entry point and frame loop
 
-`Browser.create_window_and_run_loop` creates one `BrowserState` and runs the render loop. Docking
+`Browser.start_browser` creates one `BrowserState` and runs the render loop. Docking
 layout is configured once at startup: left side for navigation and information, right side for
 plot-oriented work.
 
@@ -42,9 +42,10 @@ objects.
 
 ## Plot rendering
 
-Plots render directly when their inputs change. `PlotViewState` stores one window's measurements,
-plot type, figure, errors, and Live setting. The main and detached plots use the same type and the
-same rendering path.
+Plots render directly when their inputs change. `PlotViewState` stores stable measurement ids,
+plot type, figure, errors, and Live setting. It resolves those ids from the workspace index when
+rendering, so browser state never keeps a second copy of measurement objects. The main and detached
+plots use the same type and the same rendering path.
 
 Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the measurements they were created with unless the user enables Live in that window.
 
