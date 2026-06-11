@@ -286,13 +286,11 @@ statistics run only after all files are known, allowing cross-file calculations.
 """
 function scan_source(
     root_path::String;
-    project::Union{AbstractProject,Nothing}=nothing,
+    project::AbstractProject,
     on_progress::Union{Nothing,Function}=nothing,
     on_measurements::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
-    selected_project = project === nothing ? DEFAULT_PROJECT[] : project
-    selected_project === nothing && error("No project implementation is available")
     root = normpath(abspath(expanduser(root_path)))
     metadata = load_scan_metadata(root)
     count_first && count_source_files(root; on_progress)
@@ -327,7 +325,7 @@ function scan_source(
         skipped_csv=0,
     )
     summary = interpret_source_files(
-        selected_project,
+        project,
         files,
         metadata;
         on_result=(index, file) -> (scanned_files[index] = file),
@@ -359,7 +357,7 @@ function scan_source(
         current_path=root,
     )
     analysis_failures = compute_and_add_measurement_stats!(
-        selected_project,
+        project,
         measurements,
         scanned_files;
         on_progress=progress -> begin
@@ -389,13 +387,13 @@ function scan_source(
         measurements,
         root,
         metadata !== nothing,
-        selected_project,
+        project,
         summary.skipped_csv,
     )
     append!(summary.failures, analysis_failures)
     return SourceScan(
         root,
-        selected_project,
+        project,
         scanned_files,
         hierarchy,
         summary.failures,

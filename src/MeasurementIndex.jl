@@ -4,7 +4,6 @@ using Dates
 
 import ..Project:
     AbstractProject,
-    DEFAULT_PROJECT,
     compute_and_add_measurement_stats!,
     device_path_label,
     interpret_file,

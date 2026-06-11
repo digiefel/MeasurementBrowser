@@ -11,7 +11,10 @@ end
         _copy_fixture(dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
         _copy_fixture(dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
 
-        source = MeasurementBrowser.scan_source(dir)
+        source = MeasurementBrowser.scan_source(
+            dir;
+            project=MeasurementBrowser.RUO2_PROJECT,
+        )
         @test source isa MeasurementBrowser.SourceScan
         @test source.hierarchy isa MeasurementBrowser.MeasurementHierarchy
         @test source.hierarchy.skipped_count == 0
@@ -20,6 +23,7 @@ end
         events = NamedTuple[]
         MeasurementBrowser.scan_source(
             dir;
+            project=MeasurementBrowser.RUO2_PROJECT,
             on_progress=(p) -> push!(events, p),
             count_first=true,
         )
@@ -37,13 +41,17 @@ end
 
         # Hidden files are not source data.
         write(joinpath(dir, ".hidden_IVSweep.csv"), "")
-        source = MeasurementBrowser.scan_source(dir)
+        source = MeasurementBrowser.scan_source(
+            dir;
+            project=MeasurementBrowser.RUO2_PROJECT,
+        )
         @test length(source.files) == 2
 
         # Measurement batches are emitted before scan_source returns its final SourceScan.
         streamed = Vector{MeasurementInfo}[]
         source = MeasurementBrowser.scan_source(
             dir;
+            project=MeasurementBrowser.RUO2_PROJECT,
             on_measurements=(measurements) -> push!(streamed, copy(measurements)),
         )
         @test !isempty(streamed)
@@ -53,7 +61,10 @@ end
 
         # One malformed source file is reported without discarding the valid scan.
         write(joinpath(dir, "broken_IVSweep.csv"), "")
-        source = MeasurementBrowser.scan_source(dir)
+        source = MeasurementBrowser.scan_source(
+            dir;
+            project=MeasurementBrowser.RUO2_PROJECT,
+        )
         @test length(source.files) == 3
         @test length(source.analysis_failures) == 1
         @test only(source.analysis_failures).filepath == joinpath(dir, "broken_IVSweep.csv")
@@ -69,7 +80,11 @@ end
                 return false
             end,
         ) do
-            MeasurementBrowser.scan_source(dir; count_first=true)
+            MeasurementBrowser.scan_source(
+                dir;
+                project=MeasurementBrowser.RUO2_PROJECT,
+                count_first=true,
+            )
         end
     end
 end
