@@ -70,11 +70,10 @@ mutable struct WorkspaceJob
     error::String
     events::Union{Nothing,Channel{NamedTuple}}
     cancel_token::Union{Nothing,Base.Threads.Atomic{Bool}}
-    task::Union{Nothing,Task}
 end
 
 WorkspaceJob()::WorkspaceJob =
-    WorkspaceJob(0, :idle, WorkspaceProgress(), "", nothing, nothing, nothing)
+    WorkspaceJob(0, :idle, WorkspaceProgress(), "", nothing, nothing)
 
 """
 The progressively populated measurement index for one open source root.

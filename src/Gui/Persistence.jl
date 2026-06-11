@@ -253,15 +253,6 @@ function _measurements_for_ids(
     return [index[id] for id in ids if haskey(index, id)]
 end
 
-"""Refresh plot references after cache loading or scanning changes the index."""
-function _refresh_plot_measurement_refs!(state::BrowserState)::Nothing
-    plots = state.plots
-    for view in (plots.main, plots.windows...)
-        view.measurements = _measurements_for_ids(state, view.measurement_ids)
-    end
-    return nothing
-end
-
 """Convert one runtime plot window into its persisted form."""
 function _persisted_plot_view(view::PlotViewState)::PersistedPlotView
     return PersistedPlotView(
@@ -335,7 +326,6 @@ function _apply_project_view!(
         title="Plot Area",
         live=view.main_plot.live,
         measurement_ids=copy(view.main_plot.measurements),
-        measurements=_measurements_for_ids(state, view.main_plot.measurements),
         plot_kind=_plot_kind_from_name(view.main_plot.plot_kind),
     )
     plots.windows = [
@@ -344,7 +334,6 @@ function _apply_project_view!(
             title=isempty(plot_view.title) ? "Plot" : plot_view.title,
             live=plot_view.live,
             measurement_ids=copy(plot_view.measurements),
-            measurements=_measurements_for_ids(state, plot_view.measurements),
             plot_kind=_plot_kind_from_name(plot_view.plot_kind),
         )
         for plot_view in view.plot_windows

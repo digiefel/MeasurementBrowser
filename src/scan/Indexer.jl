@@ -57,30 +57,20 @@ function is_source_filename(name::AbstractString)::Bool
     return endswith(lowercase(name), ".csv") && !startswith(name, ".")
 end
 
-"""Visit every visible CSV source file below a root."""
-function walk_source_files(
-    root_path::AbstractString;
-    on_file::Function,
-)::Nothing
-    for (root, _, names) in walkdir(root_path)
-        for name in names
-            check_cancel()
-            is_source_filename(name) || continue
-            on_file(index_source_file(joinpath(root, name)))
-        end
-    end
-    return nothing
-end
-
 """Collect every indexed source file below a root."""
 function collect_source_files(
     root_path::AbstractString;
     on_file::Union{Nothing,Function}=nothing,
 )::Vector{SourceFile}
     source_files = SourceFile[]
-    walk_source_files(root_path; on_file=file -> begin
-        push!(source_files, file)
-        on_file !== nothing && on_file(file, length(source_files))
-    end)
+    for (root, _, names) in walkdir(root_path)
+        for name in names
+            check_cancel()
+            is_source_filename(name) || continue
+            file = index_source_file(joinpath(root, name))
+            push!(source_files, file)
+            on_file !== nothing && on_file(file, length(source_files))
+        end
+    end
     return source_files
 end

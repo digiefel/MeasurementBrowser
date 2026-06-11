@@ -83,16 +83,6 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
     )
 end
 
-"""
-Return completed work as a value between zero and one.
-"""
-function _progress_fraction(progress::WorkspaceProgress)::Float32
-    total = progress.total_files
-    processed = progress.processed_files
-    total <= 0 && return 0.0f0
-    return Float32(clamp(processed / total, 0, 1))
-end
-
 """Describe source-scan progress independently from cache progress."""
 function _source_rescan_progress_model(
     state::BrowserState,
@@ -150,7 +140,9 @@ function _source_rescan_progress_model(
     return (
         title,
         progress=text,
-        fraction=source_state == :done ? 1.0f0 : _progress_fraction(progress),
+        fraction=source_state == :done ?
+                 1.0f0 :
+                 total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0,
         show_bar=total > 0 || source_state == :done,
     )
 end
@@ -761,7 +753,7 @@ end
 """
 Initialize browser state and run the CImGui render loop.
 """
-function create_window_and_run_loop(
+function start_browser(
     root_path::Union{Nothing,String}=nothing;
     engine::Any=nothing,
     spawn::Int=1,
@@ -806,7 +798,6 @@ function create_window_and_run_loop(
         state.performance.frame += 1
         workspace = state.workspace
         if workspace isa Workspace.Workspace && poll_workspace!(workspace)
-            _refresh_plot_measurement_refs!(state)
             _invalidate_figure_script_scan_cache!(state)
         end
         _poll_figure_script_job_events!(state)
@@ -845,11 +836,5 @@ function create_window_and_run_loop(
         # Show metadata guidance modal if needed
         render_device_info_modal(state)
     end
-    return nothing
-end
-
-"""Start the browser, optionally opening one source root immediately."""
-function start_browser(root_path::Union{Nothing,String}=nothing)::Nothing
-    create_window_and_run_loop(root_path)
     return nothing
 end

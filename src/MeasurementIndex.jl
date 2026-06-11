@@ -360,7 +360,6 @@ function MeasurementHierarchy(
 end
 
 children(node::HierarchyNode)::Vector{HierarchyNode} = node.children
-isleaf(node::HierarchyNode)::Bool = isempty(node.children)
 
 compute_and_add_measurement_stats!(
     ::AbstractProject,

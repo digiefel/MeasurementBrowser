@@ -82,43 +82,27 @@ function _has_bad_tag(
     return "bad" in Annotations.Tags.effective(tag_state, key, ancestor_keys)
 end
 
-function _device_is_explicitly_bad(
-    state::BrowserState,
-    device_key::String,
-)::Bool
-    tag_state = _tag_state_or_error(state)
-    return _has_bad_tag(tag_state, device_key, _ancestor_keys_for_path(device_key))
-end
-
-function _measurement_is_explicitly_bad(
-    state::BrowserState,
-    measurement_id::String,
-)::Bool
-    tag_state = _tag_state_or_error(state)
-    return _has_bad_tag(tag_state, measurement_id, String[])
-end
-
-function _measurement_is_bad(
-    state::BrowserState,
-    measurement::MeasurementInfo,
-)::Bool
-    tag_state = _tag_state_or_error(state)
-    dev_key = device_path_key(measurement.device_info)
-    ancestor_keys = _ancestor_keys_for_path(dev_key)
-    return _has_bad_tag(tag_state, measurement.unique_id, [dev_key; ancestor_keys])
-end
-
+"""Return whether a device remains visible after applying the bad-tag filter."""
 function _device_is_visible(state::BrowserState, device_key::String)::Bool
     _show_bad_effective(state) && return true
-    return !_device_is_explicitly_bad(state, device_key)
+    tag_state = _tag_state_or_error(state)
+    return !_has_bad_tag(
+        tag_state,
+        device_key,
+        _ancestor_keys_for_path(device_key),
+    )
 end
 
+"""Return whether a measurement remains visible after applying inherited bad tags."""
 function _measurement_is_visible(
     state::BrowserState,
     measurement::MeasurementInfo,
 )::Bool
     _show_bad_effective(state) && return true
-    return !_measurement_is_bad(state, measurement)
+    tag_state = _tag_state_or_error(state)
+    device_key = device_path_key(measurement.device_info)
+    ancestors = [device_key; _ancestor_keys_for_path(device_key)]
+    return !_has_bad_tag(tag_state, measurement.unique_id, ancestors)
 end
 
 """

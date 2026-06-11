@@ -160,9 +160,9 @@ const Browser = MeasurementBrowser.Browser
           Dict(:iv_sweep => MeasurementBrowser.RuO2IVSweepPlot)
     @test plots.main.live == true
     @test plots.main.plot_kind == MeasurementBrowser.RuO2TLM4PointPlot
-    @test only(plots.main.measurements).unique_id == "measurement-1"
+    @test plots.main.measurement_ids == ["measurement-1"]
     @test only(plots.windows).id == "plot_1"
-    @test only(only(plots.windows).measurements).unique_id == "measurement-2"
+    @test only(plots.windows).measurement_ids == ["measurement-2"]
 
     saved_view = Browser._project_view_from_browser(state)
     @test saved_view.project == "RuO2"

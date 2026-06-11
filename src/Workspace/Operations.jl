@@ -130,7 +130,7 @@ function scan_source!(workspace::Workspace)::Nothing
             close(events)
         end
     end
-    job.task = track_task!(workspace, task)
+    track_task!(workspace, task)
     return nothing
 end
 
@@ -192,7 +192,7 @@ function load_cache!(workspace::Workspace)::Nothing
             close(events)
         end
     end
-    job.task = track_task!(workspace, task)
+    track_task!(workspace, task)
     return nothing
 end
 
@@ -253,7 +253,7 @@ function update_cache!(
             close(events)
         end
     end
-    job.task = track_task!(workspace, task)
+    track_task!(workspace, task)
     return nothing
 end
 
@@ -426,18 +426,15 @@ function poll_workspace!(workspace::Workspace)::Bool
                 index_changed |= apply_cache_index!(workspace, event.index)
                 workspace.cache_job.events = nothing
                 workspace.cache_job.cancel_token = nothing
-                workspace.cache_job.task = nothing
             elseif event.kind == :missing
                 workspace.cache_job.state = :missing
                 workspace.cache_job.error = event.message
                 workspace.cache_job.events = nothing
                 workspace.cache_job.cancel_token = nothing
-                workspace.cache_job.task = nothing
             elseif event.kind == :canceled
                 workspace.cache_job.state = :canceled
                 workspace.cache_job.events = nothing
                 workspace.cache_job.cancel_token = nothing
-                workspace.cache_job.task = nothing
             elseif event.kind == :error
                 workspace.cache_job.state = :error
                 workspace.cache_job.error =
@@ -450,7 +447,6 @@ function poll_workspace!(workspace::Workspace)::Bool
                 )
                 workspace.cache_job.events = nothing
                 workspace.cache_job.cancel_token = nothing
-                workspace.cache_job.task = nothing
             end
         end
     end
@@ -472,12 +468,10 @@ function poll_workspace!(workspace::Workspace)::Bool
                 workspace.scan.state = :done
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
-                workspace.scan.task = nothing
             elseif event.kind == :canceled
                 workspace.scan.state = :canceled
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
-                workspace.scan.task = nothing
             elseif event.kind == :error
                 workspace.scan.state = :error
                 workspace.scan.error =
@@ -491,7 +485,6 @@ function poll_workspace!(workspace::Workspace)::Bool
                 )
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
-                workspace.scan.task = nothing
             end
         end
         index_changed |= append_measurements!(workspace, pending_measurements)

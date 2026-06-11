@@ -9,7 +9,6 @@ Base.@kwdef mutable struct PlotViewState
     title::String
     live::Bool
     measurement_ids::Vector{String} = String[]
-    measurements::Vector{MeasurementInfo} = MeasurementInfo[]
     measurement_kind::Union{Nothing,Symbol} = nothing
     plot_kind::Union{Nothing,Type{<:PlotKind}} = nothing
     figure::Union{Nothing,Figure} = nothing
@@ -152,7 +151,6 @@ Base.@kwdef mutable struct BrowserState
     show_performance_window::Bool = false
     device_info_modal::Bool = true
     modal_root_path::String = ""
-    shutting_down::Bool = false
     shutdown_complete::Bool = false
 end
 const FIGURE_SCRIPT_NAME_BUFFER_SIZE = 192

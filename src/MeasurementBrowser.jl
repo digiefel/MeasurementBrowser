@@ -45,7 +45,6 @@ using .MeasurementIndex:
     insert_measurement!,
     interpret_measurements,
     is_job_cancelled,
-    isleaf,
     load_scan_metadata,
     measurement_timestamp_key,
     measurements_for_file,
@@ -54,39 +53,13 @@ using .MeasurementIndex:
     with_cancel
 
 include("Cache.jl")
-using .Cache:
-    ProjectCacheError,
-    ProjectCacheIdentity,
-    ProjectCacheIndex,
-    ProjectCacheStatus,
-    cache_status,
-    cached_measurement_data,
-    load_project_cache,
-    project_cache_id,
-    project_cache_identity,
-    project_cache_index,
-    write_measurement_data_cache!,
-    write_project_cache!
 
 include("Workspace.jl")
 using .Workspace:
-    WorkspaceCache,
-    WorkspaceIndex,
-    WorkspaceJob,
-    WorkspaceProgress,
-    WorkspaceSelection,
-    cache_work_running,
-    cancel_cache!,
-    cancel_scan!,
     close_workspace!,
     open_workspace,
-    poll_workspace!,
     read_measurement_data,
-    scan_source!,
-    select_measurements!,
-    source_scan_running,
-    track_task!,
-    update_cache!
+    select_measurements!
 
 include("Visualization.jl")
 using .Visualization: PlotKind, plot_kinds

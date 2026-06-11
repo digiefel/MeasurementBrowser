@@ -41,7 +41,6 @@ function _measurement_plot_window(
         title=measurement.clean_title,
         live=false,
         measurement_ids=[measurement.unique_id],
-        measurements=[measurement],
         plot_kind=get(plots.kind_by_measurement, measurement.measurement_kind, nothing),
     )
 end
@@ -164,7 +163,6 @@ function _render_plot_toolbar!(
         view.live = live
         view.last_key = nothing
         if !live
-            view.measurements = copy(selected_measurements)
             view.measurement_ids =
                 [measurement.unique_id for measurement in selected_measurements]
         end
@@ -186,7 +184,6 @@ function _render_plot_toolbar!(
                     measurement_ids=[
                         measurement.unique_id for measurement in measurements
                     ],
-                    measurements=copy(measurements),
                     plot_kind=current,
                 ),
             )
@@ -276,8 +273,8 @@ end
 """
 Update and render one plot window.
 
-Live views copy the current browser selection. Static views retain their own measurement ids and
-references.
+Live views use the current browser selection. Static views resolve their saved measurement ids
+against the current workspace index.
 """
 function _render_plot_view!(
     state::BrowserState,
@@ -287,12 +284,13 @@ function _render_plot_view!(
     plots = state.plots
 
     if view.live
-        view.measurements = copy(selected_measurements)
         view.measurement_ids = [
             measurement.unique_id for measurement in selected_measurements
         ]
     end
-    measurements = view.measurements
+    measurements = view.live ?
+        selected_measurements :
+        _measurements_for_ids(state, view.measurement_ids)
 
     if view === plots.main && view.live
         measurement_kind =

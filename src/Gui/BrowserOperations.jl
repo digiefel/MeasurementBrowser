@@ -98,7 +98,6 @@ Stop browser and workspace work before the render loop exits.
 """
 function _shutdown_background_jobs!(state::BrowserState)::Nothing
     state.shutdown_complete && return nothing
-    state.shutting_down = true
     _cancel_figure_script_job!(state)
     workspace = state.workspace
     workspace isa Workspace.Workspace && close_workspace!(workspace)
