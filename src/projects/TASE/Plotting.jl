@@ -1,21 +1,5 @@
 using GLMakie
-using DataFrames
-
-using DataLoader: read_tlm_4p
-
-function load_source_data(
-    ::TASEProject,
-    source_file::SourceFile;
-    measurement::Union{Nothing,MeasurementInfo}=nothing,
-)::DataFrame
-    check_cancel()
-    if measurement !== nothing && measurement.measurement_kind !== :four_terminal_iv
-        error("TASE cannot load measurement data for $(measurement.measurement_kind)")
-    end
-    detect_kind(TASE_PROJECT, source_file.filename) === :four_terminal_iv ||
-        error("TASE cannot load source data for $(source_file.filepath)")
-    return read_tlm_4p(source_file.filename, dirname(source_file.filepath))
-end
+using DataFrames: nrow
 
 function setup_plot(
     ::Workspace.Workspace{TASEProject},
