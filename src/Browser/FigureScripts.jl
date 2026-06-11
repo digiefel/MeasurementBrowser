@@ -1,21 +1,6 @@
-using Printf
-using Statistics: mean
-import CImGui as ig
-import ModernGL as gl
-
-using ..Project:
-    AbstractProject,
-    DEFAULT_PROJECT,
-    PROJECTS,
-    project_name
-using ..MeasurementIndex:
-    MeasurementInfo,
-    device_path_key
+using ..MeasurementIndex: MeasurementInfo
 import ..Workspace
-using ..Workspace:
-    close_workspace!,
-    open_workspace,
-    track_task!
+using ..Workspace: track_task!
 using ..MeasurementBrowser:
     FigureScriptInferenceProfile,
     FigureScriptProfiledError,
@@ -26,82 +11,6 @@ using ..MeasurementBrowser:
     _infer_measurement_group_profiled,
     _matching_measurements,
     _validate_named_measurement_groups
-
-"""Return the project selected by the saved project preference."""
-function _project_for_preference(pref::AbstractString)::AbstractProject
-    pref == "auto" && return something(DEFAULT_PROJECT[])
-    for project in PROJECTS
-        project_name(project) == pref && return project
-    end
-    error("Unknown project preference '$pref'")
-end
-
-"""
-Replace the current workspace with the project selected for one source root.
-"""
-function _open_project_path!(
-    state::BrowserState,
-    path::String;
-    persist::Bool=true,
-)::Nothing
-    norm_path = _normalize_project_path(path)
-    state.project_preference = _project_preference_for_path(state, norm_path)
-    project = _project_for_preference(state.project_preference)
-    previous_workspace = state.workspace
-    previous_root = previous_workspace isa Workspace.Workspace ?
-        previous_workspace.root_path :
-        ""
-    _cancel_figure_script_job!(state)
-    previous_workspace isa Workspace.Workspace && close_workspace!(previous_workspace)
-    state.plots = PlotState(debug=state.plots.debug)
-    previous_root == norm_path ||
-        _reset_figure_script_state!(state, norm_path)
-    view = _load_project_view(norm_path)
-    !isempty(view.project) && view.project != project_name(project) &&
-        (view = PersistedProjectView(project=project_name(project)))
-    _load_tag_state_for_root!(state, norm_path)
-    state.workspace = open_workspace(project, norm_path)
-    _apply_project_view!(state, view)
-    state.saved_project_view = view
-    _invalidate_figure_script_scan_cache!(state)
-    persist && _persist_preferences!(state; path=norm_path)
-    return nothing
-end
-
-"""Select and reveal every measurement produced by one source file."""
-function select_source_file!(
-    state::BrowserState,
-    filepath::AbstractString,
-)::Bool
-    workspace = state.workspace
-    workspace isa Workspace.Workspace || return false
-    path = String(filepath)
-    measurements = [
-        measurement
-        for measurement in workspace.index.hierarchy.all_measurements
-        if measurement.filepath == path
-    ]
-    isempty(measurements) && return false
-
-    device_paths =
-        unique([device_path_key(measurement.device_info) for measurement in measurements])
-    expanded_paths = copy(state.expanded_device_paths)
-    for device_path in device_paths
-        parts = split(device_path, '/')
-        for depth in 1:(length(parts) - 1)
-            parent_path = join(parts[1:depth], '/')
-            parent_path in expanded_paths || push!(expanded_paths, parent_path)
-        end
-    end
-
-    state.expanded_device_paths = expanded_paths
-    workspace.selection.device_paths = device_paths
-    workspace.selection.measurement_ids =
-        [measurement.unique_id for measurement in measurements]
-    state.scroll_to_device_path = first(device_paths)
-    state.scroll_to_measurement_id = first(measurements).unique_id
-    return true
-end
 
 """Read a null-terminated CImGui text buffer."""
 function _buffer_string(buffer::Vector{UInt8})::String
@@ -120,18 +29,6 @@ function _set_buffer_string!(
     fill!(buffer, 0x00)
     buffer[1:length(bytes)] = bytes
     return buffer
-end
-
-"""
-Stop browser and workspace work before the render loop exits.
-"""
-function _shutdown_background_jobs!(state::BrowserState)::Nothing
-    state.shutdown_complete && return nothing
-    _cancel_figure_script_job!(state)
-    workspace = state.workspace
-    workspace isa Workspace.Workspace && close_workspace!(workspace)
-    state.shutdown_complete = true
-    return nothing
 end
 
 function _selected_figure_script_group(
@@ -184,22 +81,6 @@ function _set_figure_script_status!(
 )::Nothing
     state.figure_scripts.status = String(message)
     state.figure_scripts.error = ""
-    return nothing
-end
-
-"""Retain a bounded history of one performance measurement."""
-function _append_perf_sample!(
-    state::BrowserState,
-    key::Symbol,
-    duration_ms::Float64,
-    alloc_bytes::Int,
-)::Nothing
-    samples = get!(() -> Float64[], state.performance.timings, key)
-    allocations = get!(() -> Int[], state.performance.allocations, key)
-    push!(samples, duration_ms)
-    length(samples) > 400 && popfirst!(samples)
-    push!(allocations, alloc_bytes)
-    length(allocations) > 400 && popfirst!(allocations)
     return nothing
 end
 
@@ -609,125 +490,5 @@ function _delete_selected_figure_script_group!(state::BrowserState)::Nothing
         state,
         min(state.figure_scripts.selected_group, length(groups)),
     )
-    return nothing
-end
-
-"""Measure one browser operation and retain its latest timing and allocation samples."""
-function _time!(
-    f::Function,
-    state::BrowserState,
-    key::Symbol,
-)::Nothing
-    t0 = time_ns()
-    bytes = @allocated f()
-    dt_ms = (time_ns() - t0) / 1e6
-    _append_perf_sample!(state, key, dt_ms, bytes)
-    return nothing
-end
-
-"""Read one integer field from a Linux process-information file."""
-function _read_proc_int(
-    path::String,
-    prefix::String,
-)::Union{Nothing,Int}
-    isfile(path) || return nothing
-    for line in eachline(path)
-        startswith(line, prefix) || continue
-        fields = split(strip(line))
-        length(fields) >= 2 || return nothing
-        try
-            return parse(Int, fields[2])
-        catch
-            return nothing
-        end
-    end
-    return nothing
-end
-
-"""Collect the process-memory values shown in the performance window."""
-function _memory_snapshot()::NamedTuple
-    return (
-        vmrss_kb=_read_proc_int("/proc/self/status", "VmRSS:"),
-        rssanon_kb=_read_proc_int("/proc/self/status", "RssAnon:"),
-        vmsize_kb=_read_proc_int("/proc/self/status", "VmSize:"),
-        vmpeak_kb=_read_proc_int("/proc/self/status", "VmPeak:"),
-        read_bytes=_read_proc_int("/proc/self/io", "read_bytes:"),
-        gc_live_bytes=Int(Base.gc_live_bytes()),
-        maxrss_bytes=Int(Sys.maxrss()),
-    )
-end
-
-"""Format a kibibyte count for the performance window."""
-function _fmt_kb(kb::Union{Nothing,Integer})::String
-    kb === nothing && return "n/a"
-    gib = kb / (1024^2)
-    gib >= 1 && return @sprintf("%.2f GiB", gib)
-    return @sprintf("%.0f MiB", kb / 1024)
-end
-
-"""Format a byte count for the performance window."""
-function _fmt_bytes(bytes::Union{Nothing,Integer})::String
-    bytes === nothing && return "n/a"
-    gib = bytes / (1024^3)
-    gib >= 1 && return @sprintf("%.2f GiB", gib)
-    return @sprintf("%.0f MiB", bytes / (1024^2))
-end
-
-"""Read identifying strings from the active OpenGL context."""
-function _gl_info()::Dict{Symbol,String}
-    try
-        Dict(
-            :vendor => unsafe_string(gl.glGetString(gl.GL_VENDOR)),
-            :renderer => unsafe_string(gl.glGetString(gl.GL_RENDERER)),
-            :version => unsafe_string(gl.glGetString(gl.GL_VERSION)),
-            :sl => unsafe_string(gl.glGetString(gl.GL_SHADING_LANGUAGE_VERSION)),
-        )
-    catch err
-        @warn "GL info query failed" error = err
-        Dict{Symbol,String}()
-    end
-end
-
-"""Write the collected performance samples to the debug log at shutdown."""
-function _print_perf_summary(state::BrowserState)::Nothing
-    @debug begin
-        gi = state.performance.gl_info
-        timings = state.performance.timings
-        allocs = state.performance.allocations
-        msg = """\n
-        ==== Performance Summary ====
-        GL Vendor:   $(get(gi, :vendor, "?"))
-        GL Renderer: $(get(gi, :renderer, "?"))
-        GL Version:  $(get(gi, :version, "?"))
-        """
-        if !isempty(timings)
-            msg = msg * @sprintf "%-12s %5s %9s %9s %9s %12s %12s\n" "Key" "n" "Mean(ms)" "Max(ms)" "Last(ms)" "AllocMean(KB)" "AllocLast(KB)"
-        end
-        for k in sort(collect(keys(timings)))
-            v = timings[k]
-            isempty(v) && continue
-            a = get(allocs, k, Int[])
-            n = length(v)
-            mean_ms = mean(v)
-            max_ms = maximum(v)
-            last_ms = v[end]
-            mean_alloc = isempty(a) ? 0.0 : mean(a) / 1024
-            last_alloc = isempty(a) ? 0.0 : a[end] / 1024
-            msg = msg * @sprintf "%-12s %5d %9.2f %9.2f %9.2f %12.1f %12.1f\n" String(k) n mean_ms max_ms last_ms mean_alloc last_alloc
-        end
-        msg * "=============================="
-    end
-    return nothing
-end
-
-"""Render a small question mark with explanatory hover text."""
-function _helpmarker(desc::String)::Nothing
-    ig.TextDisabled("(?)")
-    if ig.BeginItemTooltip()
-        ig.PushTextWrapPos(ig.GetFontSize() * 35.0)
-        ig.TextUnformatted(desc)
-        ig.PopTextWrapPos()
-        ig.EndTooltip()
-    end
     return nothing
 end
