@@ -22,19 +22,6 @@ using .MakieImguiIntegration: MakieFigure
 
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
 
-"""
-Find a plot type previously written to project state.
-
-An empty name means no plot was selected. Any other unknown name is an invalid project state.
-"""
-function _plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKind}}
-    isempty(name) && return nothing
-    for plot_kind in plot_kinds()
-        String(nameof(plot_kind)) == name && return plot_kind
-    end
-    error("Unknown plot kind '$name' in measurementbrowser.toml")
-end
-
 """Remember the plot chosen for each kind of selected measurement."""
 function _remember_plot_kind!(
     plots::PlotState,

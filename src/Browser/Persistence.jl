@@ -1,4 +1,3 @@
-import CImGui as ig
 using TOML
 
 using ..Project:
@@ -6,6 +5,9 @@ using ..Project:
     project_name
 using ..MeasurementIndex: MeasurementInfo
 import ..Workspace
+using ..Visualization:
+    PlotKind,
+    plot_kinds
 
 # ---------------------------------------------------------------------------
 # App preferences
@@ -185,6 +187,19 @@ end
 
 const PROJECT_VIEW_FILENAME = "measurementbrowser.toml"
 
+"""
+Find a plot type previously written to project state.
+
+An empty name means no plot was selected. Any other unknown name is an invalid project state.
+"""
+function _plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKind}}
+    isempty(name) && return nothing
+    for plot_kind in plot_kinds()
+        String(nameof(plot_kind)) == name && return plot_kind
+    end
+    error("Unknown plot kind '$name' in measurementbrowser.toml")
+end
+
 function _project_view_file_path(root_path::AbstractString)::String
     return joinpath(_normalize_project_path(root_path), PROJECT_VIEW_FILENAME)
 end
@@ -301,16 +316,6 @@ function _project_view_from_browser(
     )
 end
 
-"""Destroy text-filter widgets before their saved text is replaced."""
-function _reset_project_filter_widgets!(state::BrowserState)::Nothing
-    state.tree_filter_widget === nothing || ig.Destroy(state.tree_filter_widget)
-    state.measurement_filter_widget === nothing ||
-        ig.Destroy(state.measurement_filter_widget)
-    state.tree_filter_widget = nothing
-    state.measurement_filter_widget = nothing
-    return nothing
-end
-
 """Apply loaded project-local state to browser controls and workspace selection."""
 function _apply_project_view!(
     state::BrowserState,
@@ -368,17 +373,4 @@ function _save_project_view_if_changed!(state::BrowserState)::Nothing
     _save_project_view(workspace.root_path, view)
     state.saved_project_view = view
     return nothing
-end
-
-"""Read the current text from a CImGui filter widget."""
-function _imgui_text_filter_text(
-    filter::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}},
-)::String
-    filter === nothing && return ""
-    bytes = UInt8[]
-    for char in unsafe_load(filter).InputBuf
-        char == 0 && break
-        push!(bytes, UInt8(mod(Int(char), 256)))
-    end
-    return String(bytes)
 end

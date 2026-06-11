@@ -11,6 +11,29 @@ using ..MeasurementIndex:
     device_path_key
 import ..Workspace
 
+"""Destroy text-filter widgets before their saved text is replaced."""
+function _reset_project_filter_widgets!(state::BrowserState)::Nothing
+    state.tree_filter_widget === nothing || ig.Destroy(state.tree_filter_widget)
+    state.measurement_filter_widget === nothing ||
+        ig.Destroy(state.measurement_filter_widget)
+    state.tree_filter_widget = nothing
+    state.measurement_filter_widget = nothing
+    return nothing
+end
+
+"""Read the current text from a CImGui filter widget."""
+function _imgui_text_filter_text(
+    filter::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}},
+)::String
+    filter === nothing && return ""
+    bytes = UInt8[]
+    for char in unsafe_load(filter).InputBuf
+        char == 0 && break
+        push!(bytes, UInt8(mod(Int(char), 256)))
+    end
+    return String(bytes)
+end
+
 # Left panel (hierarchy tree) rendering
 """Return whether a hierarchy label passes the tree filter."""
 function _tree_node_matches_filter(

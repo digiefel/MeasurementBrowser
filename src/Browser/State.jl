@@ -134,7 +134,7 @@ Base.@kwdef mutable struct PerformanceState
 end
 
 """
-All state owned by the browser.
+Runtime state owned by the browser.
 
 The workspace owns measurements, selection, cache state, data, and background work. This type owns
 only controls, windows, local persistence, annotations, and rendering state.
