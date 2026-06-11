@@ -225,61 +225,46 @@ function _process_ruo2_pund_data(measurement::MeasurementInfo, data::DataFrame):
     return processed
 end
 
-function _process_ruo2_iv_data(data::DataFrame)::DataFrame
-    nrow(data) == 0 && return DataFrame(v=Float64[], i_abs=Float64[], i_positive=Bool[])
-    return DataFrame(
-        v=Float64.(data.v),
-        i_abs=abs.(Float64.(data.i)),
-        i_positive=Float64.(data.i) .> 0,
-    )
-end
+"""Add resistance and linear-fit results while preserving the shared `:i` and `:v` columns."""
+function _process_ruo2_iv_data(
+    measurement::MeasurementInfo,
+    data::DataFrame,
+)::DataFrame
+    mask = isfinite.(data.i) .& isfinite.(data.v)
+    i = Float64.(data.i[mask])
+    v = Float64.(data.v[mask])
 
-function _empty_ruo2_tlm_data()::DataFrame
-    return DataFrame(
-        current_uA=Float64[],
-        voltage_mV=Float64[],
-        resistance_kohm=Float64[],
-        valid_resistance=Bool[],
-        fit_resistance_ohm=Float64[],
-        fit_offset_V=Float64[],
-        rho_sheet=Float64[],
-    )
-end
-
-function _process_ruo2_tlm_data(measurement::MeasurementInfo, data::DataFrame)::DataFrame
-    nrow(data) == 0 && return _empty_ruo2_tlm_data()
-
-    mask = isfinite.(data.current_source) .& isfinite.(data.voltage_drop)
-    I = Float64.(data.current_source[mask])
-    V = Float64.(data.voltage_drop[mask])
-    isempty(I) && return _empty_ruo2_tlm_data()
-
-    n = length(I)
-    sx = sum(I)
-    sy = sum(V)
-    sxx = sum(I .^ 2)
-    sxy = sum(I .* V)
+    n = length(i)
+    sx = sum(i)
+    sy = sum(v)
+    sxx = sum(i .^ 2)
+    sxy = sum(i .* v)
     denom = n * sxx - sx^2
-    R_fit = 0.0
-    offset = 0.0
+    resistance_fit = NaN
+    voltage_offset = NaN
     if abs(denom) > 1e-20
-        R_fit = (n * sxy - sx * sy) / denom
-        offset = (sy - R_fit * sx) / n
+        resistance_fit = (n * sxy - sx * sy) / denom
+        voltage_offset = (sy - resistance_fit * sx) / n
     end
 
     params = merge(measurement.device_info.parameters, measurement.parameters)
-    L_um, W_um = extract_tlm_geometry_from_params(params)
-    rho_sheet = (!isnan(L_um) && !isnan(W_um) && L_um > 0) ? R_fit * W_um / L_um : NaN
-    resistance_kohm = (V ./ I) ./ 1e3
+    length_um, width_um = extract_tlm_geometry_from_params(params)
+    sheet_resistance = (
+        isfinite(resistance_fit) &&
+        isfinite(length_um) &&
+        isfinite(width_um) &&
+        length_um > 0
+    ) ? resistance_fit * width_um / length_um : NaN
+    resistance = v ./ i
 
     return DataFrame(
-        current_uA=I .* 1e6,
-        voltage_mV=V .* 1e3,
-        resistance_kohm=resistance_kohm,
-        valid_resistance=isfinite.(resistance_kohm) .& (abs.(resistance_kohm) .< 1e6),
-        fit_resistance_ohm=fill(R_fit, n),
-        fit_offset_V=fill(offset, n),
-        rho_sheet=fill(rho_sheet, n),
+        i=i,
+        v=v,
+        resistance_ohm=resistance,
+        valid_resistance=isfinite.(resistance) .& (abs.(resistance) .< 1e9),
+        fit_resistance_ohm=fill(resistance_fit, n),
+        fit_offset_v=fill(voltage_offset, n),
+        sheet_resistance_ohm=fill(sheet_resistance, n),
     )
 end
 
@@ -290,8 +275,8 @@ function process_measurement_data(
     data = only(read_measurement_data(workspace, [measurement]))
     measurement.measurement_kind in (:pund, :pn, :wakeup_pn, :wakeup_pund) &&
         return _process_ruo2_pund_data(measurement, data)
-    measurement.measurement_kind in (:iv, :breakdown) && return _process_ruo2_iv_data(data)
-    measurement.measurement_kind === :tlm4p && return _process_ruo2_tlm_data(measurement, data)
+    measurement.measurement_kind in (:iv, :breakdown, :tlm4p) &&
+        return _process_ruo2_iv_data(measurement, data)
     return data
 end
 
@@ -406,9 +391,17 @@ function plot_data!(
         nrow(df) == 0 && continue
         label = length(measurements) == 1 ? nothing : measurement.clean_title
         if label === nothing
-            lines!(ax, df.v, df.i_abs; color=df.i_positive, colormap=:RdBu_3, linewidth=2)
+            lines!(ax, df.v, abs.(df.i); color=df.i .> 0, colormap=:RdBu_3, linewidth=2)
         else
-            lines!(ax, df.v, df.i_abs; color=df.i_positive, colormap=:RdBu_3, linewidth=2, label)
+            lines!(
+                ax,
+                df.v,
+                abs.(df.i);
+                color=df.i .> 0,
+                colormap=:RdBu_3,
+                linewidth=2,
+                label,
+            )
         end
     end
     ax.yscale = log10
@@ -431,14 +424,13 @@ function setup_plot(
 end
 
 function _ruo2_tlm_fit_line(df::DataFrame)::Tuple{Vector{Float64},Vector{Float64}}
-    i_min, i_max = minimum(df.current_uA), maximum(df.current_uA)
+    i_min, i_max = minimum(df.i), maximum(df.i)
     i_span = i_max - i_min
-    i_span == 0 && (i_span = 1.0)
-    current_uA = [i_min - 0.1 * i_span, i_max + 0.1 * i_span]
-    R_fit = first(df.fit_resistance_ohm)
-    offset = first(df.fit_offset_V)
-    voltage_mV = (R_fit / 1e3) .* current_uA .+ (offset * 1e3)
-    return current_uA, voltage_mV
+    i_span == 0 && (i_span = 1e-6)
+    fit_i = [i_min - 0.1 * i_span, i_max + 0.1 * i_span]
+    resistance = first(df.fit_resistance_ohm)
+    offset = first(df.fit_offset_v)
+    return fit_i, resistance .* fit_i .+ offset
 end
 
 function plot_data!(
@@ -460,30 +452,44 @@ function plot_data!(
         nrow(df) == 0 && continue
         color = colors[index]
         if length(measurements) == 1
-            scatter!(ax_iv, df.current_uA, df.voltage_mV; color, markersize=8, label="Data")
+            scatter!(ax_iv, df.i .* 1e6, df.v .* 1e3; color, markersize=8, label="Data")
         else
-            scatter!(ax_iv, df.current_uA, df.voltage_mV; color, markersize=8, label=measurement.clean_title)
+            scatter!(
+                ax_iv,
+                df.i .* 1e6,
+                df.v .* 1e3;
+                color,
+                markersize=8,
+                label=measurement.clean_title,
+            )
         end
-        fit_current_uA, fit_voltage_mV = _ruo2_tlm_fit_line(df)
+        fit_i, fit_v = _ruo2_tlm_fit_line(df)
         fit_label = "Fit: R=$(round(first(df.fit_resistance_ohm), digits=2)) Ω"
         if length(measurements) == 1
-            lines!(ax_iv, fit_current_uA, fit_voltage_mV; color=:red, linewidth=2, label=fit_label)
-            isfinite(first(df.rho_sheet)) && lines!(
+            lines!(ax_iv, fit_i .* 1e6, fit_v .* 1e3; color=:red, linewidth=2, label=fit_label)
+            isfinite(first(df.sheet_resistance_ohm)) && lines!(
                 ax_iv,
                 [NaN],
                 [NaN];
                 color=:transparent,
-                label="ρ_sq = $(round(first(df.rho_sheet), digits=2)) Ω/sq",
+                label="R_sq = $(round(first(df.sheet_resistance_ohm), digits=2)) Ω/sq",
             )
         else
-            lines!(ax_iv, fit_current_uA, fit_voltage_mV; color, linewidth=2, linestyle=:dash)
+            lines!(
+                ax_iv,
+                fit_i .* 1e6,
+                fit_v .* 1e3;
+                color,
+                linewidth=2,
+                linestyle=:dash,
+            )
         end
 
         valid = df.valid_resistance
         any(valid) && scatter!(
             ax_r,
-            df.current_uA[valid],
-            df.resistance_kohm[valid];
+            df.i[valid] .* 1e6,
+            df.resistance_ohm[valid] ./ 1e3;
             color,
             markersize=8,
             label=length(measurements) == 1 ? "R = V/I" : measurement.clean_title,

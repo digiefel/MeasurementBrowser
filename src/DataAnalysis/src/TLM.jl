@@ -7,7 +7,7 @@ function validate_tlm_dataframe(df::DataFrame, filepath::String="")
     issues = String[]
 
     # Check required columns
-    required_cols = ["current_source", "voltage_drop"]
+    required_cols = ["i", "v"]
     for col in required_cols
         if !(col in names(df))
             push!(issues, "Missing required column: $col")
@@ -25,17 +25,17 @@ function validate_tlm_dataframe(df::DataFrame, filepath::String="")
     end
 
     # Check for all-zero currents (would cause division by zero)
-    if all(df.current_source .== 0)
+    if all(df.i .== 0)
         push!(issues, "All source currents are zero - cannot calculate resistance")
     end
 
     # Check for excessive NaN/missing values
-    nan_fraction = sum(ismissing.(df.current_source) .| isnan.(df.current_source)) / nrow(df)
+    nan_fraction = sum(ismissing.(df.i) .| isnan.(df.i)) / nrow(df)
     if nan_fraction > 0.5
         push!(issues, "More than 50% of current data is missing or NaN")
     end
 
-    voltage_nan_fraction = sum(ismissing.(df.voltage_drop) .| isnan.(df.voltage_drop)) / nrow(df)
+    voltage_nan_fraction = sum(ismissing.(df.v) .| isnan.(df.v)) / nrow(df)
     if voltage_nan_fraction > 0.5
         push!(issues, "More than 50% of voltage data is missing or NaN")
     end
@@ -132,8 +132,8 @@ Returns DataFrame with columns:
 - width_um: extracted width in micrometers
 - resistance_ohm: calculated resistance (V/I at each current point)
 - resistance_normalized: resistance * width (Ω·μm)
-- current_source: source current values
-- voltage: measured voltage values
+- i: source current values
+- v: measured voltage values
 """
 function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,Dict{Symbol,Any}}}; Vmin=0.0003, Imin=1e-15)
     if isempty(files_data_params)
@@ -165,14 +165,14 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
         end
 
         # Calculate resistance from V/I, handling division by zero
-        resistance_ohm = similar(df.current_source, Float64)
-        for i in eachindex(df.current_source)
-            if abs(df.current_source[i]) < Imin  # Avoid division by very small numbers
+        resistance_ohm = similar(df.i, Float64)
+        for i in eachindex(df.i)
+            if abs(df.i[i]) < Imin  # Avoid division by very small numbers
                 resistance_ohm[i] = NaN
-            elseif abs(df.voltage_drop[i]) < Vmin # avoid inaccurate values
+            elseif abs(df.v[i]) < Vmin # avoid inaccurate values
                 resistance_ohm[i] = NaN
             else
-                resistance_ohm[i] = df.voltage_drop[i] / df.current_source[i]
+                resistance_ohm[i] = df.v[i] / df.i[i]
             end
         end
 
@@ -186,8 +186,8 @@ function analyze_tlm_combined(files_data_params::Vector{Tuple{String,DataFrame,D
             width_um=fill(width_um, nrow(df)),
             resistance_ohm=resistance_ohm,
             resistance_normalized=resistance_normalized,
-            current_source=df.current_source,
-            voltage=df.voltage_drop
+            i=df.i,
+            v=df.v,
         )
 
         # Add device name for plotting

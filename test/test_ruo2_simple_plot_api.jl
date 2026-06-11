@@ -14,6 +14,8 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
     fixtures_dir = joinpath(@__DIR__, "fixtures", "RuO2")
     pund_path = joinpath(fixtures_dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
     iv_path = joinpath(fixtures_dir, "RuO2test_A11_XI_FeCapBD_A1A2_20260509_184021_IVSweep.csv")
+    breakdown_path =
+        joinpath(fixtures_dir, "Break of oxide 15V [RuO2test_A9_VI_D1D2(1) ; 2025-10-01 16_27_53].csv")
     tlm_device_iv_path =
         joinpath(fixtures_dir, "RuO2test_A11_XI_TLM_L100W4_20260609_183048_14K_IVSweep.csv")
     tlm_path = joinpath(fixtures_dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
@@ -21,6 +23,7 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
 
     pund = only(measurements_for_file(RUO2_PROJECT, pund_path))
     iv = only(measurements_for_file(RUO2_PROJECT, iv_path))
+    breakdown = first(measurements_for_file(RUO2_PROJECT, breakdown_path))
     tlm_device_iv = only(measurements_for_file(RUO2_PROJECT, tlm_device_iv_path))
     tlm = only(measurements_for_file(RUO2_PROJECT, tlm_path))
     fatigue = measurements_for_file(RUO2_PROJECT, fatigue_path)[1:3]
@@ -57,6 +60,8 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
         tlm_measurement(50.0, 350.0),
     ]
     workspace = MeasurementBrowser.Workspace.Workspace(RUO2_PROJECT, fixtures_dir)
+    iv_like_data = read_measurement_data(workspace, [iv, breakdown, tlm_device_iv, tlm])
+    @test all(names(df) == ["i", "v"] for df in iv_like_data)
 
     pund_data = only(process_measurement_data(workspace, [pund]))
     @test all(name in names(pund_data) for name in [
@@ -70,31 +75,39 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
     @test nrow(pund_data) > 0
 
     iv_data = only(process_measurement_data(workspace, [iv]))
-    @test names(iv_data) == ["v", "i_abs", "i_positive"]
+    @test names(iv_data) == [
+        "i",
+        "v",
+        "resistance_ohm",
+        "valid_resistance",
+        "fit_resistance_ohm",
+        "fit_offset_v",
+        "sheet_resistance_ohm",
+    ]
     @test nrow(iv_data) > 0
 
     tlm_device_iv_data = only(process_measurement_data(workspace, [tlm_device_iv]))
     @test tlm_device_iv.measurement_kind === :iv
     @test maximum(abs, tlm_device_iv_data.v) ≈ 0.001
-    @test maximum(tlm_device_iv_data.i_abs) < 1e-6
+    @test maximum(abs, tlm_device_iv_data.i) < 1e-6
 
     tlm_data = only(process_measurement_data(workspace, [tlm]))
     @test all(name in names(tlm_data) for name in [
-        "current_uA",
-        "voltage_mV",
-        "resistance_kohm",
+        "i",
+        "v",
+        "resistance_ohm",
         "valid_resistance",
         "fit_resistance_ohm",
-        "fit_offset_V",
-        "rho_sheet",
+        "fit_offset_v",
+        "sheet_resistance_ohm",
     ])
     @test nrow(tlm_data) > 0
 
     pund_fig = setup_plot(workspace, RuO2PUNDPlot, [pund, pund])
     @test plot_data!(workspace, RuO2PUNDPlot, [pund, pund], pund_fig) === nothing
 
-    iv_fig = setup_plot(workspace, RuO2IVSweepPlot, [iv, iv])
-    @test plot_data!(workspace, RuO2IVSweepPlot, [iv, iv], iv_fig) === nothing
+    iv_fig = setup_plot(workspace, RuO2IVSweepPlot, [iv, breakdown, tlm])
+    @test plot_data!(workspace, RuO2IVSweepPlot, [iv, breakdown, tlm], iv_fig) === nothing
     tlm_device_iv_fig = setup_plot(workspace, RuO2IVSweepPlot, [tlm_device_iv])
     @test plot_data!(
         workspace,
@@ -103,8 +116,8 @@ const RuO2PUNDFatiguePlot = MeasurementBrowser.RuO2PUNDFatiguePlot
         tlm_device_iv_fig,
     ) === nothing
 
-    tlm_fig = setup_plot(workspace, RuO2TLM4PointPlot, [tlm, tlm])
-    @test plot_data!(workspace, RuO2TLM4PointPlot, [tlm, tlm], tlm_fig) === nothing
+    tlm_fig = setup_plot(workspace, RuO2TLM4PointPlot, [iv, tlm])
+    @test plot_data!(workspace, RuO2TLM4PointPlot, [iv, tlm], tlm_fig) === nothing
 
     tlm_analysis_fig = setup_plot(workspace, RuO2TLMAnalysisPlot, tlm_analysis_measurements)
     @test_logs (:info, r"TLM combined analysis completed") (:info, r"Sheet/contact analysis") begin

@@ -89,3 +89,9 @@ Virtual measurements share a filepath but have distinct `unique_id` values.
 
 Measurement kinds and filename rules belong to project implementations. The package stores the
 resulting `Symbol` without assigning project-specific meaning to it.
+
+## Direct I-V data
+
+DC current-voltage measurements use `:i` for current in amperes and `:v` for voltage in volts.
+Voltage-driven sweeps, four-terminal measurements, breakdown measurements, and their visualizers
+share these names so the same data can be reused across compatible views.

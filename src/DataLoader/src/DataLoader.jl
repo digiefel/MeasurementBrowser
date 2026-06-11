@@ -14,9 +14,12 @@ using Dates
 export find_files, get_file_patterns, read_iv_sweep, read_tlm_4p
 
 """
-Read I-V sweep data from CSV file, skipping header metadata
+Read one voltage-driven I-V sweep and return its measured current and voltage as `:i` and `:v`.
 """
-function read_iv_sweep(filename, workdir=".")
+function read_iv_sweep(
+    filename::AbstractString,
+    workdir::AbstractString=".",
+)::DataFrame
     filepath = joinpath(workdir, filename)
 
     # 1. Find the header line index
@@ -74,21 +77,22 @@ function read_iv_sweep(filename, workdir=".")
             i_col = idx !== nothing ? cols[idx] : nothing
         end
 
-        if v_col === nothing || i_col === nothing
-            @warn "Could not identify V/I columns in $filename. Columns: $cols"
-            return DataFrame()
-        end
+        (v_col === nothing || i_col === nothing) &&
+            error("Could not identify current and voltage columns in $filepath. Columns: $cols")
     end
 
-    # 4. Return standardized DataFrame
-    return DataFrame(v=df[!, v_col], i=df[!, i_col])
+    return DataFrame(i=df[!, i_col], v=df[!, v_col])
 end
 
 
 """
-Read TLM 4-point data from CSV file
+Read one four-terminal I-V measurement and return source current and measured voltage as `:i` and
+`:v`.
 """
-function read_tlm_4p(filename, workdir=".")
+function read_tlm_4p(
+    filename::AbstractString,
+    workdir::AbstractString=".",
+)::DataFrame
     filepath = joinpath(workdir, filename)
     lines = readlines(filepath)
     data_start = 1
@@ -107,8 +111,8 @@ function read_tlm_4p(filename, workdir=".")
     end
 
     data_lines = lines[data_start:end]
-    current_source = Float64[]
-    voltage_drop = Float64[]
+    i = Float64[]
+    v = Float64[]
 
     if is_new_format
         for line in data_lines
@@ -118,8 +122,8 @@ function read_tlm_4p(filename, workdir=".")
                     curr = parse(Float64, parts[1])
                     v_high = parse(Float64, parts[2])
                     v_low = parse(Float64, parts[3])
-                    push!(current_source, curr)
-                    push!(voltage_drop, v_high - v_low) # Use measured drop (high - low)
+                    push!(i, curr)
+                    push!(v, v_high - v_low) # Use measured drop (high - low)
                 catch
                     continue
                 end
@@ -134,8 +138,8 @@ function read_tlm_4p(filename, workdir=".")
                 try
                     curr = parse(Float64, valid_parts[1])
                     dv = parse(Float64, valid_parts[2])
-                    push!(current_source, curr)
-                    push!(voltage_drop, dv)
+                    push!(i, curr)
+                    push!(v, dv)
                 catch e
                     println("Error parsing line: $line, error: $e")
                     continue
@@ -144,7 +148,7 @@ function read_tlm_4p(filename, workdir=".")
         end
     end
 
-    return DataFrame(current_source=current_source, voltage_drop=voltage_drop)
+    return DataFrame(i=i, v=v)
 end
 
 """

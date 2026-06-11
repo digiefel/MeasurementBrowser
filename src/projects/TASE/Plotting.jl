@@ -28,8 +28,8 @@ function plot_data!(
     for (measurement, df) in zip(measurements, data)
         nrow(df) == 0 && continue
         label = measurement.clean_title
-        lines!(ax, df.current_source .* 1e6, df.voltage_drop .* 1e3; linewidth=2, label)
-        scatter!(ax, df.current_source .* 1e6, df.voltage_drop .* 1e3; markersize=4)
+        lines!(ax, df.i .* 1e6, df.v .* 1e3; linewidth=2, label)
+        scatter!(ax, df.i .* 1e6, df.v .* 1e3; markersize=4)
     end
     length(measurements) > 1 && axislegend(ax)
     return nothing

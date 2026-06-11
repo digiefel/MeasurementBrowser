@@ -21,6 +21,7 @@ const TASEFourTerminalIVPlot = MeasurementBrowser.TASEFourTerminalIVPlot
         data = read_measurement_data(workspace, measurements)
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)
+        @test all(names(df) == ["i", "v"] for df in data)
 
         fig = setup_plot(workspace, TASEFourTerminalIVPlot, measurements)
         @test plot_data!(workspace, TASEFourTerminalIVPlot, measurements, fig) === nothing
