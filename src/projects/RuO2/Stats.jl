@@ -1,5 +1,105 @@
 using DataFrames: DataFrame, nrow
+using DataAnalysis: extract_tlm_geometry_from_params
 using Statistics: mean
+
+"""Analyze one PUND-family measurement and add plotting-unit columns."""
+function process_pund_measurement_data(
+    measurement::MeasurementInfo,
+    data::DataFrame,
+)::DataFrame
+    kind = measurement.measurement_kind
+    segment = kind === :pn || kind === :wakeup_pn ? :pn :
+        kind === :wakeup_pund ? :pund :
+        nothing
+    group_size = 5
+    analyzed = if segment === :pn
+        result = analyze_pund_and_pn(data)
+        group_size = result.pn_group_size
+        result.pn
+    elseif segment === :pund
+        result = analyze_pund_and_pn(data)
+        group_size = result.pund_group_size
+        result.pund
+    else
+        analyze_pund(data)
+    end
+
+    analyzed === nothing && return DataFrame()
+    processed = DataFrame(analyzed)
+    processed.time_us = processed.time .* 1e6
+    processed.current_uA = processed.current .* 1e6
+    processed.i_fe_uA = processed.I_FE .* 1e6
+    processed.q_fe_pC = processed.Q_FE .* 1e12
+    processed.pulse_group_size = fill(group_size, nrow(processed))
+
+    finite_q = filter(isfinite, processed.Q_FE)
+    q_mean = isempty(finite_q) ? 0.0 : mean(finite_q)
+    q_centered = processed.Q_FE .- q_mean
+    processed.q_centered_pC = q_centered .* 1e12
+
+    params = merge(measurement.device_info.parameters, measurement.parameters)
+    area_um2 = get(params, :area_um2, nothing)
+    if area_um2 !== nothing
+        area_cm2 = Float64(area_um2) / 1e8
+        processed.p_fe_uC_cm2 = (q_centered ./ area_cm2) .* 1e6
+    end
+    return processed
+end
+
+"""Fit one current-voltage measurement and add resistance columns."""
+function process_iv_measurement_data(
+    measurement::MeasurementInfo,
+    data::DataFrame,
+)::DataFrame
+    mask = isfinite.(data.i) .& isfinite.(data.v)
+    i = Float64.(data.i[mask])
+    v = Float64.(data.v[mask])
+    n = length(i)
+    sx = sum(i)
+    sy = sum(v)
+    sxx = sum(i .^ 2)
+    sxy = sum(i .* v)
+    denom = n * sxx - sx^2
+    resistance_fit = NaN
+    voltage_offset = NaN
+    if abs(denom) > 1e-20
+        resistance_fit = (n * sxy - sx * sy) / denom
+        voltage_offset = (sy - resistance_fit * sx) / n
+    end
+
+    params = merge(measurement.device_info.parameters, measurement.parameters)
+    length_um, width_um = extract_tlm_geometry_from_params(params)
+    sheet_resistance = (
+        isfinite(resistance_fit) &&
+        isfinite(length_um) &&
+        isfinite(width_um) &&
+        length_um > 0
+    ) ? resistance_fit * width_um / length_um : NaN
+    resistance = v ./ i
+
+    return DataFrame(
+        i=i,
+        v=v,
+        resistance_ohm=resistance,
+        valid_resistance=isfinite.(resistance) .& (abs.(resistance) .< 1e9),
+        fit_resistance_ohm=fill(resistance_fit, n),
+        fit_offset_v=fill(voltage_offset, n),
+        sheet_resistance_ohm=fill(sheet_resistance, n),
+    )
+end
+
+"""Load and process one logical RuO2 measurement through the workspace."""
+function process_measurement_data(
+    workspace::Workspace.Workspace{RuO2Project},
+    measurement::MeasurementInfo,
+)::DataFrame
+    data = only(read_measurement_data(workspace, [measurement]))
+    measurement.measurement_kind in (:pund, :pn, :wakeup_pn, :wakeup_pund) &&
+        return process_pund_measurement_data(measurement, data)
+    measurement.measurement_kind in (:iv, :breakdown, :tlm4p) &&
+        return process_iv_measurement_data(measurement, data)
+    return data
+end
 
 """Compute PUND history and waveform stats after all measurements for a device are known."""
 function compute_and_add_measurement_stats!(

@@ -240,10 +240,6 @@ function figure_script_path(output_directory::AbstractString, script_name::Abstr
     )
 end
 
-function _script_project_binding(::RuO2Project)
-    return "MeasurementBrowser.RUO2_PROJECT"
-end
-
 function _script_project_binding(::TASEProject)
     return "MeasurementBrowser.TASE_PROJECT"
 end
@@ -423,16 +419,6 @@ end
 function _figure_script_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Type{<:PlotKind}
     throw(FigureScriptResolutionError(
         "Figure script plot data is not implemented for $(project_name(project))",
-    ))
-end
-
-function _figure_script_plot_kind(::RuO2Project, measurement::MeasurementInfo)::Type{<:PlotKind}
-    measurement.measurement_kind in (:pund, :pn, :wakeup_pn, :wakeup_pund) && return RuO2PUNDPlot
-    measurement.measurement_kind in (:iv, :breakdown, :unknown) && return RuO2IVSweepPlot
-    measurement.measurement_kind === :tlm4p && return RuO2TLM4PointPlot
-    measurement.measurement_kind === :cvsweep && return RuO2CVSweepPlot
-    throw(FigureScriptResolutionError(
-        "No figure script plot kind is available for measurement '$(measurement.unique_id)'",
     ))
 end
 

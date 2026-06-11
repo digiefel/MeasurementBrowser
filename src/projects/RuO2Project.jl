@@ -14,7 +14,6 @@ include("RuO2/Interpretation.jl")
 include("RuO2/PUNDIO.jl")
 include("RuO2/PUNDAnalysis.jl")
 include("RuO2/Stats.jl")
-include("RuO2/PlotHelpers.jl")
 
 """Load the direct table for one RuO2 source file or logical measurement."""
 function load_source_data(
@@ -48,27 +47,8 @@ function load_source_data(
     error("RuO2 source data API is not implemented for $kind")
 end
 
-struct RuO2PUNDPlot <: PlotKind end
-struct RuO2IVSweepPlot <: PlotKind end
-struct RuO2TLM4PointPlot <: PlotKind end
-struct RuO2CVSweepPlot <: PlotKind end
-struct RuO2TLMAnalysisPlot <: PlotKind end
-struct RuO2TLMTemperaturePlot <: PlotKind end
-struct RuO2PUNDFatiguePlot <: PlotKind end
-
-include("RuO2/PlotSingle.jl")
-include("RuO2/PlotCombined.jl")
-
-# ---------------------------------------------------------------------------
-# Interface implementations
-# ---------------------------------------------------------------------------
-
 project_name(::RuO2Project) = "RuO2"
 project_description(::RuO2Project) = "Ferroelectric RuO2test measurements"
-
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
 
 const RUO2_PROJECT = RuO2Project()
 push!(PROJECTS, RUO2_PROJECT)

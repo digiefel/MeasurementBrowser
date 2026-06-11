@@ -3,6 +3,12 @@ using Test
 
 const Browser = MeasurementBrowser.Browser
 
+struct ProjectViewTestProject <: AbstractProject end
+struct ProjectViewIVPlot <: PlotKind end
+struct ProjectViewTLMPlot <: PlotKind end
+
+MeasurementBrowser.project_name(::ProjectViewTestProject) = "ProjectViewTest"
+
 @testset "project view state" begin
     root_path = mktempdir()
     @test basename(Browser._project_view_file_path(root_path)) == "measurementbrowser.toml"
@@ -12,7 +18,7 @@ const Browser = MeasurementBrowser.Browser
     @test default_view.main_plot.live == true
 
     view = Browser.PersistedProjectView(
-        project="RuO2",
+        project="ProjectViewTest",
         tree=Browser.PersistedTreeView(
             expanded=["chip/device"],
             selected=["chip/device"],
@@ -22,11 +28,11 @@ const Browser = MeasurementBrowser.Browser
             selected=["measurement-1", "measurement-2"],
             filter="298K",
         ),
-        plot_kinds=Dict("iv_sweep" => "RuO2IVSweepPlot"),
+        plot_kinds=Dict("iv_sweep" => "ProjectViewIVPlot"),
         main_plot=Browser.PersistedPlotView(
             id="main",
             title="Plot Area",
-            plot_kind="RuO2TLM4PointPlot",
+            plot_kind="ProjectViewTLMPlot",
             live=true,
             measurements=["measurement-1"],
         ),
@@ -34,7 +40,7 @@ const Browser = MeasurementBrowser.Browser
             Browser.PersistedPlotView(
                 id="plot_1",
                 title="Detached",
-                plot_kind="RuO2IVSweepPlot",
+                plot_kind="ProjectViewIVPlot",
                 live=false,
                 measurements=["measurement-2"],
             ),
@@ -66,7 +72,7 @@ const Browser = MeasurementBrowser.Browser
     ])
 
     parsed = Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
-        "project" => "RuO2",
+        "project" => "ProjectViewTest",
         "tree" => Dict{String,Any}(
             "expanded" => ["chip/device"],
             "selected" => ["chip/device"],
@@ -76,11 +82,11 @@ const Browser = MeasurementBrowser.Browser
             "selected" => ["measurement-1"],
             "filter" => "298K",
         ),
-        "plot_kinds" => Dict{String,Any}("iv_sweep" => "RuO2IVSweepPlot"),
+        "plot_kinds" => Dict{String,Any}("iv_sweep" => "ProjectViewIVPlot"),
         "main_plot" => Dict{String,Any}(
             "id" => "main",
             "title" => "Plot Area",
-            "plot_kind" => "RuO2TLM4PointPlot",
+            "plot_kind" => "ProjectViewTLMPlot",
             "live" => true,
             "measurements" => ["measurement-1"],
         ),
@@ -88,7 +94,7 @@ const Browser = MeasurementBrowser.Browser
             Dict{String,Any}(
                 "id" => "plot_1",
                 "title" => "Detached",
-                "plot_kind" => "RuO2IVSweepPlot",
+                "plot_kind" => "ProjectViewIVPlot",
                 "live" => false,
                 "measurements" => ["measurement-2"],
             ),
@@ -96,7 +102,7 @@ const Browser = MeasurementBrowser.Browser
     ))
 
     @test_throws ErrorException Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
-        "project" => "RuO2",
+        "project" => "ProjectViewTest",
         "tree" => Dict{String,Any}(
             "expanded" => Any["chip/device", 1],
             "selected" => ["chip/device"],
@@ -106,18 +112,18 @@ const Browser = MeasurementBrowser.Browser
             "selected" => ["measurement-1"],
             "filter" => "298K",
         ),
-        "plot_kinds" => Dict{String,Any}("iv_sweep" => "RuO2IVSweepPlot"),
+        "plot_kinds" => Dict{String,Any}("iv_sweep" => "ProjectViewIVPlot"),
         "main_plot" => Dict{String,Any}(
             "id" => "main",
             "title" => "Plot Area",
-            "plot_kind" => "RuO2TLM4PointPlot",
+            "plot_kind" => "ProjectViewTLMPlot",
             "live" => true,
             "measurements" => ["measurement-1"],
         ),
         "plot_windows" => Any[],
     ))
 
-    @test parsed.project == "RuO2"
+    @test parsed.project == "ProjectViewTest"
     @test parsed.tree.expanded == ["chip/device"]
     @test parsed.measurements.selected == ["measurement-1"]
     @test parsed.main_plot.id == "main"
@@ -125,7 +131,7 @@ const Browser = MeasurementBrowser.Browser
     @test parsed.main_plot.live == true
     @test only(parsed.plot_windows).measurements == ["measurement-2"]
 
-    project = MeasurementBrowser.RuO2Project()
+    project = ProjectViewTestProject()
     measurement_1 = MeasurementBrowser.MeasurementInfo(;
         unique_id="measurement-1",
         filepath=joinpath(root_path, "measurement-1.csv"),
@@ -157,21 +163,21 @@ const Browser = MeasurementBrowser.Browser
     @test state.measurement_filter == "298K"
     plots = state.plots
     @test plots.kind_by_measurement ==
-          Dict(:iv_sweep => MeasurementBrowser.RuO2IVSweepPlot)
+          Dict(:iv_sweep => ProjectViewIVPlot)
     @test plots.main.live == true
-    @test plots.main.plot_kind == MeasurementBrowser.RuO2TLM4PointPlot
+    @test plots.main.plot_kind == ProjectViewTLMPlot
     @test plots.main.measurement_ids == ["measurement-1"]
     @test only(plots.windows).id == "plot_1"
     @test only(plots.windows).measurement_ids == ["measurement-2"]
 
     saved_view = Browser._project_view_from_browser(state)
-    @test saved_view.project == "RuO2"
+    @test saved_view.project == "ProjectViewTest"
     @test saved_view.tree.selected == ["chip/device"]
     @test saved_view.tree.expanded == ["chip/device"]
     @test saved_view.measurements.selected == ["measurement-1", "measurement-2"]
-    @test saved_view.plot_kinds == Dict("iv_sweep" => "RuO2IVSweepPlot")
-    @test saved_view.main_plot.plot_kind == "RuO2TLM4PointPlot"
-    @test only(saved_view.plot_windows).plot_kind == "RuO2IVSweepPlot"
+    @test saved_view.plot_kinds == Dict("iv_sweep" => "ProjectViewIVPlot")
+    @test saved_view.main_plot.plot_kind == "ProjectViewTLMPlot"
+    @test only(saved_view.plot_windows).plot_kind == "ProjectViewIVPlot"
 
     Browser._save_project_view_if_changed!(state)
     loaded_after_ui_save = Browser._load_project_view(root_path)

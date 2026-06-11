@@ -3,7 +3,6 @@ using DataFrames: nrow
 using Test
 
 const RUO2_PROJECT = MeasurementBrowser.RUO2_PROJECT
-const RuO2CVSweepPlot = MeasurementBrowser.RuO2CVSweepPlot
 
 const _CV_FIXTURES = (
     z_comment = "RuO2test_A13_XI_FeCap_B1_20260511_004120_CVSweep.csv",
@@ -33,7 +32,7 @@ const _CV_FIXTURES = (
     @test all(isfinite, g_df.Z_Ohm)
     @test all(g_df.Z_Ohm .> 0)
 
-    # Full pipeline check: interpret, load, and plot for the comment-header fixture.
+    # Full package pipeline check: interpret and load the comment-header fixture.
     items = measurements_for_file(MeasurementBrowser.RUO2_PROJECT, z_path)
     @test length(items) == 1
     @test only(items).measurement_kind == :cvsweep
@@ -43,6 +42,4 @@ const _CV_FIXTURES = (
     @test length(data) == 1
     @test nrow(only(data)) == nrow(z_df)
 
-    fig = MeasurementBrowser.setup_plot(workspace, RuO2CVSweepPlot, items)
-    @test MeasurementBrowser.plot_data!(workspace, RuO2CVSweepPlot, items, fig) === nothing
 end

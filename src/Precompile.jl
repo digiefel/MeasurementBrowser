@@ -14,14 +14,10 @@
         if isfile(pund_path)
             pund_meas = only(measurements_for_file(RUO2_PROJECT, pund_path))
             process_measurement_data(workspace, [pund_meas])
-            pund_fig = setup_plot(workspace, RuO2PUNDPlot, [pund_meas])
-            plot_data!(workspace, RuO2PUNDPlot, [pund_meas], pund_fig)
         end
 
         if isfile(tlm_path)
             tlm_meas = only(measurements_for_file(RUO2_PROJECT, tlm_path))
-            tlm_fig = setup_plot(workspace, RuO2TLM4PointPlot, [tlm_meas])
-            plot_data!(workspace, RuO2TLM4PointPlot, [tlm_meas], tlm_fig)
         end
 
         if pund_meas !== nothing && tlm_meas !== nothing

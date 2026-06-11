@@ -34,10 +34,10 @@ Normal plots call `setup_plot` and `plot_data!` directly; the old plot-job layer
 
 ### External Projects
 
-RuO2 and TASE are still compiled inside MeasurementBrowser. They should become ordinary external
-Julia project code that imports the public MeasurementBrowser API. They do not need to be packages.
-Tests should define small test projects instead of depending on bundled projects for package
-contracts.
+RuO2 analysis and plotting now live with the experiment and load through the public browser entry
+point. The package still compiles the old RuO2 reader and scan analysis for remaining cache and scan
+tests; those tests must move to small test projects before that last copy is deleted. TASE is still
+compiled inside MeasurementBrowser.
 
 ### Public API
 
@@ -76,9 +76,9 @@ notes have storage APIs but no browser interface. The spatial browser plan owns 
 
 ### Code Surface
 
-RuO2 plotting and analysis remain the largest project-specific code surface. `FigureScripts.jl`
-also remains large despite being deprecated. Each replacement should delete the code it supersedes;
-no compatibility paths should remain.
+The remaining bundled RuO2 reader and scan analysis are temporary test dependencies.
+`FigureScripts.jl` also remains large despite being deprecated. Each replacement should delete the
+code it supersedes; no compatibility paths should remain.
 
 ### Documentation And Function Quality
 
