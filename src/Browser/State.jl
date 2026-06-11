@@ -141,6 +141,7 @@ only controls, windows, local persistence, annotations, and rendering state.
 """
 Base.@kwdef mutable struct BrowserState
     workspace::Union{Nothing,Workspace.Workspace} = nothing
+    project_locked::Bool = false
     plots::PlotState = PlotState()
     figure_scripts::FigureScriptState = FigureScriptState()
     performance::PerformanceState = PerformanceState()

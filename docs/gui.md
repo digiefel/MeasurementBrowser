@@ -4,9 +4,11 @@
 
 ## Entry point and frame loop
 
-`Browser.start_browser` creates one `BrowserState` and runs the render loop. Docking
-layout is configured once at startup: left side for navigation and information, right side for
-plot-oriented work.
+`start_browser(root_path; project)` creates one `BrowserState` and runs the render loop. External
+project code passes its project object directly; the browser then uses that project for every source
+root opened in the window. Without that argument, the browser uses its saved bundled-project
+preference. Docking layout is configured once at startup: left side for navigation and information,
+right side for plot-oriented work.
 
 ## State boundary
 

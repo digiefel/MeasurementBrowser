@@ -22,11 +22,19 @@ end
 function _open_project_path!(
     state::BrowserState,
     path::String;
+    project::Union{Nothing,AbstractProject}=nothing,
     persist::Bool=true,
 )::Nothing
     norm_path = _normalize_project_path(path)
-    state.project_preference = _project_preference_for_path(state, norm_path)
-    project = _project_for_preference(state.project_preference)
+    if project === nothing && state.project_locked
+        project = state.workspace.project
+    end
+    if project === nothing
+        state.project_preference = _project_preference_for_path(state, norm_path)
+        project = _project_for_preference(state.project_preference)
+    else
+        state.project_preference = project_name(project)
+    end
     previous_workspace = state.workspace
     previous_root = previous_workspace isa Workspace.Workspace ?
         previous_workspace.root_path :

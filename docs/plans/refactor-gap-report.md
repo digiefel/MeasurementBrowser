@@ -35,8 +35,9 @@ Normal plots call `setup_plot` and `plot_data!` directly; the old plot-job layer
 ### External Projects
 
 RuO2 and TASE are still compiled inside MeasurementBrowser. They should become ordinary external
-project packages that import the public MeasurementBrowser API. Tests should define small test
-projects instead of depending on bundled projects for package contracts.
+Julia project code that imports the public MeasurementBrowser API. They do not need to be packages.
+Tests should define small test projects instead of depending on bundled projects for package
+contracts.
 
 ### Public API
 

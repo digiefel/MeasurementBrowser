@@ -699,41 +699,45 @@ function render_project_window(state::BrowserState)::Nothing
 
         ig.Separator()
 
-        pref = state.project_preference
-        changed = false
+        if state.project_locked
+            ig.TextDisabled("Project supplied by the Julia caller")
+        else
+            pref = state.project_preference
+            changed = false
 
-        default_project = something(DEFAULT_PROJECT[])
-        default_label = "Default ($(project_name(default_project)))"
+            default_project = something(DEFAULT_PROJECT[])
+            default_label = "Default ($(project_name(default_project)))"
 
-        if ig.RadioButton(default_label, pref == "auto")
-            state.project_preference = "auto"
-            changed = true
-        end
-        ig.SameLine()
-        _helpmarker("Use the default project without trying to infer the project from the files in the folder.")
-
-        for p in PROJECTS
-            pn = project_name(p)
-            if ig.RadioButton(pn, pref == pn)
-                state.project_preference = pn
+            if ig.RadioButton(default_label, pref == "auto")
+                state.project_preference = "auto"
                 changed = true
             end
             ig.SameLine()
-            _helpmarker(project_description(p))
-        end
+            _helpmarker("Use the default project without trying to infer the project from the files in the folder.")
 
-        if changed
-            current_root = workspace isa Workspace.Workspace ? workspace.root_path : ""
-            _persist_preferences!(
-                state;
-                path=isempty(current_root) ? nothing : current_root,
-            )
-            if workspace isa Workspace.Workspace
-                @info(
-                    "Project preference changed to '$(state.project_preference)' - " *
-                    "reloading cache",
+            for p in PROJECTS
+                pn = project_name(p)
+                if ig.RadioButton(pn, pref == pn)
+                    state.project_preference = pn
+                    changed = true
+                end
+                ig.SameLine()
+                _helpmarker(project_description(p))
+            end
+
+            if changed
+                current_root = workspace isa Workspace.Workspace ? workspace.root_path : ""
+                _persist_preferences!(
+                    state;
+                    path=isempty(current_root) ? nothing : current_root,
                 )
-                _open_project_path!(state, current_root)
+                if workspace isa Workspace.Workspace
+                    @info(
+                        "Project preference changed to '$(state.project_preference)' - " *
+                        "reloading cache",
+                    )
+                    _open_project_path!(state, current_root)
+                end
             end
         end
     end
@@ -776,18 +780,22 @@ function _window_close_requested()::Bool
     return GLFW.WindowShouldClose(window)
 end
 
-"""
-Initialize browser state and run the CImGui render loop.
-"""
+"""Run the browser for one source root, optionally using a project supplied by the caller."""
 function start_browser(
     root_path::Union{Nothing,String}=nothing;
+    project::Union{Nothing,AbstractProject}=nothing,
     engine::Any=nothing,
     spawn::Int=1,
 )::Nothing
+    project !== nothing && (root_path === nothing || isempty(root_path)) &&
+        throw(ArgumentError("A caller-supplied project requires a source root"))
     ig.set_backend(:GlfwOpenGL3)
     prefs = _load_prefs()
     state = BrowserState(
-        project_preference=String(get(prefs, "project", "auto")),
+        project_locked=project !== nothing,
+        project_preference=project === nothing ?
+            String(get(prefs, "project", "auto")) :
+            project_name(project),
         recent_projects=_parse_recent_projects(prefs),
     )
     ctx = ig.CreateContext()
@@ -799,7 +807,7 @@ function start_browser(
     ig.StyleColorsDark()
 
     if root_path !== nothing && root_path != ""
-        _open_project_path!(state, root_path)
+        _open_project_path!(state, root_path; project)
     end
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
