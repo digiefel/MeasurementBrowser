@@ -10,6 +10,6 @@ import ..MeasurementIndex:
     file_fingerprint
 import ..Project: AbstractProject, project_name
 
-include("ProjectCache.jl")
+include("Cache/ProjectCache.jl")
 
 end
