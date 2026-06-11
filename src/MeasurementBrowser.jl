@@ -77,11 +77,12 @@ using .Browser: start_browser
 
 export start_browser
 export AbstractProject
-export SourceFile, MeasurementInfo, DeviceInfo
+export SourceFile, MeasurementInfo, DeviceInfo, MeasurementAnalysisFailure
 export PlotKind, plot_kinds
 export parse_device_info, detect_kind, kind_label, display_label, interpret_file
 export measurements_for_file
 export load_source_data, read_measurement_data, process_measurement_data, setup_plot, plot_data!
+export compute_and_add_measurement_stats!
 export debug_plot
 export project_name, project_description
 export open_workspace, close_workspace!, select_measurements!
