@@ -14,7 +14,6 @@ struct TASEProject <: AbstractProject end
 
 include("TASE/Display.jl")
 include("TASE/Interpretation.jl")
-include("TASE/Analysis.jl")
 
 struct TASEFourTerminalIVPlot <: PlotKind end
 

@@ -9,7 +9,6 @@ using .Project:
     DEFAULT_PROJECT,
     PROJECTS
 import .Project:
-    available_analyses,
     compute_and_add_measurement_stats!,
     detect_kind,
     device_path_label,
@@ -20,8 +19,7 @@ import .Project:
     parse_device_info,
     process_measurement_data,
     project_description,
-    project_name,
-    run_analysis
+    project_name
 
 include("MeasurementIndex.jl")
 using .MeasurementIndex:
@@ -54,11 +52,6 @@ using .MeasurementIndex:
     parse_timestamp,
     scan_source,
     with_cancel
-
-include("AnalysisResult.jl")
-
-"""Draw one view from the deprecated analysis-result API."""
-draw_analysis_view(result::AnalysisResult, view::NamedTuple) = nothing
 
 include("Cache.jl")
 using .Cache:

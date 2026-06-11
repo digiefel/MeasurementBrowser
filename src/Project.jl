@@ -47,10 +47,4 @@ function compute_and_add_measurement_stats! end
 """Return the project-specific display label for one device path."""
 function device_path_label end
 
-"""Return the analyses offered for the current measurement selection."""
-available_analyses(::AbstractProject, measurements)::Vector{NamedTuple} = NamedTuple[]
-
-"""Run one project analysis selected by its stable key."""
-run_analysis(::AbstractProject, key::Symbol, measurements; kwargs...) = nothing
-
 end
