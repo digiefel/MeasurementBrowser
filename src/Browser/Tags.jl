@@ -1,5 +1,4 @@
 using Annotations
-import CImGui as ig
 
 import ..Workspace
 using ..MeasurementIndex:
@@ -261,33 +260,4 @@ function _selection_targets(
         return selected_items
     end
     return T[clicked_item]
-end
-
-"""Show the tag-loading failure without blocking the rest of the browser."""
-function _render_tag_state_error!(state::BrowserState)::Nothing
-    message = state.tag_state_error
-    isempty(message) && return nothing
-    ig.TextColored((1.0, 0.5, 0.5, 1.0), "tags error")
-    if ig.BeginItemTooltip()
-        ig.PushTextWrapPos(ig.GetFontSize() * 35.0)
-        ig.TextUnformatted(message)
-        ig.PopTextWrapPos()
-        ig.EndTooltip()
-    end
-end
-
-"""Apply the dominant tag color and report whether the caller must pop it."""
-function _push_tag_text_style!(
-    tag_state::Annotations.Tags.TagState,
-    key::AbstractString,
-    ancestor_keys::Vector{String},
-)::Bool
-    eff = Annotations.Tags.effective(tag_state, key, ancestor_keys)
-    color = Annotations.Tags.dominant_color(tag_state, eff)
-    color === nothing && return false
-    r = Float32(color[1]) / 255f0
-    g = Float32(color[2]) / 255f0
-    b = Float32(color[3]) / 255f0
-    ig.PushStyleColor(ig.ImGuiCol_Text, (r, g, b, 1.0f0))
-    return true
 end
