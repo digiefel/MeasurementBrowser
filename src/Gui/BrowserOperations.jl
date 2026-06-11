@@ -1,3 +1,32 @@
+using Printf
+using Statistics: mean
+import CImGui as ig
+import ModernGL as gl
+
+using ..Project:
+    AbstractProject,
+    DEFAULT_PROJECT,
+    PROJECTS,
+    project_name
+using ..MeasurementIndex:
+    MeasurementInfo,
+    device_path_key
+import ..Workspace
+using ..Workspace:
+    close_workspace!,
+    open_workspace,
+    track_task!
+using ..MeasurementBrowser:
+    FigureScriptInferenceProfile,
+    FigureScriptProfiledError,
+    FigureScriptValidationError,
+    NamedMeasurementGroup,
+    _FigureScriptFactIndex,
+    _build_figure_script_fact_index,
+    _infer_measurement_group_profiled,
+    _matching_measurements,
+    _validate_named_measurement_groups
+
 """Return the project selected by the saved project preference."""
 function _project_for_preference(pref::AbstractString)::AbstractProject
     pref == "auto" && return something(DEFAULT_PROJECT[])

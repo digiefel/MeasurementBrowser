@@ -1,3 +1,16 @@
+import CImGui as ig
+
+using ..Project:
+    AbstractProject,
+    display_label,
+    kind_label
+using ..MeasurementIndex:
+    HierarchyNode,
+    MeasurementInfo,
+    children,
+    device_path_key
+import ..Workspace
+
 # Left panel (hierarchy tree) rendering
 """Return whether a hierarchy label passes the tree filter."""
 function _tree_node_matches_filter(

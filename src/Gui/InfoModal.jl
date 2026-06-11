@@ -1,3 +1,20 @@
+import CImGui as ig
+import CImGui.CSyntax: @c
+using NativeFileDialog: pick_folder
+
+using ..Project:
+    AbstractProject,
+    display_label,
+    kind_label
+using ..MeasurementIndex: MeasurementInfo
+import ..Workspace
+using ..MeasurementBrowser:
+    FigureScriptExistsError,
+    FigureScriptIOError,
+    FigureScriptValidationError,
+    figure_script_path,
+    write_figure_script
+
 """Render device and measurement details for the visible workspace selection."""
 function render_info_window(state::BrowserState)::Nothing
     workspace = state.workspace

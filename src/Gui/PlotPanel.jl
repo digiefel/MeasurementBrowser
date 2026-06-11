@@ -1,3 +1,25 @@
+using DataFrames: DataFrame
+using GLMakie: Axis, Figure, lines!
+import GLMakie.Makie as Makie
+import CImGui as ig
+import CImGui.CSyntax: @c
+using NativeFileDialog: save_file
+
+using ..Project:
+    load_source_data,
+    project_name
+using ..MeasurementIndex:
+    MeasurementInfo,
+    index_source_file
+import ..Workspace
+using ..Visualization:
+    PlotKind,
+    debug_plot,
+    plot_data!,
+    plot_kinds,
+    setup_plot
+using .MakieImguiIntegration: MakieFigure
+
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
 
 """

@@ -1,3 +1,29 @@
+using Printf
+using Statistics: mean
+import GLFW
+import CImGui as ig
+using NativeFileDialog: pick_folder
+
+using ..Project:
+    DEFAULT_PROJECT,
+    PROJECTS,
+    project_description,
+    project_name
+using ..MeasurementIndex: SourceScan
+using ..Cache:
+    ProjectCacheIdentity,
+    ProjectCacheStatus
+import ..Workspace
+using ..Workspace:
+    WorkspaceProgress,
+    cache_work_running,
+    cancel_cache!,
+    cancel_scan!,
+    poll_workspace!,
+    scan_source!,
+    source_scan_running,
+    update_cache!
+
 """Describe the current cache operation for toolbar and progress rendering."""
 function _cache_activity_model(state::BrowserState)::NamedTuple
     workspace = state.workspace

@@ -1,3 +1,14 @@
+using Annotations
+using GLMakie: Figure
+import CImGui as ig
+
+import ..Workspace
+using ..MeasurementIndex: MeasurementInfo
+using ..Visualization: PlotKind
+using ..MeasurementBrowser:
+    NamedMeasurementGroup,
+    _FigureScriptFactIndex
+
 """
 Runtime state for one plot window.
 

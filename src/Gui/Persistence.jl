@@ -1,3 +1,12 @@
+import CImGui as ig
+using TOML
+
+using ..Project:
+    PROJECTS,
+    project_name
+using ..MeasurementIndex: MeasurementInfo
+import ..Workspace
+
 # ---------------------------------------------------------------------------
 # App preferences
 # ---------------------------------------------------------------------------
