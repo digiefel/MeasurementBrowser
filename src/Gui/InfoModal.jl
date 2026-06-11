@@ -1,5 +1,6 @@
-function render_info_window(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
+"""Render device and measurement details for the visible workspace selection."""
+function render_info_window(state::BrowserState)::Nothing
+    workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
         if ig.Begin("Information Panel")
             ig.TextDisabled("Open a project folder to inspect measurements")
@@ -9,7 +10,7 @@ function render_info_window(ui_state)
     end
     proj = workspace.project
     selected_devices, selected_measurements, selected_path =
-        _project_visible_selection(ui_state)
+        _project_visible_selection(state)
     if ig.Begin("Information Panel")
         flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_ScrollY
         ig.BeginTable("info_cols", 2, flags)
@@ -24,27 +25,6 @@ function render_info_window(ui_state)
             sel_name = join(selected_path, "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
-            stats = begin
-                try
-                    get_measurements_stats(meas_vec, proj)
-                catch err
-                    @warn "Failed to compute stats" error = err
-                    Dict{Symbol,Any}()
-                end
-            end
-            if !isempty(stats)
-                ig.Text("Stats")
-                ig.BulletText("Total: $(stats[:total_measurements])")
-                ig.BulletText("Types: $(join(stats[:measurement_types], ", "))")
-                if haskey(stats, :first_measurement)
-                    ig.BulletText("First: $(stats[:first_measurement]) ")
-                    ig.BulletText("Last:  $(stats[:last_measurement]) ")
-                end
-            else
-                ig.TextDisabled("No stats available")
-            end
-            ig.Separator()
-            # Device-level metadata
             if !isempty(meas_vec)
                 dev_meta = first(meas_vec).device_info.parameters
                 if !isempty(dev_meta)
@@ -102,11 +82,15 @@ function render_info_window(ui_state)
         ig.EndTable()
     end
     ig.End()
+    return nothing
 end
 
-function _figure_script_output_path(ui_state)
-    output_directory = _buffer_string(ui_state[:figure_script_output_dir_buffer])
-    script_name = _buffer_string(ui_state[:figure_script_name_buffer])
+"""Return the current figure-script output path when both inputs are valid."""
+function _figure_script_output_path(
+    state::BrowserState,
+)::Union{Nothing,String}
+    output_directory = _buffer_string(state.figure_scripts.output_dir_buffer)
+    script_name = _buffer_string(state.figure_scripts.script_name_buffer)
     try
         return figure_script_path(output_directory, script_name)
     catch err
@@ -115,45 +99,58 @@ function _figure_script_output_path(ui_state)
     end
 end
 
-function _write_figure_script_from_ui!(ui_state; overwrite::Bool=false)
-    workspace = ui_state[:workspace]::Workspace.Workspace
+"""Write the configured figure script and update its browser status."""
+function _write_figure_script_from_ui!(
+    state::BrowserState;
+    overwrite::Bool=false,
+)::String
+    workspace = state.workspace::Workspace.Workspace
     path = write_figure_script(
-        _buffer_string(ui_state[:figure_script_output_dir_buffer]),
+        _buffer_string(state.figure_scripts.output_dir_buffer),
         workspace.root_path,
         workspace.project,
-        _buffer_string(ui_state[:figure_script_name_buffer]),
-        copy(_figure_script_groups(ui_state)),
-        _current_scan_measurements(ui_state);
+        _buffer_string(state.figure_scripts.script_name_buffer),
+        copy(state.figure_scripts.groups),
+        _current_scan_measurements(state);
         overwrite=overwrite,
     )
-    ui_state[:figure_script_overwrite_confirm] = ""
-    _set_figure_script_status!(ui_state, "Wrote $(basename(path))")
+    state.figure_scripts.overwrite_confirm = ""
+    _set_figure_script_status!(state, "Wrote $(basename(path))")
     return path
 end
 
-function _render_figure_script_group_tooltip(proj, preview_measurements::Vector{MeasurementInfo})
-    ig.BeginItemTooltip() || return
+"""Show a short preview of measurements matched by one figure-script group."""
+function _render_figure_script_group_tooltip(
+    project::AbstractProject,
+    preview_measurements::Vector{MeasurementInfo},
+)::Nothing
+    ig.BeginItemTooltip() || return nothing
     for measurement in preview_measurements[1:min(6, end)]
-        ig.BulletText("$(display_label(proj, measurement))")
+        ig.BulletText("$(display_label(project, measurement))")
     end
     length(preview_measurements) > 6 && ig.TextDisabled("...")
     ig.EndTooltip()
+    return nothing
 end
 
-function render_figure_script_window(ui_state)
-    get(ui_state, :show_figure_script_window, false) || return
+"""Render the temporary figure-script editor until Workflow replaces it."""
+function render_figure_script_window(state::BrowserState)::Nothing
+    figure_scripts = state.figure_scripts
+    figure_scripts.visible || return nothing
 
-    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace = state.workspace::Workspace.Workspace
     proj = workspace.project
-    selected_measurements = _selected_measurements_in_panel_order(ui_state)
+    selected_measurements = _selected_measurements_in_panel_order(state)
     selected_count = length(selected_measurements)
-    job_running = _figure_script_job_running(ui_state)
-    groups = _figure_script_groups(ui_state)
-    group_matches = isempty(groups) ? Dict{String,Vector{MeasurementInfo}}() : _ensure_figure_script_group_matches!(ui_state)
-    output_path = _figure_script_output_path(ui_state)
-    overwrite_path = get(ui_state, :figure_script_overwrite_confirm, "")
+    job_running = _figure_script_job_running(state)
+    groups = figure_scripts.groups
+    group_matches = isempty(groups) ?
+        Dict{String,Vector{MeasurementInfo}}() :
+        _ensure_figure_script_group_matches!(state)
+    output_path = _figure_script_output_path(state)
+    overwrite_path = figure_scripts.overwrite_confirm
     if output_path === nothing || output_path != overwrite_path
-        ui_state[:figure_script_overwrite_confirm] = ""
+        figure_scripts.overwrite_confirm = ""
         overwrite_path = ""
     end
 
@@ -166,16 +163,19 @@ function render_figure_script_window(ui_state)
         ig.Text("Output Directory")
         output_dir_changed = ig.InputText(
             "##figure_script_output_dir",
-            ui_state[:figure_script_output_dir_buffer],
-            length(ui_state[:figure_script_output_dir_buffer]),
+            figure_scripts.output_dir_buffer,
+            length(figure_scripts.output_dir_buffer),
         )
-        output_dir_changed && _persist_current_project_preferences!(ui_state)
+        output_dir_changed && _persist_current_project_preferences!(state)
         ig.SameLine()
         if ig.Button("Choose...")
             selected_dir = pick_folder()
             if !isnothing(selected_dir) && !isempty(selected_dir)
-                _set_buffer_string!(ui_state[:figure_script_output_dir_buffer], _normalize_project_path(selected_dir))
-                _persist_current_project_preferences!(ui_state)
+                _set_buffer_string!(
+                    figure_scripts.output_dir_buffer,
+                    _normalize_project_path(selected_dir),
+                )
+                _persist_current_project_preferences!(state)
             end
         end
         ig.SameLine()
@@ -183,12 +183,20 @@ function render_figure_script_window(ui_state)
 
         ig.Spacing()
         ig.Text("Script Name")
-        ig.InputText("##figure_script_name", ui_state[:figure_script_name_buffer], length(ui_state[:figure_script_name_buffer]))
+        ig.InputText(
+            "##figure_script_name",
+            figure_scripts.script_name_buffer,
+            length(figure_scripts.script_name_buffer),
+        )
         ig.TextDisabled(output_path === nothing ? "<choose output directory and enter script name>" : output_path)
 
         ig.Spacing()
         ig.Text("Group Name")
-        ig.InputText("##figure_group_name", ui_state[:figure_script_group_name_buffer], length(ui_state[:figure_script_group_name_buffer]))
+        ig.InputText(
+            "##figure_group_name",
+            figure_scripts.group_name_buffer,
+            length(figure_scripts.group_name_buffer),
+        )
 
         ig.Spacing()
         ig.Text("Groups")
@@ -202,8 +210,8 @@ function render_figure_script_window(ui_state)
                     preview_measurements = get(group_matches, group.name, MeasurementInfo[])
                     match_count = length(preview_measurements)
                     label = "$(group.name) ($(match_count))###figure_group_$index"
-                    if ig.Selectable(label, get(ui_state, :figure_script_selected_group, 0) == index)
-                        _set_selected_figure_script_group!(ui_state, index)
+                    if ig.Selectable(label, figure_scripts.selected_group == index)
+                        _set_selected_figure_script_group!(state, index)
                     end
                     ig.IsItemHovered() && _render_figure_script_group_tooltip(proj, preview_measurements)
                 end
@@ -211,17 +219,17 @@ function render_figure_script_window(ui_state)
         end
         ig.EndChild()
 
-        group_selected = _selected_figure_script_group(ui_state) !== nothing
+        group_selected = _selected_figure_script_group(state) !== nothing
         can_apply_selection = selected_count > 0
 
         (!can_apply_selection || job_running) && ig.BeginDisabled()
         if ig.Button("New Group From Selection")
-            _clear_figure_script_messages!(ui_state)
+            _clear_figure_script_messages!(state)
             try
-                _create_figure_script_group_from_selection!(ui_state)
+                _create_figure_script_group_from_selection!(state)
             catch err
                 if err isa FigureScriptValidationError
-                    _set_figure_script_error!(ui_state, err)
+                    _set_figure_script_error!(state, err)
                 else
                     rethrow()
                 end
@@ -232,12 +240,12 @@ function render_figure_script_window(ui_state)
         (!group_selected || job_running) && ig.BeginDisabled()
         ig.SameLine()
         if ig.Button("Rename Group")
-            _clear_figure_script_messages!(ui_state)
+            _clear_figure_script_messages!(state)
             try
-                _rename_selected_figure_script_group!(ui_state)
+                _rename_selected_figure_script_group!(state)
             catch err
                 if err isa FigureScriptValidationError
-                    _set_figure_script_error!(ui_state, err)
+                    _set_figure_script_error!(state, err)
                 else
                     rethrow()
                 end
@@ -245,12 +253,12 @@ function render_figure_script_window(ui_state)
         end
         ig.SameLine()
         if ig.Button("Delete Group")
-            _clear_figure_script_messages!(ui_state)
+            _clear_figure_script_messages!(state)
             try
-                _delete_selected_figure_script_group!(ui_state)
+                _delete_selected_figure_script_group!(state)
             catch err
                 if err isa FigureScriptValidationError
-                    _set_figure_script_error!(ui_state, err)
+                    _set_figure_script_error!(state, err)
                 else
                     rethrow()
                 end
@@ -263,12 +271,12 @@ function render_figure_script_window(ui_state)
             ig.SameLine()
         end
         if ig.Button("Add Selection")
-            _clear_figure_script_messages!(ui_state)
+            _clear_figure_script_messages!(state)
             try
-                _add_selection_to_figure_script_group!(ui_state)
+                _add_selection_to_figure_script_group!(state)
             catch err
                 if err isa FigureScriptValidationError
-                    _set_figure_script_error!(ui_state, err)
+                    _set_figure_script_error!(state, err)
                 else
                     rethrow()
                 end
@@ -276,12 +284,12 @@ function render_figure_script_window(ui_state)
         end
         ig.SameLine()
         if ig.Button("Remove Selection")
-            _clear_figure_script_messages!(ui_state)
+            _clear_figure_script_messages!(state)
             try
-                _remove_selection_from_figure_script_group!(ui_state)
+                _remove_selection_from_figure_script_group!(state)
             catch err
                 if err isa FigureScriptValidationError
-                    _set_figure_script_error!(ui_state, err)
+                    _set_figure_script_error!(state, err)
                 else
                     rethrow()
                 end
@@ -292,15 +300,15 @@ function render_figure_script_window(ui_state)
         ig.Separator()
         job_running && ig.BeginDisabled()
         if ig.Button("Generate Script")
-            _clear_figure_script_messages!(ui_state)
+            _clear_figure_script_messages!(state)
             try
-                _write_figure_script_from_ui!(ui_state)
+                _write_figure_script_from_ui!(state)
             catch err
                 if err isa FigureScriptExistsError
-                    ui_state[:figure_script_overwrite_confirm] = err.path
-                    _set_figure_script_error!(ui_state, err)
+                    figure_scripts.overwrite_confirm = err.path
+                    _set_figure_script_error!(state, err)
                 elseif err isa FigureScriptValidationError || err isa FigureScriptIOError
-                    _set_figure_script_error!(ui_state, err)
+                    _set_figure_script_error!(state, err)
                 else
                     rethrow()
                 end
@@ -312,12 +320,12 @@ function render_figure_script_window(ui_state)
             job_running && ig.BeginDisabled()
             ig.SameLine()
             if ig.Button("Overwrite Existing")
-                _clear_figure_script_messages!(ui_state)
+                _clear_figure_script_messages!(state)
                 try
-                    _write_figure_script_from_ui!(ui_state; overwrite=true)
+                    _write_figure_script_from_ui!(state; overwrite=true)
                 catch err
                     if err isa FigureScriptValidationError || err isa FigureScriptIOError
-                        _set_figure_script_error!(ui_state, err)
+                        _set_figure_script_error!(state, err)
                     else
                         rethrow()
                     end
@@ -325,32 +333,31 @@ function render_figure_script_window(ui_state)
             end
             ig.SameLine()
             if ig.Button("Cancel Overwrite")
-                ui_state[:figure_script_overwrite_confirm] = ""
+                figure_scripts.overwrite_confirm = ""
             end
             job_running && ig.EndDisabled()
         end
 
-        error_message = get(ui_state, :figure_script_error, "")
+        error_message = figure_scripts.error
         !isempty(error_message) && ig.TextColored((1.0, 0.45, 0.45, 1.0), error_message)
-        status_message = get(ui_state, :figure_script_status, "")
+        status_message = figure_scripts.status
         !isempty(status_message) && ig.TextColored((0.45, 0.85, 0.55, 1.0), status_message)
         job_running && ig.TextDisabled("Figure-script worker is running...")
     end
-    open_ref[] || (ui_state[:show_figure_script_window] = false)
+    open_ref[] || (figure_scripts.visible = false)
     ig.End()
+    return nothing
 end
 
-# ------------------------------------------------------------------
-# Modal for missing device metadata (shown each scan when missing)
-# ------------------------------------------------------------------
-function render_device_info_modal(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
+"""Explain how to add device metadata when the current source root has none."""
+function render_device_info_modal(state::BrowserState)::Nothing
+    workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     # Reset dismissal when root path changes
     current_root = workspace.root_path
-    if get(ui_state, :_modal_last_root_path, "") != current_root
-        ui_state[:_modal_last_root_path] = current_root
-        ui_state[:dev_info_modal] = true
+    if state.modal_root_path != current_root
+        state.modal_root_path = current_root
+        state.device_info_modal = true
     end
     # always center
     center = ig.ImVec2(0.5, 0.5)
@@ -358,12 +365,12 @@ function render_device_info_modal(ui_state)
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
 
     # Show modal if: missing metadata and user hasn't dismissed it this scan
-    if get(ui_state, :dev_info_modal, true) &&
+    if state.device_info_modal &&
        !workspace.index.hierarchy.has_device_metadata
         ig.OpenPopup("Device Metadata Missing")
     end
 
-    opened = get(ui_state, :dev_info_modal, true)
+    opened = state.device_info_modal
 
     if @c ig.BeginPopupModal("Device Metadata Missing", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
         ig.Text("No device metadata file (device_info.txt) was found.")
@@ -392,5 +399,6 @@ function render_device_info_modal(ui_state)
         end
         ig.EndPopup()
     end
-    ui_state[:dev_info_modal] = opened
+    state.device_info_modal = opened
+    return nothing
 end

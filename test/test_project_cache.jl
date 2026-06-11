@@ -22,13 +22,7 @@ function _same_dataframe(left, right)
 end
 
 function _cache_test_ui_state()
-    ui_state = Dict{Symbol,Any}()
-    MeasurementBrowser._init_tag_state!(ui_state)
-    MeasurementBrowser._init_figure_script_state!(ui_state)
-    MeasurementBrowser._init_plot_state!(ui_state)
-    ui_state[:project_preference] = "RuO2"
-    ui_state[:recent_projects] = Dict{String,String}[]
-    return ui_state
+    return MeasurementBrowser.Browser.BrowserState(project_preference="RuO2")
 end
 
 @testset "project HDF5 cache" begin
@@ -237,12 +231,12 @@ end
                 MeasurementBrowser.write_project_cache!(identity, source; replace=true)
                 _copy_cache_fixture!(dir, _CACHE_FIXTURES.pund)
 
-                ui_state = _cache_test_ui_state()
-                MeasurementBrowser._open_project_path!(ui_state, dir; persist=false)
+                state = _cache_test_ui_state()
+                MeasurementBrowser.Browser._open_project_path!(state, dir; persist=false)
                 saw_writing = false
                 deadline = time() + 10
                 while time() < deadline
-                    workspace = ui_state[:workspace]
+                    workspace = state.workspace
                     MeasurementBrowser.Workspace.poll_workspace!(workspace)
                     saw_writing |= workspace.cache_job.state == :writing
                     status = workspace.cache.status
@@ -256,7 +250,7 @@ end
                     sleep(0.02)
                 end
 
-                workspace = ui_state[:workspace]
+                workspace = state.workspace
                 status = workspace.cache.status
                 @test saw_writing
                 @test workspace.scan.state == :done

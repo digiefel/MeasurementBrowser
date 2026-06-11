@@ -106,7 +106,8 @@ include("projects/RuO2Project.jl")
 include("projects/TASEProject.jl")
 include("FigureScripts.jl")
 include("Precompile.jl")
-include("Gui.jl")
+include("Browser.jl")
+using .Browser: start_browser
 
 export start_browser
 export AbstractProject

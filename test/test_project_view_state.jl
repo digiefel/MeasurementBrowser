@@ -1,27 +1,29 @@
 using MeasurementBrowser
 using Test
 
+const Browser = MeasurementBrowser.Browser
+
 @testset "project view state" begin
     root_path = mktempdir()
-    @test basename(MeasurementBrowser._project_view_file_path(root_path)) == "measurementbrowser.toml"
-    default_view = MeasurementBrowser._load_project_view(root_path)
+    @test basename(Browser._project_view_file_path(root_path)) == "measurementbrowser.toml"
+    default_view = Browser._load_project_view(root_path)
     @test default_view.project == ""
     @test default_view.main_plot.id == "main"
     @test default_view.main_plot.live == true
 
-    view = MeasurementBrowser.PersistedProjectView(
+    view = Browser.PersistedProjectView(
         project="RuO2",
-        tree=MeasurementBrowser.PersistedTreeView(
+        tree=Browser.PersistedTreeView(
             expanded=["chip/device"],
             selected=["chip/device"],
             filter="tlm",
         ),
-        measurements=MeasurementBrowser.PersistedMeasurementsView(
+        measurements=Browser.PersistedMeasurementsView(
             selected=["measurement-1", "measurement-2"],
             filter="298K",
         ),
         plot_kinds=Dict("iv_sweep" => "RuO2IVSweepPlot"),
-        main_plot=MeasurementBrowser.PersistedPlotView(
+        main_plot=Browser.PersistedPlotView(
             id="main",
             title="Plot Area",
             plot_kind="RuO2TLM4PointPlot",
@@ -29,7 +31,7 @@ using Test
             measurements=["measurement-1"],
         ),
         plot_windows=[
-            MeasurementBrowser.PersistedPlotView(
+            Browser.PersistedPlotView(
                 id="plot_1",
                 title="Detached",
                 plot_kind="RuO2IVSweepPlot",
@@ -39,9 +41,9 @@ using Test
         ],
     )
 
-    MeasurementBrowser._save_project_view(root_path, view)
+    Browser._save_project_view(root_path, view)
     @test isfile(joinpath(root_path, "measurementbrowser.toml"))
-    loaded = MeasurementBrowser._load_project_view(root_path)
+    loaded = Browser._load_project_view(root_path)
     @test loaded.project == view.project
     @test loaded.tree.expanded == view.tree.expanded
     @test loaded.tree.selected == view.tree.selected
@@ -53,7 +55,7 @@ using Test
     @test only(loaded.plot_windows).plot_kind == only(view.plot_windows).plot_kind
     @test only(loaded.plot_windows).measurements == only(view.plot_windows).measurements
 
-    toml_data = MeasurementBrowser._project_view_to_toml(view)
+    toml_data = Browser._project_view_to_toml(view)
     @test Set(keys(toml_data)) == Set([
         "project",
         "tree",
@@ -63,7 +65,7 @@ using Test
         "plot_windows",
     ])
 
-    parsed = MeasurementBrowser._project_view_from_toml(MeasurementBrowser.PersistedProjectView, Dict{String,Any}(
+    parsed = Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
         "project" => "RuO2",
         "tree" => Dict{String,Any}(
             "expanded" => ["chip/device"],
@@ -93,7 +95,7 @@ using Test
         ],
     ))
 
-    @test_throws ErrorException MeasurementBrowser._project_view_from_toml(MeasurementBrowser.PersistedProjectView, Dict{String,Any}(
+    @test_throws ErrorException Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
         "project" => "RuO2",
         "tree" => Dict{String,Any}(
             "expanded" => Any["chip/device", 1],
@@ -146,24 +148,23 @@ using Test
     )
     workspace = MeasurementBrowser.Workspace.Workspace(project, root_path)
     MeasurementBrowser.Workspace.replace_measurement_index!(workspace, hierarchy)
-    ui_state = Dict{Symbol,Any}(
-        :workspace => workspace,
-        :_plot_window_counter => 0,
-    )
+    state = Browser.BrowserState(workspace=workspace)
 
-    MeasurementBrowser._apply_project_view!(ui_state, view)
+    Browser._apply_project_view!(state, view)
     @test workspace.selection.device_paths == ["chip/device"]
     @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]
-    @test ui_state[:tree_filter] == "tlm"
-    @test ui_state[:measurement_filter] == "298K"
-    @test ui_state[:plot_kind_by_measurement_kind] == Dict("iv_sweep" => "RuO2IVSweepPlot")
-    @test ui_state[:main_plot_live] == true
-    @test ui_state[:main_plot_kind] == MeasurementBrowser.RuO2TLM4PointPlot
-    @test only(ui_state[:main_plot_measurements]).unique_id == "measurement-1"
-    @test only(ui_state[:open_plot_windows])[:target_id] == "plot_1"
-    @test only(only(ui_state[:open_plot_windows])[:measurements]).unique_id == "measurement-2"
+    @test state.tree_filter == "tlm"
+    @test state.measurement_filter == "298K"
+    plots = state.plots
+    @test plots.kind_by_measurement ==
+          Dict(:iv_sweep => MeasurementBrowser.RuO2IVSweepPlot)
+    @test plots.main.live == true
+    @test plots.main.plot_kind == MeasurementBrowser.RuO2TLM4PointPlot
+    @test only(plots.main.measurements).unique_id == "measurement-1"
+    @test only(plots.windows).id == "plot_1"
+    @test only(only(plots.windows).measurements).unique_id == "measurement-2"
 
-    saved_view = MeasurementBrowser._project_view_from_ui_state(ui_state)
+    saved_view = Browser._project_view_from_browser(state)
     @test saved_view.project == "RuO2"
     @test saved_view.tree.selected == ["chip/device"]
     @test saved_view.tree.expanded == ["chip/device"]
@@ -172,8 +173,9 @@ using Test
     @test saved_view.main_plot.plot_kind == "RuO2TLM4PointPlot"
     @test only(saved_view.plot_windows).plot_kind == "RuO2IVSweepPlot"
 
-    MeasurementBrowser._save_project_view_if_changed!(ui_state)
-    loaded_after_ui_save = MeasurementBrowser._load_project_view(root_path)
-    @test MeasurementBrowser._same_project_view(loaded_after_ui_save, saved_view)
+    Browser._save_project_view_if_changed!(state)
+    loaded_after_ui_save = Browser._load_project_view(root_path)
+    @test Browser._project_view_to_toml(loaded_after_ui_save) ==
+          Browser._project_view_to_toml(saved_view)
 
 end

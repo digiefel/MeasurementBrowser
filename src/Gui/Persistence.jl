@@ -8,13 +8,15 @@ function _prefs_path()::String
     return joinpath(homedir(), ".config", "MeasurementBrowser", "prefs.toml")
 end
 
+"""Read app-wide preferences, returning an empty table before the first save."""
 function _load_prefs()::Dict{String,Any}
     path = _prefs_path()
     isfile(path) || return Dict{String,Any}()
     return TOML.parsefile(path)
 end
 
-function _save_prefs(data::Dict)::Nothing
+"""Write app-wide preferences outside any source project."""
+function _save_prefs(data::Dict{String,Any})::Nothing
     path = _prefs_path()
     mkpath(dirname(path))
     open(path, "w") do io
@@ -23,10 +25,12 @@ function _save_prefs(data::Dict)::Nothing
     return nothing
 end
 
+"""Convert a user path into the stable absolute form used by persistence."""
 function _normalize_project_path(path::AbstractString)::String
     return normpath(abspath(expanduser(String(path))))
 end
 
+"""Accept only the automatic choice or a currently registered project name."""
 function _sanitize_project_preference(pref::AbstractString)::String
     pref == "auto" && return "auto"
     for project in PROJECTS
@@ -35,13 +39,17 @@ function _sanitize_project_preference(pref::AbstractString)::String
     return "auto"
 end
 
+"""Normalize the optional figure-script output directory."""
 function _sanitize_figure_script_output_dir(value::Any)::String
     value isa AbstractString || return ""
     return String(strip(String(value)))
 end
 
-function _parse_recent_projects(prefs::Dict{String,Any})::Vector{Dict{String,String}}
-    recents = Dict{String,String}[]
+"""Decode recent-project entries from app preferences."""
+function _parse_recent_projects(
+    prefs::Dict{String,Any},
+)::Vector{RecentProject}
+    recents = RecentProject[]
     raw = get(prefs, "recent_projects", Any[])
     raw isa Vector || return recents
 
@@ -54,91 +62,111 @@ function _parse_recent_projects(prefs::Dict{String,Any})::Vector{Dict{String,Str
         pref = get(entry, "project_preference", "auto")
         pref = pref isa AbstractString ? pref : "auto"
         figure_script_output_dir = _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
-        push!(recents, Dict{String,String}(
-            "path" => _normalize_project_path(path),
-            "project_preference" => _sanitize_project_preference(pref),
-            "figure_script_output_dir" => figure_script_output_dir,
-        ))
+        push!(
+            recents,
+            RecentProject(
+                path=_normalize_project_path(path),
+                project_preference=_sanitize_project_preference(pref),
+                figure_script_output_dir=figure_script_output_dir,
+            ),
+        )
     end
 
     return recents
 end
 
-function _update_recent_projects(
-    recents::Vector{Dict{String,String}},
+"""Move an opened project to the front of the bounded recent-project list."""
+function _update_recent_projects!(
+    recents::Vector{RecentProject},
     path::AbstractString,
     pref::AbstractString,
     figure_script_output_dir::AbstractString,
-)::Vector{Dict{String,String}}
+)::Nothing
     norm_path = _normalize_project_path(path)
-    filter!(entry -> get(entry, "path", "") != norm_path, recents)
-    pushfirst!(recents, Dict{String,String}(
-        "path" => norm_path,
-        "project_preference" => String(pref),
-        "figure_script_output_dir" => _sanitize_figure_script_output_dir(figure_script_output_dir),
-    ))
+    filter!(entry -> entry.path != norm_path, recents)
+    pushfirst!(
+        recents,
+        RecentProject(
+            path=norm_path,
+            project_preference=String(pref),
+            figure_script_output_dir=
+                _sanitize_figure_script_output_dir(figure_script_output_dir),
+        ),
+    )
     length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
-    return recents
+    return nothing
 end
 
-function _current_figure_script_output_dir(ui_state)::String
-    haskey(ui_state, :figure_script_output_dir_buffer) || return ""
-    return _sanitize_figure_script_output_dir(_buffer_string(ui_state[:figure_script_output_dir_buffer]))
-end
-
+"""Save the current project choice and optional source-root preferences."""
 function _persist_preferences!(
-    ui_state;
+    state::BrowserState;
     path::Union{Nothing,String}=nothing,
 )::Nothing
     prefs = _load_prefs()
-    pref = _sanitize_project_preference(string(get(ui_state, :project_preference, "auto")))
-    ui_state[:project_preference] = pref
+    pref = _sanitize_project_preference(state.project_preference)
+    state.project_preference = pref
     prefs["project"] = pref
 
     recents = _parse_recent_projects(prefs)
     if path !== nothing && !isempty(path)
-        _update_recent_projects(
+        _update_recent_projects!(
             recents,
             path,
             pref,
-            _current_figure_script_output_dir(ui_state),
+            _sanitize_figure_script_output_dir(
+                _buffer_string(state.figure_scripts.output_dir_buffer),
+            ),
         )
-        prefs["recent_projects"] = recents
+        prefs["recent_projects"] = [
+            Dict{String,String}(
+                "path" => recent.path,
+                "project_preference" => recent.project_preference,
+                "figure_script_output_dir" => recent.figure_script_output_dir,
+            )
+            for recent in recents
+        ]
     end
 
     _save_prefs(prefs)
-    ui_state[:recent_projects] = recents
+    state.recent_projects = recents
     return nothing
 end
 
-function _recent_project_entry_for_path(ui_state, path::String)::Union{Nothing,Dict{String,String}}
-    recents = get(ui_state, :recent_projects, Dict{String,String}[])
-    for entry in recents
-        get(entry, "path", "") == path && return entry
+"""Find the recent-project entry for one normalized source root."""
+function _recent_project_entry_for_path(
+    state::BrowserState,
+    path::String,
+)::Union{Nothing,RecentProject}
+    for entry in state.recent_projects
+        entry.path == path && return entry
     end
     return nothing
 end
 
-function _project_preference_for_path(ui_state, path::String)::String
-    entry = _recent_project_entry_for_path(ui_state, path)
+"""Return the project choice saved for a source root."""
+function _project_preference_for_path(state::BrowserState, path::String)::String
+    entry = _recent_project_entry_for_path(state, path)
     if entry !== nothing
-        pref = get(entry, "project_preference", "auto")
-        return _sanitize_project_preference(pref)
+        return _sanitize_project_preference(entry.project_preference)
     end
-    pref = string(get(ui_state, :project_preference, "auto"))
-    return _sanitize_project_preference(pref)
+    return _sanitize_project_preference(state.project_preference)
 end
 
-function _figure_script_output_dir_for_path(ui_state, path::String)::String
-    entry = _recent_project_entry_for_path(ui_state, path)
+"""Return the figure-script output directory saved for a source root."""
+function _figure_script_output_dir_for_path(
+    state::BrowserState,
+    path::String,
+)::String
+    entry = _recent_project_entry_for_path(state, path)
     entry === nothing && return ""
-    return _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
+    return _sanitize_figure_script_output_dir(entry.figure_script_output_dir)
 end
 
-function _persist_current_project_preferences!(ui_state)::Nothing
-    workspace = get(ui_state, :workspace, nothing)
+"""Persist preferences associated with the currently open source root."""
+function _persist_current_project_preferences!(state::BrowserState)::Nothing
+    workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
-    _persist_preferences!(ui_state; path=workspace.root_path)
+    _persist_preferences!(state; path=workspace.root_path)
     return nothing
 end
 
@@ -148,59 +176,15 @@ end
 
 const PROJECT_VIEW_FILENAME = "measurementbrowser.toml"
 
-"""
-    PersistedTreeView(; expanded, selected, filter) -> PersistedTreeView
-
-Saved tree state from `measurementbrowser.toml`.
-"""
-Base.@kwdef struct PersistedTreeView
-    expanded::Vector{String} = String[]
-    selected::Vector{String} = String[]
-    filter::String = ""
-end
-
-"""
-    PersistedMeasurementsView(; selected, filter) -> PersistedMeasurementsView
-
-Saved measurement-list state from `measurementbrowser.toml`.
-"""
-Base.@kwdef struct PersistedMeasurementsView
-    selected::Vector{String} = String[]
-    filter::String = ""
-end
-
-"""
-    PersistedPlotView(; id, title, plot_kind, live, measurements) -> PersistedPlotView
-
-Saved plot-window state from `measurementbrowser.toml`.
-"""
-Base.@kwdef struct PersistedPlotView
-    id::String = ""
-    title::String = ""
-    plot_kind::String = ""
-    live::Bool = false
-    measurements::Vector{String} = String[]
-end
-
-"""
-    PersistedProjectView(; kwargs...) -> PersistedProjectView
-
-Saved browser state for one project. It contains only stable ids and strings, never cache data,
-runtime jobs, figures, `MeasurementInfo`, `HierarchyNode`, or ImGui objects.
-"""
-Base.@kwdef struct PersistedProjectView
-    project::String = ""
-    tree::PersistedTreeView = PersistedTreeView()
-    measurements::PersistedMeasurementsView = PersistedMeasurementsView()
-    plot_kinds::Dict{String,String} = Dict{String,String}()
-    main_plot::PersistedPlotView = PersistedPlotView(id="main", title="Plot Area", live=true)
-    plot_windows::Vector{PersistedPlotView} = PersistedPlotView[]
-end
-
 function _project_view_file_path(root_path::AbstractString)::String
     return joinpath(_normalize_project_path(root_path), PROJECT_VIEW_FILENAME)
 end
 
+"""
+Decode TOML values according to the fields of the requested browser-state type.
+
+Missing or incorrectly typed fields are errors because no compatibility format is supported.
+"""
 function _project_view_from_toml(::Type{String}, value::Any)::String
     value isa AbstractString || error("Expected string, got $(typeof(value))")
     return String(value)
@@ -235,23 +219,22 @@ _project_view_to_toml(value::AbstractVector)::Vector = [_project_view_to_toml(it
 _project_view_to_toml(value::AbstractDict)::Dict{String,Any} =
     Dict{String,Any}(String(key) => _project_view_to_toml(item) for (key, item) in value)
 
-function _project_view_to_toml(value)::Dict{String,Any}
+"""Convert persisted browser-state structs into values accepted by `TOML.print`."""
+function _project_view_to_toml(value::Any)::Dict{String,Any}
     return Dict{String,Any}(
         String(name) => _project_view_to_toml(getfield(value, name))
         for name in fieldnames(typeof(value))
     )
 end
 
-function _same_project_view(a::PersistedProjectView, b::PersistedProjectView)::Bool
-    return _project_view_to_toml(a) == _project_view_to_toml(b)
-end
-
+"""Read project-local browser state when it exists."""
 function _load_project_view(root_path::AbstractString)::PersistedProjectView
     path = _project_view_file_path(root_path)
     isfile(path) || return PersistedProjectView()
     return _project_view_from_toml(PersistedProjectView, TOML.parsefile(path))
 end
 
+"""Write project-local browser state beside the source data."""
 function _save_project_view(root_path::AbstractString, view::PersistedProjectView)::Nothing
     open(_project_view_file_path(root_path), "w") do io
         TOML.print(io, _project_view_to_toml(view))
@@ -259,160 +242,140 @@ function _save_project_view(root_path::AbstractString, view::PersistedProjectVie
     return nothing
 end
 
-function _load_project_view!(ui_state, root_path::AbstractString, project::AbstractProject)::Nothing
-    view = _load_project_view(root_path)
-    if !isempty(view.project) && view.project != project_name(project)
-        view = PersistedProjectView(project=project_name(project))
-    end
-    ui_state[:project_view_loaded] = view
-    ui_state[:project_view_saved] = view
-    return nothing
-end
-
-_measurement_ids(measurements)::Vector{String} =
-    [measurement.unique_id for measurement in measurements if measurement isa MeasurementInfo]
-
-function _measurements_for_ids(ui_state, ids::Vector{String})::Vector{MeasurementInfo}
-    workspace = get(ui_state, :workspace, nothing)
+"""Resolve stable measurement ids against the current workspace index."""
+function _measurements_for_ids(
+    state::BrowserState,
+    ids::Vector{String},
+)::Vector{MeasurementInfo}
+    workspace = state.workspace
     workspace isa Workspace.Workspace || return MeasurementInfo[]
     index = workspace.index.measurements
     return [index[id] for id in ids if haskey(index, id)]
 end
 
-function _plot_kind_name_for_state(state, key::Symbol)::String
-    kind = get(state, key, nothing)
-    kind isa Type && kind <: PlotKind || return ""
-    return String(nameof(kind))
-end
-
-function _plot_measurement_ids(entry)::Vector{String}
-    get(entry, :live, false) === true && return _measurement_ids(get(entry, :measurements, MeasurementInfo[]))
-    ids = get(entry, :measurement_ids, nothing)
-    ids isa Vector{String} && return copy(ids)
-    return _measurement_ids(get(entry, :measurements, MeasurementInfo[]))
-end
-
-function _refresh_plot_measurement_refs!(ui_state)::Nothing
-    ids = get(ui_state, :main_plot_measurement_ids, nothing)
-    ids isa Vector{String} && (ui_state[:main_plot_measurements] = _measurements_for_ids(ui_state, ids))
-
-    open_plots = get(ui_state, :open_plot_windows, nothing)
-    open_plots isa AbstractVector || return nothing
-    for entry in open_plots
-        entry isa AbstractDict || continue
-        ids = get(entry, :measurement_ids, nothing)
-        ids isa Vector{String} && (entry[:measurements] = _measurements_for_ids(ui_state, ids))
+"""Refresh plot references after cache loading or scanning changes the index."""
+function _refresh_plot_measurement_refs!(state::BrowserState)::Nothing
+    plots = state.plots
+    for view in (plots.main, plots.windows...)
+        view.measurements = _measurements_for_ids(state, view.measurement_ids)
     end
     return nothing
 end
 
-function _persisted_plot_view(entry)::PersistedPlotView
+"""Convert one runtime plot window into its persisted form."""
+function _persisted_plot_view(view::PlotViewState)::PersistedPlotView
     return PersistedPlotView(
-        id=String(get(entry, :target_id, "")),
-        title=String(get(entry, :title, "Plot")),
-        plot_kind=_plot_kind_name_for_state(entry, :plot_kind),
-        live=get(entry, :live, false) === true,
-        measurements=_plot_measurement_ids(entry),
+        id=view.id,
+        title=view.title,
+        plot_kind=view.plot_kind === nothing ? "" : String(nameof(view.plot_kind)),
+        live=view.live,
+        measurements=copy(view.measurement_ids),
     )
 end
 
-function _project_view_from_ui_state(ui_state)::Union{Nothing,PersistedProjectView}
-    workspace = get(ui_state, :workspace, nothing)
+"""Capture the browser controls that belong in the source-root state file."""
+function _project_view_from_browser(
+    state::BrowserState,
+)::Union{Nothing,PersistedProjectView}
+    workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
-
-    open_plots = get(ui_state, :open_plot_windows, Dict{Symbol,Any}[])
-    main_plot_state = Dict{Symbol,Any}(
-        :live => get(ui_state, :main_plot_live, true) === true,
-        :measurement_ids => get(ui_state, :main_plot_measurement_ids, nothing),
-        :measurements => get(ui_state, :main_plot_measurements, MeasurementInfo[]),
-    )
+    plots = state.plots
 
     return PersistedProjectView(
         project=project_name(workspace.project),
         tree=PersistedTreeView(
-            expanded=copy(get(ui_state, :expanded_device_paths, String[])),
+            expanded=copy(state.expanded_device_paths),
             selected=copy(workspace.selection.device_paths),
-            filter=String(get(ui_state, :tree_filter, "")),
+            filter=state.tree_filter,
         ),
         measurements=PersistedMeasurementsView(
             selected=copy(workspace.selection.measurement_ids),
-            filter=String(get(ui_state, :measurement_filter, "")),
+            filter=state.measurement_filter,
         ),
-        plot_kinds=copy(get(ui_state, :plot_kind_by_measurement_kind, Dict{String,String}())),
-        main_plot=PersistedPlotView(
-            id="main",
-            title="Plot Area",
-            plot_kind=_plot_kind_name_for_state(ui_state, :main_plot_kind),
-            live=main_plot_state[:live],
-            measurements=_plot_measurement_ids(main_plot_state),
+        plot_kinds=Dict(
+            String(measurement_kind) => String(nameof(plot_kind))
+            for (measurement_kind, plot_kind) in plots.kind_by_measurement
         ),
-        plot_windows=[_persisted_plot_view(entry) for entry in open_plots if entry isa AbstractDict],
+        main_plot=_persisted_plot_view(plots.main),
+        plot_windows=[_persisted_plot_view(view) for view in plots.windows],
     )
 end
 
-function _set_plot_kind_from_name!(state, key::Symbol, name::AbstractString)::Nothing
-    kind = _plot_kind_from_name(name)
-    kind === nothing ? delete!(state, key) : (state[key] = kind)
+"""Destroy text-filter widgets before their saved text is replaced."""
+function _reset_project_filter_widgets!(state::BrowserState)::Nothing
+    state.tree_filter_widget === nothing || ig.Destroy(state.tree_filter_widget)
+    state.measurement_filter_widget === nothing ||
+        ig.Destroy(state.measurement_filter_widget)
+    state.tree_filter_widget = nothing
+    state.measurement_filter_widget = nothing
     return nothing
 end
 
-function _reset_project_filter_widgets!(ui_state)::Nothing
-    for key in (:_imgui_text_filter_tree, :_imgui_text_filter_meas)
-        filter = get(ui_state, key, nothing)
-        filter === nothing || ig.Destroy(filter)
-        delete!(ui_state, key)
-    end
-    return nothing
-end
-
-function _restore_plot_windows!(ui_state, views::Vector{PersistedPlotView})::Nothing
-    ui_state[:open_plot_windows] = [begin
-        entry = Dict{Symbol,Any}(
-            :target_id => view.id,
-            :title => isempty(view.title) ? "Plot" : view.title,
-            :live => view.live,
-            :measurement_ids => copy(view.measurements),
-            :measurements => _measurements_for_ids(ui_state, view.measurements),
-        )
-        _set_plot_kind_from_name!(entry, :plot_kind, view.plot_kind)
-        entry
-    end for view in views]
-    counters = [parse(Int, only(m.captures)) for view in views for m in (match(r"^plot_(\d+)$", view.id),) if m !== nothing]
-    ui_state[:_plot_window_counter] = max(get(ui_state, :_plot_window_counter, 0), isempty(counters) ? 0 : maximum(counters))
-    return nothing
-end
-
-function _apply_project_view!(ui_state, view::PersistedProjectView)::Nothing
-    workspace = ui_state[:workspace]::Workspace.Workspace
-    ui_state[:expanded_device_paths] = copy(view.tree.expanded)
+"""Apply loaded project-local state to browser controls and workspace selection."""
+function _apply_project_view!(
+    state::BrowserState,
+    view::PersistedProjectView,
+)::Nothing
+    workspace = state.workspace::Workspace.Workspace
+    plots = state.plots
+    state.expanded_device_paths = copy(view.tree.expanded)
     workspace.selection.device_paths = copy(view.tree.selected)
     workspace.selection.measurement_ids = copy(view.measurements.selected)
-    ui_state[:tree_filter] = view.tree.filter
-    ui_state[:measurement_filter] = view.measurements.filter
-    ui_state[:plot_kind_by_measurement_kind] = copy(view.plot_kinds)
-    ui_state[:main_plot_live] = view.main_plot.live
-    ui_state[:main_plot_measurement_ids] = copy(view.main_plot.measurements)
-    ui_state[:main_plot_measurements] = _measurements_for_ids(ui_state, view.main_plot.measurements)
-    _set_plot_kind_from_name!(ui_state, :main_plot_kind, view.main_plot.plot_kind)
-    delete!(ui_state, :main_plot_measurement_kind)
-    delete!(ui_state, :_last_plot_key)
-    _restore_plot_windows!(ui_state, view.plot_windows)
-    _reset_project_filter_widgets!(ui_state)
+    state.tree_filter = view.tree.filter
+    state.measurement_filter = view.measurements.filter
+    empty!(plots.kind_by_measurement)
+    for (measurement_kind, plot_kind_name) in view.plot_kinds
+        plot_kind = _plot_kind_from_name(plot_kind_name)
+        plot_kind === nothing &&
+            error("Missing plot kind for measurement '$measurement_kind'")
+        plots.kind_by_measurement[Symbol(measurement_kind)] = plot_kind
+    end
+    plots.main = PlotViewState(
+        id="main",
+        title="Plot Area",
+        live=view.main_plot.live,
+        measurement_ids=copy(view.main_plot.measurements),
+        measurements=_measurements_for_ids(state, view.main_plot.measurements),
+        plot_kind=_plot_kind_from_name(view.main_plot.plot_kind),
+    )
+    plots.windows = [
+        PlotViewState(
+            id=plot_view.id,
+            title=isempty(plot_view.title) ? "Plot" : plot_view.title,
+            live=plot_view.live,
+            measurement_ids=copy(plot_view.measurements),
+            measurements=_measurements_for_ids(state, plot_view.measurements),
+            plot_kind=_plot_kind_from_name(plot_view.plot_kind),
+        )
+        for plot_view in view.plot_windows
+    ]
+    counters = [
+        parse(Int, only(match_result.captures))
+        for plot_view in view.plot_windows
+        for match_result in (match(r"^plot_(\d+)$", plot_view.id),)
+        if match_result !== nothing
+    ]
+    plots.next_window_id = isempty(counters) ? 0 : maximum(counters)
+    _reset_project_filter_widgets!(state)
     return nothing
 end
 
-function _save_project_view_if_changed!(ui_state)::Nothing
-    view = _project_view_from_ui_state(ui_state)
+"""Write project-local state only when its serialized value changed."""
+function _save_project_view_if_changed!(state::BrowserState)::Nothing
+    view = _project_view_from_browser(state)
     view === nothing && return nothing
-    saved = get(ui_state, :project_view_saved, nothing)
-    saved isa PersistedProjectView && _same_project_view(saved, view) && return nothing
-    workspace = ui_state[:workspace]::Workspace.Workspace
+    _project_view_to_toml(state.saved_project_view) ==
+        _project_view_to_toml(view) && return nothing
+    workspace = state.workspace::Workspace.Workspace
     _save_project_view(workspace.root_path, view)
-    ui_state[:project_view_saved] = view
+    state.saved_project_view = view
     return nothing
 end
 
-function _imgui_text_filter_text(filter)::String
+"""Read the current text from a CImGui filter widget."""
+function _imgui_text_filter_text(
+    filter::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}},
+)::String
     filter === nothing && return ""
     bytes = UInt8[]
     for char in unsafe_load(filter).InputBuf
@@ -420,15 +383,4 @@ function _imgui_text_filter_text(filter)::String
         push!(bytes, UInt8(mod(Int(char), 256)))
     end
     return String(bytes)
-end
-
-function _sync_imgui_text_filter!(ui_state, key::Symbol, filter)::Nothing
-    ui_state[key] = _imgui_text_filter_text(filter)
-    return nothing
-end
-
-function _imgui_text_filter_for_state!(ui_state, filter_key::Symbol, text_key::Symbol)
-    return get!(ui_state, filter_key) do
-        ig.ImGuiTextFilter_ImGuiTextFilter(String(get(ui_state, text_key, "")))
-    end
 end

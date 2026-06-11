@@ -4,20 +4,20 @@
 
 ## Entry point and frame loop
 
-`create_window_and_run_loop` initializes an empty `ui_state::Dict{Symbol,Any}` and runs the render
-loop. Docking layout is configured once at startup: left side for navigation and information, right
-side for plot-oriented work.
+`Browser.create_window_and_run_loop` creates one `BrowserState` and runs the render loop. Docking
+layout is configured once at startup: left side for navigation and information, right side for
+plot-oriented work.
 
 ## State boundary
 
-Render functions still share one `ui_state::Dict{Symbol,Any}`, but it now contains browser state
-only: filters, expanded tree paths, plot windows, figures, dialogs, performance counters, and
-persistence buffers. Its `:workspace` entry is the browser's single reference to the open
-workspace.
+Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
+to the open workspace. `PlotState` owns plot windows and choices, `FigureScriptState` isolates the
+interface that Workflow will replace, and `PerformanceState` owns measurements used only for
+diagnostics.
 
 The workspace owns the project, source root, measurement index, selected device and measurement
 identities, loaded cache, direct and processed data memory, and the state of source-scan and cache
-work. Those values must not be copied into separate `ui_state` entries.
+work. Those values must not be copied into browser state.
 
 Source-scan and cache work each have independent state, progress, errors, cancellation, and task
 ownership. This prevents one operation from overwriting the status shown for the other.
@@ -42,12 +42,15 @@ objects.
 
 ## Plot rendering
 
-Plots render directly when their plot key changes. The main figure is stored in
-`ui_state[:plot_figure]`; detached windows store figures in their own entry.
+Plots render directly when their inputs change. `PlotViewState` stores one window's measurements,
+plot type, figure, errors, and Live setting. The main and detached plots use the same type and the
+same rendering path.
 
 Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the measurements they were created with unless the user enables Live in that window.
 
-Plot kind choices are persisted in the app preferences as project name → measurement kind → plot kind type name. When the main Live plot sees a single measurement kind, it uses that remembered plot kind or clears the chooser if none has been chosen for that kind yet.
+While the app runs, plot choices are stored as `measurement kind => plot type`. Project-local
+persistence writes the type names to `measurementbrowser.toml`. When the main Live plot sees one
+measurement kind, it restores that kind's last plot choice.
 
 ## Context menus (right-click)
 

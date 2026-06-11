@@ -1,53 +1,71 @@
 # Left panel (hierarchy tree) rendering
-function _tree_node_matches_filter(filter_tree, node::HierarchyNode)
+"""Return whether a hierarchy label passes the tree filter."""
+function _tree_node_matches_filter(
+    filter_tree::Ptr{ig.lib.ImGuiTextFilter},
+    node::HierarchyNode,
+)::Bool
     return ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL)
 end
 
-function _measurement_filter_text(proj, measurement::MeasurementInfo)
-    return string(
-        display_label(proj, measurement), "\n",
-        measurement.clean_title, "\n",
-        kind_label(proj, measurement.measurement_kind),
-    )
-end
-
-function _measurement_matches_filter(proj, measurement::MeasurementInfo, filter_obj)
+"""Return whether a measurement's visible labels pass the measurement filter."""
+function _measurement_matches_filter(
+    project::AbstractProject,
+    measurement::MeasurementInfo,
+    filter_obj::Ptr{ig.lib.ImGuiTextFilter},
+)::Bool
     if !ig.ImGuiTextFilter_IsActive(filter_obj)
         return true
     end
-    return ig.ImGuiTextFilter_PassFilter(filter_obj, _measurement_filter_text(proj, measurement), C_NULL)
+    text = string(
+        display_label(project, measurement),
+        "\n",
+        measurement.clean_title,
+        "\n",
+        kind_label(project, measurement.measurement_kind),
+    )
+    return ig.ImGuiTextFilter_PassFilter(filter_obj, text, C_NULL)
 end
 
-function _visible_measurements(ui_state, proj, measurements, filter_meas)
-    if _show_bad_effective(ui_state) && !ig.ImGuiTextFilter_IsActive(filter_meas)
+"""Filter measurements by tags and the text entered in the measurement panel."""
+function _visible_measurements(
+    state::BrowserState,
+    project::AbstractProject,
+    measurements::Vector{MeasurementInfo},
+    filter_meas::Ptr{ig.lib.ImGuiTextFilter},
+)::Vector{MeasurementInfo}
+    if _show_bad_effective(state) && !ig.ImGuiTextFilter_IsActive(filter_meas)
         return measurements
     end
 
     visible = MeasurementInfo[]
     sizehint!(visible, length(measurements))
     for measurement in measurements
-        _measurement_is_visible(ui_state, measurement) || continue
-        _measurement_matches_filter(proj, measurement, filter_meas) || continue
+        _measurement_is_visible(state, measurement) || continue
+        _measurement_matches_filter(project, measurement, filter_meas) || continue
         push!(visible, measurement)
     end
     return visible
 end
 
-function _render_hierarchy_tree_panel(ui_state, filter_tree)
+"""Render the device hierarchy and write device selection into the workspace."""
+function _render_hierarchy_tree_panel(
+    state::BrowserState,
+    filter_tree::Ptr{ig.lib.ImGuiTextFilter},
+)::Nothing
     ig.BeginChild("Tree", (0, 0), true)
     ig.SeparatorText("Device Selection")
-    _render_tag_state_error!(ui_state)
+    _render_tag_state_error!(state)
 
-    workspace = get(ui_state, :workspace, nothing)
+    workspace = state.workspace
     root = workspace isa Workspace.Workspace ? workspace.index.hierarchy.root : nothing
     meta_keys = workspace isa Workspace.Workspace ?
         workspace.index.device_metadata_keys :
         Symbol[]
-    selected_devices, _, _ = _project_visible_selection(ui_state)
+    selected_devices, _, _ = _project_visible_selection(state)
 
     visible_devices = HierarchyNode[]
     visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
-    expanded_device_path_set = Set(get(ui_state, :expanded_device_paths, String[]))
+    expanded_device_path_set = Set(state.expanded_device_paths)
     selected_device_path_set = workspace isa Workspace.Workspace ?
         Set(workspace.selection.device_paths) :
         Set{String}()
@@ -63,10 +81,11 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             _device_path_key(node)
         end
 
-        function has_visible_leaf(node::HierarchyNode)
+        """Return whether this subtree contains a visible device."""
+        function has_visible_leaf(node::HierarchyNode)::Bool
             return get!(has_visible_leaf_cache, node) do
                 if isempty(children(node))
-                    return _device_is_visible(ui_state, device_key(node))
+                    return _device_is_visible(state, device_key(node))
                 end
                 for child in children(node)
                     has_visible_leaf(child) && return true
@@ -75,7 +94,8 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             end
         end
 
-        function subtree_matches(node::HierarchyNode)
+        """Return whether this node or one of its descendants matches the filter."""
+        function subtree_matches(node::HierarchyNode)::Bool
             return get!(subtree_matches_cache, node) do
                 _tree_node_matches_filter(filter_tree, node) && return true
                 for child in children(node)
@@ -85,21 +105,27 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
             end
         end
 
-        function collect_visible_devices!(node::HierarchyNode, force_show::Bool=false)
+        """Collect visible leaf devices while respecting inherited filter matches."""
+        function collect_visible_devices!(
+            node::HierarchyNode,
+            force_show::Bool=false,
+        )::Nothing
             has_visible_leaf(node) || return
             force_show || subtree_matches(node) || return
 
             direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
             if isempty(children(node))
                 push!(visible_devices, node)
-                return
+                return nothing
             end
             for child in children(node)
                 collect_visible_devices!(child, direct_match)
             end
+            return nothing
         end
 
-        function count_leaf_nodes(node::HierarchyNode)
+        """Count device leaves below one hierarchy node."""
+        function count_leaf_nodes(node::HierarchyNode)::Int
             if isempty(children(node))
                 return 1
             end
@@ -139,16 +165,17 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
         next_node_id(parent_id::UInt64, node::HierarchyNode) = hash(node.name, parent_id)
         to_imgui_id(node_id::UInt64) = Int32(node_id % UInt64(typemax(Int32)))
 
+        """Render one hierarchy row and recursively render its open descendants."""
         function render_node(
             node::HierarchyNode,
             node_id::UInt64,
             path_segments::Vector{String},
             force_show::Bool=false,
-        )
+        )::Nothing
             has_visible_leaf(node) || return
             force_show || subtree_matches(node) || return
 
-            ui_state[:_node_count] += 1
+            state.performance.node_count += 1
             ig.TableNextRow()
 
             direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
@@ -183,8 +210,8 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
 
             ig.TableSetColumnIndex(0)
             bad_text_pushed = false
-            if is_leaf && leaf_device_key !== nothing && _tag_state_ready(ui_state)
-                tag_state = _tag_state_or_error(ui_state)
+            if is_leaf && leaf_device_key !== nothing && _tag_state_ready(state)
+                tag_state = _tag_state_or_error(state)
                 ancestor_keys = _ancestor_keys_for_path(leaf_device_key)
                 bad_text_pushed = _push_tag_text_style!(tag_state, leaf_device_key, ancestor_keys)
             end
@@ -192,18 +219,18 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 ig.SetNextItemOpen(path_key in expanded_device_path_set, ig.ImGuiCond_Always)
             end
             opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
-            if is_leaf && get(ui_state, :scroll_to_device_path, "") == leaf_device_key
+            if is_leaf && state.scroll_to_device_path == leaf_device_key
                 ig.SetScrollHereY(0.5)
-                delete!(ui_state, :scroll_to_device_path)
+                state.scroll_to_device_path = nothing
             end
             if !is_leaf && !filter_active && ig.IsItemToggledOpen()
-                expanded_device_paths = copy(get(ui_state, :expanded_device_paths, String[]))
+                expanded_device_paths = copy(state.expanded_device_paths)
                 if opened
                     path_key in expanded_device_paths || push!(expanded_device_paths, path_key)
                 else
                     filter!(key -> key != path_key, expanded_device_paths)
                 end
-                ui_state[:expanded_device_paths] = expanded_device_paths
+                state.expanded_device_paths = expanded_device_paths
                 expanded_device_path_set = Set(expanded_device_paths)
             end
             bad_text_pushed && ig.PopStyleColor()
@@ -227,7 +254,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 selected_count = length(target_keys)
                 selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
 
-                editable = _tag_state_ready(ui_state)
+                editable = _tag_state_ready(state)
                 if !editable
                     ig.TextDisabled("Fix tags.txt and rescan to edit")
                     ig.Separator()
@@ -235,10 +262,10 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
 
                 !editable && ig.BeginDisabled()
                 if ig.MenuItem("Mark Bad")
-                    _set_devices_bad!(ui_state, target_keys, true)
+                    _set_devices_bad!(state, target_keys, true)
                 end
                 if ig.MenuItem("Unmark Bad")
-                    _set_devices_bad!(ui_state, target_keys, false)
+                    _set_devices_bad!(state, target_keys, false)
                 end
                 !editable && ig.EndDisabled()
                 ig.EndPopup()
@@ -264,6 +291,7 @@ function _render_hierarchy_tree_panel(ui_state, filter_tree)
                 ig.TreePop()
             end
             ig.PopID()
+            return nothing
         end
 
         local table_flags = ig.ImGuiTableFlags_BordersV | ig.ImGuiTableFlags_BordersOuterH |
@@ -303,14 +331,14 @@ end
 
 # Shared multi-select utility functions
 
-"""
-    _update_multi_selection!(selected_items, item, all_items, shift_held, ctrl_held)
-
-Common multi-select logic for both device and measurement panels.
-Handles range selection (Shift), toggle selection (Ctrl), and single selection.
-Modifies selected_items in place.
-"""
-function _update_multi_selection!(selected_items::Vector{T}, item::T, all_items::Vector{T}, shift_held::Bool, ctrl_held::Bool) where {T}
+"""Apply range, toggle, or replacement selection to a list of stable item ids."""
+function _update_multi_selection!(
+    selected_items::Vector{T},
+    item::T,
+    all_items::Vector{T},
+    shift_held::Bool,
+    ctrl_held::Bool,
+)::Nothing where {T}
     if shift_held && !isempty(selected_items)
         # Range selection: select from last selected to current
         last_item = selected_items[end]
@@ -338,16 +366,16 @@ function _update_multi_selection!(selected_items::Vector{T}, item::T, all_items:
         empty!(selected_items)
         push!(selected_items, item)
     end
+    return nothing
 end
 
-"""
-    _render_selection_status!(selected_count, filtered_count, total_count, item_type)
-
-Renders consistent selection status display for both device and measurement panels.
-Shows "X/Y items selected" with total count if filtering is active.
-Uses appropriate colors: green for multi-select, blue for single, disabled for none.
-"""
-function _render_selection_status!(selected_count::Int, filtered_count::Int, total_count::Int, item_type::String)
+"""Render selection counts shared by the device and measurement panels."""
+function _render_selection_status!(
+    selected_count::Int,
+    filtered_count::Int,
+    total_count::Int,
+    item_type::String,
+)::Nothing
     if selected_count > 1
         ig.TextColored((0.2, 0.8, 0.2, 1.0), "$selected_count/$filtered_count $item_type selected")
     elseif selected_count == 1
@@ -362,17 +390,19 @@ function _render_selection_status!(selected_count::Int, filtered_count::Int, tot
     end
     ig.SameLine()
     _helpmarker("Multi-select: Shift+click=range, Ctrl+click=toggle, Ctrl+A=all")
+    return nothing
 end
 
+"""Render filtering and select-all controls shared by both selection panels."""
 function _render_selection_toolbar!(
     selected_count::Int,
     visible_count::Int,
     total_count::Int,
-    filter_obj,
+    filter_obj::Ptr{ig.lib.ImGuiTextFilter},
     on_select_all!::Function;
     item_label::String,
     filter_id::String,
-)
+)::Nothing
     _render_selection_status!(selected_count, visible_count, total_count, item_label)
 
     ig.Text("Filter")
@@ -388,33 +418,18 @@ function _render_selection_toolbar!(
         io = ig.GetIO()
         unsafe_load(io.KeyCtrl) && on_select_all!()
     end
-end
-
-function _collect_leaf_nodes!(devices::Vector{HierarchyNode}, node::HierarchyNode)
-    if isempty(children(node))
-        push!(devices, node)
-        return
-    end
-    for child in children(node)
-        _collect_leaf_nodes!(devices, child)
-    end
-end
-
-function _all_devices(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
-    workspace isa Workspace.Workspace || return HierarchyNode[]
-    root = workspace.index.hierarchy.root
-
-    devices = HierarchyNode[]
-    _collect_leaf_nodes!(devices, root)
-    return devices
+    return nothing
 end
 
 # Right panel (measurements list) rendering
-function _render_measurements_panel(ui_state, filter_meas)
+"""Render measurements for the selected devices and update workspace selection."""
+function _render_measurements_panel(
+    state::BrowserState,
+    filter_meas::Ptr{ig.lib.ImGuiTextFilter},
+)::Nothing
     ig.BeginChild("Measurements", (0, 0), true)
     ig.SeparatorText("Measurement Selection")
-    workspace = get(ui_state, :workspace, nothing)
+    workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
         ig.TextDisabled("Open a project folder to browse measurements")
         ig.EndChild()
@@ -423,11 +438,12 @@ function _render_measurements_panel(ui_state, filter_meas)
     proj = workspace.project
 
     selected_devices, selected_measurements, selected_path =
-        _project_visible_selection(ui_state)
-    all_measurements = _measurements_of_selected_devices(ui_state)
-    visible_measurements = _visible_measurements(ui_state, proj, all_measurements, filter_meas)
+        _project_visible_selection(state)
+    all_measurements = _measurements_of_selected_devices(state)
+    visible_measurements =
+        _visible_measurements(state, proj, all_measurements, filter_meas)
     selected_measurement_id_set = Set(workspace.selection.measurement_ids)
-    registry_ready = _tag_state_ready(ui_state)
+    registry_ready = _tag_state_ready(state)
 
     _render_selection_toolbar!(
         length(selected_measurements),
@@ -457,11 +473,11 @@ function _render_measurements_panel(ui_state, filter_meas)
     if isempty(selected_devices)
         ig.Text("Select one or more devices to view their measurements")
         ig.EndChild()
-        return
+        return nothing
     end
 
-    ui_state[:_measurement_rows_visible] = length(visible_measurements)
-    ui_state[:_measurement_rows_rendered] = 0
+    state.performance.measurement_rows_visible = length(visible_measurements)
+    state.performance.measurement_rows_rendered = 0
 
     if !isempty(visible_measurements)
         table_flags = ig.ImGuiTableFlags_BordersOuterH | ig.ImGuiTableFlags_BordersOuterV |
@@ -486,7 +502,7 @@ function _render_measurements_panel(ui_state, filter_meas)
                         is_selected = measurement.unique_id in selected_measurement_id_set
                         bad_text_pushed = false
                         if registry_ready
-                            tag_state = _tag_state_or_error(ui_state)
+                            tag_state = _tag_state_or_error(state)
                             dev_key = device_path_key(measurement.device_info)
                             ancestor_keys = _ancestor_keys_for_path(dev_key)
                             bad_text_pushed = _push_tag_text_style!(
@@ -507,9 +523,9 @@ function _render_measurements_panel(ui_state, filter_meas)
                             )
                             workspace.selection.measurement_ids = selected_measurement_ids
                         end
-                        if get(ui_state, :scroll_to_measurement_id, "") == measurement.unique_id
+                        if state.scroll_to_measurement_id == measurement.unique_id
                             ig.SetScrollHereY(0.5)
-                            delete!(ui_state, :scroll_to_measurement_id)
+                            state.scroll_to_measurement_id = nothing
                         end
                         bad_text_pushed && ig.PopStyleColor()
 
@@ -521,13 +537,14 @@ function _render_measurements_panel(ui_state, filter_meas)
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count measurements")
 
                             if ig.MenuItem("Open Plot in New Window")
-                                open_plots = get!(ui_state, :open_plot_windows) do
-                                    Vector{Dict{Symbol,Any}}()
-                                end
-                                push!(open_plots, _measurement_plot_window_entry(ui_state, measurement))
+                                plots = state.plots
+                                push!(
+                                    plots.windows,
+                                    _measurement_plot_window(plots, measurement),
+                                )
                             end
 
-                            editable = _tag_state_ready(ui_state)
+                            editable = _tag_state_ready(state)
                             if !editable
                                 ig.TextDisabled("Fix tags.txt and rescan to edit")
                                 ig.Separator()
@@ -535,10 +552,10 @@ function _render_measurements_panel(ui_state, filter_meas)
 
                             !editable && ig.BeginDisabled()
                             if ig.MenuItem("Mark Bad")
-                                _set_measurements_bad!(ui_state, target_ids, true)
+                                _set_measurements_bad!(state, target_ids, true)
                             end
                             if ig.MenuItem("Unmark Bad")
-                                _set_measurements_bad!(ui_state, target_ids, false)
+                                _set_measurements_bad!(state, target_ids, false)
                             end
                             !editable && ig.EndDisabled()
                             ig.EndPopup()
@@ -550,8 +567,8 @@ function _render_measurements_panel(ui_state, filter_meas)
                 ig.Destroy(clipper)
             end
 
-            ui_state[:_measurement_rows_rendered] = rows_rendered
-            ui_state[:_measurement_rows_visible] = length(visible_measurements)
+            state.performance.measurement_rows_rendered = rows_rendered
+            state.performance.measurement_rows_visible = length(visible_measurements)
             ig.EndTable()
         end
     else
@@ -561,24 +578,37 @@ function _render_measurements_panel(ui_state, filter_meas)
     return nothing
 end
 
-function render_selection_window(ui_state)
-    ui_state[:_node_count] = 0
-    pop!(ui_state, :reset_project_filters, false) && _reset_project_filter_widgets!(ui_state)
-    filter_tree = _imgui_text_filter_for_state!(ui_state, :_imgui_text_filter_tree, :tree_filter)
-    filter_meas = _imgui_text_filter_for_state!(ui_state, :_imgui_text_filter_meas, :measurement_filter)
+"""Render both selection panels and keep their text filters in browser state."""
+function render_selection_window(state::BrowserState)::Nothing
+    state.performance.node_count = 0
+    if state.reset_project_filters
+        _reset_project_filter_widgets!(state)
+        state.reset_project_filters = false
+    end
+    if state.tree_filter_widget === nothing
+        state.tree_filter_widget =
+            ig.ImGuiTextFilter_ImGuiTextFilter(state.tree_filter)
+    end
+    if state.measurement_filter_widget === nothing
+        state.measurement_filter_widget =
+            ig.ImGuiTextFilter_ImGuiTextFilter(state.measurement_filter)
+    end
+    filter_tree = state.tree_filter_widget
+    filter_meas = state.measurement_filter_widget
 
     if ig.Begin("Hierarchy", C_NULL, ig.ImGuiWindowFlags_MenuBar)
-        render_menu_bar(ui_state)
+        render_menu_bar(state)
         ig.Columns(2, "main_layout")
-        _time!(ui_state, :device_tree) do
-            _render_hierarchy_tree_panel(ui_state, filter_tree)
+        _time!(state, :device_tree) do
+            _render_hierarchy_tree_panel(state, filter_tree)
         end
         ig.NextColumn()
-        _time!(ui_state, :measurement_panel) do
-            _render_measurements_panel(ui_state, filter_meas)
+        _time!(state, :measurement_panel) do
+            _render_measurements_panel(state, filter_meas)
         end
     end
     ig.End()
-    _sync_imgui_text_filter!(ui_state, :tree_filter, filter_tree)
-    _sync_imgui_text_filter!(ui_state, :measurement_filter, filter_meas)
+    state.tree_filter = _imgui_text_filter_text(filter_tree)
+    state.measurement_filter = _imgui_text_filter_text(filter_meas)
+    return nothing
 end

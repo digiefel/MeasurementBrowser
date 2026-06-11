@@ -87,7 +87,8 @@ implemented by a measurement project. `MeasurementIndex` owns source-file record
 measurements, hierarchy construction, and filesystem scanning. `Cache` owns generated HDF5 state.
 `Workspace` owns one open source root, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations used by projects and the browser.
-`MeasurementBrowser` exports the small project-facing API while keeping these modules internal.
+`Browser` owns typed frontend state and CImGui rendering. `MeasurementBrowser` exports the small
+project-facing API while keeping these modules internal.
 
 `open_workspace(project, root_path)` creates that owner and immediately starts cache loading and
 source scanning. Project methods may receive the workspace to request measurement data, but project

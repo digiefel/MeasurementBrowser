@@ -1,6 +1,7 @@
-function _cache_activity_model(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
-    state = workspace isa Workspace.Workspace ? workspace.cache_job.state : :idle
+"""Describe the current cache operation for toolbar and progress rendering."""
+function _cache_activity_model(state::BrowserState)::NamedTuple
+    workspace = state.workspace
+    job_state = workspace isa Workspace.Workspace ? workspace.cache_job.state : :idle
     progress = workspace isa Workspace.Workspace ?
         workspace.cache_job.progress :
         WorkspaceProgress()
@@ -9,7 +10,7 @@ function _cache_activity_model(ui_state)
     loaded = progress.loaded_measurements
     fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
-    if state == :loading
+    if job_state == :loading
         progress_text = total > 0 ?
             @sprintf("Read %d/%d cached files, loaded %d measurements", processed, total, loaded) :
             @sprintf("Loaded %d measurements", loaded)
@@ -20,7 +21,7 @@ function _cache_activity_model(ui_state)
             fraction,
             cancel_label="Cancel Reload",
         )
-    elseif state == :writing
+    elseif job_state == :writing
         phase = progress.phase
         progress_text = phase == :cache_finalize ?
             "Finalizing cache metadata and indexes" :
@@ -40,7 +41,7 @@ function _cache_activity_model(ui_state)
             fraction,
             cancel_label="Cancel Cache Build",
         )
-    elseif state == :canceling
+    elseif job_state == :canceling
         return (
             title="Canceling",
             detail="Waiting for the active background job to stop.",
@@ -48,7 +49,7 @@ function _cache_activity_model(ui_state)
             fraction,
             cancel_label="Cancel",
         )
-    elseif state == :canceled
+    elseif job_state == :canceled
         return (
             title="Canceled",
             detail="The last background job was canceled.",
@@ -56,7 +57,7 @@ function _cache_activity_model(ui_state)
             fraction,
             cancel_label="Cancel",
         )
-    elseif state == :error
+    elseif job_state == :error
         return (
             title="Error",
             detail=workspace.cache_job.error,
@@ -64,7 +65,7 @@ function _cache_activity_model(ui_state)
             fraction,
             cancel_label="Cancel",
         )
-    elseif state == :done
+    elseif job_state == :done
         return (
             title="Ready",
             detail="No background cache or source job is running.",
@@ -92,13 +93,11 @@ function _progress_fraction(progress::WorkspaceProgress)::Float32
     return Float32(clamp(processed / total, 0, 1))
 end
 
-function _render_progress_indicator!(ui_state, item)
-    get(item, :show_bar, true) || return
-    ig.ProgressBar(item.fraction, (-1, 0))
-end
-
-function _source_rescan_progress_model(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
+"""Describe source-scan progress independently from cache progress."""
+function _source_rescan_progress_model(
+    state::BrowserState,
+)::Union{Nothing,NamedTuple}
+    workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     source_state = workspace.scan.state
     if !(source_state in (:counting, :discovering, :scanning, :analyzing, :canceling, :done, :canceled, :error))
@@ -156,42 +155,15 @@ function _source_rescan_progress_model(ui_state)
     )
 end
 
-function _cache_progress_models(ui_state)
-    models = NamedTuple[]
-    workspace = get(ui_state, :workspace, nothing)
-    cache_state = workspace isa Workspace.Workspace ?
-        workspace.cache_job.state :
-        :idle
-    if cache_state in (:loading, :writing, :canceling)
-        activity = _cache_activity_model(ui_state)
-        push!(models, (
-            title=activity.title,
-            progress=activity.progress,
-            fraction=activity.fraction,
-            show_bar=true,
-        ))
-    end
-    return models
-end
-
-function _source_progress_models(ui_state)
-    models = NamedTuple[]
-    rescan_model = _source_rescan_progress_model(ui_state)
-    if rescan_model !== nothing
-        push!(models, rescan_model)
-    end
-
-    return models
-end
-
-function _cache_toolbar_model(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
+"""Describe the cache button from the workspace cache state."""
+function _cache_toolbar_model(state::BrowserState)::NamedTuple
+    workspace = state.workspace
     identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
     status = workspace isa Workspace.Workspace ? workspace.cache.status : nothing
     cache_state = workspace isa Workspace.Workspace ?
         workspace.cache_job.state :
         :idle
-    activity = _cache_activity_model(ui_state)
+    activity = _cache_activity_model(state)
 
     if identity === nothing
         return (
@@ -267,37 +239,29 @@ function _cache_toolbar_model(ui_state)
     )
 end
 
-function _source_scan_matches_cache(ui_state, identity::ProjectCacheIdentity)
-    workspace = get(ui_state, :workspace, nothing)
-    source = workspace isa Workspace.Workspace ? workspace.index.source : nothing
-    return source isa SourceScan &&
-        source.root_path == identity.root_path &&
-        project_name(source.project) == identity.project_name
-end
-
-function _cache_button_hover_color(color)
-    return (
-        min(color[1] + 0.10, 1.0),
-        min(color[2] + 0.10, 1.0),
-        min(color[3] + 0.10, 1.0),
-        color[4],
-    )
-end
-
-function _cache_button_active_color(color)
-    return (
-        max(color[1] - 0.08, 0.0),
-        max(color[2] - 0.08, 0.0),
-        max(color[3] - 0.08, 0.0),
-        color[4],
-    )
-end
-
-function _render_cache_toolbar_button!(ui_state)
-    model = _cache_toolbar_model(ui_state)
+"""Render the cache status button and its detailed control popup."""
+function _render_cache_toolbar_button!(state::BrowserState)::Nothing
+    model = _cache_toolbar_model(state)
+    color = model.color
     ig.PushStyleColor(ig.ImGuiCol_Button, model.color)
-    ig.PushStyleColor(ig.ImGuiCol_ButtonHovered, _cache_button_hover_color(model.color))
-    ig.PushStyleColor(ig.ImGuiCol_ButtonActive, _cache_button_active_color(model.color))
+    ig.PushStyleColor(
+        ig.ImGuiCol_ButtonHovered,
+        (
+            min(color[1] + 0.10, 1.0),
+            min(color[2] + 0.10, 1.0),
+            min(color[3] + 0.10, 1.0),
+            color[4],
+        ),
+    )
+    ig.PushStyleColor(
+        ig.ImGuiCol_ButtonActive,
+        (
+            max(color[1] - 0.08, 0.0),
+            max(color[2] - 0.08, 0.0),
+            max(color[3] - 0.08, 0.0),
+            color[4],
+        ),
+    )
     if ig.Button(model.label)
         ig.OpenPopup("cache_toolbar_popup")
     end
@@ -308,21 +272,18 @@ function _render_cache_toolbar_button!(ui_state)
         ig.TextUnformatted(model.detail)
         ig.EndTooltip()
     end
-    _render_cache_toolbar_popup!(ui_state)
-end
-
-function _render_cache_toolbar_popup!(ui_state)
     ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Always)
     if ig.BeginPopup("cache_toolbar_popup")
-        _render_cache_controls!(ui_state; compact=false)
+        _render_cache_controls!(state; compact=false)
         ig.EndPopup()
     end
+    return nothing
 end
 
-function render_perf_window(ui_state)
-    if !get(ui_state, :show_performance_window, false)
-        return
-    end
+"""Render diagnostic timing, allocation, memory, and OpenGL information."""
+function render_perf_window(state::BrowserState)::Nothing
+    state.show_performance_window || return nothing
+    performance = state.performance
 
     if ig.Begin("Performance")
         raw_io = ig.GetIO()
@@ -334,28 +295,33 @@ function render_perf_window(ui_state)
             )
         end
 
-        if haskey(ui_state, :_gl_info)
-            gi = ui_state[:_gl_info]
+        if !isempty(performance.gl_info)
+            gi = performance.gl_info
             for k in (:vendor, :renderer, :version)
                 haskey(gi, k) && ig.Text("GL $(k): $(gi[k])")
             end
         end
 
-        if haskey(ui_state, :_node_count)
-            ig.Text("Tree nodes rendered: $(ui_state[:_node_count])")
-        end
-        rows_visible = get(ui_state, :_measurement_rows_visible, 0)
-        rows_rendered = get(ui_state, :_measurement_rows_rendered, 0)
+        ig.Text("Tree nodes rendered: $(performance.node_count)")
+        rows_visible = performance.measurement_rows_visible
+        rows_rendered = performance.measurement_rows_rendered
         ig.Text("Measurements visible/rendered: $rows_visible / $rows_rendered")
 
         mem = _memory_snapshot()
         if mem.vmrss_kb !== nothing
-            start_rss = get!(ui_state, :_mem_start_rss_kb, mem.vmrss_kb)
-            peak_rss = max(get(ui_state, :_mem_peak_rss_kb, mem.vmrss_kb), mem.vmrss_kb)
-            ui_state[:_mem_peak_rss_kb] = peak_rss
+            performance.memory_start_rss_kb === nothing &&
+                (performance.memory_start_rss_kb = mem.vmrss_kb)
+            start_rss = something(performance.memory_start_rss_kb)
+            peak_rss = max(
+                something(performance.memory_peak_rss_kb, mem.vmrss_kb),
+                mem.vmrss_kb,
+            )
+            performance.memory_peak_rss_kb = peak_rss
 
             read_bytes = mem.read_bytes === nothing ? 0 : mem.read_bytes
-            start_read = get!(ui_state, :_mem_start_read_bytes, read_bytes)
+            performance.memory_start_read_bytes === nothing &&
+                (performance.memory_start_read_bytes = read_bytes)
+            start_read = something(performance.memory_start_read_bytes)
 
             ig.Separator()
             ig.Text("Process memory")
@@ -367,10 +333,8 @@ function render_perf_window(ui_state)
             ig.BulletText("read_bytes Δstart=$( _fmt_bytes(read_bytes - start_read) )")
         end
 
-        timings = get(ui_state, :_timings,
-            Dict{Symbol,Vector{Float64}}())
-        allocs = get(ui_state, :_allocs,
-            Dict{Symbol,Vector{Int}}())
+        timings = performance.timings
+        allocs = performance.allocations
 
         plot_timing_keys = haskey(timings, :plot_draw) ? [:plot_draw] : Symbol[]
         other_timing_keys = sort([key for key in keys(timings) if key != :plot_draw])
@@ -392,7 +356,7 @@ function render_perf_window(ui_state)
             end
         end
 
-        profiles = get(ui_state, :figure_script_job_profiles, Any[])
+        profiles = state.figure_scripts.job_profiles
         if ig.CollapsingHeader("Figure-Script Jobs", ig.ImGuiTreeNodeFlags_DefaultOpen)
             if isempty(profiles)
                 ig.TextDisabled("No figure-script jobs profiled yet")
@@ -436,42 +400,47 @@ function render_perf_window(ui_state)
         end
 
         if ig.Button("Clear timings")
-            empty!(get!(() -> Dict{Symbol,Vector{Float64}}(), ui_state, :_timings))
-            empty!(get!(() -> Dict{Symbol,Vector{Int}}(), ui_state, :_allocs))
-            empty!(get!(ui_state, :figure_script_job_profiles) do
-                Any[]
-            end)
+            empty!(performance.timings)
+            empty!(performance.allocations)
+            empty!(state.figure_scripts.job_profiles)
         end
     end
     ig.End()
+    return nothing
 end
 
-function render_menu_bar(ui_state)
+"""Render project, cache, annotation, workflow, and debug controls."""
+function render_menu_bar(state::BrowserState)::Nothing
+    workspace = state.workspace
     if ig.BeginMenuBar()
         if ig.BeginMenu("Project")
-            ig.TextDisabled(_project_status_text(ui_state))
+            ig.TextDisabled(
+                workspace isa Workspace.Workspace ?
+                "Active: $(project_name(workspace.project))" :
+                "No project loaded",
+            )
             ig.Separator()
 
             if ig.MenuItem("Open Folder...")
                 path = pick_folder()
                 if !isnothing(path) && !isempty(path)
                     @info "Selected path: $path"
-                    _open_project_path!(ui_state, path)
+                    _open_project_path!(state, path)
                 end
             end
 
-            recents = get(ui_state, :recent_projects, Dict{String,String}[])
+            recents = state.recent_projects
             if ig.BeginMenu("Recent Projects")
                 if isempty(recents)
                     ig.TextDisabled("No recent projects")
                 else
                     for (idx, entry) in enumerate(recents)
-                        path = get(entry, "path", "")
+                        path = entry.path
                         isempty(path) && continue
-                        pref = get(entry, "project_preference", "auto")
+                        pref = entry.project_preference
                         label = "$(basename(path)) [$pref]###recent_project_$idx"
                         if ig.MenuItem(label)
-                            _open_project_path!(ui_state, path)
+                            _open_project_path!(state, path)
                         end
                         if ig.BeginItemTooltip()
                             ig.TextUnformatted(path)
@@ -482,7 +451,6 @@ function render_menu_bar(ui_state)
                 ig.EndMenu()
             end
 
-            workspace = get(ui_state, :workspace, nothing)
             has_root = workspace isa Workspace.Workspace
             source_rescan_running =
                 has_root && source_scan_running(workspace)
@@ -500,18 +468,18 @@ function render_menu_bar(ui_state)
             !can_rescan && ig.EndDisabled()
 
             ig.Separator()
-            if ig.MenuItem("Project Settings", C_NULL, get(ui_state, :show_project_window, false))
-                ui_state[:show_project_window] = !get(ui_state, :show_project_window, false)
+            if ig.MenuItem("Project Settings", C_NULL, state.show_project_window)
+                state.show_project_window = !state.show_project_window
             end
             ig.EndMenu()
         end
-        _render_cache_toolbar_button!(ui_state)
-        show_bad_effective = _show_bad_effective(ui_state)
-        bad_visibility_toggle_enabled = _tag_state_ready(ui_state) ||
-                                        isempty(get(ui_state, :tag_state_error, ""))
+        _render_cache_toolbar_button!(state)
+        show_bad_effective = _show_bad_effective(state)
+        bad_visibility_toggle_enabled = _tag_state_ready(state) ||
+                                        isempty(state.tag_state_error)
         !bad_visibility_toggle_enabled && ig.BeginDisabled()
         if ig.MenuItem("Show Bad", C_NULL, show_bad_effective)
-            ui_state[:show_bad] = !get(ui_state, :show_bad, true)
+            state.show_bad = !state.show_bad
         end
         if !bad_visibility_toggle_enabled
             ig.EndDisabled()
@@ -520,15 +488,15 @@ function render_menu_bar(ui_state)
                 ig.EndTooltip()
             end
         end
-        _, selected_measurements, _ = _project_visible_selection(ui_state)
+        _, selected_measurements, _ = _project_visible_selection(state)
         has_measurement_selection = !isempty(selected_measurements)
         can_open_figure_scripts = has_measurement_selection ||
-                                  !isempty(_figure_script_groups(ui_state)) ||
-                                  get(ui_state, :show_figure_script_window, false)
+                                  !isempty(state.figure_scripts.groups) ||
+                                  state.figure_scripts.visible
         !can_open_figure_scripts && ig.BeginDisabled()
-        if ig.MenuItem("Figure Script", C_NULL, get(ui_state, :show_figure_script_window, false))
-            ui_state[:show_figure_script_window] = !get(ui_state, :show_figure_script_window, false)
-            ui_state[:figure_script_root_path] =
+        if ig.MenuItem("Figure Script", C_NULL, state.figure_scripts.visible)
+            state.figure_scripts.visible = !state.figure_scripts.visible
+            state.figure_scripts.root_path =
                 workspace isa Workspace.Workspace ? workspace.root_path : ""
         end
         if !can_open_figure_scripts
@@ -539,33 +507,42 @@ function render_menu_bar(ui_state)
             end
         end
         if ig.BeginMenu("Debug")
-            if ig.MenuItem("Performance Window", C_NULL, get(ui_state, :show_performance_window, false))
-                ui_state[:show_performance_window] = !get(ui_state, :show_performance_window, false)
+            if ig.MenuItem(
+                "Performance Window",
+                C_NULL,
+                state.show_performance_window,
+            )
+                state.show_performance_window = !state.show_performance_window
             end
-            if ig.MenuItem("Debug Plot Mode", C_NULL, get(ui_state, :debug_plot_mode, false))
-                ui_state[:debug_plot_mode] = !get(ui_state, :debug_plot_mode, false)
-                _clear_plot_views!(ui_state)
+            plots = state.plots
+            if ig.MenuItem("Debug Plot Mode", C_NULL, plots.debug)
+                plots.debug = !plots.debug
+                _clear_plot_views!(plots)
             end
             ig.EndMenu()
         end
         ig.EndMenuBar()
     end
+    return nothing
 end
 
 """
 Draw source and cache progress, differences, errors, and controls.
 """
-function _render_cache_controls!(ui_state; compact::Bool)
-    workspace = get(ui_state, :workspace, nothing)
+function _render_cache_controls!(
+    state::BrowserState;
+    compact::Bool,
+)::Nothing
+    workspace = state.workspace
     identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
     status = workspace isa Workspace.Workspace ? workspace.cache.status : nothing
     cache_state = workspace isa Workspace.Workspace ?
         workspace.cache_job.state :
         :idle
-    model = _cache_toolbar_model(ui_state)
+    model = _cache_toolbar_model(state)
     running = workspace isa Workspace.Workspace &&
         cache_work_running(workspace)
-    activity = _cache_activity_model(ui_state)
+    activity = _cache_activity_model(state)
 
     if compact
         ig.Text("Cache")
@@ -574,24 +551,20 @@ function _render_cache_controls!(ui_state; compact::Bool)
     end
     ig.TextWrapped(model.detail)
     if running
-        cache_progress = _cache_progress_models(ui_state)
-        if !isempty(cache_progress)
-            for item in cache_progress
-                ig.TextDisabled(item.title)
-                ig.TextDisabled(item.progress)
-                _render_progress_indicator!(ui_state, item)
-            end
+        if cache_state in (:loading, :writing, :canceling)
+            ig.TextDisabled(activity.title)
+            ig.TextDisabled(activity.progress)
+            ig.ProgressBar(activity.fraction, (-1, 0))
         end
     end
 
-    source_progress = _source_progress_models(ui_state)
-    if !isempty(source_progress)
-        for item in source_progress
-            ig.Separator()
-            ig.TextDisabled(item.title)
-            ig.TextDisabled(item.progress)
-            _render_progress_indicator!(ui_state, item)
-        end
+    source_progress = _source_rescan_progress_model(state)
+    if source_progress !== nothing
+        ig.Separator()
+        ig.TextDisabled(source_progress.title)
+        ig.TextDisabled(source_progress.progress)
+        source_progress.show_bar &&
+            ig.ProgressBar(source_progress.fraction, (-1, 0))
     end
 
     if identity isa ProjectCacheIdentity
@@ -630,10 +603,10 @@ function _render_cache_controls!(ui_state; compact::Bool)
             index > 20 && break
             filepath, message = file_error
             ig.PushID(filepath)
-            if ig.TextLink(basename(filepath)) && select_source_file!(ui_state, filepath)
-                ui_state[:tree_filter] = ""
-                ui_state[:measurement_filter] = ""
-                ui_state[:reset_project_filters] = true
+            if ig.TextLink(basename(filepath)) && select_source_file!(state, filepath)
+                state.tree_filter = ""
+                state.measurement_filter = ""
+                state.reset_project_filters = true
             end
             if ig.BeginItemTooltip()
                 ig.TextUnformatted(filepath)
@@ -689,14 +662,16 @@ function _render_cache_controls!(ui_state; compact::Bool)
             cancel_cache!(workspace)
         end
     end
+    return nothing
 end
 
-function render_project_window(ui_state)
-    get(ui_state, :show_project_window, false) || return
+"""Render project selection and project-specific settings."""
+function render_project_window(state::BrowserState)::Nothing
+    state.show_project_window || return nothing
 
     open_ref = Ref(true)
     if ig.Begin("Project Settings###project_window", open_ref, ig.ImGuiWindowFlags_AlwaysAutoResize)
-        workspace = get(ui_state, :workspace, nothing)
+        workspace = state.workspace
         if workspace isa Workspace.Workspace
             proj = workspace.project
             ig.Text("Active: $(project_name(proj))")
@@ -706,14 +681,14 @@ function render_project_window(ui_state)
 
         ig.Separator()
 
-        pref = get(ui_state, :project_preference, "auto")
+        pref = state.project_preference
         changed = false
 
         default_project = something(DEFAULT_PROJECT[])
         default_label = "Default ($(project_name(default_project)))"
 
         if ig.RadioButton(default_label, pref == "auto")
-            ui_state[:project_preference] = "auto"
+            state.project_preference = "auto"
             changed = true
         end
         ig.SameLine()
@@ -722,7 +697,7 @@ function render_project_window(ui_state)
         for p in PROJECTS
             pn = project_name(p)
             if ig.RadioButton(pn, pref == pn)
-                ui_state[:project_preference] = pn
+                state.project_preference = pn
                 changed = true
             end
             ig.SameLine()
@@ -732,20 +707,25 @@ function render_project_window(ui_state)
         if changed
             current_root = workspace isa Workspace.Workspace ? workspace.root_path : ""
             _persist_preferences!(
-                ui_state;
+                state;
                 path=isempty(current_root) ? nothing : current_root,
             )
             if workspace isa Workspace.Workspace
-                @info "Project preference changed to '$(ui_state[:project_preference])' - reloading cache"
-                _open_project_path!(ui_state, current_root)
+                @info(
+                    "Project preference changed to '$(state.project_preference)' - " *
+                    "reloading cache",
+                )
+                _open_project_path!(state, current_root)
             end
         end
     end
-    open_ref[] || (ui_state[:show_project_window] = false)
+    open_ref[] || (state.show_project_window = false)
     ig.End()
+    return nothing
 end
 
-function _setup_docking_layout!(dockspace_id)
+"""Create the initial hierarchy, information, and plot docking layout."""
+function _setup_docking_layout!(dockspace_id::UInt32)::Nothing
     vp = ig.GetMainViewport()
     sz = unsafe_load(vp.Size)
 
@@ -768,8 +748,10 @@ function _setup_docking_layout!(dockspace_id)
     ig.DockBuilderDockWindow("Information Panel",  bottom_left[])
 
     ig.DockBuilderFinish(dockspace_id)
+    return nothing
 end
 
+"""Return whether the native GLFW window requested shutdown."""
 function _window_close_requested()::Bool
     window = ig.current_window()
     window === nothing && return false
@@ -779,13 +761,17 @@ end
 """
 Initialize browser state and run the CImGui render loop.
 """
-function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; engine=nothing, spawn=1)
+function create_window_and_run_loop(
+    root_path::Union{Nothing,String}=nothing;
+    engine::Any=nothing,
+    spawn::Int=1,
+)::Nothing
     ig.set_backend(:GlfwOpenGL3)
-    ui_state = Dict{Symbol,Any}()
-    _init_tag_state!(ui_state)
-    _init_figure_script_state!(ui_state)
-    _init_plot_state!(ui_state)
-    ui_state[:_frame] = 0
+    prefs = _load_prefs()
+    state = BrowserState(
+        project_preference=String(get(prefs, "project", "auto")),
+        recent_projects=_parse_recent_projects(prefs),
+    )
     ctx = ig.CreateContext()
     io = ig.GetIO()
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_DockingEnable
@@ -794,13 +780,8 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
     io.IniFilename = Ptr{Cchar}(C_NULL)   # disable layout persistence
     ig.StyleColorsDark()
 
-    # Load persisted preferences
-    prefs = _load_prefs()
-    ui_state[:project_preference] = get(prefs, "project", "auto")
-    ui_state[:recent_projects] = _parse_recent_projects(prefs)
-
     if root_path !== nothing && root_path != ""
-        _open_project_path!(ui_state, root_path)
+        _open_project_path!(state, root_path)
     end
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
@@ -813,24 +794,24 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
         spawn,
         wait_events=false,
         on_exit=() -> begin
-            _shutdown_background_jobs!(ui_state)
-            _save_project_view_if_changed!(ui_state)
-            _print_perf_summary(ui_state)
+            _shutdown_background_jobs!(state)
+            _save_project_view_if_changed!(state)
+            _print_perf_summary(state)
         end,
     ) do
         if _window_close_requested()
-            _shutdown_background_jobs!(ui_state)
+            _shutdown_background_jobs!(state)
             return :imgui_exit_loop
         end
-        ui_state[:_frame] += 1
-        workspace = get(ui_state, :workspace, nothing)
+        state.performance.frame += 1
+        workspace = state.workspace
         if workspace isa Workspace.Workspace && poll_workspace!(workspace)
-            _refresh_plot_measurement_refs!(ui_state)
-            _invalidate_figure_script_scan_cache!(ui_state)
+            _refresh_plot_measurement_refs!(state)
+            _invalidate_figure_script_scan_cache!(state)
         end
-        _poll_figure_script_job_events!(ui_state)
-        if first_frame[] && !haskey(ui_state, :_gl_info)
-            ui_state[:_gl_info] = _collect_gl_info!()
+        _poll_figure_script_job_events!(state)
+        if first_frame[]
+            state.performance.gl_info = _gl_info()
             first_frame[] = false
         end
         dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
@@ -839,33 +820,36 @@ function create_window_and_run_loop(root_path::Union{Nothing,String}=nothing; en
             _setup_docking_layout!(dockspace_id)
         end
         if !(workspace isa Workspace.Workspace && source_scan_running(workspace))
-            _time!(ui_state, :plot_warmup) do
-                _ensure_plot_runtime_warmed!(ui_state)
+            _time!(state, :plot_warmup) do
+                _ensure_plot_runtime_warmed!(state)
             end
         end
-        render_selection_window(ui_state)
-        render_project_window(ui_state)
-        _time!(ui_state, :info) do
-            render_info_window(ui_state)
+        render_selection_window(state)
+        render_project_window(state)
+        _time!(state, :info) do
+            render_info_window(state)
         end
-        _time!(ui_state, :figure_scripts) do
-            render_figure_script_window(ui_state)
+        _time!(state, :figure_scripts) do
+            render_figure_script_window(state)
         end
-        _time!(ui_state, :plot) do
-            render_plot_window(ui_state)
+        _time!(state, :plot) do
+            render_plot_window(state)
         end
-        _time!(ui_state, :extra_plots) do
-            render_additional_plot_windows(ui_state)
+        _time!(state, :extra_plots) do
+            render_additional_plot_windows(state)
         end
-        _time!(ui_state, :perf_window) do
-            render_perf_window(ui_state)
+        _time!(state, :perf_window) do
+            render_perf_window(state)
         end
-        _save_project_view_if_changed!(ui_state)
+        _save_project_view_if_changed!(state)
         # Show metadata guidance modal if needed
-        render_device_info_modal(ui_state)
+        render_device_info_modal(state)
     end
+    return nothing
 end
 
-function start_browser(root_path::Union{Nothing,String}=nothing)
+"""Start the browser, optionally opening one source root immediately."""
+function start_browser(root_path::Union{Nothing,String}=nothing)::Nothing
     create_window_and_run_loop(root_path)
+    return nothing
 end

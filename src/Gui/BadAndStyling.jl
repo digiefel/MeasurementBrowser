@@ -1,62 +1,69 @@
-"""
-Load the project's tag state and refresh selection visibility for the current root.
-Parse or I/O failures leave tags unavailable but keep the browser usable with bad items shown.
-"""
 const BAD_TAG_NAME = "bad"
 const BAD_TAG_COLOR = (UInt8(0xff), UInt8(0x30), UInt8(0x30))
 const BAD_TAG_PRIORITY = 100
 
-function _load_tag_state_for_root!(ui_state, root_path::String)
+"""
+Load tags for one source root.
+
+Parse or I/O failures leave tags unavailable but keep bad items visible.
+"""
+function _load_tag_state_for_root!(
+    state::BrowserState,
+    root_path::String,
+)::Nothing
     if isempty(root_path)
-        ui_state[:tag_state] = nothing
-        ui_state[:tag_state_error] = ""
-        return
+        state.tag_state = nothing
+        state.tag_state_error = ""
+        return nothing
     end
 
     try
-        ui_state[:tag_state] = Annotations.Tags.load(root_path)
-        ui_state[:tag_state_error] = ""
+        state.tag_state = Annotations.Tags.load(root_path)
+        state.tag_state_error = ""
     catch err
         if err isa Annotations.Tags.TagsParseError || err isa IOError
-            ui_state[:tag_state] = nothing
-            ui_state[:tag_state_error] = sprint(showerror, err)
-            return
+            state.tag_state = nothing
+            state.tag_state_error = sprint(showerror, err)
+            return nothing
         end
         rethrow()
     end
+    return nothing
 end
 
-function _tag_state_ready(ui_state)
-    return get(ui_state, :tag_state, nothing) isa Annotations.Tags.TagState &&
-           isempty(get(ui_state, :tag_state_error, ""))
+function _tag_state_ready(state::BrowserState)::Bool
+    return state.tag_state !== nothing && isempty(state.tag_state_error)
 end
 
 """
 Return whether bad-tagged items should be visible in the current UI state.
 Bad items stay visible when tags cannot be loaded, so missing tag metadata never hides data.
 """
-function _show_bad_effective(ui_state)
-    return get(ui_state, :show_bad, true) || !_tag_state_ready(ui_state)
+function _show_bad_effective(state::BrowserState)::Bool
+    return state.show_bad || !_tag_state_ready(state)
 end
 
-function _tag_state_or_error(ui_state)
-    state = get(ui_state, :tag_state, nothing)
-    state isa Annotations.Tags.TagState ||
-        error("Tag state unavailable: $(get(ui_state, :tag_state_error, ""))")
-    return state
+"""Return loaded tags or fail with the error that prevented loading them."""
+function _tag_state_or_error(state::BrowserState)::Annotations.Tags.TagState
+    state.tag_state === nothing &&
+        error("Tag state unavailable: $(state.tag_state_error)")
+    return state.tag_state
 end
 
-function _device_path_key(node::HierarchyNode)
+"""Return the stable device path represented by a leaf hierarchy node."""
+function _device_path_key(node::HierarchyNode)::String
     isempty(node.measurements) && error("Leaf node '$(node.name)' has no measurements")
     return device_path_key(first(node.measurements).device_info)
 end
 
-function _device_location(node::HierarchyNode)
+"""Return the device path segments represented by a leaf hierarchy node."""
+function _device_location(node::HierarchyNode)::Vector{String}
     isempty(node.measurements) && error("Leaf node '$(node.name)' has no measurements")
     return copy(first(node.measurements).device_info.location)
 end
 
-function _ancestor_keys_for_path(path::AbstractString)
+"""Return every parent path used when resolving inherited tags."""
+function _ancestor_keys_for_path(path::AbstractString)::Vector{String}
     parts = split(path, '/')
     length(parts) <= 1 && return String[]
     out = String[]
@@ -66,49 +73,62 @@ function _ancestor_keys_for_path(path::AbstractString)
     return out
 end
 
-function _has_bad_tag(tag_state::Annotations.Tags.TagState, key::AbstractString,
-                      ancestor_keys)
+"""Return whether an item or one of its supplied parents has the bad tag."""
+function _has_bad_tag(
+    tag_state::Annotations.Tags.TagState,
+    key::AbstractString,
+    ancestor_keys::Vector{String},
+)::Bool
     return "bad" in Annotations.Tags.effective(tag_state, key, ancestor_keys)
 end
 
-function _device_is_explicitly_bad(ui_state, device_key::String)
-    tag_state = _tag_state_or_error(ui_state)
+function _device_is_explicitly_bad(
+    state::BrowserState,
+    device_key::String,
+)::Bool
+    tag_state = _tag_state_or_error(state)
     return _has_bad_tag(tag_state, device_key, _ancestor_keys_for_path(device_key))
 end
 
-function _measurement_is_explicitly_bad(ui_state, measurement_id::String)
-    tag_state = _tag_state_or_error(ui_state)
+function _measurement_is_explicitly_bad(
+    state::BrowserState,
+    measurement_id::String,
+)::Bool
+    tag_state = _tag_state_or_error(state)
     return _has_bad_tag(tag_state, measurement_id, String[])
 end
 
-function _measurement_is_bad(ui_state, measurement::MeasurementInfo)
-    tag_state = _tag_state_or_error(ui_state)
+function _measurement_is_bad(
+    state::BrowserState,
+    measurement::MeasurementInfo,
+)::Bool
+    tag_state = _tag_state_or_error(state)
     dev_key = device_path_key(measurement.device_info)
     ancestor_keys = _ancestor_keys_for_path(dev_key)
     return _has_bad_tag(tag_state, measurement.unique_id, [dev_key; ancestor_keys])
 end
 
-function _assert_tag_state_visibility_available(ui_state)
-    _tag_state_ready(ui_state) && return
-    error("Cannot hide bad items while tag state is unavailable: $(get(ui_state, :tag_state_error, ""))")
+function _device_is_visible(state::BrowserState, device_key::String)::Bool
+    _show_bad_effective(state) && return true
+    return !_device_is_explicitly_bad(state, device_key)
 end
 
-function _device_is_visible(ui_state, device_key::String)
-    _show_bad_effective(ui_state) && return true
-    return !_device_is_explicitly_bad(ui_state, device_key)
-end
-
-function _measurement_is_visible(ui_state, measurement::MeasurementInfo)
-    _show_bad_effective(ui_state) && return true
-    return !_measurement_is_bad(ui_state, measurement)
+function _measurement_is_visible(
+    state::BrowserState,
+    measurement::MeasurementInfo,
+)::Bool
+    _show_bad_effective(state) && return true
+    return !_measurement_is_bad(state, measurement)
 end
 
 """
 Resolve the current selected devices and measurements after applying tag visibility.
 The persisted selection ids are left untouched; this returns only the currently visible subset.
 """
-function _project_visible_selection(ui_state)
-    workspace = get(ui_state, :workspace, nothing)
+function _project_visible_selection(
+    state::BrowserState,
+)::Tuple{Vector{HierarchyNode},Vector{MeasurementInfo},Vector{String}}
+    workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
         return HierarchyNode[], MeasurementInfo[], String[]
     end
@@ -119,7 +139,7 @@ function _project_visible_selection(ui_state)
         node = get(hierarchy.index, device_path_tuple(path_key), nothing)
         node === nothing && continue
         node.kind == :leaf || error("Selected device path '$path_key' does not point to a leaf device")
-        !_device_is_visible(ui_state, path_key) && continue
+        !_device_is_visible(state, path_key) && continue
         push!(selected_devices, node)
     end
 
@@ -130,7 +150,7 @@ function _project_visible_selection(ui_state)
         measurement = get(measurement_index, measurement_id, nothing)
         measurement === nothing && continue
         device_path_key(measurement.device_info) in visible_device_keys || continue
-        !_measurement_is_visible(ui_state, measurement) && continue
+        !_measurement_is_visible(state, measurement) && continue
         push!(selected_measurements, measurement)
     end
     selected_path = length(selected_devices) == 1 ? _device_location(selected_devices[1]) : String[]
@@ -140,8 +160,10 @@ end
 """
 Return every measurement belonging to the selected visible devices, ordered by time.
 """
-function _measurements_of_selected_devices(ui_state)::Vector{MeasurementInfo}
-    selected_devices, _, _ = _project_visible_selection(ui_state)
+function _measurements_of_selected_devices(
+    state::BrowserState,
+)::Vector{MeasurementInfo}
+    selected_devices, _, _ = _project_visible_selection(state)
     all_measurements = MeasurementInfo[]
     sizehint!(all_measurements, sum(length(device.measurements) for device in selected_devices; init=0))
     for device in selected_devices
@@ -156,24 +178,31 @@ end
 """
 Ensure the bad tag exists before writing bad-device or bad-measurement assignments.
 """
-function _ensure_bad_catalog_entry!(tag_state::Annotations.Tags.TagState)
+function _ensure_bad_catalog_entry!(
+    tag_state::Annotations.Tags.TagState,
+)::Nothing
     any(t -> t.name == BAD_TAG_NAME, tag_state.catalog) && return
     pushfirst!(tag_state.catalog,
         Annotations.Tags.TagDef(BAD_TAG_NAME, BAD_TAG_COLOR, BAD_TAG_PRIORITY))
+    return nothing
 end
 
 """
 Set or clear the bad tag on devices and persist the updated tag file.
 Returns `false` when tag state is unavailable or there is nothing to change.
 """
-function _set_devices_bad!(ui_state, device_keys::Vector{String}, bad::Bool)
+function _set_devices_bad!(
+    state::BrowserState,
+    device_keys::Vector{String},
+    bad::Bool,
+)::Bool
     unique_keys = unique(copy(device_keys))
     isempty(unique_keys) && return false
-    _tag_state_ready(ui_state) || return false
+    _tag_state_ready(state) || return false
 
-    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace = state.workspace::Workspace.Workspace
 
-    tag_state = _tag_state_or_error(ui_state)
+    tag_state = _tag_state_or_error(state)
     _ensure_bad_catalog_entry!(tag_state)
 
     for device_key in unique_keys
@@ -197,14 +226,18 @@ end
 Set or clear the bad tag on measurements and persist the updated tag file.
 Returns `false` when tag state is unavailable or there is nothing to change.
 """
-function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::Bool)
+function _set_measurements_bad!(
+    state::BrowserState,
+    measurement_ids::Vector{String},
+    bad::Bool,
+)::Bool
     unique_ids = unique(copy(measurement_ids))
     isempty(unique_ids) && return false
-    _tag_state_ready(ui_state) || return false
+    _tag_state_ready(state) || return false
 
-    workspace = ui_state[:workspace]::Workspace.Workspace
+    workspace = state.workspace::Workspace.Workspace
 
-    tag_state = _tag_state_or_error(ui_state)
+    tag_state = _tag_state_or_error(state)
     _ensure_bad_catalog_entry!(tag_state)
 
     for measurement_id in unique_ids
@@ -224,16 +257,21 @@ function _set_measurements_bad!(ui_state, measurement_ids::Vector{String}, bad::
     return true
 end
 
-function _selection_targets(selected_items::Vector{T}, clicked_item::T) where {T}
+"""Apply a context-menu action to the selection when the clicked item belongs to it."""
+function _selection_targets(
+    selected_items::Vector{T},
+    clicked_item::T,
+)::Vector{T} where {T}
     if clicked_item in selected_items
         return selected_items
     end
     return T[clicked_item]
 end
 
-function _render_tag_state_error!(ui_state)
-    message = get(ui_state, :tag_state_error, "")
-    isempty(message) && return
+"""Show the tag-loading failure without blocking the rest of the browser."""
+function _render_tag_state_error!(state::BrowserState)::Nothing
+    message = state.tag_state_error
+    isempty(message) && return nothing
     ig.TextColored((1.0, 0.5, 0.5, 1.0), "tags error")
     if ig.BeginItemTooltip()
         ig.PushTextWrapPos(ig.GetFontSize() * 35.0)
@@ -243,8 +281,12 @@ function _render_tag_state_error!(ui_state)
     end
 end
 
-function _push_tag_text_style!(tag_state::Annotations.Tags.TagState, key::AbstractString,
-                                ancestor_keys)
+"""Apply the dominant tag color and report whether the caller must pop it."""
+function _push_tag_text_style!(
+    tag_state::Annotations.Tags.TagState,
+    key::AbstractString,
+    ancestor_keys::Vector{String},
+)::Bool
     eff = Annotations.Tags.effective(tag_state, key, ancestor_keys)
     color = Annotations.Tags.dominant_color(tag_state, eff)
     color === nothing && return false
