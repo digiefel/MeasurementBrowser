@@ -1,4 +1,49 @@
 """
+Fingerprint used to decide whether a physical source file has changed.
+"""
+struct FileFingerprint
+    path::String
+    size_bytes::Int64
+    mtime_ns::Int64
+end
+
+"""Return true when two fingerprints describe the same source-file version."""
+function Base.:(==)(left::FileFingerprint, right::FileFingerprint)::Bool
+    return left.path == right.path &&
+        left.size_bytes == right.size_bytes &&
+        left.mtime_ns == right.mtime_ns
+end
+
+"""
+One physical source file and the logical measurements interpreted from it.
+"""
+struct SourceFile
+    unique_id::String
+    filepath::String
+    filename::String
+    timestamp::Union{DateTime,Nothing}
+    header_summary::Dict{String,String}
+    fingerprint::FileFingerprint
+    measurements::Vector{MeasurementInfo}
+end
+
+"""Copy indexed file metadata and attach its interpreted measurements."""
+function SourceFile(
+    file::SourceFile,
+    measurements::Vector{MeasurementInfo},
+)::SourceFile
+    return SourceFile(
+        file.unique_id,
+        file.filepath,
+        file.filename,
+        file.timestamp,
+        file.header_summary,
+        file.fingerprint,
+        measurements,
+    )
+end
+
+"""
 Read the small comment/header section used while indexing a CSV source file.
 """
 function read_csv_header_summary(
@@ -12,8 +57,10 @@ function read_csv_header_summary(
             line_count += 1
             stripped = strip(line)
             if startswith(stripped, "#")
-                m = match(r"^#\s*([^:]+):\s*(.*)$", stripped)
-                m !== nothing && (summary[strip(m.captures[1])] = strip(m.captures[2]))
+                match_result = match(r"^#\s*([^:]+):\s*(.*)$", stripped)
+                match_result !== nothing &&
+                    (summary[strip(match_result.captures[1])] =
+                        strip(match_result.captures[2]))
             elseif startswith(line, "Setup title,")
                 parts = split(line, ','; limit=2)
                 length(parts) > 1 && (summary["Setup title"] = strip(parts[2], '"'))
@@ -34,7 +81,11 @@ end
 function file_fingerprint(path::AbstractString)::FileFingerprint
     normalized = normpath(abspath(expanduser(String(path))))
     stat_info = stat(normalized)
-    return FileFingerprint(normalized, Int64(stat_info.size), Int64(stat_info.mtime * 1_000_000_000))
+    return FileFingerprint(
+        normalized,
+        Int64(stat_info.size),
+        Int64(stat_info.mtime * 1_000_000_000),
+    )
 end
 
 """Index one physical source file without reading its measurement data."""

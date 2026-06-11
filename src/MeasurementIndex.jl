@@ -183,8 +183,7 @@ function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     end
 end
 
-include("scan/Types.jl")
-include("scan/Indexer.jl")
+include("MeasurementIndex/SourceFiles.jl")
 
 """
 One node in the device hierarchy.
