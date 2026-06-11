@@ -1,6 +1,7 @@
 using GLMakie
 using DataFrames: nrow
 
+"""Create the figure used for one or more TASE four-terminal measurements."""
 function setup_plot(
     ::Workspace.Workspace{TASEProject},
     plot_kind::Type{TASEFourTerminalIVPlot},
@@ -13,6 +14,7 @@ function setup_plot(
     return fig
 end
 
+"""Draw the selected TASE measurements into an existing figure."""
 function plot_data!(
     workspace::Workspace.Workspace{TASEProject},
     plot_kind::Type{TASEFourTerminalIVPlot},
