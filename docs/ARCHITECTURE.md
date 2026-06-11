@@ -75,8 +75,9 @@ The workspace owns:
 - source scanning, cache work, progress, errors, and cancellation
 - direct and processed data already loaded in memory
 
-The browser owns windows, controls, filters, and temporary rendering state. Other package modules
-own generic visualizers, workflow persistence, and figure composition.
+The browser owns windows, controls, filters, and temporary rendering state. Annotations store
+user-authored tags, notes, coordinates, and spatial positions at the source root. Other package
+modules own generic visualizers, workflow persistence, and figure composition.
 
 Project code should not know whether data came from memory, cache, or source files. Package code
 should not know the experimental meaning of a project file beyond the project-facing functions it
@@ -127,7 +128,7 @@ Current-state reference docs:
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
 | [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or measurement data. |
-| [annotations.md](annotations.md) | You're touching `src/Annotations/` — coords, layout, tags, notes. |
+| [annotations.md](annotations.md) | You're touching annotations: coordinates, layout, tags, or notes. |
 | [figure_scripts.md](figure_scripts.md) | You're working on the figure-script export feature. |
 
 Future-facing docs and roadmaps live under [plans/](plans/), separate from the current-state docs

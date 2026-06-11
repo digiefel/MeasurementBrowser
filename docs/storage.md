@@ -1,6 +1,8 @@
-# On-Disk Metadata
+# Annotation Storage
 
 > Files at the **source root** (the measurement folder the user opens, not the repo). All hand-editable plain text. Each file owns one orthogonal concern; resist the urge to merge them.
+
+These files annotate devices and measurements. Figure annotations are stored separately.
 
 ## device_info.txt
 

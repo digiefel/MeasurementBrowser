@@ -1,5 +1,13 @@
 # Measurement Metadata Contract
 
+## Place In The Plan
+
+This doc owns the public meaning of measurement metadata fields. The
+[workspace vision](workspace-vision.md) assumes these fields can be used consistently by GUI views,
+API calls, visualizers, selections, workflows, and saved figures.
+
+It does not own UI layout, cache schema details, or plotting signatures.
+
 ## Goal
 
 Make measurement metadata simple enough that users can trust it and developers can extend it without
@@ -145,7 +153,3 @@ of hardcoding PUND-specific stat computation in the UI.
 
 RuO2 PUND stats now have one file/dataframe entry point. It computes `V_base`, `V_min`, `V_max`,
 `V_amp`, `frequency_kHz`, and `Pr_uCcm2` when the required device area is available.
-
-## Open Question
-
-How much of this should align now with the future project/procedure API rewrite?

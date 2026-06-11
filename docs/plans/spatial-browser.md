@@ -1,8 +1,14 @@
-# Spatial Browser + Annotation System — High-Level Plan
+# Spatial Browser and Annotations
+
+## Place In The Plan
+
+This doc owns spatial navigation and its annotations: coordinates, layout, tags, and
+notes. It fits under the broader [workspace vision](workspace-vision.md), but it does not own figure
+annotations, figure files, or workflow persistence.
 
 ## Context
 
-`MeasurementBrowser` currently navigates devices through a tree panel (`Gui.jl:2542 _render_hierarchy_tree_panel`). It works, but doesn't reflect the **spatial** reality of measurements on a chip — where devices physically sit, which sites are clustered, which chips are in flight together. The user wants a hybrid file-browser + GDS-style canvas where:
+`MeasurementBrowser` currently navigates devices through a tree panel. It works, but doesn't reflect the **spatial** reality of measurements on a chip — where devices physically sit, which sites are clustered, which chips are in flight together. The user wants a hybrid file-browser + GDS-style canvas where:
 
 - Positioned items (devices, sites, sub-sites) render at hierarchical XY coordinates from `device_info.txt`.
 - Unpositioned items (chips) get an initial grid layout but are then freely draggable like icons in a macOS file browser; a "reset layout" button reapplies the grid on demand.
@@ -11,7 +17,7 @@
 - Per-node notes inherit ancestor notes as read-only sections, merged into one window.
 - All of this dovetails with the existing tree panel (which stays) and the existing measurement plot panel via shared selection state.
 
-The GUI split and the `Annotations` subpackage are already in place. The remaining work is the
+The GUI split and the annotation package are already in place. The remaining work is the
 spatial browser panel, notes UI, and polishing the tag/layout workflows around that panel.
 
 ## Decisions locked in
@@ -23,20 +29,11 @@ spatial browser panel, notes UI, and polishing the tag/layout workflows around t
 
 ## High-level architecture
 
-### Data layer (`src/Annotations/`)
+### Data layer
 
-Existing internal subpackage for on-disk metadata that is not filenames or measurement contents.
-
-```
-src/Annotations/
-├── Project.toml
-├── src/
-│   ├── Annotations.jl        — module entry, re-exports
-│   ├── Coords.jl             — read/write x/y/w/h from device_info.txt; bbox computation
-│   ├── Layout.jl             — layout.txt: per-path world-XY for unpositioned containers
-│   ├── Tags.jl               — tags.txt: catalog + per-path assignments in one file
-│   └── Notes.jl              — notes.txt with [path]+fenced sections; ancestor merging
-```
+Spatial browser state builds on the existing `Annotations` package. Source-root annotations store
+durable user information, while GUI state stores only transient
+camera, selection, drag, and open-window state.
 
 **Key APIs (sketch):**
 
@@ -75,25 +72,9 @@ All files live at the source root, kept lean so they read well in any text edito
 
 ### UI layer
 
-The GUI already lives in `src/Gui/`. Spatial work should add a focused panel without reworking the
-whole UI state model.
-
-```
-src/Gui.jl                      — module entry; re-exports create_window_and_run_loop
-src/Gui/
-├── State.jl                    — ui_state init helpers and async state
-├── Layout.jl                   — _setup_docking_layout!, top menu, frame loop
-├── TreePanel.jl                — current tree
-├── PlotPanel.jl                — plot toolbar, plot area, detached plots, plot job queue
-└── InfoModal.jl                — existing device modal + figure scripts modal
-```
-
-Planned additions:
-
-```text
-src/Gui/SpatialBrowser.jl       — pan/zoom canvas, hit-testing, level controls
-src/Gui/AnnotationsUI.jl        — tag catalog editor and notes window, if it does not fit cleanly in existing files
-```
+Spatial browser work should add one focused dockable panel without changing the shared selection
+contract. The tree, spatial browser, measurement table, and plots should continue to coordinate
+through the same selected device paths and selected measurements.
 
 ### Spatial browser internals (`SpatialBrowser.jl`)
 
@@ -115,7 +96,9 @@ Render every frame inside a CImGui child window:
 
 ### Selection sync
 
-`ui_state[:selected_device_paths]` is the single source of truth. Both tree (`Gui.jl:2788 _update_multi_selection!`) and spatial browser write to it; both read from it for highlight rendering. The existing `_apply_visible_selection!` (`Gui.jl:654`) continues to drive the measurement panel.
+`ui_state[:selected_device_paths]` is the single source of truth. Both tree and spatial browser
+write to it; both read from it for highlight rendering. Applying the visible selection continues to
+drive the measurement panel.
 
 ### Notes window UI
 
@@ -133,7 +116,7 @@ A standalone, modeless ImGui window — not anchored to any node. Opened from th
 Each phase is a separate spawn: small, reviewable, behavior-checked before moving on.
 
 1. **P1 — Done: Gui.jl split.** The GUI already lives in `src/Gui/` files.
-2. **P2 — Done: `Annotations` subpackage.** `Coords`, `Layout`, `Tags`, and `Notes` already exist with fixture tests.
+2. **P2 — Done: annotation storage.** `Coords`, `Layout`, `Tags`, and `Notes` already exist with fixture tests.
 3. **P3 — Done: tags drive bad styling/filtering.** The existing tree and measurement filtering use `Tags` assignments and a `bad` catalog entry.
 4. **P4 — Spatial browser shell.** New panel, pan/zoom, render only the unpositioned-roots layer (chips with default grid initialization + "reset layout" button), drag-to-rearrange, persistence. No levels yet. Tag colors already work because P3 wired them.
 5. **P5 — Levels + bbox rendering.** Compute hierarchical positions, level state, +/- controls, render bboxes vs dots per the rules. Hit-testing across levels. Marquee selection. Labels at top-left.
@@ -141,19 +124,6 @@ Each phase is a separate spawn: small, reviewable, behavior-checked before movin
 7. **P7 — Polish.** Filters (toggle-show by tag), keyboard shortcuts, save-state in project preferences, info modal cleanup.
 
 Each phase ends with a manual verification run + git commit.
-
-## Critical files (touched or created)
-
-**Modified:**
-- `src/Gui.jl` and `src/Gui/` — existing split GUI modules; add the spatial panel here.
-- `src/MeasurementBrowser.jl` — include any new GUI files.
-- `src/DeviceParser.jl` — read optional spatial metadata from `device_info.txt`.
-- `Project.toml` — already includes `Annotations` as a path dependency.
-
-**New:**
-- `src/Gui/SpatialBrowser.jl`
-- `src/Gui/AnnotationsUI.jl`, only if notes/tag editing does not fit cleanly in existing files.
-- Test fixtures under `test/fixtures/spatial/` with sample `device_info.txt`, `tags.txt`, `notes.txt`, `layout.txt`.
 
 ## Verification
 
@@ -178,6 +148,6 @@ Per-phase manual checks:
 
 - **Save-on-blur vs explicit Save button** for notes editing.
 - **Marquee selection semantics across levels** — does a marquee at level N select only level-N items, or also descendants? Default: level-N only; implementation will revisit.
-- **Tag catalog editor placement** — separate modal or inline in `AnnotationsUI`. Will decide in P5.
+- **Tag catalog editor placement** — separate modal or inline in the spatial browser. Will decide in P5.
 - **Quadtree** for hit-testing — only if P4 profiling shows we need it.
 - **"Info window (TBD)"** from the user spec — kept TBD; existing device modal can be the placeholder until we know what's wanted.

@@ -1,23 +1,38 @@
-# Annotations Subpackage
+# Annotations
 
-> Per-path metadata that isn't filenames or measurement contents — coordinates, layout, tags, notes. Lives at [src/Annotations/](../src/Annotations/) as a path-deps subpackage.
+Annotations are user-editable information attached to devices and measurements: spatial
+coordinates, saved positions, tags, and notes. They are separate from measurement data, generated
+cache data, browser state, and annotations drawn on figures.
 
 ## Purpose
 
-`Annotations` owns the on-disk side of the annotation system. Each module pairs a small, hand-editable text file at the source root with a focused load/save API. Path keys are slash-joined strings (`"RuO2test/A9/VI/D1"`), shared with the rest of the codebase via `device_path_key`.
+The implementation is the path-dependency package
+[src/Annotations/](../src/Annotations/). Each namespace reads or writes one focused source-root
+format. Path keys are
+slash-joined strings such as `"RuO2test/A9/VI/D1"`, shared with the rest of the package through
+`device_path_key`.
 
-The subpackage is consumed via `using Annotations` and namespaced access (`Annotations.Tags.load(root)`, `Annotations.Notes.read_section(root, path)`, etc.). Submodule names are re-exported from the top-level `Annotations` module so the namespace works from outside.
+## Current API
 
-## Module map
+Code imports `Annotations` and uses four namespaces:
 
-| Module | File | Concern |
-|---|---|---|
-| `Coords` | [src/Annotations/src/Coords.jl](../src/Annotations/src/Coords.jl) | Pulls `x_um, y_um, w_um, h_um` out of a parsed `device_info` table; computes axis-aligned bounding boxes. |
-| `Layout` | [src/Annotations/src/Layout.jl](../src/Annotations/src/Layout.jl) | Reads/writes `layout.txt` (user-dragged container positions); generates default grid layouts. |
-| `Tags` | [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) | Reads/writes `tags.txt` (catalog + per-path assignments); resolves effective tags and dominant color. |
-| `Notes` | [src/Annotations/src/Notes.jl](../src/Annotations/src/Notes.jl) | Reads/writes `notes.txt` fenced sections; merges ancestor sections for display. |
+| API | Purpose |
+|---|---|
+| `Annotations.Coords` | Reads `x_um`, `y_um`, `w_um`, and `h_um` from parsed `device_info.txt` metadata and computes bounding boxes. |
+| `Annotations.Layout` | Reads and writes user-arranged positions in `layout.txt`. |
+| `Annotations.Tags` | Reads and writes tag definitions and device/measurement assignments in `tags.txt`. |
+| `Annotations.Notes` | Reads and writes inherited per-path notes in `notes.txt`. |
 
-## Public API
+## Current GUI
+
+Only tags are connected to the browser today. Device and measurement context menus show
+`Mark Bad` and `Unmark Bad`. The menu bar provides `Show Bad`, and effective tag colors style tree
+and measurement text. A malformed `tags.txt` is shown as a tag error.
+
+Coordinates, saved spatial layout, and notes currently have no GUI. They exist for the planned
+spatial browser and should not be described as existing user-facing features.
+
+## Detailed API
 
 ### `Coords`
 
@@ -53,20 +68,13 @@ See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, 
 
 ## Inheritance semantics
 
-Annotations attach to specific paths. Two modules expose ancestor inheritance at lookup time; the caller supplies the ancestor list (closest-first or any order — the modules don't care).
+Tags and notes attach to specific paths. Both expose ancestor inheritance at lookup time; the caller
+supplies the ancestor list.
 
 - **`Tags.effective`** — set union of own tags and every ancestor's tags. Keys are arbitrary strings; device-path keys and measurement-ID keys are looked up in the same `assignments` map. No precedence among keys; tags are membership, not values. Use `dominant_color` to pick a single color out of the resulting set via the catalog's `priority` field.
 - **`Notes.merged_view`** — each ancestor section is included read-only in the order supplied; the focal node's section is appended last and marked editable. Ancestors that have no section are skipped silently.
 
 Neither module rewrites stored state when it inherits — assignments and note bodies stay anchored to the path they were authored against.
 
-## Where to look
-
-| Concern | Location |
-|---|---|
-| Module entry point | [src/Annotations/src/Annotations.jl](../src/Annotations/src/Annotations.jl) |
-| Subpackage `Project.toml` | [src/Annotations/Project.toml](../src/Annotations/Project.toml) |
-| Tests | [test/test_annotations.jl](../test/test_annotations.jl) |
-| Test fixtures | [test/fixtures/annotations/](../test/fixtures/annotations) |
-| File formats | [storage.md](storage.md) |
-| Path key conventions | [data-model.md](data-model.md#identity--path-keys) |
+See [storage.md](storage.md) for file formats and
+[data-model.md](data-model.md#identity--path-keys) for path-key conventions.

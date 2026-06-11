@@ -62,12 +62,15 @@ Two existing popups, both attached to selected browser items:
 
 Both apply to multi-selection via `_set_devices_bad!` / `_set_measurements_bad!`.
 
-## Tag-driven styling
+## Annotations in the GUI
 
 Tree nodes and measurement rows colour their text from the dominant effective tag for that item.
 Untagged items render in the default colour. The `bad` tag's catalog entry is added on demand
 whenever the user marks something bad. Visibility filtering uses the same effective-tag lookup over
 the item key and its ancestors.
+
+This is currently the browser's only annotation interface. Coordinates, spatial layout, and
+notes are not yet shown or edited by the GUI.
 
 ## MakieIntegration constraint
 
