@@ -282,7 +282,9 @@ function replace_measurement_index!(
 end
 
 """
-Add newly discovered measurements to the current workspace index.
+Add newly discovered measurements to the provisional workspace index.
+
+The completed source scan later replaces this hierarchy with the final sorted hierarchy.
 """
 function append_measurements!(
     workspace::Workspace,
@@ -301,7 +303,6 @@ function append_measurements!(
         changed = true
     end
     changed || return false
-    sort!(hierarchy)
     workspace.index.device_metadata_keys = sort!(collect(metadata_keys); by=String)
     return true
 end
