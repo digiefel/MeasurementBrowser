@@ -72,6 +72,7 @@ include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
 include("projects/TASEProject.jl")
+include("RegistryProject.jl")
 include("FigureScripts.jl")
 include("Precompile.jl")
 include("Browser.jl")
@@ -89,5 +90,7 @@ export debug_plot
 export TablePreview, inspect_table
 export project_name, project_description
 export open_workspace, close_workspace!, select_measurements!
+export define_project, register_measurement!, register_device_stat!, register_plot!
+export RegistryProject
 
 end # module MeasurementBrowser
