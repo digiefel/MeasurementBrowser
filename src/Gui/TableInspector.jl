@@ -49,17 +49,6 @@ function _render_table_inspector_menu!(state::BrowserState)::Nothing
         if ig.MenuItem("Table Inspector", C_NULL, state.table_inspector.visible)
             state.table_inspector.visible = !state.table_inspector.visible
         end
-
-        selected_path = _selected_table_source(state)
-        selected_path === nothing && ig.BeginDisabled()
-        if ig.MenuItem("Open Selected Source")
-            _inspect_table_path!(state, selected_path)
-        end
-        selected_path === nothing && ig.EndDisabled()
-        if selected_path === nothing && ig.BeginItemTooltip()
-            ig.TextUnformatted("Select a measurement first.")
-            ig.EndTooltip()
-        end
         ig.EndMenu()
     end
     return nothing
@@ -107,9 +96,11 @@ function _column_combo!(
     label::String,
     current::Int,
     columns::Vector{String},
+    width::Real,
 )::Int
     isempty(columns) && return current
     current = clamp(current, 1, length(columns))
+    ig.SetNextItemWidth(width)
     if ig.BeginCombo(label, columns[current])
         for (index, column) in enumerate(columns)
             if ig.Selectable(column, index == current)
@@ -185,9 +176,20 @@ function _render_table_quick_plot!(inspector::TableInspectorState)::Nothing
     columns = preview.columns
     length(columns) < 2 && return nothing
 
-    inspector.x_column = _column_combo!("X##table_inspector_x", inspector.x_column, columns)
+    width = max(96.0, (ig.GetContentRegionAvail().x - 16.0) / 2.0)
+    inspector.x_column = _column_combo!(
+        "X##table_inspector_x",
+        inspector.x_column,
+        columns,
+        width,
+    )
     ig.SameLine()
-    inspector.y_column = _column_combo!("Y##table_inspector_y", inspector.y_column, columns)
+    inspector.y_column = _column_combo!(
+        "Y##table_inspector_y",
+        inspector.y_column,
+        columns,
+        width,
+    )
     _ensure_table_plot!(inspector)
     if inspector.figure !== nothing
         MakieFigure(
@@ -225,10 +227,14 @@ function render_table_inspector_window(state::BrowserState)::Nothing
         ig.SameLine()
         selected_path = _selected_table_source(state)
         selected_path === nothing && ig.BeginDisabled()
-        if ig.Button("Selected Source")
+        if ig.Button("Open Selection")
             _inspect_table_path!(state, selected_path)
         end
         selected_path === nothing && ig.EndDisabled()
+        if selected_path === nothing && ig.BeginItemTooltip()
+            ig.TextUnformatted("Select a measurement first.")
+            ig.EndTooltip()
+        end
         ig.SameLine()
         if ig.Button("Reload")
             path = strip(_buffer_string(inspector.path_buffer))
