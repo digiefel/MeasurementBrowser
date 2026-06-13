@@ -125,6 +125,7 @@ const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
 """State for the generic table-inspection window."""
 Base.@kwdef mutable struct TableInspectorState
     visible::Bool = false
+    live::Bool = true
     path_buffer::Vector{UInt8} = fill(UInt8(0), TABLE_INSPECTOR_PATH_BUFFER_SIZE)
     preview::Union{Nothing,TablePreview} = nothing
     error::String = ""

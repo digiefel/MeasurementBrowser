@@ -14,6 +14,7 @@ function _inspect_table_path!(
     path::AbstractString,
 )::Nothing
     inspector = state.table_inspector
+    _set_buffer_string!(inspector.path_buffer, String(path))
     try
         preview = inspect_table(path)
         _set_buffer_string!(inspector.path_buffer, preview.path)
@@ -33,6 +34,19 @@ function _inspect_table_path!(
         @error("Table inspection failed\nPath: $(String(path))", exception=(err, bt))
     end
     inspector.visible = true
+    return nothing
+end
+
+"""Update the inspector from browser selection when Live is enabled."""
+function _sync_live_table_source!(state::BrowserState)::Nothing
+    inspector = state.table_inspector
+    inspector.live || return nothing
+    selected_path = _selected_table_source(state)
+    selected_path === nothing && return nothing
+    current_path = strip(_buffer_string(inspector.path_buffer))
+    !isempty(current_path) && normpath(current_path) == normpath(selected_path) &&
+        return nothing
+    _inspect_table_path!(state, selected_path)
     return nothing
 end
 
@@ -212,15 +226,23 @@ function render_table_inspector_window(state::BrowserState)::Nothing
     open_ref = Ref(true)
     ig.SetNextWindowSize((900, 720), ig.ImGuiCond_FirstUseEver)
     if ig.Begin("Table Inspector", open_ref, ig.ImGuiWindowFlags_NoDocking)
+        _sync_live_table_source!(state)
         ig.InputText(
             "##table_inspector_path",
             inspector.path_buffer,
             length(inspector.path_buffer),
         )
         ig.SameLine()
+        live = inspector.live
+        if @c ig.Checkbox("Live##table_inspector_live", &live)
+            inspector.live = live
+            _sync_live_table_source!(state)
+        end
+        ig.SameLine()
         if ig.Button("Open...")
             path = pick_file()
             if !isnothing(path) && !isempty(path)
+                inspector.live = false
                 _inspect_table_path!(state, path)
             end
         end

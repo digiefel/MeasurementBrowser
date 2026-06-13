@@ -72,9 +72,9 @@ the file's own columns, detected delimiter, optional header row, first data row,
 count, and warning text. It does not rename columns, infer measurement meaning, call project data
 readers, or write cache entries.
 
-The browser exposes this through `Inspect -> Table Inspector`. The window can open a chosen file or
-the source file for the current measurement selection. Its quick plot is only a visual check of two
-preview columns.
+The browser exposes this through `Inspect -> Table Inspector`. With `Live` enabled, the window
+follows the current measurement selection and opens that source file. Opening a file manually turns
+`Live` off. Its quick plot is only a visual check of two preview columns.
 
 ## Annotations in the GUI
 
