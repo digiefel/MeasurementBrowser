@@ -4,6 +4,7 @@ import CImGui as ig
 
 import ..Workspace
 using ..MeasurementIndex: MeasurementInfo
+using ..TableInspector: TablePreview
 using ..Visualization: PlotKind
 using ..MeasurementBrowser:
     NamedMeasurementGroup,
@@ -119,6 +120,21 @@ Base.@kwdef mutable struct FigureScriptState
     job_profiles::Vector{NamedTuple} = NamedTuple[]
 end
 
+const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
+
+"""State for the generic table-inspection window."""
+Base.@kwdef mutable struct TableInspectorState
+    visible::Bool = false
+    path_buffer::Vector{UInt8} = fill(UInt8(0), TABLE_INSPECTOR_PATH_BUFFER_SIZE)
+    preview::Union{Nothing,TablePreview} = nothing
+    error::String = ""
+    x_column::Int = 1
+    y_column::Int = 2
+    figure::Union{Nothing,Figure} = nothing
+    plot_key::Union{Nothing,Tuple} = nothing
+    plot_error::String = ""
+end
+
 """Counters and samples shown by the performance window."""
 Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
@@ -144,6 +160,7 @@ Base.@kwdef mutable struct BrowserState
     project_locked::Bool = false
     plots::PlotState = PlotState()
     figure_scripts::FigureScriptState = FigureScriptState()
+    table_inspector::TableInspectorState = TableInspectorState()
     performance::PerformanceState = PerformanceState()
     project_preference::String = "auto"
     recent_projects::Vector{RecentProject} = RecentProject[]

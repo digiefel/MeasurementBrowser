@@ -48,10 +48,8 @@ Use `rg` for search. Use `apply_patch` for manual edits. Do not revert user chan
 dirty files.
 
 ## Commands
-Install the root package with `julia --project -e 'using Pkg; instantiate()'`. If you change a
-path-dependency package, also instantiate that package's environment:
-`src/DataAnalysis` or `src/Annotations`. `src/DataLoader` still exists for old generic CSV readers
-but is deprecated; do not add new project readers there.
+Install the root package with `julia --project -e 'using Pkg; instantiate()'`. If you change
+`src/Annotations`, also instantiate that package's environment.
 
 Launch the browser with an explicit source-data root:
 `julia --project start.jl /path/to/measurements`. Do not rely on the default path in `start.jl`;

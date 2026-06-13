@@ -10,10 +10,10 @@ Example:
 
 using GLMakie
 using DataFrames: DataFrame
-using DataLoader: read_tlm_4p
 
 struct TASEProject <: AbstractProject end
 
+include("TASE/Data.jl")
 include("TASE/Display.jl")
 include("TASE/Interpretation.jl")
 
@@ -29,7 +29,7 @@ function load_source_data(
     end
     detect_kind(TASE_PROJECT, source_file.filename) === :four_terminal_iv ||
         error("TASE cannot load source data for $(source_file.filepath)")
-    return read_tlm_4p(source_file.filename, dirname(source_file.filepath))
+    return read_tase_four_terminal_iv(source_file.filename, dirname(source_file.filepath))
 end
 
 struct TASEFourTerminalIVPlot <: PlotKind end
@@ -51,3 +51,4 @@ project_description(::TASEProject) = "GaN TASE four-terminal IV"
 
 const TASE_PROJECT = TASEProject()
 push!(PROJECTS, TASE_PROJECT)
+DEFAULT_PROJECT[] = TASE_PROJECT

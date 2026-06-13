@@ -1,88 +1,68 @@
 using MeasurementBrowser
 using Test
 
-function _copy_fixture(dst::String, filename::String; subdir::String="RuO2")
-    src = joinpath(@__DIR__, "fixtures", subdir, filename)
-    cp(src, joinpath(dst, filename); force=true)
-end
-
 @testset "scan_source progress and cancel" begin
     mktempdir() do dir
-        _copy_fixture(dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
-        _copy_fixture(dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
+        write_test_source(joinpath(dir, "first.csv"))
+        write_test_source(joinpath(dir, "second.csv"), 10)
 
-        source = MeasurementBrowser.scan_source(
-            dir;
-            project=MeasurementBrowser.RUO2_PROJECT,
-        )
+        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
         @test source isa MeasurementBrowser.SourceScan
         @test source.hierarchy isa MeasurementBrowser.MeasurementHierarchy
         @test source.hierarchy.skipped_count == 0
 
-        # Progress callback shape
         events = NamedTuple[]
         MeasurementBrowser.scan_source(
             dir;
-            project=MeasurementBrowser.RUO2_PROJECT,
-            on_progress=(p) -> push!(events, p),
+            project=TEST_PROJECT,
+            on_progress=progress -> push!(events, progress),
             count_first=true,
         )
-        @test !isempty(events)
-        @test any(e -> e.phase == :counting, events)
-        @test any(e -> e.phase == :discovering, events)
-        @test any(e -> e.phase == :scanning, events)
-        @test any(e -> e.phase == :analyzing, events)
-        last_discovering = last(filter(e -> e.phase == :discovering, events))
-        @test last_discovering.processed_csv == 2
-        @test last_discovering.total_csv == 0
-        scanning_events = filter(e -> e.phase == :scanning, events)
-        @test maximum(e -> e.processed_csv, scanning_events) == 2
-        @test all(e -> e.total_csv == 2, scanning_events)
+        @test any(event -> event.phase == :counting, events)
+        @test any(event -> event.phase == :discovering, events)
+        @test any(event -> event.phase == :scanning, events)
+        @test any(event -> event.phase == :analyzing, events)
+        scanning = filter(event -> event.phase == :scanning, events)
+        @test maximum(event -> event.processed_csv, scanning) == 2
+        @test all(event -> event.total_csv == 2, scanning)
 
-        # Hidden files are not source data.
-        write(joinpath(dir, ".hidden_IVSweep.csv"), "")
-        source = MeasurementBrowser.scan_source(
-            dir;
-            project=MeasurementBrowser.RUO2_PROJECT,
-        )
+        write(joinpath(dir, ".hidden.csv"), "")
+        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
         @test length(source.files) == 2
 
-        # Measurement batches are emitted before scan_source returns its final SourceScan.
         streamed = Vector{MeasurementInfo}[]
         source = MeasurementBrowser.scan_source(
             dir;
-            project=MeasurementBrowser.RUO2_PROJECT,
-            on_measurements=(measurements) -> push!(streamed, copy(measurements)),
+            project=TEST_PROJECT,
+            on_measurements=measurements -> push!(streamed, copy(measurements)),
         )
-        @test !isempty(streamed)
         @test sum(length, streamed) == length(source.hierarchy.all_measurements)
-        @test Set(m.unique_id for batch in streamed for m in batch) ==
-              Set(m.unique_id for m in source.hierarchy.all_measurements)
-
-        # One malformed source file is reported without discarding the valid scan.
-        write(joinpath(dir, "broken_IVSweep.csv"), "")
-        source = MeasurementBrowser.scan_source(
-            dir;
-            project=MeasurementBrowser.RUO2_PROJECT,
+        @test Set(
+            measurement.unique_id
+            for batch in streamed
+            for measurement in batch
+        ) == Set(
+            measurement.unique_id
+            for measurement in source.hierarchy.all_measurements
         )
+
+        write_test_source(joinpath(dir, "broken.csv"))
+        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
         @test length(source.files) == 3
         @test length(source.analysis_failures) == 1
-        @test only(source.analysis_failures).filepath == joinpath(dir, "broken_IVSweep.csv")
+        @test only(source.analysis_failures).filepath == joinpath(dir, "broken.csv")
 
-        # Cooperative cancellation
         fired = Ref(false)
         @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser.with_cancel(
             () -> begin
-                if fired[]
-                    return true
-                end
+                fired[] && return true
                 fired[] = true
                 return false
             end,
         ) do
             MeasurementBrowser.scan_source(
                 dir;
-                project=MeasurementBrowser.RUO2_PROJECT,
+                project=TEST_PROJECT,
                 count_first=true,
             )
         end

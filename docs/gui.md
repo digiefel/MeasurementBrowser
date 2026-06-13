@@ -14,8 +14,8 @@ right side for plot-oriented work.
 
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
 to the open workspace. `PlotState` owns plot windows and choices, `FigureScriptState` isolates the
-interface that Workflow will replace, and `PerformanceState` owns measurements used only for
-diagnostics.
+interface that Workflow will replace, `TableInspectorState` owns the generic file-inspection window,
+and `PerformanceState` owns measurements used only for diagnostics.
 
 The workspace owns the project, source root, measurement index, selected device and measurement
 identities, loaded cache, direct and processed data memory, and the state of source-scan and cache
@@ -31,6 +31,7 @@ ownership. This prevents one operation from overwriting the status shown for the
 | Hierarchy tree | Multi-select tree, primary navigation. |
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
 | Information | Device modal and figure scripts. |
+| Table Inspector | Generic delimited-text preview and quick X/Y plot. |
 
 ### Selection flow (tree → plot)
 
@@ -63,6 +64,17 @@ Two existing popups, both attached to selected browser items:
 - Measurement rows: "Open Plot in New Window", mark/unmark bad.
 
 Both apply to multi-selection via `_set_devices_bad!` / `_set_measurements_bad!`.
+
+## Table Inspector
+
+`inspect_table(path)` opens an arbitrary delimited text file and returns a bounded preview. It keeps
+the file's own columns, detected delimiter, optional header row, first data row, approximate row
+count, and warning text. It does not rename columns, infer measurement meaning, call project data
+readers, or write cache entries.
+
+The browser exposes this through `Inspect -> Table Inspector`. The window can open a chosen file or
+the source file for the current measurement selection. Its quick plot is only a visual check of two
+preview columns.
 
 ## Annotations in the GUI
 

@@ -1,34 +1,27 @@
 @setup_workload begin
-    fixture_dir = normpath(joinpath(@__DIR__, "..", "test", "fixtures", "RuO2"))
-    pund_path = joinpath(fixture_dir, "3V FE PUND [RuO2test_A9_VI_D1(2) ; 2025-10-01 17_12_33].csv")
-    tlm_path  = joinpath(fixture_dir, "TLM_4P [RuO2test_A9_VI_TLML100W2(12) ; 2025-10-01 16_21_45].csv")
-    scan_fixture_dir = mktempdir()
-    cp(pund_path, joinpath(scan_fixture_dir, basename(pund_path)); force=true)
-    cp(tlm_path,  joinpath(scan_fixture_dir, basename(tlm_path));  force=true)
+    fixture_dir = normpath(joinpath(@__DIR__, "..", "test", "fixtures", "TASE"))
+    filenames = [
+        "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv",
+        "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv",
+    ]
+    scan_dir = mktempdir()
+    foreach(filename -> cp(
+        joinpath(fixture_dir, filename),
+        joinpath(scan_dir, filename);
+        force=true,
+    ), filenames)
 
     @compile_workload begin
-        pund_meas = nothing
-        tlm_meas  = nothing
-        workspace = Workspace.Workspace(RUO2_PROJECT, scan_fixture_dir)
-
-        if isfile(pund_path)
-            pund_meas = only(measurements_for_file(RUO2_PROJECT, pund_path))
-            process_measurement_data(workspace, [pund_meas])
-        end
-
-        if isfile(tlm_path)
-            tlm_meas = only(measurements_for_file(RUO2_PROJECT, tlm_path))
-        end
-
-        if pund_meas !== nothing && tlm_meas !== nothing
-            infer_measurement_group(
-                "precompile_group",
-                MeasurementInfo[pund_meas],
-                MeasurementInfo[pund_meas, tlm_meas],
-            )
-        end
-
-        scan_source(scan_fixture_dir; project=RUO2_PROJECT)
-        scan_source(scan_fixture_dir; project=RUO2_PROJECT, count_first=true)
+        measurements = [
+            only(measurements_for_file(TASE_PROJECT, joinpath(fixture_dir, filename)))
+            for filename in filenames
+        ]
+        workspace = Workspace.Workspace(TASE_PROJECT, fixture_dir)
+        read_measurement_data(workspace, measurements)
+        figure = setup_plot(workspace, TASEFourTerminalIVPlot, measurements)
+        plot_data!(workspace, TASEFourTerminalIVPlot, measurements, figure)
+        infer_measurement_group("precompile_group", measurements[1:1], measurements)
+        scan_source(scan_dir; project=TASE_PROJECT)
+        scan_source(scan_dir; project=TASE_PROJECT, count_first=true)
     end
 end

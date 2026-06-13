@@ -5,6 +5,8 @@ This file is kept for old generated scripts while the app moves toward simpler l
 Do not build new plotting or analysis behavior here.
 """
 
+using Dates: DateTime
+
 """
     MeasurementFilterClause(; source_file=nothing, measurement_kind=nothing,
                              device_path=String[],

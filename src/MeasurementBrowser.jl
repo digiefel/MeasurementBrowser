@@ -68,7 +68,9 @@ import .Visualization:
     plot_data!,
     setup_plot
 
-include("projects/RuO2Project.jl")
+include("TableInspector.jl")
+using .TableInspector: TablePreview, inspect_table
+
 include("projects/TASEProject.jl")
 include("FigureScripts.jl")
 include("Precompile.jl")
@@ -84,6 +86,7 @@ export measurements_for_file
 export load_source_data, read_measurement_data, process_measurement_data, setup_plot, plot_data!
 export compute_and_add_measurement_stats!
 export debug_plot
+export TablePreview, inspect_table
 export project_name, project_description
 export open_workspace, close_workspace!, select_measurements!
 

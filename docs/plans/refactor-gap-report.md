@@ -35,9 +35,8 @@ Normal plots call `setup_plot` and `plot_data!` directly; the old plot-job layer
 ### External Projects
 
 RuO2 analysis and plotting now live with the experiment and load through the public browser entry
-point. The package still compiles the old RuO2 reader and scan analysis for remaining cache and scan
-tests; those tests must move to small test projects before that last copy is deleted. TASE is still
-compiled inside MeasurementBrowser.
+point. Package scanning and cache tests use a small project defined by the tests, so the core no
+longer compiles or tests private RuO2 behavior. TASE is still compiled inside MeasurementBrowser.
 
 ### Public API
 
@@ -76,9 +75,8 @@ notes have storage APIs but no browser interface. The spatial browser plan owns 
 
 ### Code Surface
 
-The remaining bundled RuO2 reader and scan analysis are temporary test dependencies.
-`FigureScripts.jl` also remains large despite being deprecated. Each replacement should delete the
-code it supersedes; no compatibility paths should remain.
+`FigureScripts.jl` remains large despite being deprecated. Its workflow replacement should delete
+the code it supersedes; no compatibility paths should remain.
 
 ### Documentation And Function Quality
 
@@ -103,7 +101,7 @@ shutdown during active work
 ## Work Order
 
 1. Finish the workspace transition and remove remaining browser-owned project state.
-2. Move RuO2 and TASE outside the core package.
+2. Move TASE outside the core package.
 3. Define generic table and column visualizers.
 4. Replace figure scripts with workflows and delete the deprecated implementation.
 5. Add continuous source watching through the existing workspace operations.

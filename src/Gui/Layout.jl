@@ -524,6 +524,7 @@ function render_menu_bar(state::BrowserState)::Nothing
                 ig.EndTooltip()
             end
         end
+        _render_table_inspector_menu!(state)
         if ig.BeginMenu("Debug")
             if ig.MenuItem(
                 "Performance Window",
@@ -856,6 +857,9 @@ function start_browser(
         end
         _time!(state, :figure_scripts) do
             render_figure_script_window(state)
+        end
+        _time!(state, :table_inspector) do
+            render_table_inspector_window(state)
         end
         _time!(state, :plot) do
             render_plot_window(state)

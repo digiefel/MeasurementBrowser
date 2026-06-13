@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "4625adf1ce922dbab0826ad2b28ae84f6b197c3f"
+project_hash = "0c63551df625cc19056fd0d23dc6f9f1ab8462c7"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -279,23 +279,11 @@ git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
 uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 version = "1.16.0"
 
-[[deps.DataAnalysis]]
-deps = ["DataFrames", "Dates", "Printf", "SmoothData", "Statistics"]
-path = "src/DataAnalysis"
-uuid = "509f87cb-f238-4275-9ee2-d3327c3af205"
-version = "0.1.0"
-
 [[deps.DataFrames]]
 deps = ["Compat", "DataAPI", "DataStructures", "Future", "InlineStrings", "InvertedIndices", "IteratorInterfaceExtensions", "LinearAlgebra", "Markdown", "Missings", "PooledArrays", "PrecompileTools", "PrettyTables", "Printf", "Random", "Reexport", "SentinelArrays", "SortingAlgorithms", "Statistics", "TableTraits", "Tables", "Unicode"]
 git-tree-sha1 = "5fab31e2e01e70ad66e3e24c968c264d1cf166d6"
 uuid = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 version = "1.8.2"
-
-[[deps.DataLoader]]
-deps = ["CSV", "DataFrames", "Dates"]
-path = "src/DataLoader"
-uuid = "a8afec15-28fe-4831-94d8-4f8efdbf8782"
-version = "0.1.0"
 
 [[deps.DataStructures]]
 deps = ["OrderedCollections"]
@@ -1005,7 +993,7 @@ uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.7"
 
 [[deps.MeasurementBrowser]]
-deps = ["Annotations", "CImGui", "CSV", "DataAnalysis", "DataFrames", "DataLoader", "Dates", "GLFW", "GLMakie", "HDF5", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+deps = ["Annotations", "CImGui", "CSV", "DataFrames", "Dates", "GLFW", "GLMakie", "HDF5", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = "."
 uuid = "12345678-1234-5678-9abc-123456789abc"
 version = "0.1.0"
