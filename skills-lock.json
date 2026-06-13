@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "julia": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": "julia/SKILL.md",
+      "computedHash": "93cab7f46d9a5fb50ac2a1f3b8c98cadd293d1906a3d4f50108649a386929344"
+    }
+  }
+}
