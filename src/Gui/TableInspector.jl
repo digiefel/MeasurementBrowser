@@ -247,17 +247,6 @@ function render_table_inspector_window(state::BrowserState)::Nothing
             end
         end
         ig.SameLine()
-        selected_path = _selected_table_source(state)
-        selected_path === nothing && ig.BeginDisabled()
-        if ig.Button("Open Selection")
-            _inspect_table_path!(state, selected_path)
-        end
-        selected_path === nothing && ig.EndDisabled()
-        if selected_path === nothing && ig.BeginItemTooltip()
-            ig.TextUnformatted("Select a measurement first.")
-            ig.EndTooltip()
-        end
-        ig.SameLine()
         if ig.Button("Reload")
             path = strip(_buffer_string(inspector.path_buffer))
             isempty(path) || _inspect_table_path!(state, path)
