@@ -45,6 +45,15 @@ struct PlotRecipe
     draw::Function
 end
 
+"""Accumulated read/stats timing for one measurement kind in the current scan."""
+mutable struct KindProfile
+    files::Int
+    measurements::Int
+    read_seconds::Float64
+    stats_seconds::Float64
+end
+KindProfile() = KindProfile(0, 0, 0.0, 0.0)
+
 """A project assembled from registered recipes."""
 mutable struct RegistryProject <: AbstractProject
     name::String
@@ -56,6 +65,10 @@ mutable struct RegistryProject <: AbstractProject
     # reused by the stats pass, so a file is never read twice in one scan. Cleared when stats finish.
     read_cache::Dict{String,DataFrame}
     read_lock::ReentrantLock
+    # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
+    # start of each scan and replaced wholesale, so it stays bounded to one row per measurement kind.
+    scan_profile::Dict{Symbol,KindProfile}
+    profile_lock::ReentrantLock
 end
 
 # ---------------------------------------------------------------------------
@@ -109,7 +122,46 @@ function define_project(name::AbstractString; description::AbstractString="")::R
         Dict{Symbol,PlotRecipe}(),
         Dict{String,DataFrame}(),
         ReentrantLock(),
+        Dict{Symbol,KindProfile}(),
+        ReentrantLock(),
     )
+end
+
+"""Accumulate one timed file read into the per-kind scan profile."""
+function _record_read!(project::RegistryProject, kind::Symbol, seconds::Float64)::Nothing
+    lock(project.profile_lock) do
+        entry = get!(KindProfile, project.scan_profile, kind)
+        entry.files += 1
+        entry.read_seconds += seconds
+    end
+    return nothing
+end
+
+"""Accumulate one timed process+stats computation into the per-kind scan profile."""
+function _record_stats!(project::RegistryProject, kind::Symbol, seconds::Float64)::Nothing
+    lock(project.profile_lock) do
+        entry = get!(KindProfile, project.scan_profile, kind)
+        entry.measurements += 1
+        entry.stats_seconds += seconds
+    end
+    return nothing
+end
+
+function reset_scan_profile!(project::RegistryProject)::Nothing
+    lock(project.profile_lock) do
+        empty!(project.scan_profile)
+    end
+    return nothing
+end
+
+function scan_profile_summary(project::RegistryProject)::Vector{NamedTuple}
+    rows = lock(project.profile_lock) do
+        [(; kind, files=p.files, measurements=p.measurements,
+            read_seconds=p.read_seconds, stats_seconds=p.stats_seconds)
+         for (kind, p) in project.scan_profile]
+    end
+    sort!(rows; by=row -> row.read_seconds + row.stats_seconds, rev=true)
+    return rows
 end
 
 """
@@ -225,7 +277,9 @@ end
 function interpret_file(project::RegistryProject, file::SourceFile)::Vector{MeasurementInfo}
     recipe = _detect_recipe(project, file)
     recipe === nothing && return MeasurementInfo[]
+    read_started = time_ns()
     data = recipe.read(file)::DataFrame
+    _record_read!(project, recipe.kind, (time_ns() - read_started) / 1e9)
     # Keep the parse so the stats pass reuses it instead of re-reading (source files are slow to open).
     lock(project.read_lock) do
         project.read_cache[file.filepath] = data
@@ -326,8 +380,11 @@ function compute_and_add_measurement_stats!(
                     ErrorException("could not read source file"))
             else
                 try
+                    stats_started = time_ns()
                     processed = recipe.process === nothing ? data : recipe.process(measurement, data)
                     merge!(measurement.stats, recipe.stats(measurement, processed))
+                    _record_stats!(project, measurement.measurement_kind,
+                        (time_ns() - stats_started) / 1e9)
                 catch err
                     is_job_cancelled(err) && rethrow()
                     add_failure!(measurement.filepath, measurement.unique_id, :stats, err)

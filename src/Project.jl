@@ -47,4 +47,15 @@ function compute_and_add_measurement_stats! end
 """Return the project-specific display label for one device path."""
 function device_path_label end
 
+"""Clear any per-scan timing a project accumulates. Called once at the start of every scan."""
+reset_scan_profile!(::AbstractProject)::Nothing = nothing
+
+"""
+Per-measurement-kind timing for the most recent scan, newest scan replacing the last.
+
+Returns one `(; kind, files, measurements, read_seconds, stats_seconds)` row per kind, or an
+empty vector for projects that do not profile. Surfaced in the performance window.
+"""
+scan_profile_summary(::AbstractProject)::Vector{NamedTuple} = NamedTuple[]
+
 end

@@ -307,6 +307,7 @@ function scan_source(
 )::SourceScan
     root = normpath(abspath(expanduser(root_path)))
     metadata = load_scan_metadata(root)
+    reset_scan_profile!(project)
     count_first && count_source_files(root; on_progress)
     emit_progress(
         on_progress;

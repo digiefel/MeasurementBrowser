@@ -19,7 +19,9 @@ import .Project:
     parse_device_info,
     process_measurement_data,
     project_description,
-    project_name
+    project_name,
+    reset_scan_profile!,
+    scan_profile_summary
 
 include("MeasurementIndex.jl")
 using .MeasurementIndex:

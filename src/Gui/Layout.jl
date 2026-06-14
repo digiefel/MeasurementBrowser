@@ -8,7 +8,8 @@ using ..Project:
     DEFAULT_PROJECT,
     PROJECTS,
     project_description,
-    project_name
+    project_name,
+    scan_profile_summary
 using ..MeasurementIndex: SourceScan
 using ..Cache:
     ProjectCacheIdentity,
@@ -358,6 +359,31 @@ function render_perf_window(state::BrowserState)::Nothing
                 msg = @sprintf "%s: n=%d  last=%.2f ms  mean=%.2f ms  alloc_last=%.1f KB  alloc_mean=%.1f KB" String(key) length(samples) last_ms mean_ms last_alloc mean_alloc
 
                 ig.BulletText(msg)
+            end
+        end
+
+        workspace = state.workspace
+        scan_rows = workspace isa Workspace.Workspace ?
+            scan_profile_summary(workspace.project) : NamedTuple[]
+        if ig.CollapsingHeader("Scan timings (per kind)", ig.ImGuiTreeNodeFlags_DefaultOpen)
+            if isempty(scan_rows)
+                ig.TextDisabled("No scan timing yet (cache hit or no scan run)")
+            else
+                total_read = sum(row.read_seconds for row in scan_rows)
+                total_stats = sum(row.stats_seconds for row in scan_rows)
+                files = sum(row.files for row in scan_rows)
+                meas = sum(row.measurements for row in scan_rows)
+                ig.Text(@sprintf(
+                    "Last scan: %d files read in %.1fs, %d measurements analyzed in %.1fs",
+                    files, total_read, meas, total_stats,
+                ))
+                for row in scan_rows
+                    ig.BulletText(@sprintf(
+                        "%s: %d files, read %.2fs  ·  %d meas, stats %.2fs",
+                        String(row.kind), row.files, row.read_seconds,
+                        row.measurements, row.stats_seconds,
+                    ))
+                end
             end
         end
 

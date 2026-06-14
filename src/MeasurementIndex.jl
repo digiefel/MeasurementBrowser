@@ -8,7 +8,8 @@ import ..Project:
     device_path_label,
     interpret_file,
     kind_label,
-    project_name
+    project_name,
+    reset_scan_profile!
 
 """
 Failure produced while interpreting or analyzing one physical source file.
