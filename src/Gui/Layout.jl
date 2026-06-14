@@ -795,6 +795,36 @@ function _init_browser_context!()
 end
 
 """
+On macOS, promote the process to a regular foreground app so its window gets a Dock icon and shows
+up in Cmd-Tab. When the renderloop is driven from the REPL the process can otherwise stay an
+accessory app with no Dock presence. No-op off macOS; never throws, since a failure here must not
+take down the render loop.
+"""
+function _promote_to_foreground_app()
+    Sys.isapple() || return nothing
+    try
+        objc_class(name) = @ccall objc_getClass(name::Cstring)::Ptr{Cvoid}
+        objc_sel(name) = @ccall sel_registerName(name::Cstring)::Ptr{Cvoid}
+        nsapplication = objc_class("NSApplication")
+        nsapplication == C_NULL && return nothing
+        app = @ccall objc_msgSend(
+            nsapplication::Ptr{Cvoid}, objc_sel("sharedApplication")::Ptr{Cvoid},
+        )::Ptr{Cvoid}
+        app == C_NULL && return nothing
+        # NSApplicationActivationPolicyRegular = 0
+        @ccall objc_msgSend(
+            app::Ptr{Cvoid}, objc_sel("setActivationPolicy:")::Ptr{Cvoid}, 0::Clong,
+        )::Bool
+        @ccall objc_msgSend(
+            app::Ptr{Cvoid}, objc_sel("activateIgnoringOtherApps:")::Ptr{Cvoid}, true::Bool,
+        )::Cvoid
+    catch error
+        @warn "Could not promote to a macOS foreground app" exception=error
+    end
+    return nothing
+end
+
+"""
 Run the browser render loop for a prepared state. With `wait=false` the loop runs as a background
 task pinned to thread 1 (required for GLFW) and the call returns that task, leaving the REPL live.
 """
@@ -828,6 +858,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         _poll_figure_script_job_events!(state)
         if first_frame[]
             state.performance.gl_info = _gl_info()
+            _promote_to_foreground_app()
             first_frame[] = false
         end
         dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
