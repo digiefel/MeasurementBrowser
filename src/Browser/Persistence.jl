@@ -190,14 +190,16 @@ const PROJECT_VIEW_FILENAME = "measurementbrowser.toml"
 """
 Find a plot type previously written to project state.
 
-An empty name means no plot was selected. Any other unknown name is an invalid project state.
+Returns `nothing` when no plot was selected (empty name) or when the saved name no longer matches any
+loaded plot kind — a stale selection (e.g. from a different project version) is dropped, not fatal.
 """
 function _plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKind}}
     isempty(name) && return nothing
     for plot_kind in plot_kinds()
         String(nameof(plot_kind)) == name && return plot_kind
     end
-    error("Unknown plot kind '$name' in measurementbrowser.toml")
+    @warn "Ignoring unknown plot kind '$name' from saved project state" maxlog=3
+    return nothing
 end
 
 function _project_view_file_path(root_path::AbstractString)::String
@@ -331,8 +333,7 @@ function _apply_project_view!(
     empty!(plots.kind_by_measurement)
     for (measurement_kind, plot_kind_name) in view.plot_kinds
         plot_kind = _plot_kind_from_name(plot_kind_name)
-        plot_kind === nothing &&
-            error("Missing plot kind for measurement '$measurement_kind'")
+        plot_kind === nothing && continue   # drop stale/unknown saved selection
         plots.kind_by_measurement[Symbol(measurement_kind)] = plot_kind
     end
     plots.main = PlotViewState(
