@@ -374,12 +374,16 @@ function render_perf_window(state::BrowserState)::Nothing
                 files = sum(row.files for row in scan_rows)
                 meas = sum(row.measurements for row in scan_rows)
                 ig.Text(@sprintf(
-                    "Last scan: %d files read in %.1fs, %d measurements analyzed in %.1fs",
-                    files, total_read, meas, total_stats,
+                    "Last scan: %d files, %d measurements", files, meas,
+                ))
+                # Reads and stats run across worker threads, so these are summed CPU-time, not
+                # wall-clock; the total can exceed elapsed time by up to the thread count.
+                ig.TextDisabled(@sprintf(
+                    "Work summed across threads: read %.1fs, stats %.1fs", total_read, total_stats,
                 ))
                 for row in scan_rows
                     ig.BulletText(@sprintf(
-                        "%s: %d files, read %.2fs  ·  %d meas, stats %.2fs",
+                        "%s: %d files read %.2fs  ·  %d meas, stats %.2fs",
                         String(row.kind), row.files, row.read_seconds,
                         row.measurements, row.stats_seconds,
                     ))

@@ -161,12 +161,18 @@ function define_project(name::AbstractString; description::AbstractString="")::R
     )
 end
 
-"""Accumulate one timed file read into the per-kind scan profile."""
-function _record_read!(project::RegistryProject, kind::Symbol, seconds::Float64)::Nothing
+"""Accumulate one timed file read (and the measurements it expanded to) into the scan profile."""
+function _record_read!(
+    project::RegistryProject,
+    kind::Symbol,
+    seconds::Float64,
+    measurements::Int,
+)::Nothing
     lock(project.profile_lock) do
         entry = get!(KindProfile, project.scan_profile, kind)
         entry.files += 1
         entry.read_seconds += seconds
+        entry.measurements += measurements
     end
     return nothing
 end
@@ -175,7 +181,6 @@ end
 function _record_stats!(project::RegistryProject, kind::Symbol, seconds::Float64)::Nothing
     lock(project.profile_lock) do
         entry = get!(KindProfile, project.scan_profile, kind)
-        entry.measurements += 1
         entry.stats_seconds += seconds
     end
     return nothing
@@ -313,12 +318,13 @@ function interpret_file(project::RegistryProject, file::SourceFile)::Vector{Meas
     recipe === nothing && return MeasurementInfo[]
     read_started = time_ns()
     data = recipe.read(file)::DataFrame
-    _record_read!(project, recipe.kind, (time_ns() - read_started) / 1e9)
+    read_seconds = (time_ns() - read_started) / 1e9
     # Keep the parse so the stats pass reuses it instead of re-reading (source files are slow to open).
     lock(project.read_lock) do
         project.read_cache[file.filepath] = data
     end
     enumerated = recipe.measurements(file, data)::Vector{MeasurementInfo}
+    _record_read!(project, recipe.kind, read_seconds, length(enumerated))
     return [_stamp(recipe, mi) for mi in enumerated]
 end
 
