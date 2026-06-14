@@ -126,7 +126,10 @@ function scan_source!(workspace::Workspace)::Nothing
                     )),
                 )
             end
-            put!(events, (kind=:source, job_id=scan_id, source))
+            # When every file fingerprint matched the cache, scan_source returns the cached
+            # SourceScan object verbatim; identity tells us it was a cache hit, not a real scan.
+            cache_hit = cached !== nothing && source === cached.source
+            put!(events, (kind=:source, job_id=scan_id, source, cache_hit))
         catch error
             if is_job_cancelled(error)
                 put!(events, (kind=:canceled, job_id=scan_id))
@@ -469,7 +472,7 @@ function poll_workspace!(workspace::Workspace)::Bool
             elseif event.kind == :source
                 apply_source_scan!(workspace, event.source)
                 index_changed = true
-                workspace.scan.state = :done
+                workspace.scan.state = event.cache_hit ? :unchanged : :done
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :canceled

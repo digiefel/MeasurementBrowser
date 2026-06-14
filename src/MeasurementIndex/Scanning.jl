@@ -334,9 +334,9 @@ function scan_source(
     if cached_source !== nothing && cached_files !== nothing && _files_unchanged(files, cached_files)
         emit_progress(
             on_progress;
-            phase=:analyzing,
-            total_csv=1,
-            processed_csv=1,
+            phase=:scanning,
+            total_csv=length(files),
+            processed_csv=length(files),
             loaded_measurements=length(cached_source.hierarchy.all_measurements),
             skipped_csv=cached_source.hierarchy.skipped_count,
             current_path=root,

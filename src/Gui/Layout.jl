@@ -116,61 +116,48 @@ function _source_rescan_progress_model(
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     source_state = workspace.scan.state
-    if !(source_state in (:counting, :discovering, :scanning, :analyzing, :canceling, :done, :canceled, :error))
-        return nothing
-    end
-    if source_state == :error
-        return (
-            title="Rescan: Error",
-            progress=workspace.scan.error,
-            fraction=0.0f0,
-            show_bar=false,
-        )
-    end
+    source_state in (:counting, :discovering, :scanning, :analyzing,
+                     :canceling, :canceled, :done, :unchanged, :error) || return nothing
 
     progress = workspace.scan.progress
     total = progress.total_files
     processed = progress.processed_files
     loaded = progress.loaded_measurements
     skipped = progress.skipped_files
-    text = if source_state == :canceling
-        "Canceling source scan..."
-    elseif source_state == :canceled
-        "Source scan canceled"
-    elseif source_state == :done
-        total > 0 ?
-            "Source scan complete: scanned $processed/$total CSV files" :
-            "Source scan complete"
-    elseif source_state == :analyzing
-        "Computing measurement stats for $loaded measurements"
-    elseif source_state in (:counting, :discovering)
-        processed > 0 ? "Finding source CSV files: $processed found" : "Finding source CSV files"
-    else
-        total > 0 ?
-            @sprintf("Scanning %d/%d source files, loaded %d measurements, skipped %d", processed, total, loaded, skipped) :
-            "Scanning source files"
-    end
-    title = if source_state == :done
-        "Source: Complete"
-    elseif source_state == :canceled
-        "Source: Canceled"
+    fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
+
+    # A single status line; the bar appears only while files are actively being read or analyzed.
+    if source_state == :error
+        return (text=workspace.scan.error, fraction=0.0f0, show_bar=false)
     elseif source_state == :canceling
-        "Source: Canceling"
-    elseif source_state == :analyzing
-        "Source: Analyzing"
+        return (text="Canceling scan...", fraction=fraction, show_bar=false)
+    elseif source_state == :canceled
+        return (text="Scan canceled", fraction=0.0f0, show_bar=false)
     elseif source_state in (:counting, :discovering)
-        "Source: Finding Files"
-    else
-        "Source: Scanning"
+        text = processed > 0 ? "Finding files... $processed found" : "Finding files..."
+        return (text=text, fraction=0.0f0, show_bar=false)
+    elseif source_state == :scanning
+        text = total > 0 ?
+            @sprintf("Reading %d/%d files, %d measurements", processed, total, loaded) :
+            "Reading files..."
+        return (text=text, fraction=fraction, show_bar=total > 0)
+    elseif source_state == :analyzing
+        text = total > 0 ?
+            @sprintf("Analyzing %d/%d, %d measurements", processed, total, loaded) :
+            @sprintf("Analyzing %d measurements...", loaded)
+        return (text=text, fraction=fraction, show_bar=total > 0)
+    elseif source_state == :unchanged
+        return (
+            text=@sprintf("Up to date: %d measurements (%d files unchanged)", loaded, total),
+            fraction=0.0f0,
+            show_bar=false,
+        )
+    else # :done
+        text = skipped > 0 ?
+            @sprintf("Scanned %d files, %d measurements (%d skipped)", total, loaded, skipped) :
+            @sprintf("Scanned %d files, %d measurements", total, loaded)
+        return (text=text, fraction=0.0f0, show_bar=false)
     end
-    return (
-        title,
-        progress=text,
-        fraction=source_state == :done ?
-                 1.0f0 :
-                 total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0,
-        show_bar=total > 0 || source_state == :done,
-    )
 end
 
 """Describe the cache button from the workspace cache state."""
@@ -580,8 +567,7 @@ function _render_cache_controls!(
     source_progress = _source_rescan_progress_model(state)
     if source_progress !== nothing
         ig.Separator()
-        ig.TextDisabled(source_progress.title)
-        ig.TextDisabled(source_progress.progress)
+        ig.TextDisabled(source_progress.text)
         source_progress.show_bar &&
             ig.ProgressBar(source_progress.fraction, (-1, 0))
     end
