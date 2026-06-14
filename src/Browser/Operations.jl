@@ -35,12 +35,29 @@ function _open_project_path!(
     else
         state.project_preference = project_name(project)
     end
+    _attach_workspace!(state, open_workspace(project, norm_path); persist)
+    return nothing
+end
+
+"""
+Make an already-opened workspace the browser's current one, loading its saved view, tag state, and
+figure-script context. Shared by `_open_project_path!` (which opens the workspace itself) and
+`open_browser` (which is handed a caller-owned workspace).
+"""
+function _attach_workspace!(
+    state::BrowserState,
+    workspace::Workspace.Workspace;
+    persist::Bool=true,
+)::Nothing
+    project = workspace.project
+    norm_path = workspace.root_path
     previous_workspace = state.workspace
     previous_root = previous_workspace isa Workspace.Workspace ?
         previous_workspace.root_path :
         ""
     _cancel_figure_script_job!(state)
-    previous_workspace isa Workspace.Workspace && close_workspace!(previous_workspace)
+    previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
+        close_workspace!(previous_workspace)
     state.plots = PlotState(debug=state.plots.debug)
     previous_root == norm_path ||
         _reset_figure_script_state!(state, norm_path)
@@ -48,7 +65,7 @@ function _open_project_path!(
     !isempty(view.project) && view.project != project_name(project) &&
         (view = PersistedProjectView(project=project_name(project)))
     _load_tag_state_for_root!(state, norm_path)
-    state.workspace = open_workspace(project, norm_path)
+    state.workspace = workspace
     _apply_project_view!(state, view)
     state.saved_project_view = view
     _invalidate_figure_script_scan_cache!(state)

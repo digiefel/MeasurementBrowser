@@ -76,9 +76,9 @@ include("RegistryProject.jl")
 include("FigureScripts.jl")
 include("Precompile.jl")
 include("Browser.jl")
-using .Browser: start_browser
+using .Browser: open_browser
 
-export start_browser
+export open_browser
 export AbstractProject
 export SourceFile, MeasurementInfo, DeviceInfo, MeasurementAnalysisFailure
 export PlotKind, plot_kinds

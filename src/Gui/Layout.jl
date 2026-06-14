@@ -781,24 +781,9 @@ function _window_close_requested()::Bool
     return GLFW.WindowShouldClose(window)
 end
 
-"""Run the browser for one source root, optionally using a project supplied by the caller."""
-function start_browser(
-    root_path::Union{Nothing,String}=nothing;
-    project::Union{Nothing,AbstractProject}=nothing,
-    engine::Any=nothing,
-    spawn::Int=1,
-)::Nothing
-    project !== nothing && (root_path === nothing || isempty(root_path)) &&
-        throw(ArgumentError("A caller-supplied project requires a source root"))
+"""Create the ImGui context with the docking/viewport configuration the browser needs."""
+function _init_browser_context!()
     ig.set_backend(:GlfwOpenGL3)
-    prefs = _load_prefs()
-    state = BrowserState(
-        project_locked=project !== nothing,
-        project_preference=project === nothing ?
-            String(get(prefs, "project", "auto")) :
-            project_name(project),
-        recent_projects=_parse_recent_projects(prefs),
-    )
     ctx = ig.CreateContext()
     io = ig.GetIO()
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_DockingEnable
@@ -806,19 +791,24 @@ function start_browser(
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_NavEnableKeyboard
     io.IniFilename = Ptr{Cchar}(C_NULL)   # disable layout persistence
     ig.StyleColorsDark()
+    return ctx
+end
 
-    if root_path !== nothing && root_path != ""
-        _open_project_path!(state, root_path; project)
-    end
+"""
+Run the browser render loop for a prepared state. With `wait=false` the loop runs as a background
+task pinned to thread 1 (required for GLFW) and the call returns that task, leaving the REPL live.
+"""
+function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
-    ig.render(
+    return ig.render(
         ctx;
         engine,
+        spawn,
+        wait,
         window_size=(1920, 1080),
         window_title="Measurement Browser",
         opengl_version=v"3.3",
-        spawn,
         wait_events=false,
         on_exit=() -> begin
             _shutdown_background_jobs!(state)
@@ -874,5 +864,25 @@ function start_browser(
         # Show metadata guidance modal if needed
         render_device_info_modal(state)
     end
-    return nothing
+end
+
+"""
+Open the browser on an already-opened workspace (see `open_workspace`). With `wait=false` the REPL
+stays interactive while the window runs; the returned task completes when the window closes.
+"""
+function open_browser(
+    workspace::Workspace.Workspace;
+    engine::Any=nothing,
+    spawn::Int=1,
+    wait::Bool=true,
+)
+    prefs = _load_prefs()
+    state = BrowserState(
+        project_locked=true,
+        project_preference=project_name(workspace.project),
+        recent_projects=_parse_recent_projects(prefs),
+    )
+    ctx = _init_browser_context!()
+    _attach_workspace!(state, workspace)
+    return _run_browser(state, ctx; engine, spawn, wait)
 end

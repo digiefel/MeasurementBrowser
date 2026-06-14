@@ -16,6 +16,6 @@ include("Gui/TreePanel.jl")
 include("Gui/InfoModal.jl")
 include("Gui/Layout.jl")
 
-export start_browser
+export open_browser
 
 end
