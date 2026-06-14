@@ -4,7 +4,7 @@ using Serialization
 using DataFrames: DataFrame
 
 const PROJECT_CACHE_COMPRESSION = 3
-const PROJECT_CACHE_SCHEMA_VERSION = 6
+const PROJECT_CACHE_SCHEMA_VERSION = 7
 const PROJECT_CACHE_INDEX_DATASET = "index"
 const PROJECT_CACHE_LOCK = ReentrantLock()
 
@@ -135,7 +135,19 @@ function read_serialized_dataset(
 )::Any
     haskey(parent, name) ||
         throw(ProjectCacheError(String(cache_path), "missing dataset '$name'"))
-    return deserialize(IOBuffer(read(parent[name])))
+    bytes = read(parent[name])
+    # A cache written by an incompatible struct layout deserializes into garbage or throws. Treat any
+    # such failure as an invalid (rebuildable) cache rather than a fatal error, so the browser
+    # self-heals instead of refusing to load forever.
+    try
+        return deserialize(IOBuffer(bytes))
+    catch err
+        throw(ProjectCacheError(
+            String(cache_path),
+            "could not deserialize dataset '$name' (incompatible cache): " *
+                sprint(showerror, err),
+        ))
+    end
 end
 
 """

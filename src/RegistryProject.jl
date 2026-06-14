@@ -18,6 +18,7 @@ Pipeline per measurement kind (fixed order, each fed the previous output):
 """
 
 using DataFrames: DataFrame
+import Serialization
 
 """One registered measurement recipe."""
 mutable struct MeasurementRecipe
@@ -69,6 +70,39 @@ mutable struct RegistryProject <: AbstractProject
     # start of each scan and replaced wholesale, so it stays bounded to one row per measurement kind.
     scan_profile::Dict{Symbol,KindProfile}
     profile_lock::ReentrantLock
+end
+
+# The project is reachable from a cached SourceScan (twice: source.project and hierarchy.project), so
+# it is serialized into the HDF5 cache. Only the registered recipes are persisted; transient scan
+# state (read cache, profiling, locks) is rebuilt empty on load. This keeps the cache format stable
+# when transient fields change, so adding scan instrumentation never silently invalidates a cache.
+# serialize_cycle/deserialize_cycle preserve object identity, so the two references still resolve to
+# one project after load.
+function Serialization.serialize(s::Serialization.AbstractSerializer, project::RegistryProject)
+    Serialization.serialize_cycle(s, project) && return nothing
+    Serialization.serialize_type(s, RegistryProject, true)
+    Serialization.serialize(s, project.name)
+    Serialization.serialize(s, project.description)
+    Serialization.serialize(s, project.recipes)
+    Serialization.serialize(s, project.device_stats)
+    Serialization.serialize(s, project.plots)
+    return nothing
+end
+
+function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{RegistryProject})
+    project = RegistryProject(
+        "", "", MeasurementRecipe[],
+        Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(), Dict{Symbol,PlotRecipe}(),
+        Dict{String,DataFrame}(), ReentrantLock(),
+        Dict{Symbol,KindProfile}(), ReentrantLock(),
+    )
+    Serialization.deserialize_cycle(s, project)
+    project.name = Serialization.deserialize(s)
+    project.description = Serialization.deserialize(s)
+    project.recipes = Serialization.deserialize(s)
+    project.device_stats = Serialization.deserialize(s)
+    project.plots = Serialization.deserialize(s)
+    return project
 end
 
 # ---------------------------------------------------------------------------
