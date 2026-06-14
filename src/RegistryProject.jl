@@ -52,6 +52,10 @@ mutable struct RegistryProject <: AbstractProject
     recipes::Vector{MeasurementRecipe}
     device_stats::Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}
     plots::Dict{Symbol,PlotRecipe}
+    # Transient scan state: each source file is parsed once during interpretation and the result is
+    # reused by the stats pass, so a file is never read twice in one scan. Cleared when stats finish.
+    read_cache::Dict{String,DataFrame}
+    read_lock::ReentrantLock
 end
 
 # ---------------------------------------------------------------------------
@@ -103,6 +107,8 @@ function define_project(name::AbstractString; description::AbstractString="")::R
         MeasurementRecipe[],
         Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(),
         Dict{Symbol,PlotRecipe}(),
+        Dict{String,DataFrame}(),
+        ReentrantLock(),
     )
 end
 
@@ -220,6 +226,10 @@ function interpret_file(project::RegistryProject, file::SourceFile)::Vector{Meas
     recipe = _detect_recipe(project, file)
     recipe === nothing && return MeasurementInfo[]
     data = recipe.read(file)::DataFrame
+    # Keep the parse so the stats pass reuses it instead of re-reading (source files are slow to open).
+    lock(project.read_lock) do
+        project.read_cache[file.filepath] = data
+    end
     enumerated = recipe.measurements(file, data)::Vector{MeasurementInfo}
     return [_stamp(recipe, mi) for mi in enumerated]
 end
@@ -263,48 +273,96 @@ function compute_and_add_measurement_stats!(
     files::Vector{SourceFile};
     on_progress::Union{Nothing,Function}=nothing,
 )::Vector{MeasurementAnalysisFailure}
+    # process/stats run on worker threads, so callbacks must be pure (no shared mutable state). Each
+    # measurement only mutates its own `stats`, the file read-cache is filled once then read-only, and
+    # failures are collected under a lock. The cancel callback lives in task-local storage, which spawned
+    # tasks do not inherit, so it is captured here and re-established inside each task via `with_cancel`.
     failures = MeasurementAnalysisFailure[]
+    failures_lock = ReentrantLock()
+    add_failure! = (filepath, id, step, err) -> lock(failures_lock) do
+        push!(failures, _step_failure(filepath, id, step, err))
+    end
     file_by_path = Dict(file.filepath => file for file in files)
-    read_cache = Dict{String,DataFrame}()
-    total = count(mi -> _recipe(project, mi.measurement_kind) !== nothing, measurements)
-    done = 0
+    cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
 
+    todo = Tuple{MeasurementInfo,MeasurementRecipe}[]
     for measurement in measurements
-        check_cancel()
         recipe = _recipe(project, measurement.measurement_kind)
         recipe === nothing && continue
-        if recipe.stats !== nothing
-            file = get(file_by_path, measurement.filepath) do
-                index_source_file(measurement.filepath)
-            end
-            try
-                data = get!(read_cache, measurement.filepath) do
-                    recipe.read(file)::DataFrame
-                end
-                processed = recipe.process === nothing ? data : recipe.process(measurement, data)
-                merge!(measurement.stats, recipe.stats(measurement, processed))
-            catch err
-                is_job_cancelled(err) && rethrow()
-                push!(failures, _step_failure(measurement.filepath, measurement.unique_id, :stats, err))
-            end
-        end
-        done += 1
-        on_progress === nothing || on_progress((total=total, processed=done, current_path=measurement.filepath))
+        recipe.stats === nothing && continue
+        push!(todo, (measurement, recipe))
     end
 
+    # Reuse the parse from interpretation; only files missing from the cache (e.g. a single-file
+    # refresh) are read here, once each, in parallel.
+    missing_paths = unique(m.filepath for (m, _) in todo if !haskey(project.read_cache, m.filepath))
+    @sync for path in missing_paths
+        Base.Threads.@spawn with_cancel(cancel_requested) do
+            check_cancel()
+            recipe = _recipe(project, detect_kind(project, basename(path)))
+            recipe === nothing && return
+            file = get(file_by_path, path) do
+                index_source_file(path)
+            end
+            try
+                data = recipe.read(file)::DataFrame
+                lock(project.read_lock) do; project.read_cache[path] = data end
+            catch
+                # leave it absent; the per-measurement loop records a read failure for it
+            end
+        end
+    end
+
+    # Run process + stats per measurement, in parallel over the now read-only file cache.
+    total = length(todo)
+    done = Base.Threads.Atomic{Int}(0)
+    Base.Threads.@threads for index in eachindex(todo)
+        measurement, recipe = todo[index]
+        with_cancel(cancel_requested) do
+            check_cancel()
+            data = get(project.read_cache, measurement.filepath, nothing)
+            if data === nothing
+                add_failure!(measurement.filepath, measurement.unique_id, :read,
+                    ErrorException("could not read source file"))
+            else
+                try
+                    processed = recipe.process === nothing ? data : recipe.process(measurement, data)
+                    merge!(measurement.stats, recipe.stats(measurement, processed))
+                catch err
+                    is_job_cancelled(err) && rethrow()
+                    add_failure!(measurement.filepath, measurement.unique_id, :stats, err)
+                end
+            end
+        end
+        if on_progress !== nothing
+            processed = Base.Threads.atomic_add!(done, 1) + 1
+            (processed % 128 == 0 || processed == total) &&
+                on_progress((total=total, processed=processed, current_path=measurement.filepath))
+        end
+    end
+
+    # 3. Cross-measurement device-stat folds run after per-measurement stats are in place. Groups are
+    #    disjoint, so they fold in parallel; separate stat recipes stay sequential.
     for recipe in values(project.device_stats)
         check_cancel()
-        for group in values(_group_for_device_stat(measurements, recipe))
+        @sync for group in values(_group_for_device_stat(measurements, recipe))
             isempty(group) && continue
-            try
-                recipe.compute_stats(group)
-            catch err
-                is_job_cancelled(err) && rethrow()
-                push!(failures, _step_failure(group[1].filepath, group[1].unique_id, :compute_stats, err))
+            Base.Threads.@spawn with_cancel(cancel_requested) do
+                check_cancel()
+                try
+                    recipe.compute_stats(group)
+                catch err
+                    is_job_cancelled(err) && rethrow()
+                    add_failure!(group[1].filepath, group[1].unique_id, :compute_stats, err)
+                end
             end
         end
     end
 
+    # Release the per-scan file parses now that every stat is computed.
+    lock(project.read_lock) do
+        empty!(project.read_cache)
+    end
     return failures
 end
 

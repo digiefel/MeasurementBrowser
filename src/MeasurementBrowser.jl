@@ -23,6 +23,7 @@ import .Project:
 
 include("MeasurementIndex.jl")
 using .MeasurementIndex:
+    CANCEL_CALLBACK_KEY,
     DeviceInfo,
     HierarchyNode,
     JobCancelled,
