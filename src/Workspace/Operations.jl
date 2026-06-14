@@ -98,10 +98,6 @@ function scan_source!(workspace::Workspace)::Nothing
 
     task = Base.Threads.@spawn begin
         try
-            # No on_measurements streaming: the scan mutates measurement stats in place on worker
-            # threads, so partially-analyzed measurements must not be published to the rendering
-            # thread mid-scan (that race corrupts the heap). The complete, fully-analyzed set is
-            # installed atomically when the :source event arrives.
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
                     workspace.root_path;
@@ -110,6 +106,15 @@ function scan_source!(workspace::Workspace)::Nothing
                         kind=:progress,
                         job_id=scan_id,
                         progress,
+                    )),
+                    # Stream immutable snapshots for incremental display. The scan keeps mutating the
+                    # original measurements' stats on worker threads, so the rendering thread must
+                    # never see those objects mid-mutation (that race corrupts the heap). The complete
+                    # originals replace these snapshots atomically when the :source event arrives.
+                    on_measurements=(measurements) -> put!(events, (
+                        kind=:measurements,
+                        job_id=scan_id,
+                        measurements=[MeasurementInfo(m) for m in measurements],
                     )),
                 )
             end
