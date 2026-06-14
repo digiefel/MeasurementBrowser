@@ -54,6 +54,47 @@ mutable struct RegistryProject <: AbstractProject
     plots::Dict{Symbol,PlotRecipe}
 end
 
+# ---------------------------------------------------------------------------
+# Pretty printing
+# ---------------------------------------------------------------------------
+
+"""Name of a callback, or "λ" for an anonymous function."""
+_callback_name(f)::String = (n = string(nameof(f)); startswith(n, "#") ? "λ" : n)
+
+"""Count with a pluralized noun, e.g. `1 plot`, `3 plots`."""
+_plural(n::Integer, word::AbstractString)::String = "$n $word" * (n == 1 ? "" : "s")
+
+Base.show(io::IO, project::RegistryProject) =
+    print(io, "RegistryProject(\"$(project.name)\", ", _plural(length(project.recipes), "measurement"), ")")
+
+function Base.show(io::IO, ::MIME"text/plain", project::RegistryProject)
+    print(io, "RegistryProject \"$(project.name)\"")
+    isempty(project.description) || print(io, " · ", project.description)
+
+    print(io, "\n  ", _plural(length(project.recipes), "measurement"))
+    isempty(project.recipes) || print(io, " (detection order):")
+    pad = isempty(project.recipes) ? 0 : maximum(length(string(r.kind)) for r in project.recipes)
+    for recipe in project.recipes
+        optional = [name for (name, f) in
+            (("process", recipe.process), ("stats", recipe.stats), ("label", recipe.label))
+            if f !== nothing]
+        steps = isempty(optional) ? "" : " · " * join(optional, " · ")
+        print(io, "\n    ", rstrip(rpad(string(recipe.kind), pad) * steps))
+    end
+
+    print(io, "\n  ", _plural(length(project.device_stats), "device stat"))
+    isempty(project.device_stats) || print(io, ":")
+    for recipe in values(project.device_stats)
+        print(io, "\n    (", join(recipe.measurement_kinds, ", "), ") → ", _callback_name(recipe.compute_stats))
+    end
+
+    print(io, "\n  ", _plural(length(project.plots), "plot"))
+    isempty(project.plots) || print(io, ":")
+    for recipe in values(project.plots)
+        print(io, "\n    ", recipe.kind, " → \"", recipe.label, "\"")
+    end
+end
+
 """Create an empty project. Register measurements/stats/plots into it afterwards."""
 function define_project(name::AbstractString; description::AbstractString="")::RegistryProject
     return RegistryProject(

@@ -152,6 +152,39 @@ function Workspace(
     )
 end
 
+# ---------------------------------------------------------------------------
+# Pretty printing
+# ---------------------------------------------------------------------------
+
+"""One-line description of where the source scan currently stands."""
+function _scan_summary(workspace::Workspace)::String
+    state = workspace.scan.state
+    progress = workspace.scan.progress
+    if state in (:counting, :discovering)
+        return "$state ($(progress.processed_files) files found)"
+    elseif state in (:scanning, :analyzing)
+        return "$state ($(progress.processed_files)/$(progress.total_files) files)"
+    else
+        return string(state)
+    end
+end
+
+Base.show(io::IO, workspace::Workspace) = print(
+    io,
+    "Workspace(", project_name(workspace.project),
+    ", ", length(workspace.index.measurements), " measurements)",
+)
+
+function Base.show(io::IO, ::MIME"text/plain", workspace::Workspace)
+    println(io, "Workspace · ", project_name(workspace.project))
+    println(io, "  root:         ", Base.contractuser(workspace.root_path))
+    println(io, "  scan:         ", _scan_summary(workspace))
+    println(io, "  cache:        ", workspace.cache_job.state)
+    println(io, "  measurements: ", length(workspace.index.measurements))
+    print(io,   "  failures:     ", length(workspace.index.analysis_errors))
+    workspace.closed && print(io, "\n  (closed)")
+end
+
 include("Workspace/Operations.jl")
 include("Workspace/DataAccess.jl")
 
