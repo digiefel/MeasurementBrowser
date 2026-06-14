@@ -277,6 +277,19 @@ function interpret_source_files(
     )
 end
 
+"""Whether the freshly indexed files exactly match the cached set, by path and fingerprint."""
+function _files_unchanged(
+    files::Vector{SourceFile},
+    cached::Dict{String,SourceFile},
+)::Bool
+    length(files) == length(cached) || return false
+    for file in files
+        cached_file = get(cached, file.filepath, nothing)
+        (cached_file === nothing || cached_file.fingerprint != file.fingerprint) && return false
+    end
+    return true
+end
+
 """
 Scan one source root into its complete measurement hierarchy.
 
@@ -286,6 +299,8 @@ statistics run only after all files are known, allowing cross-file calculations.
 function scan_source(
     root_path::String;
     project::AbstractProject,
+    cached_files::Union{Nothing,Dict{String,SourceFile}}=nothing,
+    cached_source::Union{Nothing,SourceScan}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
     on_measurements::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
@@ -314,6 +329,20 @@ function scan_source(
         ),
     )
     check_cancel()
+    # Fingerprinting is a cheap stat() per file; reading and analyzing is what's slow. When nothing
+    # changed since the cache was written, the cache is authoritative — skip all reads and analysis.
+    if cached_source !== nothing && cached_files !== nothing && _files_unchanged(files, cached_files)
+        emit_progress(
+            on_progress;
+            phase=:analyzing,
+            total_csv=1,
+            processed_csv=1,
+            loaded_measurements=length(cached_source.hierarchy.all_measurements),
+            skipped_csv=cached_source.hierarchy.skipped_count,
+            current_path=root,
+        )
+        return cached_source
+    end
     scanned_files = Vector{SourceFile}(undef, length(files))
     emit_progress(
         on_progress;

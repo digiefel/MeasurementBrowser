@@ -98,10 +98,18 @@ function scan_source!(workspace::Workspace)::Nothing
 
     task = Base.Threads.@spawn begin
         try
+            # Load the cache (if any) so the scan can skip files whose fingerprint is unchanged.
+            cached = try
+                load_project_cache(workspace.cache.identity)
+            catch
+                nothing
+            end
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
                     workspace.root_path;
                     project=workspace.project,
+                    cached_files=cached === nothing ? nothing : cached.files,
+                    cached_source=cached === nothing ? nothing : cached.source,
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
                         job_id=scan_id,
