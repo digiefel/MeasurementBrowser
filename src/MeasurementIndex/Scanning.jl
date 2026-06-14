@@ -155,7 +155,6 @@ function build_clean_title(
     filename::String,
     measurement_kind::Symbol,
     device_info::DeviceInfo,
-    ::Dict{String,String},
 )::String
     measurement_label = kind_label(project, measurement_kind)
     device_label = device_path_label(project, device_info)

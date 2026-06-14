@@ -14,7 +14,7 @@ Pipeline per measurement kind (fixed order, each fed the previous output):
     stats(mi, processed)     -> Dict{Symbol,Any}     # optional
     label(mi)                -> String               # optional
 
-`file` is a `SourceFile` (has `.filename`, `.filepath`, `.header_summary`).
+`file` is a `SourceFile` (has `.filename`, `.filepath`, `.timestamp`).
 """
 
 using DataFrames: DataFrame

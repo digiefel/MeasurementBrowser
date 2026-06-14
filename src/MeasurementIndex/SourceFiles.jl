@@ -22,7 +22,6 @@ struct SourceFile
     filepath::String
     filename::String
     timestamp::Union{DateTime,Nothing}
-    header_summary::Dict{String,String}
     fingerprint::FileFingerprint
     measurements::Vector{MeasurementInfo}
 end
@@ -37,44 +36,9 @@ function SourceFile(
         file.filepath,
         file.filename,
         file.timestamp,
-        file.header_summary,
         file.fingerprint,
         measurements,
     )
-end
-
-"""
-Read the small comment/header section used while indexing a CSV source file.
-"""
-function read_csv_header_summary(
-    path::AbstractString;
-    max_lines::Int=50,
-)::Dict{String,String}
-    summary = Dict{String,String}()
-    open(path, "r") do io
-        line_count = 0
-        for line in eachline(io)
-            line_count += 1
-            stripped = strip(line)
-            if startswith(stripped, "#")
-                match_result = match(r"^#\s*([^:]+):\s*(.*)$", stripped)
-                match_result !== nothing &&
-                    (summary[strip(match_result.captures[1])] =
-                        strip(match_result.captures[2]))
-            elseif startswith(line, "Setup title,")
-                parts = split(line, ','; limit=2)
-                length(parts) > 1 && (summary["Setup title"] = strip(parts[2], '"'))
-            elseif startswith(line, "Test date,")
-                parts = split(line, ','; limit=2)
-                length(parts) > 1 && (summary["Test date"] = strip(parts[2]))
-            elseif startswith(line, "Test time,")
-                parts = split(line, ','; limit=2)
-                length(parts) > 1 && (summary["Test time"] = strip(parts[2]))
-            end
-            line_count >= max_lines && break
-        end
-    end
-    return summary
 end
 
 """Read the current fingerprint of one physical source file."""
@@ -97,7 +61,6 @@ function index_source_file(path::AbstractString)::SourceFile
         normalized,
         filename,
         parse_timestamp(filename),
-        read_csv_header_summary(normalized),
         file_fingerprint(normalized),
         MeasurementInfo[],
     )
