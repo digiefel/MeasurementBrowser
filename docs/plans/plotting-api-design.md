@@ -8,23 +8,25 @@ workflows are [workspace-vision.md](workspace-vision.md). It builds on the item/
 
 ## How a project declares a plot
 
-A project registers one plot per measurement `kind` with plain callbacks — no types to subtype, no
-reflection:
+A project registers plots per measurement `kind` with plain callbacks — no types to subtype, no
+reflection. A kind may have **several** plots, each distinguished by its `label`:
 
 ```julia
-register_plot!(project, :pund;
-    label = "PUND loop",
-    setup = (workspace, items) -> Figure(…),          # build axes/labels/layout once
-    draw  = (workspace, items, figure) -> …)          # draw item.data into the figure
+register_plot!(project, :pund; label = "PUND loop",  setup = …, draw = …)
+register_plot!(project, :pund; label = "Q–V",        setup = …, draw = …)   # same kind, another plot
 ```
 
-- `items::Vector{<:DataItem}` are the loaded, data-bearing items for the current selection; each
-  carries its own `item.data` (see [data-model-generalization.md](data-model-generalization.md)).
+- `setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills
+  it in. `items::Vector{<:DataItem}` are the loaded, data-bearing items for the current selection;
+  each carries its own `item.data` (see [data-model-generalization.md](data-model-generalization.md)).
   Callbacks never load data or zip a parallel array — data access and caching are package-owned.
-- The engine represents each registered plot internally as `RegistryPlot{kind}` and dispatches the
-  engine's `setup_plot`/`plot_data!` to the recipe callbacks. **`PlotKind` is internal**; projects do
-  not subtype it, and the old "discover plot-kind types from the project module by reflection" path is
-  gone.
+- Plots live in `project.plots :: Dict{Symbol, Dict{String, PlotRecipe}}` (kind → label → recipe).
+  Re-registering the same `(kind, label)` replaces that one plot in place, so REPL iteration stays
+  stable. `registered_plot_kinds(project, kind)` lists every plot for a kind, sorted by label.
+- The engine represents each registered plot internally as `RegistryPlot{kind, label}` and dispatches
+  `setup_plot`/`plot_data!` to the recipe callbacks; choices persist as `"kind::label"`. **`PlotKind`
+  is internal**; projects do not subtype it, and the old "discover plot-kind types by reflection" path
+  is gone.
 
 > Current state: the implemented `setup`/`draw` callbacks still receive `(workspace, measurements,
 > processed)` with a *parallel* processed-data array. Step 2 of the data-model plan migrates them to
@@ -34,8 +36,9 @@ register_plot!(project, :pund;
 
 ```text
 select items
-  -> package shows the plot(s) registered for the selected kind(s)
-  -> user chooses one
+  -> package shows the plots registered for the selection's common kind
+     (via registered_plot_kinds; mixed-kind selection -> none)
+  -> user chooses one (persisted choices are validated, unknown ones ignored)
   -> setup_plot once
   -> plot_data once, or many times for overlay/compose
 ```
@@ -106,11 +109,11 @@ UI / render work:          setup, draw, debug_plot            → Makie figure c
 
 ## Open questions
 
-- **One plot per kind vs. several.** Registration is keyed by `kind` today (one plot per kind). How do
-  multi-measurement / combined plots (e.g. TLM length sweep, fatigue evolution) register — a separate
-  combined-plot key, a plot that accepts a heterogeneous `items` set, or a selection-driven variant?
-- **Plot availability by selection.** Currently the GUI does not filter the plot list by what the
-  selection supports; a mismatched choice just fails in `setup`/`draw`. Worth a capability check later.
+- **Cross-kind combined plots.** A plot is offered only when the whole selection shares one `kind`
+  (mixed-kind selections show no plots), and `draw` already receives the full `items` vector — so a
+  combined plot over a *homogeneous* selection (TLM length sweep, fatigue evolution) is just a
+  registered plot for that kind. A plot spanning *heterogeneous* kinds has no home yet; decide whether
+  that needs a cross-kind registration or stays out of scope.
 - **Relationship to generic visualizers.** Registered plots are project-defined visualizers; the
   generic built-ins (raw table, X–Y, heatmap, histogram, fits) are [workspace-vision.md](workspace-vision.md)'s
   domain. The two should share the same `setup`/`draw` + composition contract.
