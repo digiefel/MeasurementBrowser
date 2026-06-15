@@ -4,101 +4,162 @@
 
 Grow MeasurementBrowser into **DataBrowser**: an open, scriptable, data-focused IDE rather than a
 measurement-only viewer. The same app should browse measurements, images, fitted models, and
-arbitrary datasets; group them by meaning (a device, a wafer, an ML dataset) rather than by folder;
-and present each through the visualizers and figures described in
-[workspace-vision.md](workspace-vision.md).
+arbitrary datasets; organize them by meaning rather than by folder; and present each through the
+visualizers and figures in [workspace-vision.md](workspace-vision.md).
 
-The data model we ship today (`MeasurementInfo`, `DeviceInfo`, the device hierarchy) is the right
-shape but the wrong vocabulary: almost every field is already domain-neutral, and the parts that are
-not — the `DataFrame` payload and the directory-shaped tree — are the two things that block other
-kinds of data. This doc defines how the core types generalize without losing the concreteness that
-makes the current model legible.
+The data model we ship today is the right shape with the wrong vocabulary and two hard couplings.
+Almost every field of `MeasurementInfo` is already domain-neutral. The parts that block other kinds
+of data are exactly two:
+
+1. the payload is pinned to `DataFrame`, and
+2. an item's place in the tree is a stored, scan-time field (`DeviceInfo.location`) rather than a
+   derived view.
+
+This doc defines how the core types generalize while keeping the concreteness that makes the current
+model legible.
+
+---
+
+## Principles
+
+These three decide every ambiguous call below.
+
+1. **Generality at the base, clarity at the leaves.** Abstract umbrella types (`DataItem`,
+   `DataGroup`) are allowed to be bland — *no one reads them in normal use*. Their meaning is a small
+   documented interface, not the noun. The clarity budget is spent on concrete first-party types
+   (`Measurement`, `Device`, `Image`), which stay as concrete as `MeasurementInfo`/`DeviceInfo` are
+   today.
+2. **Two first-party APIs, neither mandatory.** A type API (subtype + dispatch) and a recipe API
+   (register callbacks). The recipe API is a *factory* for the type API, not a competitor.
+3. **The tree is a view, not an identity.** Where an item sits in the hierarchy is *computed by a
+   grouping function*, not baked into the item. The filesystem tree is just the default grouping.
+
+---
 
 ## What stays
 
-This is a vocabulary and extensibility change, not a rewrite. These do not change:
+This is a vocabulary + extensibility change, not a rewrite. Unchanged:
 
-- the **project / package split**: project code identifies and interprets items; package code owns
-  cache, jobs, selection, views, and persistence (see [workspace-vision.md](workspace-vision.md));
+- the **project / package split** — project code interprets and presents items; package code owns
+  cache, jobs, selection, views, persistence ([workspace-vision.md](workspace-vision.md));
 - the **scan pipeline** (`collect → interpret → index`) and per-kind scan profiling;
-- the **hierarchy** as a fundamental browsing structure — items live in a navigable tree;
-- **stable identity, parameters, and stats** as the per-item metadata buckets
+- the **hierarchy as a fundamental browsing structure** — now realized as *the default view*;
+- **stable identity, `parameters`, and `stats`** as the per-item metadata buckets
   ([measurement-parameters-and-stats.md](measurement-parameters-and-stats.md)).
 
-## Principle: generality at the base, clarity at the leaves
+---
 
-The risk in this work is trading a concrete, communicative `DeviceInfo` for a vague `DataGroup` and
-calling it progress. We avoid that by being explicit about where generality is allowed to live:
+## Core types
 
-- **Abstract types are general by necessity.** An umbrella over "a measurement and an image and an
-  ML dataset" cannot have a domain-specific name. Its *meaning* comes from a small, documented
-  interface — not from the noun.
-- **Concrete first-party types carry the domain weight.** `DeviceInfo`'s concept does not disappear;
-  it becomes a concrete `Device <: DataGroup` with the same area/thickness fields it has today.
-  `MeasurementInfo` becomes a concrete `Measurement <: DataItem`. Everyday code, first-party code,
-  and the RuO2 project keep naming `Measurement` and `Device` — as concrete as before, minus the
-  `Info` suffix noise.
-- **The abstract umbrella is only seen when writing generic tools.** A visualizer that draws "any
-  tabular item" dispatches on the interface; a project that just wants to browse PUND data never
-  names `DataItem` at all.
+```julia
+abstract type DataItem end     # one browsable, viewable thing backed by a source
+abstract type DataGroup end    # a semantic, metadata-bearing node in the tree (a device, a dataset)
 
-So the abstract names (`DataItem`, `DataGroup`) are deliberately bland, and that is fine, because
-**no one reads them in normal use**. If a less generic abstract name reads better we can revisit, but
-the clarity budget is spent on the concrete subtypes, not the base.
+# The interface IS the meaning. Required of every DataItem subtype:
+item_id(::DataItem)::String                 # stable identity
+item_label(::DataItem)::String              # display title
+kind(::DataItem)::Symbol                    # coarse tag for icons / UI bucketing
+read_payload(::DataItem)                    # -> Any: DataFrame, image, model, …
+render!(ax, ::DataItem, payload)            # how it draws into a figure/panel
+# Optional, with sensible defaults:
+process(::DataItem, payload)                # default: passthrough
+stats(::DataItem, payload)::Dict{Symbol,Any}
+cacheable(::DataItem)::Bool                 # default: derived from the payload-type trait
+```
+
+First-party concrete types carry the old clarity:
+
+```julia
+struct Measurement <: DataItem  …  end       # was MeasurementInfo
+struct Device      <: DataGroup …  end       # was DeviceInfo (area_um2, t_HZO_nm, …)
+struct GenericItem <: DataItem  …  end        # the recipe-API backing type
+# later: struct Image <: DataItem … end
+```
+
+`kind` is a coarse tag (icon, UI bucket), **not** the dispatch key it is today — the type carries
+the real meaning. Recipe-API projects still get a `Symbol`-keyed experience through `GenericItem`.
+
+Each `DataItem` carries the buckets it has today — `parameters` (known at interpret time), `stats`
+(computed later) — plus a stored **`group_path::Vector{String}`** (its canonical placement; see
+"The tree is a grouping") and a `tags` set (future; see "Tags"). Its identity is **file + kind +
+params**, never its tree position.
+
+`DataGroup` is the typed, metadata-bearing entity attached to a *meaningful* node — a device with
+area/thickness, a dataset with provenance. Plain intermediate path segments are just strings; you
+only reach for a `DataGroup` when a node carries semantics or metadata. (This keeps the path simple
+and `DataGroup` meaningful, rather than forcing every segment to be a heavy object.)
+
+---
 
 ## Two first-party APIs
 
-Both extension styles are first-party and supported. They are not competing models — the recipe API
-is a *factory* for the type API.
+Both are first-party and supported. They are not competing models — the recipe API produces a
+`GenericItem` that satisfies the same interface the type API implements directly, so nothing
+downstream can tell them apart.
 
 | | Type API | Recipe API |
 |---|---|---|
 | You write | `struct CVImage <: DataItem` + interface methods | `register_item!(project, :image; read=…, render=…)` |
-| Dispatch carries meaning | yes — `render!(ax, ::CVImage, …)` | no — behavior is in stored callbacks |
-| Typed fields | yes (`width`, `height`, …) | no — generic `parameters`/`stats` buckets |
+| Meaning via | dispatch — `render!(ax, ::CVImage, …)` | stored callbacks |
+| Fields | typed (`width`, `height`, …) | the generic `parameters` / `stats` dicts (no declared schema) |
 | Used by | the package itself, power users, plugins | quick projects, one-offs, scripts |
 | Produces | the subtype value directly | a `GenericItem <: DataItem` forwarding to callbacks |
 
-The package's own first-party item kinds (`Measurement`, `Image`, …) are defined through the **type
-API** — this is what `AbstractProject` gestured at, made intentional. Subtyping is **not mandatory**:
-the recipe API stays the lightweight path, and a `GenericItem` satisfies the same interface so the
-rest of the app cannot tell the difference.
+The package's own first-party kinds use the **type API** — this is the intentional, well-designed
+version of what `AbstractProject` gestured at. Subtyping is **never mandatory**: the recipe API stays
+the lightweight path, and recipe authors put their data in `parameters`/`stats` dicts (no schema —
+if you want typed named fields, that is precisely what the type API is for).
 
-## Core types (sketch)
+---
 
-```julia
-abstract type DataItem end     # one browsable, viewable thing backed by a source
-abstract type DataGroup end    # a semantic group an item belongs to
+## The tree is a grouping
 
-# The interface = the meaning. Required of every DataItem subtype:
-item_id(::DataItem)::String                 # stable identity
-item_label(::DataItem)::String              # display title
-item_kind(::DataItem)::Symbol               # coarse tag for icons / UI bucketing
-read_payload(::DataItem)                    # -> Any: DataFrame, image, model, …
-render!(ax, ::DataItem, payload)            # how it draws into a figure/panel
-groups(::DataItem)::Vector{DataGroup}       # semantic membership (see below)
-# optional, with sensible defaults:
-process(::DataItem, payload)                # default: passthrough
-stats(::DataItem, payload)::Dict{Symbol,Any}
-cacheable(::DataItem)::Bool                 # default: from payload type trait
+An item's place in the hierarchy is produced by a **grouping function** `item -> Vector{String}`,
+not stored as identity. This single mechanism serves three needs that otherwise look like separate
+features:
 
-# First-party concrete types keep the old clarity:
-struct Measurement <: DataItem … end        # was MeasurementInfo
-struct Device      <: DataGroup … end        # was DeviceInfo (area_um2, t_HZO_nm, …)
-struct GenericItem <: DataItem … end         # recipe-API backing type
-```
+- **Default grouping = the filesystem path** (relative to root). Zero project code: point at a
+  folder, get the folder tree.
+- **Project override = a simple function.** RuO2 supplies one that parses the filename into
+  `chip/layer/device/geometry` — the same parsing it does today, relocated from "set `location`
+  inside `measurements`" to "the project's grouping function."
+- **Live UI re-view = swap among built-in groupings.** By folder, by `kind`, by date, by any
+  `parameter` — instant, because it only regroups in-memory items. No rescan, no scripting, no tags.
 
-`item_kind` is a coarse tag (icon, UI grouping), no longer the dispatch key it is today — the type
-carries the real meaning. Projects that use the recipe API still get a `Symbol`-keyed experience.
+### Canonical vs. view grouping
+
+Two roles, kept distinct:
+
+- **Canonical grouping** — the project's default (filesystem, or RuO2's device path). Its output is
+  stored as each item's `group_path` at scan time. This is the **identity / metadata anchor**:
+  `device_info.txt` path matching, tag assignments, and annotations all key off `group_path`.
+- **View groupings** — any built-in or project-provided grouping the UI applies for *presentation*.
+  Computed on demand from item fields; they never touch the stored canonical `group_path`.
+
+So the hierarchy is "the default view" concretely: the canonical grouping is the stable skeleton;
+the UI can re-project items along other axes freely without disturbing identity or metadata.
+
+### Tags (later)
+
+Tags are a **cross-cutting axis** — flat, many-to-many, extrinsic ("wakeup-study", "redo"). They are
+**not a second tree system**; they feed the *same* view mechanism. The failure mode to avoid is
+bespoke tag-tree code duplicating the hierarchy. First use of tags is a **filter** over the canonical
+tree (cheapest, most useful); tag-as-grouping-axis comes after. Tags stay **distinct from
+`group_path`** in the data model — a structural path and a flat label set behave differently, and
+merging them into one undifferentiated list is exactly the generality-induced vagueness Principle 1
+forbids.
+
+---
 
 ## Payload and cache
 
 The payload type goes from `DataFrame` to `Any`. The read↔render contract is owned locally by each
-item kind, exactly as recipes already do for tables. GLMakie renders images natively (`image!`),
-so an `:image` kind needs only a reader and a `render!` — the plot panel is unchanged.
+item kind, exactly as recipes already do for tables. GLMakie renders images natively (`image!`), so
+an `:image` kind needs only a reader and a `render!` — the plot panel is unchanged. `TableInspector`
+guards on `payload isa DataFrame` and does not open for non-tabular items.
 
-Caching becomes a **trait**, not a wrapper type (a `Cacheable{T}` wrapper would force
-wrap/unwrap at every boundary):
+Caching is a **trait**, not a wrapper type (a `Cacheable{T}` wrapper would force wrap/unwrap at every
+boundary):
 
 ```julia
 cacheable(::Type) = false                   # arbitrary payloads: re-read from disk on demand
@@ -107,78 +168,74 @@ store_payload(io, x)                        # implemented for cacheable payload 
 load_payload(io, ::Type{T})
 ```
 
-- A payload whose type implements the cache interface is cached; anything else **falls back to disk
-  read gracefully** (image files are already random-access and cheap to re-read).
-- An explicit **opt-out keyword** lets a user disable caching regardless of type:
-  `register_item!(…; cache=false)` / `cacheable(::MyItem) = false`. Useful for volatile sources or
-  when re-read is cheaper than cache churn.
+- A payload whose type implements the trait is cached; anything else falls back to disk read
+  gracefully (image files are random-access and cheap to re-read).
+- An explicit **opt-out** disables caching regardless of type: `register_item!(…; cache=false)` or
+  `cacheable(::MyItem) = false`.
 
-The `TableInspector` stays DataFrame-specific: it guards on `payload isa DataFrame` and simply does
-not open for non-tabular items.
+### Cache invalidation under Revise — the minimal mechanism
 
-## Semantic groups, tags, and views
+The only invalidation requirement: **edit an analysis function, and the cache recomputes.** Achieve
+it by adding the **project source file's fingerprint** to the cache key, alongside the data-file
+fingerprints already used. Editing and saving a `process`/`stats` function changes that file's hash,
+so the next `open_workspace`/rescan misses and recomputes. That is the entire mechanism — no
+content-hashing of closures, no per-payload version keys, no compatibility handling. (A project
+defined directly in the REPL has no file to fingerprint; rescan manually — it's the throwaway case.)
 
-Groups are **not** directory paths. An image can belong to a `Device` exactly as a measurement does,
-or to an ML `Dataset`, regardless of where its file sits. This is already half-true today — the
-device location comes from filename parsing, not `dirname` — and we make it explicit: an item
-*declares* its group membership via `groups(::DataItem)`.
+---
 
-This opens three related capabilities, in increasing scope:
+## Anti-scope (what we are deliberately *not* doing)
 
-1. **Semantic, multi-membership grouping (tags).** An item may belong to several groups at once
-   (a device *and* a dataset *and* user-applied tags). Tags were already planned as annotations
-   ([workspace-vision.md](workspace-vision.md), [spatial-browser.md](spatial-browser.md)); here they
-   become a first-class grouping axis, not just labels.
-2. **Multiple browse views.** A *view* projects items into a browsable tree along a chosen axis —
-   by device, by date, by tag, by dataset — with optional filters. The same items, browsed many
-   ways.
-3. **Live and scripted views.** Views are definable both from the Julia API and built live in the
-   UI, consistent with GUI/API parity.
+- No general "view engine" up front — built-in groupings + a filter, not a query language.
+- No multi-parent *storage*. One canonical `group_path` per item; multi-membership is a view/tag
+  concern layered on top later.
+- No payload type hierarchy — payload is `Any`; the contract is local to each kind.
+- No mandatory subtyping, no declared schema for `GenericItem`.
+- No per-payload cache version keys or content hashing.
 
-To stay grounded, the migration keeps **one primary tree** (the current device hierarchy, now built
-from a declared grouping axis instead of an assumed directory path) and adds tags and alternate
-views incrementally. True multi-parent navigation is a view-layer feature layered on top, not a
-change to how a single item is stored.
-
-## Open design questions
-
-- The abstract base names (`DataItem`/`DataGroup`) — keep deliberately bland, or find a base noun
-  that reads better without overpromising?
-- Does `groups(::DataItem)` return a list (multi-membership from day one) or a single primary group
-  with tags layered separately? Leaning list, primary-tree-first in the UI.
-- How does a `GenericItem` expose typed-ish fields the recipe author cares about — purely through
-  `parameters`/`stats`, or a small declared schema?
-- Cache identity for non-tabular payloads: fingerprint-by-file is enough for images, but processed
-  payloads (fits, derived arrays) need a content/version key — shared with the existing project
-  cache fingerprinting or separate?
-- Where the grouping axis is declared: on the project, on the item kind, or on the view.
+---
 
 ## Relationship to existing plans
 
 This doc owns the **core data-model generalization**: the item/group type system, the two-API
-contract, the payload/cache trait, and the move to semantic groups. It does **not** own:
+contract, `group_path` + the grouping model, the payload/cache trait, and cache-on-Revise. It does
+**not** own:
 
-- visualizers, figures, workflows, annotations, and GUI/API parity — owned by
-  [workspace-vision.md](workspace-vision.md);
-- spatial navigation and device/measurement annotation storage —
-  [spatial-browser.md](spatial-browser.md);
+- visualizers, figures, workflows, annotations, GUI/API parity — [workspace-vision.md](workspace-vision.md);
+- spatial navigation and annotation storage — [spatial-browser.md](spatial-browser.md);
 - the public meaning of `parameters` vs `stats` —
   [measurement-parameters-and-stats.md](measurement-parameters-and-stats.md).
 
-When this generalization lands, the current-state [../data-model.md](../data-model.md) and
+When this lands, the current-state [../data-model.md](../data-model.md) and
 [../ARCHITECTURE.md](../ARCHITECTURE.md) become the reference for the new types.
 
-## Suggested sequencing
+---
 
-Each step is independently testable and ends at a clean, restart-and-run state:
+## Sequencing
 
-1. **Rename pass.** `MeasurementBrowser → DataBrowser`, `measurement_kind → kind`, scope the word
-   "recipe" to the callback path. Mechanical; no behavior change.
+Each step is independently testable and ends at a clean, restart-and-run state.
+
+1. **Rename pass.** `measurement_kind → kind`; scope the word "recipe" to the callback path. Mechanical.
+   *(The package rename `MeasurementBrowser → DataBrowser` is the most invasive move — it breaks
+   `using MeasurementBrowser` for the external TASE/v2-RuO2 projects — so it is its own deliberate
+   step, likely paired with the next release rather than folded in here.)*
 2. **Abstract interface + `GenericItem`.** Introduce `DataItem`/`DataGroup` and the interface; make
-   the existing recipe path build a `GenericItem`; redefine `Measurement`/`Device` as concrete
-   subtypes. No behavior change — the abstraction wraps what exists.
-3. **Payload `Any` + cache trait.** Loosen the payload type, add `cacheable`/`store_payload`/
-   `load_payload` and the `cache=` opt-out, fall back to disk read for non-cacheable payloads.
-4. **First non-measurement kind.** Add an `Image` item kind end-to-end as the proof the model holds.
-5. **Tags and views.** Multi-membership grouping and alternate browse views — its own design pass,
-   coordinated with the annotation plans.
+   the recipe path build a `GenericItem`; redefine `Measurement`/`Device` as concrete subtypes. No
+   behavior change — the abstraction wraps what exists.
+3. **Grouping model.** Replace stored `DeviceInfo.location` with a derived `group_path` produced by a
+   grouping function: default = filesystem, project-overridable. Keep canonical vs. view distinction;
+   re-key `device_info.txt`/annotations off `group_path`.
+4. **Payload `Any` + cache trait.** Loosen the payload type; add `cacheable`/`store_payload`/
+   `load_payload` and the `cache=` opt-out; add the project-source fingerprint to the cache key.
+5. **First non-measurement kind.** Add an `Image` kind end-to-end — the proof the model holds.
+6. **Live re-grouping + tags.** Built-in view groupings selectable in the UI; tag filtering. Its own
+   design pass, coordinated with the annotation plans.
+
+---
+
+## Deferred (decide when the step arrives)
+
+- Arbitrary custom view axes beyond the built-ins — owner is likely "the project declares them,"
+  decided at step 6.
+- Whether `DataGroup` metadata (device area/thickness) keeps the current lookup-time path-prefix
+  inheritance or becomes explicit group objects — settle during step 3.
