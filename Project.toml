@@ -1,7 +1,7 @@
 name = "MeasurementBrowser"
-uuid = "12345678-1234-5678-9abc-123456789abc"
-version = "0.1.0"
-authors = ["Your Name <your.email@example.com>"]
+uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
+version = "0.1.0-alpha.1"
+authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 
 [deps]
 Annotations = "ae6ca758-ef8f-47cf-869f-33c684d5c66b"

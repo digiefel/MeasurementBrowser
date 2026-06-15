@@ -995,8 +995,8 @@ version = "0.6.7"
 [[deps.MeasurementBrowser]]
 deps = ["Annotations", "CImGui", "CSV", "DataFrames", "Dates", "GLFW", "GLMakie", "HDF5", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = "."
-uuid = "12345678-1234-5678-9abc-123456789abc"
-version = "0.1.0"
+uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
+version = "0.1.0-alpha.1"
 
 [[deps.MeshIO]]
 deps = ["ColorTypes", "FileIO", "GeometryBasics", "Printf"]
