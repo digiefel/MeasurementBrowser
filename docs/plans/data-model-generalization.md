@@ -26,9 +26,10 @@ These three decide every ambiguous call below.
 
 1. **Generality at the base, clarity at the leaves.** Abstract umbrella types (`DataItem`,
    `DataGroup`) are allowed to be bland — *no one reads them in normal use*. Their meaning is a small
-   documented interface, not the noun. The clarity budget is spent on concrete first-party types
-   (`Measurement`, `Device`, `Image`), which stay as concrete as `MeasurementInfo`/`DeviceInfo` are
-   today.
+   documented interface, not the noun. The clarity lives in the concrete types **projects** define
+   for their own domain (an RuO2 measurement, a device) — or in well-chosen `kind`s and `parameters`
+   on a `GenericItem`. The package ships the abstract base, the interface, and `GenericItem`; it
+   ships **no** domain types.
 2. **Two first-party APIs, neither mandatory.** A type API (subtype + dispatch) and a recipe API
    (register callbacks). The recipe API is a *factory* for the type API, not a competitor. The public
    contract is the `DataItem` interface (methods), never a required field.
@@ -71,14 +72,23 @@ process(::DataItem, data)                   # default: passthrough
 cacheable(::DataItem)::Bool                 # default: derived from the data-type trait
 ```
 
-First-party concrete types carry the old clarity:
+The package ships the abstract base plus **one** concrete item — `GenericItem`, the recipe-API
+backing — and the internal `ItemRecord`. Domain-named concrete types are **project** code, not
+shipped:
 
 ```julia
-struct Measurement <: DataItem  …  end       # was MeasurementInfo
-struct Device      <: DataGroup …  end       # was DeviceInfo (area_um2, t_HZO_nm, …)
-struct GenericItem <: DataItem  …  end        # the recipe-API backing type
-# later: struct Image <: DataItem … end
+# package-provided:
+struct GenericItem <: DataItem … end          # recipe-API backing; holds an ItemRecord + data
+# (+ abstract DataItem / DataGroup, the interface, and the internal ItemRecord — see below)
+
+# project-provided via the type API — illustrative, NOT shipped by the package:
+struct PundMeasurement <: DataItem  … end
+struct Device          <: DataGroup … end       # area_um2, t_HZO_nm, …
 ```
+
+This generalizes today's package types: metadata-only `MeasurementInfo` becomes the internal
+`ItemRecord`; `DeviceInfo`'s path folds into `group_path` and its node metadata into the `DataGroup`
+abstraction. Neither a measurement nor a device *type* is package-provided anymore.
 
 `kind` is a coarse tag (icon, UI bucket), **not** the dispatch key it is today — the type carries
 the real meaning. Recipe-API projects still get a `Symbol`-keyed experience through `GenericItem`.
@@ -119,9 +129,9 @@ Consequences:
   item kind never does.
 - **Memory is bounded by construction.** The index type has no data slot; only the selected handful
   ever become data-bearing items.
-- **First-party types avoid duplication privately.** Our own `Measurement` may hold an `ItemRecord`
-  internally to reuse the metadata field list — an implementation choice for types we own, not a
-  public requirement. External item kinds stay free-form.
+- **`GenericItem` avoids duplication privately.** The one concrete item the package owns holds an
+  `ItemRecord` internally (reusing the metadata field list) plus `data` — an implementation choice,
+  not a public requirement. Project-defined item kinds stay free-form.
 
 ---
 
@@ -136,13 +146,15 @@ downstream can tell them apart.
 | You write | `struct CVImage <: DataItem` + interface methods | `register_item!(project, :image; read=…, render=…)` |
 | Meaning via | dispatch — `render!(ax, ::CVImage, …)` | stored callbacks |
 | Fields | typed (`width`, `height`, …) | the generic `parameters` / `stats` dicts (no declared schema) |
-| Used by | the package itself, power users, plugins | quick projects, one-offs, scripts |
+| Used by | the package's own model, power users, plugins | quick projects, one-offs, scripts |
 | Produces | the subtype value directly | a `GenericItem <: DataItem` forwarding to callbacks |
 
-The package's own first-party kinds use the **type API** — this is the intentional, well-designed
-version of what `AbstractProject` gestured at. Subtyping is **never mandatory**: the recipe API stays
-the lightweight path, and recipe authors put their data in `parameters`/`stats` dicts (no schema —
-if you want typed named fields, that is precisely what the type API is for).
+The package defines the model itself through the **type API** — the interface and `GenericItem` — and
+projects or plugins reach for the same type API when they want typed, dispatch-driven kinds. This is
+the intentional version of what `AbstractProject` gestured at. Subtyping is **never mandatory**: the
+recipe API is the lightweight path most projects use, and recipe authors put their data in
+`parameters`/`stats` dicts (no schema — if you want typed named fields, that is precisely what the
+type API is for).
 
 ---
 
@@ -264,14 +276,17 @@ Each step is independently testable and ends at a clean, restart-and-run state.
    `ItemRecord` the hierarchy stores; make the recipe path build a `GenericItem`; materialize
    data-bearing `DataItem`s (with `item.data`) for the viewed selection via the engine bridge. Switch
    plot/inspect callbacks to `(workspace, items, figure)` reading `item.data` — the parallel data
-   array goes away. Redefine `Measurement`/`Device` as concrete subtypes.
+   array goes away. Fold `DeviceInfo`'s path into `group_path` and its metadata into the `DataGroup`
+   representation. No package-provided domain types — projects define their own subtypes or use
+   `GenericItem`.
 3. **Grouping model.** Replace stored `DeviceInfo.location` with a derived `group_path` produced by a
    grouping function: default = filesystem, project-overridable. Keep canonical vs. view distinction;
    re-key `device_info.txt`/annotations off `group_path`.
 4. **Data `Any` + cache trait.** Loosen the data type from `DataFrame` to `Any`; add `cacheable`/
    `store_data`/`load_data` and the `cache=` opt-out; add the project-source fingerprint to the cache
    key.
-5. **First non-measurement kind.** Add an `Image` kind end-to-end — the proof the model holds.
+5. **First non-measurement kind.** Add an `Image` kind end-to-end *as an example project / test
+   fixture* (not shipped in the package) — the proof the model holds for non-tabular data.
 6. **Live re-grouping + tags.** Built-in view groupings selectable in the UI; tag filtering. Its own
    design pass, coordinated with the annotation plans.
 
