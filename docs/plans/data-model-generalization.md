@@ -11,7 +11,7 @@ The data model we ship today is the right shape with the wrong vocabulary and tw
 Almost every field of `MeasurementInfo` is already domain-neutral. The parts that block other kinds
 of data are exactly two:
 
-1. the payload is pinned to `DataFrame`, and
+1. the data is pinned to `DataFrame`, and
 2. an item's place in the tree is a stored, scan-time field (`DeviceInfo.location`) rather than a
    derived view.
 
@@ -30,7 +30,8 @@ These three decide every ambiguous call below.
    (`Measurement`, `Device`, `Image`), which stay as concrete as `MeasurementInfo`/`DeviceInfo` are
    today.
 2. **Two first-party APIs, neither mandatory.** A type API (subtype + dispatch) and a recipe API
-   (register callbacks). The recipe API is a *factory* for the type API, not a competitor.
+   (register callbacks). The recipe API is a *factory* for the type API, not a competitor. The public
+   contract is the `DataItem` interface (methods), never a required field.
 3. **The tree is a view, not an identity.** Where an item sits in the hierarchy is *computed by a
    grouping function*, not baked into the item. The filesystem tree is just the default grouping.
 
@@ -55,16 +56,19 @@ This is a vocabulary + extensibility change, not a rewrite. Unchanged:
 abstract type DataItem end     # one browsable, viewable thing backed by a source
 abstract type DataGroup end    # a semantic, metadata-bearing node in the tree (a device, a dataset)
 
-# The interface IS the meaning. Required of every DataItem subtype:
+# The interface IS the contract — a DataItem subtype indexes if it answers these, with no required
+# fields. `data` is the one stored field the *loaded* item adds; see "Two representations".
 item_id(::DataItem)::String                 # stable identity
 item_label(::DataItem)::String              # display title
 kind(::DataItem)::Symbol                    # coarse tag for icons / UI bucketing
-read_payload(::DataItem)                    # -> Any: DataFrame, image, model, …
-render!(ax, ::DataItem, payload)            # how it draws into a figure/panel
+group_path(::DataItem)::Vector{String}      # canonical placement (see "The tree is a grouping")
+parameters(::DataItem)::Dict{Symbol,Any}    # metadata known at interpret time
+stats(::DataItem)::Dict{Symbol,Any}         # values computed later
+read_data(::DataItem)                       # -> Any: load this item's data (DataFrame, image, …)
+render!(ax, ::DataItem)                     # draw it — reads item.data
 # Optional, with sensible defaults:
-process(::DataItem, payload)                # default: passthrough
-stats(::DataItem, payload)::Dict{Symbol,Any}
-cacheable(::DataItem)::Bool                 # default: derived from the payload-type trait
+process(::DataItem, data)                   # default: passthrough
+cacheable(::DataItem)::Bool                 # default: derived from the data-type trait
 ```
 
 First-party concrete types carry the old clarity:
@@ -79,15 +83,45 @@ struct GenericItem <: DataItem  …  end        # the recipe-API backing type
 `kind` is a coarse tag (icon, UI bucket), **not** the dispatch key it is today — the type carries
 the real meaning. Recipe-API projects still get a `Symbol`-keyed experience through `GenericItem`.
 
-Each `DataItem` carries the buckets it has today — `parameters` (known at interpret time), `stats`
-(computed later) — plus a stored **`group_path::Vector{String}`** (its canonical placement; see
-"The tree is a grouping") and a `tags` set (future; see "Tags"). Its identity is **file + kind +
-params**, never its tree position.
+Item **identity is file + kind + params**, never its tree position. `DataGroup` is the typed,
+metadata-bearing entity attached to a *meaningful* node — a device with area/thickness, a dataset
+with provenance. Plain intermediate path segments are just strings; you only reach for a `DataGroup`
+when a node carries semantics or metadata, rather than forcing every segment to be a heavy object.
 
-`DataGroup` is the typed, metadata-bearing entity attached to a *meaningful* node — a device with
-area/thickness, a dataset with provenance. Plain intermediate path segments are just strings; you
-only reach for a `DataGroup` when a node carries semantics or metadata. (This keeps the path simple
-and `DataGroup` meaningful, rather than forcing every segment to be a heavy object.)
+## Two representations: index record vs. loaded item
+
+Data must never sit in the bulk index — `MeasurementHierarchy` holds *every* item, and storing each
+one's data there is the unbounded-memory regression we already fixed. So there are two
+representations, bridged by the engine:
+
+- **`ItemRecord` — internal, never exported.** What the hierarchy, scan, and cache store: generic
+  metadata only (id, label, `kind`, timestamp, `group_path`, `parameters`, `stats`, tags) — **no
+  data** — plus engine-only bookkeeping. Today's metadata-only `MeasurementInfo` is already an
+  `ItemRecord` in all but name.
+- **`DataItem` — public, with a real `item.data`.** The loaded, renderable form, materialized **only
+  for the viewed selection**.
+
+The bridge is engine-owned and **uses the interface, not any field**:
+
+```
+index : ItemRecord built from a DataItem by calling its interface methods
+        → ItemRecord(item_id(x), kind(x), group_path(x), parameters(x), stats(x), …)
+view  : DataItem materialized from a record + its loaded data, via the project's loader
+        → item.data is a plain field on the result
+```
+
+Consequences:
+
+- **The contract is the interface, never a field.** A `DataItem` subtype indexes if it implements the
+  methods — there is nothing like `record::ItemRecord` to declare or forget. A missing method is a
+  clear "you didn't implement `kind`," not a struct-shape mismatch.
+- **`ItemRecord` is invisible to extenders.** Only code modifying the engine meets it; writing a new
+  item kind never does.
+- **Memory is bounded by construction.** The index type has no data slot; only the selected handful
+  ever become data-bearing items.
+- **First-party types avoid duplication privately.** Our own `Measurement` may hold an `ItemRecord`
+  internally to reuse the metadata field list — an implementation choice for types we own, not a
+  public requirement. External item kinds stay free-form.
 
 ---
 
@@ -151,25 +185,30 @@ forbids.
 
 ---
 
-## Payload and cache
+## Data and cache
 
-The payload type goes from `DataFrame` to `Any`. The read↔render contract is owned locally by each
-item kind, exactly as recipes already do for tables. GLMakie renders images natively (`image!`), so
-an `:image` kind needs only a reader and a `render!` — the plot panel is unchanged. `TableInspector`
-guards on `payload isa DataFrame` and does not open for non-tabular items.
+The data type goes from `DataFrame` to `Any`. The load↔render contract is owned locally by each item
+kind. GLMakie renders images natively (`image!`), so an `:image` kind needs only a `read_data` and a
+`render!` that reads `item.data` — the plot panel is unchanged. `TableInspector` guards on
+`item.data isa DataFrame` and does not open for non-tabular items.
+
+Because a loaded `DataItem` carries its own `data`, plot/inspect callbacks take **items**, not a
+parallel data array — `draw(workspace, items, figure)` reading `item.data`, instead of today's
+`draw(workspace, measurements, processed, figure)` zipped by index. (`payload` as a name is gone; the
+public surface is `item.data`, and the engine-internal loader is `read_data`.)
 
 Caching is a **trait**, not a wrapper type (a `Cacheable{T}` wrapper would force wrap/unwrap at every
 boundary):
 
 ```julia
-cacheable(::Type) = false                   # arbitrary payloads: re-read from disk on demand
-cacheable(::Type{DataFrame}) = true         # tabular payloads: HDF5-cached as today
-store_payload(io, x)                        # implemented for cacheable payload types
-load_payload(io, ::Type{T})
+cacheable(::Type) = false                   # arbitrary data: re-read from disk on demand
+cacheable(::Type{DataFrame}) = true         # tabular data: HDF5-cached as today
+store_data(io, x)                           # implemented for cacheable data types
+load_data(io, ::Type{T})
 ```
 
-- A payload whose type implements the trait is cached; anything else falls back to disk read
-  gracefully (image files are random-access and cheap to re-read).
+- Data whose type implements the trait is cached; anything else falls back to disk read gracefully
+  (image files are random-access and cheap to re-read).
 - An explicit **opt-out** disables caching regardless of type: `register_item!(…; cache=false)` or
   `cacheable(::MyItem) = false`.
 
@@ -179,7 +218,7 @@ The only invalidation requirement: **edit an analysis function, and the cache re
 it by adding the **project source file's fingerprint** to the cache key, alongside the data-file
 fingerprints already used. Editing and saving a `process`/`stats` function changes that file's hash,
 so the next `open_workspace`/rescan misses and recomputes. That is the entire mechanism — no
-content-hashing of closures, no per-payload version keys, no compatibility handling. (A project
+content-hashing of closures, no per-item version keys, no compatibility handling. (A project
 defined directly in the REPL has no file to fingerprint; rescan manually — it's the throwaway case.)
 
 ---
@@ -189,16 +228,17 @@ defined directly in the REPL has no file to fingerprint; rescan manually — it'
 - No general "view engine" up front — built-in groupings + a filter, not a query language.
 - No multi-parent *storage*. One canonical `group_path` per item; multi-membership is a view/tag
   concern layered on top later.
-- No payload type hierarchy — payload is `Any`; the contract is local to each kind.
+- No data type hierarchy — data is `Any`; the contract is local to each kind.
+- No required fields on item types — the contract is the `DataItem` interface, not a struct shape.
 - No mandatory subtyping, no declared schema for `GenericItem`.
-- No per-payload cache version keys or content hashing.
+- No per-item cache version keys or content hashing.
 
 ---
 
 ## Relationship to existing plans
 
 This doc owns the **core data-model generalization**: the item/group type system, the two-API
-contract, `group_path` + the grouping model, the payload/cache trait, and cache-on-Revise. It does
+contract, `group_path` + the grouping model, the data/cache trait, and cache-on-Revise. It does
 **not** own:
 
 - visualizers, figures, workflows, annotations, GUI/API parity — [workspace-vision.md](workspace-vision.md);
@@ -219,14 +259,18 @@ Each step is independently testable and ends at a clean, restart-and-run state.
    *(The package rename `MeasurementBrowser → DataBrowser` is the most invasive move — it breaks
    `using MeasurementBrowser` for the external TASE/v2-RuO2 projects — so it is its own deliberate
    step, likely paired with the next release rather than folded in here.)*
-2. **Abstract interface + `GenericItem`.** Introduce `DataItem`/`DataGroup` and the interface; make
-   the recipe path build a `GenericItem`; redefine `Measurement`/`Device` as concrete subtypes. No
-   behavior change — the abstraction wraps what exists.
+2. **Interface + record/item split + `item.data`.** Introduce `DataItem`/`DataGroup` and the
+   interface as the contract; rename today's metadata-only `MeasurementInfo` to the internal
+   `ItemRecord` the hierarchy stores; make the recipe path build a `GenericItem`; materialize
+   data-bearing `DataItem`s (with `item.data`) for the viewed selection via the engine bridge. Switch
+   plot/inspect callbacks to `(workspace, items, figure)` reading `item.data` — the parallel data
+   array goes away. Redefine `Measurement`/`Device` as concrete subtypes.
 3. **Grouping model.** Replace stored `DeviceInfo.location` with a derived `group_path` produced by a
    grouping function: default = filesystem, project-overridable. Keep canonical vs. view distinction;
    re-key `device_info.txt`/annotations off `group_path`.
-4. **Payload `Any` + cache trait.** Loosen the payload type; add `cacheable`/`store_payload`/
-   `load_payload` and the `cache=` opt-out; add the project-source fingerprint to the cache key.
+4. **Data `Any` + cache trait.** Loosen the data type from `DataFrame` to `Any`; add `cacheable`/
+   `store_data`/`load_data` and the `cache=` opt-out; add the project-source fingerprint to the cache
+   key.
 5. **First non-measurement kind.** Add an `Image` kind end-to-end — the proof the model holds.
 6. **Live re-grouping + tags.** Built-in view groupings selectable in the UI; tag filtering. Its own
    design pass, coordinated with the annotation plans.
