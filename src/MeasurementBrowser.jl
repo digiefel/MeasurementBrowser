@@ -65,7 +65,13 @@ using .Workspace:
     select_measurements!
 
 include("Visualization.jl")
-using .Visualization: PlotKind, plot_kinds
+using .Visualization:
+    PlotKind,
+    RegistryPlot,
+    plot_kind_from_name,
+    plot_kind_name,
+    plot_kind_symbol,
+    plot_kinds
 import .Visualization:
     debug_plot,
     plot_data!,
