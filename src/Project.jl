@@ -43,7 +43,8 @@ end
 function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{Project})
     project = Project(
         "", "", MeasurementRecipe[],
-        Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(), Dict{Symbol,PlotRecipe}(),
+        Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(),
+        Dict{Symbol,Dict{String,PlotRecipe}}(),
         Tuple{String,String,String}[], ReentrantLock(),
         Dict{Symbol,KindProfile}(), ReentrantLock(),
     )
@@ -90,10 +91,13 @@ function Base.show(io::IO, ::MIME"text/plain", project::Project)
         print(io, "\n    (", join(recipe.measurement_kinds, ", "), ") → ", _callback_name(recipe.compute_stats))
     end
 
-    print(io, "\n  ", _plural(length(project.plots), "plot"))
+    plot_count = sum(length, values(project.plots); init=0)
+    print(io, "\n  ", _plural(plot_count, "plot"))
     isempty(project.plots) || print(io, ":")
-    for recipe in values(project.plots)
-        print(io, "\n    ", recipe.kind, " → \"", recipe.label, "\"")
+    for kind in sort!(collect(keys(project.plots)); by=String)
+        for label in sort!(collect(keys(project.plots[kind])))
+            print(io, "\n    ", kind, " → \"", label, "\"")
+        end
     end
 end
 
@@ -104,7 +108,7 @@ function define_project(name::AbstractString; description::AbstractString="")::P
         String(description),
         MeasurementRecipe[],
         Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(),
-        Dict{Symbol,PlotRecipe}(),
+        Dict{Symbol,Dict{String,PlotRecipe}}(),
         Tuple{String,String,String}[],
         ReentrantLock(),
         Dict{Symbol,KindProfile}(),
@@ -216,13 +220,14 @@ function register_device_stat!(
 end
 
 """
-Register (or replace) the plot recipe for one measurement kind.
+Register (or replace) one plot recipe for a measurement kind.
 
 `setup(workspace, measurements, processed_data)` builds and returns the `Figure`;
 `draw(workspace, measurements, processed_data, figure)` fills it in. The package resolves
 `processed_data` (a `Vector{DataFrame}`, one per measurement and in the same order, through its
 processed-data cache) before calling either callback, so neither calls `process_measurement_data`
-itself.
+itself. A measurement kind may have multiple plots; re-registering the same `label` for the same
+kind replaces that plot, which keeps REPL iteration stable.
 """
 function register_plot!(
     project::Project,
@@ -231,7 +236,11 @@ function register_plot!(
     setup::Function,
     draw::Function,
 )::Project
-    project.plots[kind] = PlotRecipe(kind, String(label), setup, draw)
+    label_string = String(label)
+    recipes = get!(project.plots, kind) do
+        Dict{String,PlotRecipe}()
+    end
+    recipes[label_string] = PlotRecipe(kind, label_string, setup, draw)
     return project
 end
 
@@ -274,9 +283,8 @@ function parse_device_info(::Project, file::SourceFile)::DeviceInfo
     error("Project sets device identity inside `measurements`, not via parse_device_info ($(file.filepath))")
 end
 
-function kind_label(project::Project, kind::Symbol)::String
-    plot = get(project.plots, kind, nothing)
-    return plot === nothing ? string(kind) : plot.label
+function kind_label(::Project, kind::Symbol)::String
+    return string(kind)
 end
 
 function display_label(project::Project, measurement::MeasurementInfo)::String

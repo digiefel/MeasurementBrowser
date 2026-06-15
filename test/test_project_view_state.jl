@@ -3,10 +3,10 @@ using Test
 
 const Browser = MeasurementBrowser.Browser
 
-# Persisted plot choices are measurement-kind names; on load they resolve to the internal
-# RegistryPlot identity for that kind.
-const ProjectViewIVPlot = MeasurementBrowser.RegistryPlot{:ProjectViewIVPlot}
-const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
+# Persisted plot choices include measurement-kind and label names; on load they resolve to the
+# internal RegistryPlot identity for that plot.
+const ProjectViewIVPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectViewIVPlot}
+const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectViewTLMPlot}
 
 @testset "project view state" begin
     root_path = mktempdir()
@@ -27,11 +27,11 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
             selected=["measurement-1", "measurement-2"],
             filter="298K",
         ),
-        plot_kinds=Dict("iv_sweep" => "ProjectViewIVPlot"),
+        plot_kinds=Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
         main_plot=Browser.PersistedPlotView(
             id="main",
             title="Plot Area",
-            plot_kind="ProjectViewTLMPlot",
+            plot_kind="iv_sweep::ProjectViewTLMPlot",
             live=true,
             measurements=["measurement-1"],
         ),
@@ -39,7 +39,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
             Browser.PersistedPlotView(
                 id="plot_1",
                 title="Detached",
-                plot_kind="ProjectViewIVPlot",
+                plot_kind="iv_sweep::ProjectViewIVPlot",
                 live=false,
                 measurements=["measurement-2"],
             ),
@@ -81,11 +81,11 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
             "selected" => ["measurement-1"],
             "filter" => "298K",
         ),
-        "plot_kinds" => Dict{String,Any}("iv_sweep" => "ProjectViewIVPlot"),
+        "plot_kinds" => Dict{String,Any}("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
         "main_plot" => Dict{String,Any}(
             "id" => "main",
             "title" => "Plot Area",
-            "plot_kind" => "ProjectViewTLMPlot",
+            "plot_kind" => "iv_sweep::ProjectViewTLMPlot",
             "live" => true,
             "measurements" => ["measurement-1"],
         ),
@@ -93,7 +93,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
             Dict{String,Any}(
                 "id" => "plot_1",
                 "title" => "Detached",
-                "plot_kind" => "ProjectViewIVPlot",
+                "plot_kind" => "iv_sweep::ProjectViewIVPlot",
                 "live" => false,
                 "measurements" => ["measurement-2"],
             ),
@@ -111,11 +111,11 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
             "selected" => ["measurement-1"],
             "filter" => "298K",
         ),
-        "plot_kinds" => Dict{String,Any}("iv_sweep" => "ProjectViewIVPlot"),
+        "plot_kinds" => Dict{String,Any}("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
         "main_plot" => Dict{String,Any}(
             "id" => "main",
             "title" => "Plot Area",
-            "plot_kind" => "ProjectViewTLMPlot",
+            "plot_kind" => "iv_sweep::ProjectViewTLMPlot",
             "live" => true,
             "measurements" => ["measurement-1"],
         ),
@@ -174,9 +174,9 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
     @test saved_view.tree.selected == ["chip/device"]
     @test saved_view.tree.expanded == ["chip/device"]
     @test saved_view.measurements.selected == ["measurement-1", "measurement-2"]
-    @test saved_view.plot_kinds == Dict("iv_sweep" => "ProjectViewIVPlot")
-    @test saved_view.main_plot.plot_kind == "ProjectViewTLMPlot"
-    @test only(saved_view.plot_windows).plot_kind == "ProjectViewIVPlot"
+    @test saved_view.plot_kinds == Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot")
+    @test saved_view.main_plot.plot_kind == "iv_sweep::ProjectViewTLMPlot"
+    @test only(saved_view.plot_windows).plot_kind == "iv_sweep::ProjectViewIVPlot"
 
     Browser._save_project_view_if_changed!(state)
     loaded_after_ui_save = Browser._load_project_view(root_path)

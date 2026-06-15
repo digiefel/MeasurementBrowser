@@ -18,56 +18,14 @@ using ..Visualization:
     plot_data!,
     plot_kind_label,
     plot_kind_name,
-    registered_plot_kind,
+    registered_plot_kinds,
     setup_plot
 using .MakieImguiIntegration: MakieFigure
 
-"""Plot kinds the project has registered for the kinds of measurements currently selected."""
-function _available_plot_kinds(project, measurements::Vector{MeasurementInfo})::Vector{Type{<:PlotKind}}
-    available = Type{<:PlotKind}[]
-    for kind in unique(measurement.measurement_kind for measurement in measurements)
-        plot_kind = registered_plot_kind(project, kind)
-        plot_kind === nothing || push!(available, plot_kind)
-    end
-    return available
-end
-
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
 
-"""Remember the plot chosen for each kind of selected measurement."""
-function _remember_plot_kind!(
-    plots::PlotState,
-    measurements::Vector{MeasurementInfo},
-    plot_kind::Type{<:PlotKind},
-)::Nothing
-    for measurement in measurements
-        plots.kind_by_measurement[measurement.measurement_kind] = plot_kind
-    end
-    return nothing
-end
-
-"""Reserve the next unique id for a detached plot window."""
-function _next_plot_window_id!(plots::PlotState)::String
-    plots.next_window_id += 1
-    return "plot_$(plots.next_window_id)"
-end
-
-"""Create a detached plot for one measurement."""
-function _measurement_plot_window(
-    plots::PlotState,
-    measurement::MeasurementInfo,
-)::PlotViewState
-    return PlotViewState(
-        id=_next_plot_window_id!(plots),
-        title=measurement.clean_title,
-        live=false,
-        measurement_ids=[measurement.unique_id],
-        plot_kind=get(plots.kind_by_measurement, measurement.measurement_kind, nothing),
-    )
-end
-
 """Discard rendered figures so every open plot is redrawn."""
-function _clear_plot_views!(plots::PlotState)::Nothing
+function clear_plot_views!(plots::PlotState)::Nothing
     for view in (plots.main, plots.windows...)
         view.figure = nothing
         view.last_key = nothing
@@ -82,7 +40,7 @@ Draw one plot and keep a short UI error when drawing fails.
 
 The console receives the complete exception together with the project, plot type, and source files.
 """
-function _draw_plot_view!(
+function draw_plot_view!(
     state::BrowserState,
     view::PlotViewState,
     plot_key::Tuple,
@@ -155,11 +113,12 @@ function _draw_plot_view!(
 end
 
 """Render the controls shared by the main and detached plot windows."""
-function _render_plot_toolbar!(
+function render_plot_toolbar!(
     state::BrowserState,
     view::PlotViewState,
     measurements::Vector{MeasurementInfo},
     selected_measurements::Vector{MeasurementInfo},
+    available::Vector{Type{<:PlotKind}},
 )::Nothing
     plots = state.plots
     project = (state.workspace::Workspace.Workspace).project
@@ -168,12 +127,14 @@ function _render_plot_toolbar!(
         "##plot_kind_$(view.id)",
         current === nothing ? "Choose plot kind" : plot_kind_label(project, current),
     )
-        for candidate in _available_plot_kinds(project, measurements)
+        for candidate in available
             if ig.Selectable(plot_kind_label(project, candidate), current === candidate)
                 view.plot_kind = candidate
                 view.last_key = nothing
                 view.error = ""
-                _remember_plot_kind!(plots, measurements, candidate)
+                for measurement in measurements
+                    plots.kind_by_measurement[measurement.measurement_kind] = candidate
+                end
             end
         end
         ig.EndCombo()
@@ -195,10 +156,11 @@ function _render_plot_toolbar!(
         ig.SameLine()
         !can_detach && ig.BeginDisabled()
         if ig.Button("Detach") && can_detach
+            plots.next_window_id += 1
             push!(
                 plots.windows,
                 PlotViewState(
-                    id=_next_plot_window_id!(plots),
+                    id="plot_$(plots.next_window_id)",
                     title=length(measurements) == 1 ?
                           only(measurements).clean_title :
                           "$(length(measurements)) measurements",
@@ -257,7 +219,7 @@ function _render_plot_toolbar!(
 end
 
 """Render a figure or the reason no figure is available."""
-function _render_plot_body!(
+function render_plot_body!(
     state::BrowserState,
     view::PlotViewState,
     status::Symbol,
@@ -298,7 +260,7 @@ Update and render one plot window.
 Live views use the current browser selection. Static views resolve their saved measurement ids
 against the current workspace index.
 """
-function _render_plot_view!(
+function render_plot_view!(
     state::BrowserState,
     view::PlotViewState,
     selected_measurements::Vector{MeasurementInfo},
@@ -314,29 +276,38 @@ function _render_plot_view!(
         selected_measurements :
         _measurements_for_ids(state, view.measurement_ids)
 
+    project = (state.workspace::Workspace.Workspace).project
+    measurement_kind = if isempty(measurements)
+        nothing
+    else
+        kind = first(measurements).measurement_kind
+        all(measurement -> measurement.measurement_kind == kind, measurements) ? kind : nothing
+    end
+    available = measurement_kind === nothing ?
+        Type{<:PlotKind}[] :
+        registered_plot_kinds(project, measurement_kind)
     if view === plots.main && view.live
-        measurement_kind =
-            !isempty(measurements) &&
-            all(
-                measurement ->
-                    measurement.measurement_kind == first(measurements).measurement_kind,
-                measurements,
-            ) ?
-            first(measurements).measurement_kind :
-            nothing
         if view.measurement_kind !== measurement_kind
             view.measurement_kind = measurement_kind
-            if measurement_kind !== nothing
-                # Prefer the remembered choice, else the project's registered plot for this kind.
+            if measurement_kind === nothing
+                view.plot_kind = nothing
+            else
                 remembered = get(plots.kind_by_measurement, measurement_kind, nothing)
-                view.plot_kind = remembered !== nothing ? remembered :
-                    registered_plot_kind(
-                        (state.workspace::Workspace.Workspace).project,
-                        measurement_kind,
-                    )
+                view.plot_kind =
+                    remembered !== nothing && remembered in available ? remembered :
+                    isempty(available) ? nothing : first(available)
             end
             view.last_key = nothing
         end
+    end
+
+    if view.plot_kind === nothing && !isempty(available)
+        view.plot_kind = first(available)
+        view.last_key = nothing
+    elseif view.plot_kind !== nothing && !(view.plot_kind in available)
+        view.plot_kind = nothing
+        view.figure = nothing
+        view.last_key = nothing
     end
 
     status = isempty(measurements) ?
@@ -352,7 +323,7 @@ function _render_plot_view!(
             plots.debug,
         )
         view.last_key == plot_key ||
-            _draw_plot_view!(
+            draw_plot_view!(
                 state,
                 view,
                 plot_key,
@@ -364,14 +335,14 @@ function _render_plot_view!(
         view.last_key = nothing
     end
 
-    _render_plot_toolbar!(state, view, measurements, selected_measurements)
+    render_plot_toolbar!(state, view, measurements, selected_measurements, available)
     ig.Separator()
-    _render_plot_body!(state, view, status)
+    render_plot_body!(state, view, status)
     return nothing
 end
 
 """Warm GLMakie once in a hidden window before the first visible plot."""
-function _ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
+function ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
     plots = state.plots
     plots.runtime_warmed && return nothing
     flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoInputs |
@@ -403,7 +374,7 @@ function render_plot_window(state::BrowserState)::Nothing
     _, selected, _ = _project_visible_selection(state)
     main = state.plots.main
     if ig.Begin(main.title)
-        _render_plot_view!(state, main, selected)
+        render_plot_view!(state, main, selected)
     end
     ig.End()
     return nothing
@@ -420,7 +391,7 @@ function render_additional_plot_windows(state::BrowserState)::Nothing
         window_id = replace(view.id, '/' => '_')
         if ig.Begin("Plot: $(view.title)###plot_window_$window_id", open)
             view.debug == plots.debug || (view.last_key = nothing)
-            _render_plot_view!(state, view, selected)
+            render_plot_view!(state, view, selected)
         end
         ig.End()
         open[] && push!(kept, view)

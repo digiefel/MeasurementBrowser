@@ -574,9 +574,20 @@ function _render_measurements_panel(
 
                             if ig.MenuItem("Open Plot in New Window")
                                 plots = state.plots
+                                plots.next_window_id += 1
                                 push!(
                                     plots.windows,
-                                    _measurement_plot_window(plots, measurement),
+                                    PlotViewState(
+                                        id="plot_$(plots.next_window_id)",
+                                        title=measurement.clean_title,
+                                        live=false,
+                                        measurement_ids=[measurement.unique_id],
+                                        plot_kind=get(
+                                            plots.kind_by_measurement,
+                                            measurement.measurement_kind,
+                                            nothing,
+                                        ),
+                                    ),
                                 )
                             end
 

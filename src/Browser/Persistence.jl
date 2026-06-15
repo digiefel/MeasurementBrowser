@@ -188,19 +188,6 @@ end
 
 const PROJECT_VIEW_FILENAME = "measurementbrowser.toml"
 
-"""
-Find a plot type previously written to project state.
-
-Returns `nothing` when no plot was selected (empty name) or when the saved name no longer matches any
-loaded plot kind — a stale selection (e.g. from a different project version) is dropped, not fatal.
-"""
-function _plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKind}}
-    isempty(name) && return nothing
-    # A saved name is a measurement-kind symbol; resolve it to its registered plot identity. If the
-    # kind is no longer registered, drawing simply errors gracefully later (not fatal here).
-    return plot_kind_from_name(name)
-end
-
 function _project_view_file_path(root_path::AbstractString)::String
     return joinpath(_normalize_project_path(root_path), PROJECT_VIEW_FILENAME)
 end
@@ -331,16 +318,18 @@ function _apply_project_view!(
     state.measurement_filter = view.measurements.filter
     empty!(plots.kind_by_measurement)
     for (measurement_kind, plot_kind_name) in view.plot_kinds
-        plot_kind = _plot_kind_from_name(plot_kind_name)
-        plot_kind === nothing && continue   # drop stale/unknown saved selection
-        plots.kind_by_measurement[Symbol(measurement_kind)] = plot_kind
+        isempty(plot_kind_name) && continue
+        plots.kind_by_measurement[Symbol(measurement_kind)] =
+            plot_kind_from_name(plot_kind_name)
     end
     plots.main = PlotViewState(
         id="main",
         title="Plot Area",
         live=view.main_plot.live,
         measurement_ids=copy(view.main_plot.measurements),
-        plot_kind=_plot_kind_from_name(view.main_plot.plot_kind),
+        plot_kind=isempty(view.main_plot.plot_kind) ?
+            nothing :
+            plot_kind_from_name(view.main_plot.plot_kind),
     )
     plots.windows = [
         PlotViewState(
@@ -348,7 +337,9 @@ function _apply_project_view!(
             title=isempty(plot_view.title) ? "Plot" : plot_view.title,
             live=plot_view.live,
             measurement_ids=copy(plot_view.measurements),
-            plot_kind=_plot_kind_from_name(plot_view.plot_kind),
+            plot_kind=isempty(plot_view.plot_kind) ?
+                nothing :
+                plot_kind_from_name(plot_view.plot_kind),
         )
         for plot_view in view.plot_windows
     ]

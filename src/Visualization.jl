@@ -12,25 +12,29 @@ Base type for visualizers selectable by the browser and Julia API.
 
 `PlotKind` is an internal identity used by the engine to dispatch plotting. Projects do not define
 their own subtypes; they call `register_plot!`, and the engine represents each registered plot as a
-`RegistryPlot{kind}` (below).
+`RegistryPlot{kind,label}` (below).
 """
 abstract type PlotKind end
 
 """
 Internal plot identity for a plot registered with `register_plot!`, parameterized by the measurement
-kind it draws. One registered plot per measurement kind, so the kind alone identifies the plot.
+kind it applies to and the label that distinguishes plots for that kind.
 """
-struct RegistryPlot{Kind} <: PlotKind end
+struct RegistryPlot{Kind,Label} <: PlotKind end
 
 """The measurement-kind symbol a `RegistryPlot` draws."""
-plot_kind_symbol(::Type{RegistryPlot{Kind}}) where {Kind} = Kind
+plot_kind_symbol(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} = Kind
 
 """Stable name used to persist a plot choice in `measurementbrowser.toml`."""
 plot_kind_name(plot_kind::Type{<:PlotKind})::String = String(nameof(plot_kind))
-plot_kind_name(::Type{RegistryPlot{Kind}}) where {Kind} = String(Kind)
+plot_kind_name(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} =
+    string(Kind, "::", Label)
 
 """Resolve a persisted plot name back to its internal identity (a registered plot kind)."""
-plot_kind_from_name(name::AbstractString)::Type{<:PlotKind} = RegistryPlot{Symbol(name)}
+function plot_kind_from_name(name::AbstractString)::Type{<:PlotKind}
+    kind, label = split(name, "::"; limit=2)
+    return RegistryPlot{Symbol(kind),Symbol(label)}
+end
 
 """Create the figure layout required by a visualizer."""
 function setup_plot(
@@ -58,7 +62,7 @@ function plot_data!(
 end
 
 # --- Registered-plot bridge ------------------------------------------------
-# A RegistryPlot{kind} dispatches the engine's plot calls to the project's registered setup/draw
+# A RegistryPlot{kind,label} dispatches the engine's plot calls to the project's registered setup/draw
 # callbacks. `project.plots` is the recipe table filled by register_plot!.
 
 """
@@ -69,11 +73,10 @@ size the figure layout to the data without calling `process_measurement_data` it
 """
 function setup_plot(
     workspace::Workspace.Workspace,
-    ::Type{RegistryPlot{Kind}},
+    ::Type{RegistryPlot{Kind,Label}},
     measurements::Vector{MeasurementInfo},
-)::Figure where {Kind}
-    recipe = get(workspace.project.plots, Kind, nothing)
-    recipe === nothing && error("No plot registered for measurement kind :$Kind")
+)::Figure where {Kind,Label}
+    recipe = workspace.project.plots[Kind][String(Label)]
     processed = Workspace.process_measurement_data(workspace, measurements)
     return recipe.setup(workspace, measurements, processed)::Figure
 end
@@ -87,25 +90,29 @@ themselves.
 """
 function plot_data!(
     workspace::Workspace.Workspace,
-    ::Type{RegistryPlot{Kind}},
+    ::Type{RegistryPlot{Kind,Label}},
     measurements::Vector{MeasurementInfo},
     figure::Figure,
-)::Nothing where {Kind}
-    recipe = get(workspace.project.plots, Kind, nothing)
-    recipe === nothing && error("No plot registered for measurement kind :$Kind")
+)::Nothing where {Kind,Label}
+    recipe = workspace.project.plots[Kind][String(Label)]
     processed = Workspace.process_measurement_data(workspace, measurements)
     recipe.draw(workspace, measurements, processed, figure)
     return nothing
 end
 
-"""The plot kind registered for a measurement kind, or `nothing` if none is registered."""
-registered_plot_kind(project, measurement_kind::Symbol)::Union{Nothing,Type{<:PlotKind}} =
-    haskey(project.plots, measurement_kind) ? RegistryPlot{measurement_kind} : nothing
+"""Every plot registered for a measurement kind, sorted by label."""
+function registered_plot_kinds(project, measurement_kind::Symbol)::Vector{Type{<:PlotKind}}
+    recipes = get(project.plots, measurement_kind, nothing)
+    recipes === nothing && return Type{<:PlotKind}[]
+    return Type{<:PlotKind}[
+        RegistryPlot{measurement_kind,Symbol(label)}
+        for label in sort!(collect(keys(recipes)))
+    ]
+end
 
 """Human label for a registered plot kind, taken from its recipe."""
-function plot_kind_label(project, ::Type{RegistryPlot{Kind}})::String where {Kind}
-    recipe = get(project.plots, Kind, nothing)
-    return recipe === nothing ? string(Kind) : recipe.label
+function plot_kind_label(project, ::Type{RegistryPlot{Kind,Label}})::String where {Kind,Label}
+    return project.plots[Kind][String(Label)].label
 end
 
 """

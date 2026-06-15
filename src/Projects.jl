@@ -60,7 +60,7 @@ mutable struct Project
     description::String
     recipes::Vector{MeasurementRecipe}
     device_stats::Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}
-    plots::Dict{Symbol,PlotRecipe}
+    plots::Dict{Symbol,Dict{String,PlotRecipe}}
     # Transient per-measurement analysis failures gathered while interpreting files, as
     # (filepath, measurement id, message) tuples. Drained when device stats run. Plain string tuples
     # so this early module needs no MeasurementIndex types.

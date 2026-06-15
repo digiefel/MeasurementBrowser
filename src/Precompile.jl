@@ -64,8 +64,9 @@ using DataFrames: DataFrame, nrow
         ]
         workspace = Workspace.Workspace(project, fixture_dir)
         read_measurement_data(workspace, measurements)
-        figure = setup_plot(workspace, RegistryPlot{:iv}, measurements)
-        plot_data!(workspace, RegistryPlot{:iv}, measurements, figure)
+        plot_kind = RegistryPlot{:iv,Symbol("I-V")}
+        figure = setup_plot(workspace, plot_kind, measurements)
+        plot_data!(workspace, plot_kind, measurements, figure)
         infer_measurement_group("precompile_group", measurements[1:1], measurements)
         scan_source(scan_dir; project=project)
         scan_source(scan_dir; project=project, count_first=true)

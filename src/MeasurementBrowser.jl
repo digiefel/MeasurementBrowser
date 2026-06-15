@@ -77,7 +77,7 @@ using .Visualization:
     plot_kind_name,
     plot_kind_symbol,
     plot_kinds,
-    registered_plot_kind
+    registered_plot_kinds
 import .Visualization:
     debug_plot,
     plot_data!,

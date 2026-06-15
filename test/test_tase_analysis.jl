@@ -96,8 +96,8 @@ end
         @test all(nrow(df) == 3 for df in data)
         @test all(names(df) == ["i", "v"] for df in data)
 
-        plot_kind = MB.registered_plot_kind(project, :four_terminal_iv)
-        @test plot_kind === MB.RegistryPlot{:four_terminal_iv}
+        plot_kind = MB.RegistryPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+        @test plot_kind === MB.RegistryPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
         figure = setup_plot(workspace, plot_kind, measurements)
         @test plot_data!(workspace, plot_kind, measurements, figure) === nothing
     end

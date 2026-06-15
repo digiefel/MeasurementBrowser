@@ -32,22 +32,45 @@ const MB = MeasurementBrowser
         setup=(workspace, measurements, processed) -> Figure(),
         draw=(workspace, measurements, processed, figure) -> (drew[] = length(processed); Axis(figure[1, 1]); nothing),
     )
+    MB.register_plot!(
+        project,
+        :table;
+        label="Table Summary",
+        setup=(workspace, measurements, processed) -> Figure(),
+        draw=(workspace, measurements, processed, figure) -> nothing,
+    )
+    MB.register_plot!(
+        project,
+        :table;
+        label="Table Summary",
+        setup=(workspace, measurements, processed) -> Figure(),
+        draw=(workspace, measurements, processed, figure) -> (drew[] = -1; nothing),
+    )
 
     # Identity helpers used by the GUI and persistence.
-    @test MB.registered_plot_kind(project, :table) === MB.RegistryPlot{:table}
-    @test MB.registered_plot_kind(project, :missing) === nothing
-    @test MB.plot_kind_label(project, MB.RegistryPlot{:table}) == "Table Plot"
-    @test MB.plot_kind_name(MB.RegistryPlot{:table}) == "table"
-    @test MB.plot_kind_from_name("table") === MB.RegistryPlot{:table}
+    table_plot = MB.RegistryPlot{:table,Symbol("Table Plot")}
+    table_summary = MB.RegistryPlot{:table,Symbol("Table Summary")}
+    @test MB.registered_plot_kinds(project, :table) == [table_plot, table_summary]
+    @test MB.registered_plot_kinds(project, :missing) == Type{<:MB.PlotKind}[]
+    @test MB.plot_kind_label(project, table_plot) == "Table Plot"
+    @test MB.plot_kind_name(table_plot) == "table::Table Plot"
+    @test MB.plot_kind_from_name("table::Table Plot") === table_plot
 
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
     measurements = measurements_for_file(project, joinpath(dir, "m.csv"))
     workspace = MB.Workspace.Workspace(project, dir)
-    figure = setup_plot(workspace, MB.RegistryPlot{:table}, measurements)
+    figure = setup_plot(workspace, table_plot, measurements)
     @test figure isa Figure
-    @test plot_data!(workspace, MB.RegistryPlot{:table}, measurements, figure) === nothing
+    @test plot_data!(workspace, table_plot, measurements, figure) === nothing
     @test drew[] == length(measurements)
+    figure = setup_plot(workspace, table_summary, measurements)
+    @test plot_data!(workspace, table_summary, measurements, figure) === nothing
+    @test drew[] == -1
 
     # An unregistered kind errors clearly rather than dispatching nowhere.
-    @test_throws ErrorException setup_plot(workspace, MB.RegistryPlot{:missing}, measurements)
+    @test_throws KeyError setup_plot(
+        workspace,
+        MB.RegistryPlot{:missing,Symbol("Missing")},
+        measurements,
+    )
 end

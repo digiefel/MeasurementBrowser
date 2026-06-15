@@ -553,7 +553,7 @@ function render_menu_bar(state::BrowserState)::Nothing
             plots = state.plots
             if ig.MenuItem("Debug Plot Mode", C_NULL, plots.debug)
                 plots.debug = !plots.debug
-                _clear_plot_views!(plots)
+                clear_plot_views!(plots)
             end
             ig.EndMenu()
         end
@@ -884,7 +884,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         end
         if !(workspace isa Workspace.Workspace && source_scan_running(workspace))
             _time!(state, :plot_warmup) do
-                _ensure_plot_runtime_warmed!(state)
+                ensure_plot_runtime_warmed!(state)
             end
         end
         render_selection_window(state)
