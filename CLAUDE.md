@@ -2,14 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+For the architectural model, read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first — it is the
+current-state source of truth. This file is the operational quick-reference.
+
 ## Commands
 
 ```bash
 # Install dependencies
 julia --project -e 'using Pkg; Pkg.instantiate()'
-
-# Launch the GUI browser
-julia --project start.jl /path/to/measurements
 
 # Run tests
 julia --project -e 'using Pkg; Pkg.test()'
@@ -18,79 +18,116 @@ julia --project -e 'using Pkg; Pkg.test()'
 julia --project -e 'using Pkg; Pkg.precompile()'
 ```
 
-When modifying subpackages (DataLoader, DataAnalysis, DataPlotter), also instantiate their local projects: `julia --project=src/DataLoader -e 'using Pkg; Pkg.instantiate()'`.
+`Annotations` (`src/Annotations`) is the only local subpackage; instantiate it too when its deps
+change: `julia --project=src/Annotations -e 'using Pkg; Pkg.instantiate()'`.
+
+There is no generic launcher script. The app is started from **project code**: define a project,
+open a workspace on a data root, and open the browser. See "Launching" below.
 
 ## Architecture
 
-MeasurementBrowser is a Julia GUI application for browsing/analyzing ferroelectric and semiconductor device measurements (RuO2 test chips). It combines GLMakie plotting with CImGui for the UI.
+MeasurementBrowser is a **project-agnostic** Julia GUI engine for browsing and analyzing
+measurement data. It combines GLMakie plotting with a CImGui UI. The package ships **no
+domain knowledge** — no measurement kinds, readers, analyzers, or plotters. All of that lives in
+*project code* (external scripts) registered through the project API. RuO2 ferroelectric/semiconductor
+work and the TASE project are projects built on top, not part of the package.
 
-### Module Dependency Graph
+### Modules (root `src/MeasurementBrowser.jl`, in include order)
 
+| Module | File | Owns |
+|---|---|---|
+| `Projects` | `Projects.jl` | The `Project` struct + recipe types + interface stubs. Defined early so other modules can name the concrete type; its methods live in `Project.jl`. |
+| `MeasurementIndex` | `MeasurementIndex.jl` (+ `SourceFiles.jl`, `Scanning.jl`) | `SourceFile`, `MeasurementInfo`, `DeviceInfo`, the hierarchy, and filesystem scanning. |
+| `Cache` | `Cache.jl`, `Cache/ProjectCache.jl` | Fingerprint-keyed HDF5 cache of the scan + measurement data. |
+| `Workspace` | `Workspace.jl` (+ `DataAccess.jl`, `Operations.jl`) | One open data root: index, selection, loaded/cached data access, background jobs. |
+| `Visualization` | `Visualization.jl` | Plot engine; `RegistryPlot{Kind}` adapter bridging registered plots to dispatch. |
+| `TableInspector` | `TableInspector.jl` | Tabular preview of measurement data. |
+| (project methods) | `Project.jl` | `define_project`, the `register_*` functions, the engine-interface impls, and `Project` serialization. |
+| `Browser` | `Browser.jl` (+ `Browser/*`, `Gui/*`) | CImGui frontend: tree/plot/table panels, state, persistence, tags, Makie embedding. |
+
+### Project API
+
+Project code builds a `Project` by mutation, pointing each registration at plain callbacks:
+
+```julia
+project = define_project("TASE"; description="…")
+
+register_measurement!(project, :iv;
+    detect       = file -> occursin("iv", lowercase(file.filename)),  # Bool; first match wins
+    read         = file -> DataFrame(...),                            # whole file, parsed once
+    measurements = (file, data) -> [MeasurementInfo(...)],            # one entry per measurement
+    process      = (mi, data) -> data,                               # optional; default passthrough
+    stats        = (mi, processed) -> Dict{Symbol,Any}(...),         # optional
+    label        = mi -> "…")                                        # optional
+
+register_device_stat!(project; measurement_kinds=[:iv],              # cross-measurement fold
+    compute_stats = group -> …)                                      # fills each mi.stats in place
+
+register_plot!(project, :iv; label="I–V", setup=…, draw=…)           # one plot recipe per kind
 ```
-MeasurementBrowser.jl (root module)
-  ├── DeviceParser.jl     — filename parsing, device hierarchy, measurement detection
-  ├── Gui.jl              — CImGui UI (tree panel, plot panel, combined plots)
-  └── MakieIntegration.jl — GLMakie↔CImGui bridge (included by Gui.jl)
 
-Gui.jl uses:
-  ├── DataPlotter/        — figure_for_file(), figure_for_files(), plot functions
-  │     ├── uses DataLoader/   — CSV readers (read_fe_pund, read_iv_sweep, etc.)
-  │     └── uses DataAnalysis/ — analyze_pund, analyze_tlm_combined, etc.
-```
+The `measurements` callback sets each measurement's device identity (`DeviceInfo`) and is where a
+single file expands into multiple entries (e.g. one `MeasurementInfo` per fatigue cycle, distinguished
+by `parameters`); the engine mints each `unique_id` from filepath + kind + params. Re-calling a
+`register_*` with the same key replaces the recipe in place, so editing and re-running a line updates
+a live project.
 
 ### Data Flow
 
-1. **Scan:** `scan_source()` walks a folder tree, creating `MeasurementInfo` structs from CSV filenames via regex patterns (`RuO2test_CHIP_TYPE_GEOMETRY_...`). Some files expand into multiple virtual measurements (breakdown → per-device, PUND fatigue → per-cycle).
+1. **Scan:** `scan_source` walks the data root, and for each file the project's first matching
+   `detect` selects a recipe. `interpret_file` then runs `read → measurements`, and folds each
+   measurement's `process → stats` into the **same pass** (so the parsed table is freed per file and
+   scan memory stays bounded). Merges source-root `device_info.txt` metadata.
+2. **Hierarchy:** measurements organize into a `MeasurementHierarchy` tree by `DeviceInfo.location`.
+   Cross-measurement `register_device_stat!` folds run after the full scan.
+3. **Cache:** the whole scan (including the `Project`'s recipes) is serialized into a fingerprint-keyed
+   HDF5 cache; a fresh cache restores the hierarchy quickly while scanning continues.
+4. **View:** views request data via `read_measurement_data`/`process_measurement_data` (memory →
+   cache → source). Registered plots render through the `RegistryPlot{Kind}` adapter.
 
-2. **Hierarchy:** Measurements organize into a `MeasurementHierarchy` tree (chip → layer → device type → geometry). Optional `device_info.txt` at root merges metadata (area, thickness) into devices.
+### Key Types (`MeasurementIndex.jl`, `Projects.jl`)
 
-3. **Plot:** Single file → `figure_for_file(path, kind)` routes to the appropriate reader + plotter. Multiple files → `figure_for_files(paths, combined_kind)` for combined analysis (TLM, fatigue).
+- `MeasurementInfo` — one logical measurement: ids, `clean_title`, `measurement_kind::Symbol`,
+  `timestamp`, `device_info`, `parameters` (known at interpret time), `stats` (computed later).
+- `DeviceInfo` — `location::Vector{String}` (the tree path) + `parameters` metadata dict.
+- `SourceFile` — one physical file: path, timestamp, header summary, fingerprint, measurements.
+- `MeasurementHierarchy` / `HierarchyNode` — the browsable device tree.
+- `Project` / `MeasurementRecipe` / `DeviceStatRecipe` / `PlotRecipe` — the registry model.
 
-### Key Types (DeviceParser.jl)
+## Launching
 
-- `MeasurementInfo` — one measurement: filename, filepath, kind (`:pund`, `:iv`, `:tlm4p`, `:breakdown`, `:wakeup`, `:pund_fatigue`), timestamp, device_info, parameters
-- `DeviceInfo` — device location path + metadata parameters dict
-- `HierarchyNode` / `MeasurementHierarchy` — browsable tree structure
+```julia
+using MeasurementBrowser
+# … define_project + register_* …
+ws = open_workspace(project, "/path/to/data")
+open_browser(ws)
+```
 
-### Measurement Kinds and Their Modules
-
-| Kind | Detected by filename | Reader (DataLoader) | Analyzer (DataAnalysis) | Plotter (DataPlotter) |
-|------|---------------------|---------------------|------------------------|-----------------------|
-| `:pund` | "fe pund" / "fepund" | `read_fe_pund` | `analyze_pund` | `plot_fe_pund` |
-| `:pund_fatigue` | "pund_fatigue" / "pund fatigue" | `read_pund_fatigue_cycle` | `analyze_pund` (trough fallback) | expands to virtual `:pund` entries |
-| `:iv` | "i_v sweep" / "iv sweep" | `read_iv_sweep` | — | `plot_iv_sweep_single` |
-| `:tlm4p` | "tlm_4p" / "tlm" | `read_tlm_4p` | `analyze_tlm_combined` | `plot_tlm_4p`, `plot_tlm_combined` |
-| `:breakdown` | "break" / "breakdown" | `read_iv_sweep` | `analyze_breakdown` | `plot_iv_sweep_single` |
-| `:wakeup` | "wakeup" | `read_wakeup` | — | `plot_wakeup` |
-
-### Combined Plot Types
-
-Selectable in the GUI when multiple measurements are selected:
-- `:tlm_analysis` — width-normalized resistance vs length
-- `:tlm_temperature` — sheet resistance vs temperature
-- `:pund_fatigue` — P-E curve evolution + remnant polarization vs fatigue cycles
-
-### Virtual Measurement Expansion
-
-Some single CSV files expand into multiple `MeasurementInfo` entries during scanning:
-- **Breakdown files** → `expand_multi_device()` splits multi-device breakdown measurements
-- **PUND Fatigue files** → `expand_pund_fatigue()` creates one virtual `:pund` entry per cycle, storing cycle number in `parameters[:fatigue_cycle]`
+Project scripts live outside the repo (e.g. the TASE_SNS and v2 RuO2 analysis projects). They add
+`MeasurementBrowser` as a dependency, register their measurement kinds, and launch the browser.
 
 ## Coding Conventions
 
 - Julia 1.12; 4-space indentation; ~100-char lines
 - `snake_case` functions/variables, `UpperCamelCase` types, `ALL_CAPS` constants
-- Don't catch errors; let failures surface
+- Don't catch errors that should be fixed; let failures surface
 - Docstrings for public APIs; brief comments only where non-obvious
 - Short imperative commit messages matching existing history style
-- File parsing depends on `RuO2test_...` regex patterns — update regexes and tests together
+- Pre-pre-alpha: prefer clean replacement over compatibility shims (see ARCHITECTURE.md engineering rules)
 
 ## Testing
 
-Tests in `test/` with fixture CSVs. For plot/GUI changes, assert metadata/labels and ensure figure creation doesn't error rather than pixel-perfect checks.
+Tests in `test/` with fixture CSVs under `test/fixtures/`. Projects under test are built inline with
+`define_project` + `register_*` (see `test/test_project.jl`, `test/test_scan_profile.jl`). For
+plot/GUI changes, assert metadata/labels and that figure creation doesn't error rather than
+pixel-perfect checks.
 
 ## Notes
 
-- UI requires OpenGL-capable environment (GLMakie + CImGui)
-- Scanning large measurement trees is slow; point at a small subfolder or `test/` fixtures during development
-- `detect_measurement_kind()` ordering matters: more specific patterns (e.g. "pund_fatigue") must come before general ones ("pund")
+- UI requires an OpenGL-capable environment (GLMakie + CImGui).
+- Scanning large measurement trees is slow; point at a small subfolder or `test/` fixtures during
+  development.
+- **Detection order matters:** recipes are checked in registration order and the first `detect`
+  returning `true` wins — register more specific patterns (e.g. `pund_fatigue`) before general ones
+  (`pund`).
+- Docs split: `docs/*.md` are current-state reference; `docs/plans/*.md` are forward-looking design.

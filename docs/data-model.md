@@ -46,7 +46,7 @@ struct MeasurementHierarchy
     root_path::String
     index::Dict{Tuple{Vararg{String}}, HierarchyNode}   # path tuple → node
     has_device_metadata::Bool
-    project::AbstractProject
+    project::Project
     skipped_count::Int
 end
 ```
@@ -80,12 +80,14 @@ Implication: hierarchical metadata is stored once at the highest applicable leve
 
 ## Virtual measurement expansion
 
-Some single CSVs become multiple `MeasurementInfo` entries during scan:
+A single source file may yield several `MeasurementInfo` entries when the project's `measurements`
+callback returns a vector with more than one entry. They share a filepath but get distinct
+`unique_id` values, which the engine mints from filepath + kind + the `parameters` that distinguish
+siblings.
 
-- **Breakdown files** → `expand_multi_device` splits multi-device sweeps into per-device entries.
-- **PUND fatigue files** → `expand_pund_fatigue` creates one virtual `:pund` per cycle, storing `parameters[:fatigue_cycle]`.
-
-Virtual measurements share a filepath but have distinct `unique_id` values.
+Expansion is purely a project concern. For example, a project may split a multi-device sweep into one
+entry per device, or expand a fatigue file into one entry per cycle (storing the cycle number in
+`parameters`).
 
 Measurement kinds and filename rules belong to project implementations. The package stores the
 resulting `Symbol` without assigning project-specific meaning to it.

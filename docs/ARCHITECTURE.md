@@ -114,7 +114,7 @@ docs and tests to match.
 - Julia 1.12; 4-space indentation; ~100-char lines.
 - `snake_case` functions/variables, `UpperCamelCase` types, `ALL_CAPS` constants.
 - Don't catch errors that should be fixed; let failures surface clearly.
-- Update `detect_measurement_kind` ordering carefully — specific patterns before general ones.
+- Detection runs the project's recipes in registration order (first matching `detect` wins) — register specific patterns before general ones.
 - Tests live in `test/` with fixture CSVs under `test/fixtures/`.
 - Figure-creation tests assert metadata and figure construction behavior, not pixels or labels.
 
