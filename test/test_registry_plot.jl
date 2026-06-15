@@ -55,6 +55,7 @@ const MB = MeasurementBrowser
     @test MB.plot_kind_label(project, table_plot) == "Table Plot"
     @test MB.plot_kind_name(table_plot) == "table::Table Plot"
     @test MB.plot_kind_from_name("table::Table Plot") === table_plot
+    @test_throws ErrorException MB.plot_kind_from_name("table")
 
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
     measurements = measurements_for_file(project, joinpath(dir, "m.csv"))

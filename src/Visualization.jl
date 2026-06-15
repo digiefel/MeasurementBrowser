@@ -32,7 +32,11 @@ plot_kind_name(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} =
 
 """Resolve a persisted plot name back to its internal identity (a registered plot kind)."""
 function plot_kind_from_name(name::AbstractString)::Type{<:PlotKind}
-    kind, label = split(name, "::"; limit=2)
+    parts = split(name, "::"; limit=2)
+    length(parts) == 2 || error(
+        "Invalid persisted plot kind '$name'; expected 'measurement_kind::label'",
+    )
+    kind, label = parts
     return RegistryPlot{Symbol(kind),Symbol(label)}
 end
 
