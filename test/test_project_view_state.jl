@@ -4,10 +4,13 @@ using Test
 const Browser = MeasurementBrowser.Browser
 
 struct ProjectViewTestProject <: AbstractProject end
-struct ProjectViewIVPlot <: PlotKind end
-struct ProjectViewTLMPlot <: PlotKind end
 
 MeasurementBrowser.project_name(::ProjectViewTestProject) = "ProjectViewTest"
+
+# Persisted plot choices are measurement-kind names; on load they resolve to the internal
+# RegistryPlot identity for that kind.
+const ProjectViewIVPlot = MeasurementBrowser.RegistryPlot{:ProjectViewIVPlot}
+const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
 
 @testset "project view state" begin
     root_path = mktempdir()

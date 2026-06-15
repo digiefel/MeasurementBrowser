@@ -1,3 +1,6 @@
+using GLMakie: Axis, Figure, contents, lines!
+using DataFrames: DataFrame, nrow
+
 @setup_workload begin
     fixture_dir = normpath(joinpath(@__DIR__, "..", "test", "fixtures", "TASE"))
     filenames = [
@@ -12,16 +15,59 @@
     ), filenames)
 
     @compile_workload begin
+        # Warm the registry pipeline (define -> register -> scan -> plot) the way real projects use it.
+        project = define_project("Precompile")
+        register_measurement!(
+            project,
+            :iv;
+            detect=file -> endswith(file.filename, ".csv"),
+            read=function (file)
+                rows = Tuple{Float64,Float64}[]
+                for line in Iterators.drop(readlines(file.filepath), 1)
+                    isempty(strip(line)) && continue
+                    parts = split(line, ',')
+                    length(parts) >= 2 || continue
+                    a = tryparse(Float64, parts[1])
+                    b = tryparse(Float64, parts[2])
+                    (a === nothing || b === nothing) && continue
+                    push!(rows, (a, b))
+                end
+                DataFrame(i=first.(rows), v=last.(rows))
+            end,
+            measurements=(file, _data) -> [MeasurementInfo(
+                filepath=file.filepath,
+                measurement_kind=:iv,
+                device_info=DeviceInfo([splitext(file.filename)[1]]),
+                timestamp=file.timestamp,
+                clean_title=file.filename,
+            )],
+            stats=(_mi, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+        )
+        register_plot!(
+            project,
+            :iv;
+            label="I-V",
+            setup=(_workspace, _measurements) -> (figure = Figure(); Axis(figure[1, 1]); figure),
+            draw=function (workspace, measurements, figure)
+                axis = only(contents(figure[1, 1]))
+                for df in read_measurement_data(workspace, measurements)
+                    nrow(df) == 0 && continue
+                    lines!(axis, df.i, df.v)
+                end
+                nothing
+            end,
+        )
+
         measurements = [
-            only(measurements_for_file(TASE_PROJECT, joinpath(fixture_dir, filename)))
+            only(measurements_for_file(project, joinpath(fixture_dir, filename)))
             for filename in filenames
         ]
-        workspace = Workspace.Workspace(TASE_PROJECT, fixture_dir)
+        workspace = Workspace.Workspace(project, fixture_dir)
         read_measurement_data(workspace, measurements)
-        figure = setup_plot(workspace, TASEFourTerminalIVPlot, measurements)
-        plot_data!(workspace, TASEFourTerminalIVPlot, measurements, figure)
+        figure = setup_plot(workspace, RegistryPlot{:iv}, measurements)
+        plot_data!(workspace, RegistryPlot{:iv}, measurements, figure)
         infer_measurement_group("precompile_group", measurements[1:1], measurements)
-        scan_source(scan_dir; project=TASE_PROJECT)
-        scan_source(scan_dir; project=TASE_PROJECT, count_first=true)
+        scan_source(scan_dir; project=project)
+        scan_source(scan_dir; project=project, count_first=true)
     end
 end

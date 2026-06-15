@@ -7,7 +7,8 @@ using ..MeasurementIndex: MeasurementInfo
 import ..Workspace
 using ..Visualization:
     PlotKind,
-    plot_kinds
+    plot_kind_from_name,
+    plot_kind_name
 
 # ---------------------------------------------------------------------------
 # App preferences
@@ -195,11 +196,9 @@ loaded plot kind — a stale selection (e.g. from a different project version) i
 """
 function _plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKind}}
     isempty(name) && return nothing
-    for plot_kind in plot_kinds()
-        String(nameof(plot_kind)) == name && return plot_kind
-    end
-    @warn "Ignoring unknown plot kind '$name' from saved project state" maxlog=3
-    return nothing
+    # A saved name is a measurement-kind symbol; resolve it to its registered plot identity. If the
+    # kind is no longer registered, drawing simply errors gracefully later (not fatal here).
+    return plot_kind_from_name(name)
 end
 
 function _project_view_file_path(root_path::AbstractString)::String
@@ -284,7 +283,7 @@ function _persisted_plot_view(view::PlotViewState)::PersistedPlotView
     return PersistedPlotView(
         id=view.id,
         title=view.title,
-        plot_kind=view.plot_kind === nothing ? "" : String(nameof(view.plot_kind)),
+        plot_kind=view.plot_kind === nothing ? "" : plot_kind_name(view.plot_kind),
         live=view.live,
         measurements=copy(view.measurement_ids),
     )
@@ -310,7 +309,7 @@ function _project_view_from_browser(
             filter=state.measurement_filter,
         ),
         plot_kinds=Dict(
-            String(measurement_kind) => String(nameof(plot_kind))
+            String(measurement_kind) => plot_kind_name(plot_kind)
             for (measurement_kind, plot_kind) in plots.kind_by_measurement
         ),
         main_plot=_persisted_plot_view(plots.main),

@@ -57,6 +57,44 @@ function plot_data!(
     )
 end
 
+# --- Registered-plot bridge ------------------------------------------------
+# A RegistryPlot{kind} dispatches the engine's plot calls to the project's registered setup/draw
+# callbacks. `project.plots` is the recipe table filled by register_plot!.
+
+"""Build the figure for a registered plot by running its `setup` callback."""
+function setup_plot(
+    workspace::Workspace.Workspace,
+    ::Type{RegistryPlot{Kind}},
+    measurements::Vector{MeasurementInfo},
+)::Figure where {Kind}
+    recipe = get(workspace.project.plots, Kind, nothing)
+    recipe === nothing && error("No plot registered for measurement kind :$Kind")
+    return recipe.setup(workspace, measurements)::Figure
+end
+
+"""Draw a registered plot into its figure by running its `draw` callback."""
+function plot_data!(
+    workspace::Workspace.Workspace,
+    ::Type{RegistryPlot{Kind}},
+    measurements::Vector{MeasurementInfo},
+    figure::Figure,
+)::Nothing where {Kind}
+    recipe = get(workspace.project.plots, Kind, nothing)
+    recipe === nothing && error("No plot registered for measurement kind :$Kind")
+    recipe.draw(workspace, measurements, figure)
+    return nothing
+end
+
+"""The plot kind registered for a measurement kind, or `nothing` if none is registered."""
+registered_plot_kind(project, measurement_kind::Symbol)::Union{Nothing,Type{<:PlotKind}} =
+    haskey(project.plots, measurement_kind) ? RegistryPlot{measurement_kind} : nothing
+
+"""Human label for a registered plot kind, taken from its recipe."""
+function plot_kind_label(project, ::Type{RegistryPlot{Kind}})::String where {Kind}
+    recipe = get(project.plots, Kind, nothing)
+    return recipe === nothing ? string(Kind) : recipe.label
+end
+
 """
 Return every loaded concrete visualizer type.
 

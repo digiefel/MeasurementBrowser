@@ -18,7 +18,6 @@ Pipeline per measurement kind (fixed order, each fed the previous output):
 """
 
 using DataFrames: DataFrame
-using GLMakie: Figure
 import Serialization
 
 """One registered measurement recipe."""
@@ -256,44 +255,6 @@ function register_plot!(
 )::Project
     project.plots[kind] = PlotRecipe(kind, String(label), setup, draw)
     return project
-end
-
-# --- Plotting bridge -------------------------------------------------------
-# Registered recipes drive the engine's PlotKind dispatch through RegistryPlot{kind}. Users only ever
-# call register_plot!; RegistryPlot stays an internal identity.
-
-"""Build the figure for a registered plot by running its `setup` callback."""
-function setup_plot(
-    workspace::Workspace.Workspace{Project},
-    ::Type{RegistryPlot{Kind}},
-    measurements::Vector{MeasurementInfo},
-)::Figure where {Kind}
-    recipe = get(workspace.project.plots, Kind, nothing)
-    recipe === nothing && error("No plot registered for measurement kind :$Kind")
-    return recipe.setup(workspace, measurements)::Figure
-end
-
-"""Draw a registered plot into its figure by running its `draw` callback."""
-function plot_data!(
-    workspace::Workspace.Workspace{Project},
-    ::Type{RegistryPlot{Kind}},
-    measurements::Vector{MeasurementInfo},
-    figure::Figure,
-)::Nothing where {Kind}
-    recipe = get(workspace.project.plots, Kind, nothing)
-    recipe === nothing && error("No plot registered for measurement kind :$Kind")
-    recipe.draw(workspace, measurements, figure)
-    return nothing
-end
-
-"""The plot kind registered for a measurement kind, or `nothing` if none is registered."""
-registered_plot_kind(project::Project, measurement_kind::Symbol)::Union{Nothing,Type{<:PlotKind}} =
-    haskey(project.plots, measurement_kind) ? RegistryPlot{measurement_kind} : nothing
-
-"""Human label for a plot kind, taken from its registered recipe."""
-function plot_kind_label(project::Project, ::Type{RegistryPlot{Kind}})::String where {Kind}
-    recipe = get(project.plots, Kind, nothing)
-    return recipe === nothing ? string(Kind) : recipe.label
 end
 
 _default_device_group(mi::MeasurementInfo)::String = device_path_key(mi.device_info)

@@ -242,8 +242,11 @@ function figure_script_path(output_directory::AbstractString, script_name::Abstr
     )
 end
 
-function _script_project_binding(::TASEProject)
-    return "MeasurementBrowser.TASE_PROJECT"
+function _script_project_binding(project::AbstractProject)
+    throw(FigureScriptResolutionError(
+        "Figure-script generation needs a project binding configured for " *
+        "$(project_name(project))",
+    ))
 end
 
 function _path_within_root(root_path::AbstractString, path::AbstractString)

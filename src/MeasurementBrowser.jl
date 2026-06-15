@@ -69,9 +69,11 @@ using .Visualization:
     PlotKind,
     RegistryPlot,
     plot_kind_from_name,
+    plot_kind_label,
     plot_kind_name,
     plot_kind_symbol,
-    plot_kinds
+    plot_kinds,
+    registered_plot_kind
 import .Visualization:
     debug_plot,
     plot_data!,
@@ -80,7 +82,6 @@ import .Visualization:
 include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
-include("projects/TASEProject.jl")
 include("Project.jl")
 include("FigureScripts.jl")
 include("Precompile.jl")

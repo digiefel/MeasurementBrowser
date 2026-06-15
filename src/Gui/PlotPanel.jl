@@ -16,9 +16,21 @@ using ..Visualization:
     PlotKind,
     debug_plot,
     plot_data!,
-    plot_kinds,
+    plot_kind_label,
+    plot_kind_name,
+    registered_plot_kind,
     setup_plot
 using .MakieImguiIntegration: MakieFigure
+
+"""Plot kinds the project has registered for the kinds of measurements currently selected."""
+function _available_plot_kinds(project, measurements::Vector{MeasurementInfo})::Vector{Type{<:PlotKind}}
+    available = Type{<:PlotKind}[]
+    for kind in unique(measurement.measurement_kind for measurement in measurements)
+        plot_kind = registered_plot_kind(project, kind)
+        plot_kind === nothing || push!(available, plot_kind)
+    end
+    return available
+end
 
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
 
@@ -134,7 +146,7 @@ function _draw_plot_view!(
         @error(
             "Plot drawing failed\n" *
             "Project: $(project_name(project))\n" *
-            "Plot: $(nameof(plot_kind))\n" *
+            "Plot: $(plot_kind_name(plot_kind))\n" *
             "Measurements: $(length(measurements))\n$measurement_context",
             exception=(err, bt),
         )
@@ -150,13 +162,14 @@ function _render_plot_toolbar!(
     selected_measurements::Vector{MeasurementInfo},
 )::Nothing
     plots = state.plots
+    project = (state.workspace::Workspace.Workspace).project
     current = view.plot_kind
     if ig.BeginCombo(
         "##plot_kind_$(view.id)",
-        current === nothing ? "Choose plot kind" : String(nameof(current)),
+        current === nothing ? "Choose plot kind" : plot_kind_label(project, current),
     )
-        for candidate in plot_kinds()
-            if ig.Selectable(String(nameof(candidate)), current === candidate)
+        for candidate in _available_plot_kinds(project, measurements)
+            if ig.Selectable(plot_kind_label(project, candidate), current === candidate)
                 view.plot_kind = candidate
                 view.last_key = nothing
                 view.error = ""
@@ -204,7 +217,7 @@ function _render_plot_toolbar!(
     ig.SameLine()
     !can_export && ig.BeginDisabled()
     if ig.Button("Export##export_$(view.id)") && can_export
-        name = current === nothing ? "plot" : lowercase(String(nameof(current)))
+        name = current === nothing ? "plot" : plot_kind_name(current)
         default_name = length(measurements) == 1 ?
             "$(splitext(basename(only(measurements).filepath))[1])-$name.png" :
             "$(length(measurements))-measurements-$name.png"
@@ -314,8 +327,13 @@ function _render_plot_view!(
         if view.measurement_kind !== measurement_kind
             view.measurement_kind = measurement_kind
             if measurement_kind !== nothing
-                view.plot_kind =
-                    get(plots.kind_by_measurement, measurement_kind, nothing)
+                # Prefer the remembered choice, else the project's registered plot for this kind.
+                remembered = get(plots.kind_by_measurement, measurement_kind, nothing)
+                view.plot_kind = remembered !== nothing ? remembered :
+                    registered_plot_kind(
+                        (state.workspace::Workspace.Workspace).project,
+                        measurement_kind,
+                    )
             end
             view.last_key = nothing
         end
@@ -329,7 +347,7 @@ function _render_plot_view!(
         plot_key = (
             project_name(workspace.project),
             view.id,
-            nameof(view.plot_kind),
+            plot_kind_name(view.plot_kind),
             [measurement.unique_id for measurement in measurements],
             plots.debug,
         )
