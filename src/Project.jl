@@ -215,7 +215,15 @@ function register_device_stat!(
     return project
 end
 
-"""Register (or replace) the plot recipe for one measurement kind."""
+"""
+Register (or replace) the plot recipe for one measurement kind.
+
+`setup(workspace, measurements, processed_data)` builds and returns the `Figure`;
+`draw(workspace, measurements, processed_data, figure)` fills it in. The package resolves
+`processed_data` (a `Vector{DataFrame}`, one per measurement and in the same order, through its
+processed-data cache) before calling either callback, so neither calls `process_measurement_data`
+itself.
+"""
 function register_plot!(
     project::Project,
     kind::Symbol;

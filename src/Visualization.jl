@@ -61,7 +61,12 @@ end
 # A RegistryPlot{kind} dispatches the engine's plot calls to the project's registered setup/draw
 # callbacks. `project.plots` is the recipe table filled by register_plot!.
 
-"""Build the figure for a registered plot by running its `setup` callback."""
+"""
+Build the figure for a registered plot by running its `setup` callback.
+
+The package resolves processed data (through its cache) before invoking the recipe, so `setup` can
+size the figure layout to the data without calling `process_measurement_data` itself.
+"""
 function setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegistryPlot{Kind}},
@@ -69,10 +74,17 @@ function setup_plot(
 )::Figure where {Kind}
     recipe = get(workspace.project.plots, Kind, nothing)
     recipe === nothing && error("No plot registered for measurement kind :$Kind")
-    return recipe.setup(workspace, measurements)::Figure
+    processed = Workspace.process_measurement_data(workspace, measurements)
+    return recipe.setup(workspace, measurements, processed)::Figure
 end
 
-"""Draw a registered plot into its figure by running its `draw` callback."""
+"""
+Draw a registered plot into its figure by running its `draw` callback.
+
+The package resolves processed data (through its cache) before invoking the recipe, so `draw`
+callbacks receive the processed `DataFrame`s directly and never call `process_measurement_data`
+themselves.
+"""
 function plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegistryPlot{Kind}},
@@ -81,7 +93,8 @@ function plot_data!(
 )::Nothing where {Kind}
     recipe = get(workspace.project.plots, Kind, nothing)
     recipe === nothing && error("No plot registered for measurement kind :$Kind")
-    recipe.draw(workspace, measurements, figure)
+    processed = Workspace.process_measurement_data(workspace, measurements)
+    recipe.draw(workspace, measurements, processed, figure)
     return nothing
 end
 

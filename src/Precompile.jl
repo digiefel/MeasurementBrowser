@@ -47,10 +47,10 @@ using DataFrames: DataFrame, nrow
             project,
             :iv;
             label="I-V",
-            setup=(_workspace, _measurements) -> (figure = Figure(); Axis(figure[1, 1]); figure),
-            draw=function (workspace, measurements, figure)
+            setup=(_workspace, _measurements, _processed) -> (figure = Figure(); Axis(figure[1, 1]); figure),
+            draw=function (_workspace, _measurements, processed, figure)
                 axis = only(contents(figure[1, 1]))
-                for df in read_measurement_data(workspace, measurements)
+                for df in processed
                     nrow(df) == 0 && continue
                     lines!(axis, df.i, df.v)
                 end

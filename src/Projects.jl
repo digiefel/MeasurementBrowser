@@ -27,7 +27,12 @@ struct DeviceStatRecipe
     compute_stats::Function
 end
 
-"""One registered plot recipe for a measurement kind."""
+"""
+One registered plot recipe for a measurement kind.
+
+`setup(workspace, measurements, processed_data)` returns the `Figure`; `draw(workspace,
+measurements, processed_data, figure)` fills it. Both receive the package-resolved processed data.
+"""
 struct PlotRecipe
     kind::Symbol
     label::String

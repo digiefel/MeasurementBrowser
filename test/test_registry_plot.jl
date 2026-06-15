@@ -29,8 +29,8 @@ const MB = MeasurementBrowser
         project,
         :table;
         label="Table Plot",
-        setup=(workspace, measurements) -> Figure(),
-        draw=(workspace, measurements, figure) -> (drew[] = length(measurements); Axis(figure[1, 1]); nothing),
+        setup=(workspace, measurements, processed) -> Figure(),
+        draw=(workspace, measurements, processed, figure) -> (drew[] = length(processed); Axis(figure[1, 1]); nothing),
     )
 
     # Identity helpers used by the GUI and persistence.
