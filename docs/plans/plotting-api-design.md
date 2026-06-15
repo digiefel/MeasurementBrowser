@@ -12,8 +12,9 @@ A project registers plots per measurement `kind` with plain callbacks — no typ
 reflection. A kind may have **several** plots, each distinguished by its `label`:
 
 ```julia
-register_plot!(project, :pund; label = "PUND loop",  setup = …, draw = …)
-register_plot!(project, :pund; label = "Q–V",        setup = …, draw = …)   # same kind, another plot
+register_plot!(project, :pund; label = "PUND loop", setup = …, draw = …,
+               debug = (workspace, items) -> …)     # optional: live raw-data tuning variant
+register_plot!(project, :pund; label = "Q–V",       setup = …, draw = …)    # same kind, another plot
 ```
 
 - `setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills
@@ -58,33 +59,37 @@ branching in the composition layer.
 | Package owns | Project owns |
 |---|---|
 | selection UI, menus, labels | `register_plot!` `setup`/`draw` per kind |
-| overlay, faceting, multi-panel layout | optional `debug_plot` for analysis tuning |
+| overlay, faceting, multi-panel layout | an optional `debug` callback for analysis tuning |
 | data access + cache; materializing `item.data` | the figure/axes/layout a plot kind needs |
 | calling `setup` once and `draw` as many times as needed | drawing `item.data` into the figure |
-| dispatching `debug_plot` for explicit debug workflows | |
+| running `recipe.debug` when debug mode is toggled | |
 
 ## Normal plots vs. debug plots
 
-Two distinct workflows, kept separate:
+A plot may carry an optional **`debug`** callback — the interactive, raw-data variant of *that* plot,
+for tuning the analysis rather than viewing the finished result. It is a fourth keyword on the same
+registration, not a separate hook (defaults to `nothing`):
 
 ```text
-normal plot                         debug plot
+draw (normal)                       debug
   show the finished result            explain and tune the analysis
-  uses processed item.data            uses raw data
-  static figure                       live figure with sliders/Observables
+  processed item.data                 RAW data
+  static figure                       live figure with sliders / Observables
   cache-friendly                      recomputes inside the figure; never cached
 ```
 
-A **debug plot** is a project-specific diagnostic tool for tuning analysis parameters, not a
-replacement for normal plotting:
+- The GUI's debug toggle is **enabled iff the selected plot's recipe has a `debug` callback**;
+  toggling runs `debug` instead of `setup`/`draw`. There is no standalone `debug_plot` hook — the
+  engine looks up `recipe.debug` exactly as it looks up `recipe.setup`/`recipe.draw`.
+- **`debug` receives raw data, deliberately.** `setup`/`draw` get processed `item.data`; `debug`
+  needs raw, because moving a slider re-runs the analysis itself. So its `items` expose raw data and
+  the callback owns its own Makie `Observable`s and recompute. That asymmetry is the point of the split.
+- `debug` is per `(kind, label)`, so each plot can have its own. A debug tool usually tunes the
+  *kind's* analysis, so attaching one to the natural plot for that kind is enough; a debug-only view
+  with no normal plot is just a plot whose `draw` is the debug view — not solved until it's needed.
 
-```julia
-debug_plot(workspace, items; kwargs...)::Figure   # stub lives in Visualization.jl today
-```
-
-The package only loads the relevant raw data and embeds the returned Makie figure — it knows nothing
-about a project's smoothing windows, pulse thresholds, or similar. Inside the figure the project
-drives Makie `Observable`s:
+The package knows nothing about a project's smoothing windows, pulse thresholds, or similar — it only
+loads the raw data and embeds the returned Makie figure:
 
 ```text
 slider changes -> Observable updates -> project recomputes analysis from raw data
@@ -98,13 +103,17 @@ interactive workspaces built from raw data.
 voltage/current and smoothed traces, the derivative + threshold + ramp regions + pulse boundaries,
 the I–V loop, and the Q–V / P–V loop.*
 
+> Current state: debug is still a standalone `debug_plot` engine hook toggled globally. Folding it
+> into the recipe — `recipe.debug` lookup in the plot bridge + the GUI toggle — is a small pending
+> code change.
+
 ## Thread discipline
 
 Makie mutation stays on the UI/render thread; data resolution can run in the background:
 
 ```text
 background / cache work:   data access (read_data, process)  → materialize item.data
-UI / render work:          setup, draw, debug_plot            → Makie figure construction & mutation
+UI / render work:          setup, draw, debug                 → Makie figure construction & mutation
 ```
 
 ## Open questions
@@ -120,7 +129,7 @@ UI / render work:          setup, draw, debug_plot            → Makie figure c
 
 ## Relationship to existing plans
 
-This doc owns the **project-facing plot API** (`register_plot!`, `setup`/`draw`, `debug_plot`), the
+This doc owns the **project-facing plot API** (`register_plot!` with `setup`/`draw`/`debug`), the
 **normal-vs-debug split**, and the **project↔package composition contract**. It does not own:
 
 - the generic built-in visualizers, figures, annotations, and workflows — [workspace-vision.md](workspace-vision.md);
