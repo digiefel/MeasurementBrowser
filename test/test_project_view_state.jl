@@ -155,6 +155,29 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
     MeasurementBrowser.Workspace.replace_measurement_index!(workspace, hierarchy)
     state = Browser.BrowserState(workspace=workspace)
 
+    bad_plot_view = Browser.PersistedProjectView(
+        project="ProjectViewTest",
+        plot_kinds=Dict("iv_sweep" => "tlm4p"),
+        main_plot=Browser.PersistedPlotView(
+            id="main",
+            title="Plot Area",
+            plot_kind="tlm4p",
+            live=true,
+        ),
+        plot_windows=[
+            Browser.PersistedPlotView(
+                id="plot_1",
+                title="Detached",
+                plot_kind="tlm4p",
+                live=false,
+            ),
+        ],
+    )
+    Browser._apply_project_view!(state, bad_plot_view)
+    @test isempty(state.plots.kind_by_measurement)
+    @test state.plots.main.plot_kind === nothing
+    @test only(state.plots.windows).plot_kind === nothing
+
     Browser._apply_project_view!(state, view)
     @test workspace.selection.device_paths == ["chip/device"]
     @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]

@@ -319,8 +319,9 @@ function _apply_project_view!(
     empty!(plots.kind_by_measurement)
     for (measurement_kind, plot_kind_name) in view.plot_kinds
         isempty(plot_kind_name) && continue
-        plots.kind_by_measurement[Symbol(measurement_kind)] =
-            plot_kind_from_name(plot_kind_name)
+        plot_kind = plot_kind_from_name(plot_kind_name)
+        plot_kind === nothing && continue
+        plots.kind_by_measurement[Symbol(measurement_kind)] = plot_kind
     end
     plots.main = PlotViewState(
         id="main",
