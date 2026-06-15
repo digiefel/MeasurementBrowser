@@ -1,7 +1,5 @@
 module Projects
 
-using DataFrames: DataFrame
-
 # ---------------------------------------------------------------------------
 # Project type
 #
@@ -58,10 +56,11 @@ mutable struct Project
     recipes::Vector{MeasurementRecipe}
     device_stats::Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}
     plots::Dict{Symbol,PlotRecipe}
-    # Transient scan state: each source file is parsed once during interpretation and the result is
-    # reused by the stats pass, so a file is never read twice in one scan. Cleared when stats finish.
-    read_cache::Dict{String,DataFrame}
-    read_lock::ReentrantLock
+    # Transient per-measurement analysis failures gathered while interpreting files, as
+    # (filepath, measurement id, message) tuples. Drained when device stats run. Plain string tuples
+    # so this early module needs no MeasurementIndex types.
+    stat_failures::Vector{Tuple{String,String,String}}
+    stat_failures_lock::ReentrantLock
     # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
     # start of each scan and replaced wholesale, so it stays bounded to one row per measurement kind.
     scan_profile::Dict{Symbol,KindProfile}

@@ -89,7 +89,7 @@ end
 @testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.
-    project.read_cache["/tmp/x.csv"] = DataFrame(a=[1])
+    push!(project.stat_failures, ("/tmp/x.csv", "id", "boom"))
     project.scan_profile[:table] = MB.KindProfile(2, 5, 1.0, 0.5)
 
     io = IOBuffer()
@@ -102,7 +102,7 @@ end
     @test length(restored.recipes) == 1
     @test restored.recipes[1].kind == :table
     # Transient state is rebuilt empty rather than carried across the cache boundary.
-    @test isempty(restored.read_cache)
+    @test isempty(restored.stat_failures)
     @test isempty(restored.scan_profile)
 
     # The same project is reachable twice from a cached scan (source.project and hierarchy.project);
@@ -112,4 +112,40 @@ end
     seekstart(shared)
     a, b = deserialize(shared)
     @test a === b
+end
+
+@testset "per-measurement stat failure surfaces through the fused pass" begin
+    mktempdir() do dir
+        write(joinpath(dir, "ok.csv"), "x,y\n1,2\n")
+        write(joinpath(dir, "bad.csv"), "x,y\n1,2\n")
+
+        project = MB.define_project("FailureProject")
+        MB.register_measurement!(
+            project,
+            :table;
+            detect=file -> endswith(file.filename, ".csv"),
+            read=file -> DataFrame(CSV.File(file.filepath)),
+            measurements=(file, data) -> [MB.MeasurementInfo(
+                filepath=file.filepath,
+                measurement_kind=:table,
+                device_info=MB.DeviceInfo(["dev", splitext(file.filename)[1]]),
+                timestamp=file.timestamp,
+                clean_title=file.filename,
+            )],
+            # Stats throw only for bad.csv; ok.csv still gets its stats computed.
+            stats=function (mi, data)
+                startswith(basename(mi.filepath), "bad") && error("stats blew up")
+                return Dict{Symbol,Any}(:rows => nrow(data))
+            end,
+        )
+
+        source = MB.scan_source(dir; project=project)
+        @test length(source.analysis_failures) == 1
+        failure = only(source.analysis_failures)
+        @test basename(failure.filepath) == "bad.csv"
+        @test occursin("step=stats", failure.message)
+
+        ok = only(m for m in source.hierarchy.all_measurements if endswith(m.filepath, "ok.csv"))
+        @test ok.stats[:rows] == 1
+    end
 end

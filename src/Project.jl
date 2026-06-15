@@ -44,7 +44,7 @@ function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{P
     project = Project(
         "", "", MeasurementRecipe[],
         Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(), Dict{Symbol,PlotRecipe}(),
-        Dict{String,DataFrame}(), ReentrantLock(),
+        Tuple{String,String,String}[], ReentrantLock(),
         Dict{Symbol,KindProfile}(), ReentrantLock(),
     )
     Serialization.deserialize_cycle(s, project)
@@ -105,7 +105,7 @@ function define_project(name::AbstractString; description::AbstractString="")::P
         MeasurementRecipe[],
         Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(),
         Dict{Symbol,PlotRecipe}(),
-        Dict{String,DataFrame}(),
+        Tuple{String,String,String}[],
         ReentrantLock(),
         Dict{Symbol,KindProfile}(),
         ReentrantLock(),
@@ -140,6 +140,25 @@ end
 function reset_scan_profile!(project::Project)::Nothing
     lock(project.profile_lock) do
         empty!(project.scan_profile)
+    end
+    lock(project.stat_failures_lock) do
+        empty!(project.stat_failures)
+    end
+    return nothing
+end
+
+"""Log and record one per-measurement analysis failure raised while interpreting a file."""
+function _record_stat_failure!(
+    project::Project,
+    filepath::String,
+    measurement_id::String,
+    step::Symbol,
+    err,
+)::Nothing
+    @error("Measurement analysis failed", file=filepath, measurement=measurement_id, step,
+        exception=(err, catch_backtrace()))
+    lock(project.stat_failures_lock) do
+        push!(project.stat_failures, (filepath, measurement_id, "step=$step: " * sprint(showerror, err)))
     end
     return nothing
 end
@@ -263,20 +282,40 @@ function _default_label(measurement::MeasurementInfo)::String
     return join(filter(!isnothing, parts), " ")
 end
 
-"""Interpret one file: detect its recipe, then enumerate its logical measurements."""
+"""
+Interpret one file: read it, enumerate its measurements, and compute their per-measurement stats
+while the parse is still in hand.
+
+Folding stats into this single pass frees the (often large) parsed table as soon as the file's
+measurements are analyzed, instead of holding every file's parse until a separate stats pass — so
+scan memory stays bounded to the files in flight rather than the whole tree. Per-measurement failures
+are recorded on the project and drained by `compute_and_add_measurement_stats!`.
+"""
 function interpret_file(project::Project, file::SourceFile)::Vector{MeasurementInfo}
     recipe = _detect_recipe(project, file)
     recipe === nothing && return MeasurementInfo[]
     read_started = time_ns()
     data = recipe.read(file)::DataFrame
     read_seconds = (time_ns() - read_started) / 1e9
-    # Keep the parse so the stats pass reuses it instead of re-reading (source files are slow to open).
-    lock(project.read_lock) do
-        project.read_cache[file.filepath] = data
-    end
     enumerated = recipe.measurements(file, data)::Vector{MeasurementInfo}
-    _record_read!(project, recipe.kind, read_seconds, length(enumerated))
-    return [_stamp(recipe, mi) for mi in enumerated]
+    measurements = [_stamp(recipe, mi) for mi in enumerated]
+    _record_read!(project, recipe.kind, read_seconds, length(measurements))
+    if recipe.stats !== nothing
+        for measurement in measurements
+            try
+                stats_started = time_ns()
+                processed = recipe.process === nothing ? data : recipe.process(measurement, data)
+                merge!(measurement.stats, recipe.stats(measurement, processed))
+                _record_stats!(project, measurement.measurement_kind,
+                    (time_ns() - stats_started) / 1e9)
+            catch err
+                is_job_cancelled(err) && rethrow()
+                _record_stat_failure!(project, measurement.filepath, measurement.unique_id, :stats, err)
+            end
+        end
+    end
+    # `data` falls out of scope here, so the parse becomes collectable once this file is done.
+    return measurements
 end
 
 """Re-stamp a user-built measurement with the recipe kind and an engine-minted id."""
@@ -311,87 +350,35 @@ function process_measurement_data(
     return recipe.process(measurement, raw)::DataFrame
 end
 
-"""Per-measurement stats, then cross-measurement device stats. Failures carry file + step."""
+"""
+Run the cross-measurement device stats, then return every analysis failure for the scan.
+
+Per-measurement process/stats already ran inside `interpret_file` (one pass over each file's parse),
+so this only does the disjoint device-scoped folds, which read the measurements' computed `stats`
+rather than any raw data. Per-measurement failures collected during interpretation are drained and
+returned alongside any device-fold failures.
+"""
 function compute_and_add_measurement_stats!(
     project::Project,
     measurements::Vector{MeasurementInfo},
     files::Vector{SourceFile};
     on_progress::Union{Nothing,Function}=nothing,
 )::Vector{MeasurementAnalysisFailure}
-    # process/stats run on worker threads, so callbacks must be pure (no shared mutable state). Each
-    # measurement only mutates its own `stats`, the file read-cache is filled once then read-only, and
-    # failures are collected under a lock. The cancel callback lives in task-local storage, which spawned
-    # tasks do not inherit, so it is captured here and re-established inside each task via `with_cancel`.
+    # The cancel callback lives in task-local storage, which spawned tasks do not inherit, so capture
+    # it here and re-establish it inside each task via `with_cancel`.
     failures = MeasurementAnalysisFailure[]
     failures_lock = ReentrantLock()
     add_failure! = (filepath, id, step, err) -> lock(failures_lock) do
         push!(failures, _step_failure(filepath, id, step, err))
     end
-    file_by_path = Dict(file.filepath => file for file in files)
     cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
 
-    todo = Tuple{MeasurementInfo,MeasurementRecipe}[]
-    for measurement in measurements
-        recipe = _recipe(project, measurement.measurement_kind)
-        recipe === nothing && continue
-        recipe.stats === nothing && continue
-        push!(todo, (measurement, recipe))
-    end
-
-    # Reuse the parse from interpretation; only files missing from the cache (e.g. a single-file
-    # refresh) are read here, once each, in parallel.
-    missing_paths = unique(m.filepath for (m, _) in todo if !haskey(project.read_cache, m.filepath))
-    @sync for path in missing_paths
-        Base.Threads.@spawn with_cancel(cancel_requested) do
-            check_cancel()
-            recipe = _recipe(project, detect_kind(project, basename(path)))
-            recipe === nothing && return
-            file = get(file_by_path, path) do
-                index_source_file(path)
-            end
-            try
-                data = recipe.read(file)::DataFrame
-                lock(project.read_lock) do; project.read_cache[path] = data end
-            catch
-                # leave it absent; the per-measurement loop records a read failure for it
-            end
-        end
-    end
-
-    # Run process + stats per measurement, in parallel over the now read-only file cache.
-    total = length(todo)
+    # Cross-measurement device-stat folds. Groups within one recipe are disjoint, so they fold in
+    # parallel; separate stat recipes stay sequential.
+    recipes = collect(values(project.device_stats))
+    total = length(recipes)
     done = Base.Threads.Atomic{Int}(0)
-    Base.Threads.@threads for index in eachindex(todo)
-        measurement, recipe = todo[index]
-        with_cancel(cancel_requested) do
-            check_cancel()
-            data = get(project.read_cache, measurement.filepath, nothing)
-            if data === nothing
-                add_failure!(measurement.filepath, measurement.unique_id, :read,
-                    ErrorException("could not read source file"))
-            else
-                try
-                    stats_started = time_ns()
-                    processed = recipe.process === nothing ? data : recipe.process(measurement, data)
-                    merge!(measurement.stats, recipe.stats(measurement, processed))
-                    _record_stats!(project, measurement.measurement_kind,
-                        (time_ns() - stats_started) / 1e9)
-                catch err
-                    is_job_cancelled(err) && rethrow()
-                    add_failure!(measurement.filepath, measurement.unique_id, :stats, err)
-                end
-            end
-        end
-        if on_progress !== nothing
-            processed = Base.Threads.atomic_add!(done, 1) + 1
-            (processed % 128 == 0 || processed == total) &&
-                on_progress((total=total, processed=processed, current_path=measurement.filepath))
-        end
-    end
-
-    # 3. Cross-measurement device-stat folds run after per-measurement stats are in place. Groups are
-    #    disjoint, so they fold in parallel; separate stat recipes stay sequential.
-    for recipe in values(project.device_stats)
+    for recipe in recipes
         check_cancel()
         @sync for group in values(_group_for_device_stat(measurements, recipe))
             isempty(group) && continue
@@ -405,11 +392,18 @@ function compute_and_add_measurement_stats!(
                 end
             end
         end
+        if on_progress !== nothing
+            processed = Base.Threads.atomic_add!(done, 1) + 1
+            on_progress((total=total, processed=processed, current_path=""))
+        end
     end
 
-    # Release the per-scan file parses now that every stat is computed.
-    lock(project.read_lock) do
-        empty!(project.read_cache)
+    # Drain the per-measurement failures gathered while interpreting files.
+    lock(project.stat_failures_lock) do
+        for (filepath, measurement_id, message) in project.stat_failures
+            push!(failures, MeasurementAnalysisFailure(filepath, measurement_id, message))
+        end
+        empty!(project.stat_failures)
     end
     return failures
 end
