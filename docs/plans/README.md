@@ -11,10 +11,12 @@ docs; use [../ARCHITECTURE.md](../ARCHITECTURE.md) when you need to know how the
 2. [data-model-generalization.md](data-model-generalization.md) — generalizing the core item/group
    types toward DataBrowser: two extension APIs, `Any` payloads, the cache trait, and the grouping
    model (the tree as a derived view via `group_path`).
-3. [refactor-gap-report.md](refactor-gap-report.md) — current branch gap report and immediate
+3. [plotting-api-design.md](plotting-api-design.md) — project-facing plot API (`register_plot!`,
+   `setup`/`draw`), GUI-owned composition, and the normal-vs-debug-plot split.
+4. [refactor-gap-report.md](refactor-gap-report.md) — current branch gap report and immediate
    cleanup order. This is the most time-sensitive plan doc.
-4. [spatial-browser.md](spatial-browser.md) — spatial browser and annotations.
-5. [measurement-parameters-and-stats.md](measurement-parameters-and-stats.md) — metadata bucket
+5. [spatial-browser.md](spatial-browser.md) — spatial browser and annotations.
+6. [measurement-parameters-and-stats.md](measurement-parameters-and-stats.md) — metadata bucket
    contract for parsed parameters and computed stats.
 
 ## Plan Boundaries
@@ -25,6 +27,7 @@ The plans are deliberately split by ownership boundary:
 |---|---|---|
 | `workspace-vision.md` | The end-state user model and shared vocabulary. | Specific signatures, migration steps, or current-state claims. |
 | `data-model-generalization.md` | The core item/group type system, two extension APIs, payload/cache trait, and the grouping model (`group_path`, canonical vs. view). | Visualizers, figures, workflows, annotation storage. |
+| `plotting-api-design.md` | The project plot API (`register_plot!`, `setup`/`draw`, `debug_plot`), GUI-owned composition, normal-vs-debug split. | The item/data model, generic built-in visualizers, figure/workflow persistence. |
 | `refactor-gap-report.md` | Near-term cleanup list for the branch at the time it was written. | Long-term product vision. |
 | `spatial-browser.md` | Spatial navigation plus device and measurement annotations. | Figure annotations and workflow persistence. |
 | `measurement-parameters-and-stats.md` | Public meaning of metadata fields. | UI layout, cache schema, plotting signatures. |
