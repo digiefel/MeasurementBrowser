@@ -2,7 +2,7 @@ import CImGui as ig
 import CImGui.CSyntax: @c
 using NativeFileDialog: pick_folder
 
-using ..Project:
+using ..Projects:
     AbstractProject,
     display_label,
     kind_label

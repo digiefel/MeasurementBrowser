@@ -4,7 +4,7 @@ import GLFW
 import CImGui as ig
 using NativeFileDialog: pick_folder
 
-using ..Project:
+using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
     project_description,

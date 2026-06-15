@@ -86,7 +86,7 @@ end
     end
 end
 
-@testset "RegistryProject serialization drops transient state" begin
+@testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.
     project.read_cache["/tmp/x.csv"] = DataFrame(a=[1])
@@ -97,7 +97,7 @@ end
     seekstart(io)
     restored = deserialize(io)
 
-    @test restored isa MB.RegistryProject
+    @test restored isa MB.Project
     @test restored.name == project.name
     @test length(restored.recipes) == 1
     @test restored.recipes[1].kind == :table

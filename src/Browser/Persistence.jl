@@ -1,6 +1,6 @@
 using TOML
 
-using ..Project:
+using ..Projects:
     PROJECTS,
     project_name
 using ..MeasurementIndex: MeasurementInfo

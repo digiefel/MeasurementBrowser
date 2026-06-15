@@ -2,7 +2,7 @@ module MeasurementIndex
 
 using Dates
 
-import ..Project:
+import ..Projects:
     AbstractProject,
     compute_and_add_measurement_stats!,
     device_path_label,

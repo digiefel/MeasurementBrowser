@@ -5,7 +5,7 @@ import CImGui as ig
 import CImGui.CSyntax: @c
 using NativeFileDialog: save_file
 
-using ..Project:
+using ..Projects:
     load_source_data,
     project_name
 using ..MeasurementIndex:

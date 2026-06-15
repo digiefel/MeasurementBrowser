@@ -1,6 +1,6 @@
 import CImGui as ig
 
-using ..Project:
+using ..Projects:
     AbstractProject,
     display_label,
     kind_label

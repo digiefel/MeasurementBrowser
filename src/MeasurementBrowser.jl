@@ -3,12 +3,12 @@ module MeasurementBrowser
 using PrecompileTools
 using Annotations
 
-include("Project.jl")
-using .Project:
+include("Projects.jl")
+using .Projects:
     AbstractProject,
     DEFAULT_PROJECT,
     PROJECTS
-import .Project:
+import .Projects:
     compute_and_add_measurement_stats!,
     detect_kind,
     device_path_label,
@@ -75,7 +75,7 @@ include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
 include("projects/TASEProject.jl")
-include("RegistryProject.jl")
+include("Project.jl")
 include("FigureScripts.jl")
 include("Precompile.jl")
 include("Browser.jl")
@@ -94,6 +94,6 @@ export TablePreview, inspect_table
 export project_name, project_description
 export open_workspace, close_workspace!, select_measurements!
 export define_project, register_measurement!, register_device_stat!, register_plot!
-export RegistryProject
+export Project
 
 end # module MeasurementBrowser

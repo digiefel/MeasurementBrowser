@@ -4,7 +4,7 @@ using GLMakie: Figure
 using InteractiveUtils: subtypes
 
 import ..MeasurementIndex: MeasurementInfo
-import ..Project: project_name
+import ..Projects: project_name
 import ..Workspace
 
 """

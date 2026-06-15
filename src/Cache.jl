@@ -8,7 +8,7 @@ import ..MeasurementIndex:
     check_cancel,
     emit_progress,
     file_fingerprint
-import ..Project: AbstractProject, project_name
+import ..Projects: AbstractProject, project_name
 
 include("Cache/ProjectCache.jl")
 

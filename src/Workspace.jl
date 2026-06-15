@@ -28,7 +28,7 @@ import ..MeasurementIndex:
     is_job_cancelled,
     scan_source,
     with_cancel
-import ..Project:
+import ..Projects:
     AbstractProject,
     load_source_data,
     process_measurement_data,

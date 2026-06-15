@@ -1,4 +1,4 @@
-using ..Project:
+using ..Projects:
     AbstractProject,
     DEFAULT_PROJECT,
     PROJECTS,
