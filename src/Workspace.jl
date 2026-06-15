@@ -29,7 +29,7 @@ import ..MeasurementIndex:
     scan_source,
     with_cancel
 import ..Projects:
-    AbstractProject,
+    Project,
     load_source_data,
     process_measurement_data,
     project_name
@@ -107,7 +107,7 @@ end
 """
 One open measurement source root and all package-managed state belonging to it.
 """
-mutable struct Workspace{P<:AbstractProject}
+mutable struct Workspace{P<:Project}
     project::P
     root_path::String
     index::WorkspaceIndex
@@ -127,7 +127,7 @@ Create the empty state for one project and normalized source root.
 function Workspace(
     project::P,
     root_path::AbstractString,
-)::Workspace{P} where {P<:AbstractProject}
+)::Workspace{P} where {P<:Project}
     root = normpath(abspath(expanduser(String(root_path))))
     hierarchy = MeasurementHierarchy(root, has_device_metadata(root), project)
     identity = project_cache_identity(project_cache_id(root), project, root)

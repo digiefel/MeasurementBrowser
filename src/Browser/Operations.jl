@@ -1,5 +1,5 @@
 using ..Projects:
-    AbstractProject,
+    Project,
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
@@ -10,7 +10,7 @@ using ..Workspace:
     open_workspace
 
 """Return the project selected by the saved project preference."""
-function _project_for_preference(pref::AbstractString)::AbstractProject
+function _project_for_preference(pref::AbstractString)::Project
     pref == "auto" && return something(DEFAULT_PROJECT[])
     for project in PROJECTS
         project_name(project) == pref && return project
@@ -22,7 +22,7 @@ end
 function _open_project_path!(
     state::BrowserState,
     path::String;
-    project::Union{Nothing,AbstractProject}=nothing,
+    project::Union{Nothing,Project}=nothing,
     persist::Bool=true,
 )::Nothing
     norm_path = _normalize_project_path(path)

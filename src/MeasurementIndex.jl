@@ -3,7 +3,7 @@ module MeasurementIndex
 using Dates
 
 import ..Projects:
-    AbstractProject,
+    Project,
     compute_and_add_measurement_stats!,
     device_path_label,
     interpret_file,
@@ -66,7 +66,7 @@ end
 
 DeviceInfo(location::Vector{String}) = DeviceInfo(location, Dict{Symbol,Any}())
 
-device_path_label(::AbstractProject, device_info::DeviceInfo)::String =
+device_path_label(::Project, device_info::DeviceInfo)::String =
     join(device_info.location, "_")
 
 device_path_key(location::AbstractVector{<:AbstractString})::String = join(location, "/")
@@ -208,7 +208,7 @@ struct MeasurementHierarchy
     root_path::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
     has_device_metadata::Bool
-    project::AbstractProject
+    project::Project
     skipped_count::Int
 end
 
@@ -217,7 +217,7 @@ The authoritative result of one completed filesystem scan.
 """
 struct SourceScan
     root_path::String
-    project::AbstractProject
+    project::Project
     files::Vector{SourceFile}
     hierarchy::MeasurementHierarchy
     analysis_failures::Vector{MeasurementAnalysisFailure}
@@ -226,7 +226,7 @@ end
 """Construct a successful scan with no recorded analysis failures."""
 function SourceScan(
     root_path::String,
-    project::AbstractProject,
+    project::Project,
     files::Vector{SourceFile},
     hierarchy::MeasurementHierarchy,
 )::SourceScan
@@ -300,7 +300,7 @@ Create an empty hierarchy ready for progressive scan results.
 function MeasurementHierarchy(
     root_path::String,
     has_device_metadata::Bool,
-    project::AbstractProject,
+    project::Project,
     skipped_count::Int=0,
 )::MeasurementHierarchy
     return MeasurementHierarchy(
@@ -345,7 +345,7 @@ function MeasurementHierarchy(
     measurements::Vector{MeasurementInfo},
     root_path::String,
     has_device_metadata::Bool,
-    project::AbstractProject,
+    project::Project,
     skipped_count::Int=0,
 )::MeasurementHierarchy
     hierarchy = MeasurementHierarchy(
@@ -359,13 +359,6 @@ function MeasurementHierarchy(
 end
 
 children(node::HierarchyNode)::Vector{HierarchyNode} = node.children
-
-compute_and_add_measurement_stats!(
-    ::AbstractProject,
-    ::Vector{MeasurementInfo},
-    ::Vector{SourceFile};
-    on_progress::Union{Nothing,Function}=nothing,
-)::Vector{MeasurementAnalysisFailure} = MeasurementAnalysisFailure[]
 
 include("MeasurementIndex/Scanning.jl")
 

@@ -65,7 +65,7 @@ The returned identity also contains the package-owned HDF5 path.
 """
 function project_cache_identity(
     cache_id::AbstractString,
-    project::AbstractProject,
+    project::Project,
     root_path::AbstractString,
 )::ProjectCacheIdentity
     root = normpath(abspath(expanduser(String(root_path))))

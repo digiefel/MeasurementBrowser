@@ -3,10 +3,6 @@ using Test
 
 const Browser = MeasurementBrowser.Browser
 
-struct ProjectViewTestProject <: AbstractProject end
-
-MeasurementBrowser.project_name(::ProjectViewTestProject) = "ProjectViewTest"
-
 # Persisted plot choices are measurement-kind names; on load they resolve to the internal
 # RegistryPlot identity for that kind.
 const ProjectViewIVPlot = MeasurementBrowser.RegistryPlot{:ProjectViewIVPlot}
@@ -134,7 +130,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:ProjectViewTLMPlot}
     @test parsed.main_plot.live == true
     @test only(parsed.plot_windows).measurements == ["measurement-2"]
 
-    project = ProjectViewTestProject()
+    project = MeasurementBrowser.define_project("ProjectViewTest")
     measurement_1 = MeasurementBrowser.MeasurementInfo(;
         unique_id="measurement-1",
         filepath=joinpath(root_path, "measurement-1.csv"),

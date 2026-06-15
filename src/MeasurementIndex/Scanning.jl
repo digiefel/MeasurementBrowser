@@ -151,7 +151,7 @@ end
 Create the short title shown for a measurement in browser panels and plots.
 """
 function build_clean_title(
-    project::AbstractProject,
+    project::Project,
     filename::String,
     measurement_kind::Symbol,
     device_info::DeviceInfo,
@@ -171,7 +171,7 @@ end
 Interpret one indexed file and apply matching source-root device metadata.
 """
 function interpret_measurements(
-    project::AbstractProject,
+    project::Project,
     file::SourceFile,
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
 )::Vector{MeasurementInfo}
@@ -188,7 +188,7 @@ end
 Interpret and analyze one physical file using the same project path as a full scan.
 """
 function measurements_for_file(
-    project::AbstractProject,
+    project::Project,
     filepath::AbstractString;
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
 )::Vector{MeasurementInfo}
@@ -204,7 +204,7 @@ Interpret indexed files concurrently and stream each successful measurement batc
 Failures remain attached to their physical files and do not stop unrelated files.
 """
 function interpret_source_files(
-    project::AbstractProject,
+    project::Project,
     files::Vector{SourceFile},
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
     on_result::Function,
@@ -298,7 +298,7 @@ statistics run only after all files are known, allowing cross-file calculations.
 """
 function scan_source(
     root_path::String;
-    project::AbstractProject,
+    project::Project,
     cached_files::Union{Nothing,Dict{String,SourceFile}}=nothing,
     cached_source::Union{Nothing,SourceScan}=nothing,
     on_progress::Union{Nothing,Function}=nothing,

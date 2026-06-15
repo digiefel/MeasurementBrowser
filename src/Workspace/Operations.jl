@@ -2,7 +2,7 @@
 Start cache loading and source scanning for one new workspace.
 """
 function open_workspace(
-    project::AbstractProject,
+    project::Project,
     root_path::AbstractString,
 )::Workspace
     workspace = Workspace(project, root_path)

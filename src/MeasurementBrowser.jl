@@ -5,9 +5,13 @@ using Annotations
 
 include("Projects.jl")
 using .Projects:
-    AbstractProject,
     DEFAULT_PROJECT,
-    PROJECTS
+    DeviceStatRecipe,
+    KindProfile,
+    MeasurementRecipe,
+    PROJECTS,
+    PlotRecipe,
+    Project
 import .Projects:
     compute_and_add_measurement_stats!,
     detect_kind,
@@ -89,7 +93,6 @@ include("Browser.jl")
 using .Browser: open_browser
 
 export open_browser
-export AbstractProject
 export SourceFile, MeasurementInfo, DeviceInfo, MeasurementAnalysisFailure
 export PlotKind, plot_kinds
 export parse_device_info, detect_kind, kind_label, display_label, interpret_file

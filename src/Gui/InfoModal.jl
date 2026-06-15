@@ -3,7 +3,7 @@ import CImGui.CSyntax: @c
 using NativeFileDialog: pick_folder
 
 using ..Projects:
-    AbstractProject,
+    Project,
     display_label,
     kind_label
 using ..MeasurementIndex: MeasurementInfo
@@ -138,7 +138,7 @@ end
 
 """Show a short preview of measurements matched by one figure-script group."""
 function _render_figure_script_group_tooltip(
-    project::AbstractProject,
+    project::Project,
     preview_measurements::Vector{MeasurementInfo},
 )::Nothing
     ig.BeginItemTooltip() || return nothing

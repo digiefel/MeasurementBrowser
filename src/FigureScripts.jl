@@ -242,7 +242,7 @@ function figure_script_path(output_directory::AbstractString, script_name::Abstr
     )
 end
 
-function _script_project_binding(project::AbstractProject)
+function _script_project_binding(project::Project)
     throw(FigureScriptResolutionError(
         "Figure-script generation needs a project binding configured for " *
         "$(project_name(project))",
@@ -383,7 +383,7 @@ end
 
 function _load_measurements_from_source_files(
     root_path::AbstractString,
-    project::AbstractProject,
+    project::Project,
     source_files::Vector{String},
 )
     source_files = _normalize_source_files(root_path, source_files)
@@ -421,7 +421,7 @@ function _group_matches(
     return matches
 end
 
-function _figure_script_plot_kind(project::AbstractProject, measurement::MeasurementInfo)::Type{<:PlotKind}
+function _figure_script_plot_kind(project::Project, measurement::MeasurementInfo)::Type{<:PlotKind}
     throw(FigureScriptResolutionError(
         "Figure script plot data is not implemented for $(project_name(project))",
     ))
@@ -456,7 +456,7 @@ Load the source-file union for a figure script and expose the fixed named groups
 """
 function prepare_figure_script_data(
     root_path::AbstractString,
-    project::AbstractProject,
+    project::Project,
     source_files::Vector{String},
     groups::Vector{NamedMeasurementGroup},
 )
@@ -1158,7 +1158,7 @@ end
 
 function _render_figure_script(
     root_path::AbstractString,
-    project::AbstractProject,
+    project::Project,
     source_files::Vector{String},
     groups::Vector{NamedMeasurementGroup},
     measurements::Vector{MeasurementInfo},
@@ -1206,7 +1206,7 @@ Render and write a figure-preparation script.
 function write_figure_script(
     output_directory::AbstractString,
     root_path::AbstractString,
-    project::AbstractProject,
+    project::Project,
     script_name::AbstractString,
     groups::Vector{NamedMeasurementGroup},
     measurements::Vector{MeasurementInfo};

@@ -1,7 +1,7 @@
 import CImGui as ig
 
 using ..Projects:
-    AbstractProject,
+    Project,
     display_label,
     kind_label
 using ..MeasurementIndex:
@@ -45,7 +45,7 @@ end
 
 """Return whether a measurement's visible labels pass the measurement filter."""
 function _measurement_matches_filter(
-    project::AbstractProject,
+    project::Project,
     measurement::MeasurementInfo,
     filter_obj::Ptr{ig.lib.ImGuiTextFilter},
 )::Bool
@@ -65,7 +65,7 @@ end
 """Filter measurements by tags and the text entered in the measurement panel."""
 function _visible_measurements(
     state::BrowserState,
-    project::AbstractProject,
+    project::Project,
     measurements::Vector{MeasurementInfo},
     filter_meas::Ptr{ig.lib.ImGuiTextFilter},
 )::Vector{MeasurementInfo}

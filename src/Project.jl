@@ -1,10 +1,13 @@
 """
-Project.jl - the registration-based project API.
+Project.jl - methods of the registration-based project API.
+
+The `Project` type and its recipe types are defined in the `Projects` module (early, so other
+submodules can name the concrete type). This file defines the methods: `define_project`, the
+`register_*` functions, and the project's implementation of the engine interface (interpretation,
+data access, plotting, serialization).
 
 A project is built by mutation with `register_measurement!` / `register_device_stat!` /
-`register_plot!`, each pointing at plain callbacks. `Project` then satisfies the existing
-`AbstractProject` contract by dispatching to those callbacks, so all package scanning, caching,
-workspace, and GUI machinery is reused unchanged.
+`register_plot!`, each pointing at plain callbacks, which the engine then drives:
 
 Pipeline per measurement kind (fixed order, each fed the previous output):
     detect(file)             -> Bool
@@ -19,58 +22,6 @@ Pipeline per measurement kind (fixed order, each fed the previous output):
 
 using DataFrames: DataFrame
 import Serialization
-
-"""One registered measurement recipe."""
-mutable struct MeasurementRecipe
-    kind::Symbol
-    detect::Function
-    read::Function
-    measurements::Function
-    process::Union{Nothing,Function}
-    stats::Union{Nothing,Function}
-    label::Union{Nothing,Function}
-end
-
-"""One registered cross-measurement (device-scoped) stat."""
-struct DeviceStatRecipe
-    measurement_kinds::Vector{Symbol}
-    group_by::Function
-    compute_stats::Function
-end
-
-"""One registered plot recipe for a measurement kind."""
-struct PlotRecipe
-    kind::Symbol
-    label::String
-    setup::Function
-    draw::Function
-end
-
-"""Accumulated read/stats timing for one measurement kind in the current scan."""
-mutable struct KindProfile
-    files::Int
-    measurements::Int
-    read_seconds::Float64
-    stats_seconds::Float64
-end
-KindProfile() = KindProfile(0, 0, 0.0, 0.0)
-
-"""A project assembled from registered recipes."""
-mutable struct Project <: AbstractProject
-    name::String
-    description::String
-    recipes::Vector{MeasurementRecipe}
-    device_stats::Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}
-    plots::Dict{Symbol,PlotRecipe}
-    # Transient scan state: each source file is parsed once during interpretation and the result is
-    # reused by the stats pass, so a file is never read twice in one scan. Cleared when stats finish.
-    read_cache::Dict{String,DataFrame}
-    read_lock::ReentrantLock
-    # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
-    # start of each scan and replaced wholesale, so it stays bounded to one row per measurement kind.
-    scan_profile::Dict{Symbol,KindProfile}
-    profile_lock::ReentrantLock
-end
 
 # The project is reachable from a cached SourceScan (twice: source.project and hierarchy.project), so
 # it is serialized into the HDF5 cache. Only the registered recipes are persisted; transient scan
@@ -281,7 +232,7 @@ function _mint_id(filepath::AbstractString, kind::Symbol, params::Dict{Symbol,An
 end
 
 # ---------------------------------------------------------------------------
-# AbstractProject contract
+# Engine interface implementation
 # ---------------------------------------------------------------------------
 
 project_name(project::Project)::String = project.name

@@ -2,22 +2,86 @@ module Projects
 
 using DataFrames: DataFrame
 
+# ---------------------------------------------------------------------------
+# Project type
+#
+# A project is a value built by registration (define_project + register_*). It is the single project
+# type in the package. The struct and its recipe types live here, before MeasurementIndex/Workspace,
+# so those modules can name the concrete type directly. The methods that operate on it (registration,
+# interpretation, plotting, serialization) are defined later, once MeasurementIndex types exist.
+# ---------------------------------------------------------------------------
+
+"""One registered measurement recipe."""
+mutable struct MeasurementRecipe
+    kind::Symbol
+    detect::Function
+    read::Function
+    measurements::Function
+    process::Union{Nothing,Function}
+    stats::Union{Nothing,Function}
+    label::Union{Nothing,Function}
+end
+
+"""One registered cross-measurement (device-scoped) stat."""
+struct DeviceStatRecipe
+    measurement_kinds::Vector{Symbol}
+    group_by::Function
+    compute_stats::Function
+end
+
+"""One registered plot recipe for a measurement kind."""
+struct PlotRecipe
+    kind::Symbol
+    label::String
+    setup::Function
+    draw::Function
+end
+
+"""Accumulated read/stats timing for one measurement kind in the current scan."""
+mutable struct KindProfile
+    files::Int
+    measurements::Int
+    read_seconds::Float64
+    stats_seconds::Float64
+end
+KindProfile() = KindProfile(0, 0, 0.0, 0.0)
+
 """
-Base type implemented by measurement projects.
+A measurement project assembled from registered recipes.
 
-Project values define source interpretation, data processing, and presentation. Package-owned
-cache, job, and browser state does not belong in project implementations. A project method may
-receive a workspace when it needs package-managed measurement data.
+Source interpretation, data processing, and presentation are defined by the registered callbacks.
+Package-owned cache, job, and browser state does not belong here.
 """
-abstract type AbstractProject end
+mutable struct Project
+    name::String
+    description::String
+    recipes::Vector{MeasurementRecipe}
+    device_stats::Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}
+    plots::Dict{Symbol,PlotRecipe}
+    # Transient scan state: each source file is parsed once during interpretation and the result is
+    # reused by the stats pass, so a file is never read twice in one scan. Cleared when stats finish.
+    read_cache::Dict{String,DataFrame}
+    read_lock::ReentrantLock
+    # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
+    # start of each scan and replaced wholesale, so it stays bounded to one row per measurement kind.
+    scan_profile::Dict{Symbol,KindProfile}
+    profile_lock::ReentrantLock
+end
 
-const PROJECTS = AbstractProject[]
-const DEFAULT_PROJECT = Ref{Union{AbstractProject,Nothing}}(nothing)
+const PROJECTS = Project[]
+const DEFAULT_PROJECT = Ref{Union{Project,Nothing}}(nothing)
 
-"""Return the stable name used to identify a project implementation."""
+# ---------------------------------------------------------------------------
+# Interface functions
+#
+# Declared here so the package's submodules can call them; the methods are defined later, after the
+# types they depend on (MeasurementInfo, SourceFile, Workspace) are available.
+# ---------------------------------------------------------------------------
+
+"""Return the stable name used to identify a project."""
 function project_name end
 
-"""Return a short human-readable description of a project implementation."""
+"""Return a short human-readable description of a project."""
 function project_description end
 
 """Parse the device represented by a project source file."""
@@ -48,14 +112,14 @@ function compute_and_add_measurement_stats! end
 function device_path_label end
 
 """Clear any per-scan timing a project accumulates. Called once at the start of every scan."""
-reset_scan_profile!(::AbstractProject)::Nothing = nothing
+function reset_scan_profile! end
 
 """
 Per-measurement-kind timing for the most recent scan, newest scan replacing the last.
 
-Returns one `(; kind, files, measurements, read_seconds, stats_seconds)` row per kind, or an
-empty vector for projects that do not profile. Surfaced in the performance window.
+Returns one `(; kind, files, measurements, read_seconds, stats_seconds)` row per kind. Surfaced in
+the performance window.
 """
-scan_profile_summary(::AbstractProject)::Vector{NamedTuple} = NamedTuple[]
+function scan_profile_summary end
 
 end
