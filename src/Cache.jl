@@ -1,8 +1,8 @@
 module Cache
 
-import ..MeasurementIndex:
+import ..ItemIndex:
     FileFingerprint,
-    MeasurementInfo,
+    ItemRecord,
     SourceFile,
     SourceScan,
     check_cancel,

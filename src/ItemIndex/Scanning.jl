@@ -1,4 +1,4 @@
-const DEVICE_INFO_FILENAME = "device_info.txt"
+const COLLECTION_METADATA_FILENAME = "device_info.txt"
 
 """
 Send one structured progress update when a callback is present.
@@ -81,7 +81,7 @@ end
 """
 Read device metadata keyed by exact slash-separated path fragments.
 """
-function load_device_metadata(
+function load_collection_metadata(
     path::AbstractString,
 )::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
     lines = readlines(path)
@@ -113,7 +113,7 @@ Merge every metadata fragment matching a parsed device path.
 
 Longer path fragments are applied later and therefore override broader entries.
 """
-function matching_device_parameters(
+function matching_collection_parameters(
     metadata::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
     location::Vector{String},
 )::Union{Nothing,Dict{Symbol,Any}}
@@ -131,11 +131,11 @@ function matching_device_parameters(
     return isempty(merged) ? nothing : merged
 end
 
-device_info_path(root_path::AbstractString)::String =
-    joinpath(root_path, DEVICE_INFO_FILENAME)
+collection_metadata_path(root_path::AbstractString)::String =
+    joinpath(root_path, COLLECTION_METADATA_FILENAME)
 
-has_device_metadata(root_path::AbstractString)::Bool =
-    isfile(device_info_path(root_path))
+has_collection_metadata(root_path::AbstractString)::Bool =
+    isfile(collection_metadata_path(root_path))
 
 """
 Read optional source-root device metadata for one scan.
@@ -143,24 +143,24 @@ Read optional source-root device metadata for one scan.
 function load_scan_metadata(
     root_path::String,
 )::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}
-    path = device_info_path(root_path)
-    return isfile(path) ? load_device_metadata(path) : nothing
+    path = collection_metadata_path(root_path)
+    return isfile(path) ? load_collection_metadata(path) : nothing
 end
 
 """
-Create the short title shown for a measurement in browser panels and plots.
+Create the short title shown for an item in browser panels and plots.
 """
 function build_clean_title(
     project::Project,
     filename::String,
-    measurement_kind::Symbol,
-    device_info::DeviceInfo,
+    kind::Symbol,
+    collection::AbstractVector{<:AbstractString},
 )::String
-    measurement_label = kind_label(project, measurement_kind)
-    device_label = device_path_label(project, device_info)
+    kind_text = kind_label(project, kind)
+    collection_label = collection_path_label(project, collection)
     parts = filter(!isempty, (
-        measurement_label == "Unknown" ? "" : measurement_label,
-        device_label,
+        kind_text == "Unknown" ? "" : kind_text,
+        collection_label,
     ))
     return isempty(parts) ?
         strip(replace(filename, r"\.csv$" => "")) :
@@ -168,33 +168,33 @@ function build_clean_title(
 end
 
 """
-Interpret one indexed file and apply matching source-root device metadata.
+Interpret one indexed file and apply matching source-root collection metadata.
 """
-function interpret_measurements(
+function interpret_items(
     project::Project,
     file::SourceFile,
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
-)::Vector{MeasurementInfo}
-    measurements = interpret_file(project, file)
-    metadata === nothing && return measurements
-    for measurement in measurements
-        parameters = matching_device_parameters(metadata, measurement.device_info.location)
-        parameters === nothing || merge!(measurement.device_info.parameters, parameters)
+)::Vector{ItemRecord}
+    items = interpret_file(project, file)
+    metadata === nothing && return items
+    for item in items
+        parameters = matching_collection_parameters(metadata, item.collection)
+        parameters === nothing || merge!(item.collection_metadata, parameters)
     end
-    return measurements
+    return items
 end
 
 """
 Interpret and analyze one physical file using the same project path as a full scan.
 """
-function measurements_for_file(
+function items_for_file(
     project::Project,
     filepath::AbstractString;
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
-)::Vector{MeasurementInfo}
+)::Vector{ItemRecord}
     file = index_source_file(filepath)
-    measurements = interpret_measurements(project, file, meta)
-    compute_and_add_measurement_stats!(project, measurements, [file])
+    measurements = interpret_items(project, file, meta)
+    compute_and_add_item_stats!(project, measurements, [file])
     return measurements
 end
 
@@ -217,7 +217,7 @@ function interpret_source_files(
     callback_lock = ReentrantLock()
     worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
     cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
-    failures = MeasurementAnalysisFailure[]
+    failures = ItemFailure[]
 
     @sync for (index, file) in pairs(files)
         check_cancel()
@@ -226,7 +226,7 @@ function interpret_source_files(
             with_cancel(cancel_requested) do
                 check_cancel()
                 measurements = try
-                    interpret_measurements(project, file, metadata)
+                    interpret_items(project, file, metadata)
                 catch error
                     is_job_cancelled(error) && rethrow()
                     backtrace = catch_backtrace()
@@ -237,13 +237,13 @@ function interpret_source_files(
                         exception=(error, backtrace),
                     )
                     lock(callback_lock) do
-                        push!(failures, MeasurementAnalysisFailure(
+                        push!(failures, ItemFailure(
                             file.filepath,
                             "",
                             sprint(showerror, error),
                         ))
                     end
-                    MeasurementInfo[]
+                    ItemRecord[]
                 end
                 check_cancel()
                 on_result(index, SourceFile(file, measurements))
@@ -373,7 +373,7 @@ function scan_source(
     measurements = reduce(
         append!,
         (file.measurements for file in scanned_files);
-        init=MeasurementInfo[],
+        init=ItemRecord[],
     )
     analysis_progress_seen = Ref(false)
     emit_progress(
@@ -385,7 +385,7 @@ function scan_source(
         skipped_csv=summary.skipped_csv,
         current_path=root,
     )
-    analysis_failures = compute_and_add_measurement_stats!(
+    analysis_failures = compute_and_add_item_stats!(
         project,
         measurements,
         scanned_files;
@@ -412,7 +412,7 @@ function scan_source(
         current_path=root,
     )
     check_cancel()
-    hierarchy = MeasurementHierarchy(
+    hierarchy = Hierarchy(
         measurements,
         root,
         metadata !== nothing,

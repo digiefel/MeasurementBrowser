@@ -23,13 +23,13 @@ struct SourceFile
     filename::String
     timestamp::Union{DateTime,Nothing}
     fingerprint::FileFingerprint
-    measurements::Vector{MeasurementInfo}
+    measurements::Vector{ItemRecord}
 end
 
 """Copy indexed file metadata and attach its interpreted measurements."""
 function SourceFile(
     file::SourceFile,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::SourceFile
     return SourceFile(
         file.unique_id,
@@ -62,7 +62,7 @@ function index_source_file(path::AbstractString)::SourceFile
         filename,
         parse_timestamp(filename),
         file_fingerprint(normalized),
-        MeasurementInfo[],
+        ItemRecord[],
     )
 end
 

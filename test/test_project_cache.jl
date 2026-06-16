@@ -58,7 +58,7 @@ end
 
             measurement = first(loaded.source.hierarchy.all_measurements)
             source_workspace = MeasurementBrowser.Workspace.Workspace(TEST_PROJECT, dir)
-            source_data = only(read_measurement_data(source_workspace, [measurement]))
+            source_data = only(read_item_data(source_workspace, [measurement]))
 
             cached_workspace = MeasurementBrowser.Workspace.Workspace(TEST_PROJECT, dir)
             cached_workspace.cache.index = loaded
@@ -67,7 +67,7 @@ end
                 [measurement],
             )) === nothing
 
-            cached_data = only(read_measurement_data(cached_workspace, [measurement]))
+            cached_data = only(read_item_data(cached_workspace, [measurement]))
             @test same_dataframe(cached_data, source_data)
             @test same_dataframe(
                 only(ProjectCache.cached_measurement_data(loaded, [measurement])),
@@ -79,7 +79,7 @@ end
                 [measurement];
                 processed=true,
             )) === nothing
-            processed = only(process_measurement_data(cached_workspace, [measurement]))
+            processed = only(process_item_data(cached_workspace, [measurement]))
             @test names(processed) == ["x", "y", "processed"]
             @test same_dataframe(
                 only(ProjectCache.cached_measurement_data(
@@ -117,7 +117,7 @@ end
                 updated_source.project,
                 updated_source.files,
                 updated_source.hierarchy,
-                [MeasurementAnalysisFailure(
+                [ItemFailure(
                     first(updated_source.files).filepath,
                     first(updated_source.hierarchy.all_measurements).unique_id,
                     "synthetic analysis failure",

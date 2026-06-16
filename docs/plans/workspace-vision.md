@@ -69,9 +69,9 @@ control protocol. This sketch is illustrative:
 workspace = open_workspace(RuO2Project(), root)
 browser = open_browser(workspace; wait=false)
 
-selection = select(workspace;
-    measurement_kind=:pund,
-    device=r"RuO2test/A9",
+selection = select_items!(workspace;
+    kind=:pund,
+    collection=r"RuO2test/A9",
 )
 
 fig = Figure(workspace)
@@ -92,7 +92,7 @@ Generic visualizers should be modular and composable. The first useful set is:
 
 - raw table view for any loaded tabular measurement data
 - X-vs-Y scatter and line plots
-- grouped overlays by measurement, device, tag, or parameter
+- overlays collected by measurement, device, tag, or parameter
 - heatmaps for gridded or pivoted tabular data
 - simple summaries and histograms
 - fit views for common models, starting with linear fits
@@ -148,7 +148,7 @@ select measurements by rule
 load or process data
 create visualizer
 map columns to axes
-set grouping and style
+set collection axis and style
 add fit
 add annotations
 export or save figure

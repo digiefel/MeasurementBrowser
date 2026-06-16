@@ -16,10 +16,10 @@ const MB = MeasurementBrowser
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        measurements=(file, data) -> [MB.MeasurementInfo(
+        measurements=(file, data) -> [MB.ItemRecord(
             filepath=file.filepath,
-            measurement_kind=:table,
-            device_info=MB.DeviceInfo(["dev"]),
+            kind=:table,
+            collection=["dev"],
             timestamp=file.timestamp,
             clean_title=file.filename,
         )],
@@ -58,7 +58,7 @@ const MB = MeasurementBrowser
     @test MB.plot_kind_from_name("table") === nothing
 
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
-    measurements = measurements_for_file(project, joinpath(dir, "m.csv"))
+    measurements = items_for_file(project, joinpath(dir, "m.csv"))
     workspace = MB.Workspace.Workspace(project, dir)
     figure = setup_plot(workspace, table_plot, measurements)
     @test figure isa Figure

@@ -272,7 +272,7 @@ function render_table_inspector_window(state::BrowserState)::Nothing
             ig.Separator()
             _render_table_quick_plot!(inspector)
         else
-            ig.TextDisabled("Open a delimited text file or select a measurement source.")
+            ig.TextDisabled("Open a delimited text file or select an item source.")
         end
     end
     open_ref[] || (inspector.visible = false)

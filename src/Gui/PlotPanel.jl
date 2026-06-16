@@ -8,8 +8,8 @@ using NativeFileDialog: save_file
 using ..Projects:
     load_source_data,
     project_name
-using ..MeasurementIndex:
-    MeasurementInfo,
+using ..ItemIndex:
+    ItemRecord,
     index_source_file
 import ..Workspace
 using ..Visualization:
@@ -44,7 +44,7 @@ function draw_plot_view!(
     state::BrowserState,
     view::PlotViewState,
     plot_key::Tuple,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     plot_kind::Type{<:PlotKind},
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
@@ -95,7 +95,7 @@ function draw_plot_view!(
         view.error = "Plot failed: $summary. See the console for full details."
         measurement_context = join(
             [
-                "$(measurement.clean_title) ($(measurement.measurement_kind))\n" *
+                "$(measurement.clean_title) ($(measurement.kind))\n" *
                 "  $(measurement.filepath)"
                 for measurement in measurements
             ],
@@ -105,7 +105,7 @@ function draw_plot_view!(
             "Plot drawing failed\n" *
             "Project: $(project_name(project))\n" *
             "Plot: $(plot_kind_name(plot_kind))\n" *
-            "Measurements: $(length(measurements))\n$measurement_context",
+            "Items: $(length(measurements))\n$measurement_context",
             exception=(err, bt),
         )
     end
@@ -116,8 +116,8 @@ end
 function render_plot_toolbar!(
     state::BrowserState,
     view::PlotViewState,
-    measurements::Vector{MeasurementInfo},
-    selected_measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
+    selected_measurements::Vector{ItemRecord},
     available::Vector{Type{<:PlotKind}},
 )::Nothing
     plots = state.plots
@@ -133,7 +133,7 @@ function render_plot_toolbar!(
                 view.last_key = nothing
                 view.error = ""
                 for measurement in measurements
-                    plots.kind_by_measurement[measurement.measurement_kind] = candidate
+                    plots.kind_by_measurement[measurement.kind] = candidate
                 end
             end
         end
@@ -163,7 +163,7 @@ function render_plot_toolbar!(
                     id="plot_$(plots.next_window_id)",
                     title=length(measurements) == 1 ?
                           only(measurements).clean_title :
-                          "$(length(measurements)) measurements",
+                          "$(length(measurements)) items",
                     live=false,
                     measurement_ids=[
                         measurement.unique_id for measurement in measurements
@@ -246,7 +246,7 @@ function render_plot_body!(
     elseif status == :needs_kind
         ig.TextDisabled("No plot kind selected")
     elseif status == :empty
-        ig.TextDisabled("No measurement selected")
+        ig.TextDisabled("No item selected")
     else
         ig.TextColored((1.0, 0.4, 0.4, 1.0), "Plot generation failed")
         isempty(view.error) || ig.TextWrapped(view.error)
@@ -263,7 +263,7 @@ against the current workspace index.
 function render_plot_view!(
     state::BrowserState,
     view::PlotViewState,
-    selected_measurements::Vector{MeasurementInfo},
+    selected_measurements::Vector{ItemRecord},
 )::Nothing
     plots = state.plots
 
@@ -277,22 +277,22 @@ function render_plot_view!(
         _measurements_for_ids(state, view.measurement_ids)
 
     project = (state.workspace::Workspace.Workspace).project
-    measurement_kind = if isempty(measurements)
+    kind = if isempty(measurements)
         nothing
     else
-        kind = first(measurements).measurement_kind
-        all(measurement -> measurement.measurement_kind == kind, measurements) ? kind : nothing
+        kind = first(measurements).kind
+        all(measurement -> measurement.kind == kind, measurements) ? kind : nothing
     end
-    available = measurement_kind === nothing ?
+    available = kind === nothing ?
         Type{<:PlotKind}[] :
-        registered_plot_kinds(project, measurement_kind)
+        registered_plot_kinds(project, kind)
     if view === plots.main && view.live
-        if view.measurement_kind !== measurement_kind
-            view.measurement_kind = measurement_kind
-            if measurement_kind === nothing
+        if view.kind !== kind
+            view.kind = kind
+            if kind === nothing
                 view.plot_kind = nothing
             else
-                remembered = get(plots.kind_by_measurement, measurement_kind, nothing)
+                remembered = get(plots.kind_by_measurement, kind, nothing)
                 view.plot_kind =
                     remembered !== nothing && remembered in available ? remembered :
                     isempty(available) ? nothing : first(available)

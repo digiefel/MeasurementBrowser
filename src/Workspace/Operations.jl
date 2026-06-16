@@ -30,7 +30,7 @@ Replace the selected measurements with the supplied measurement identities.
 """
 function select_measurements!(
     workspace::Workspace,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::Nothing
     workspace.selection.measurement_ids =
         [measurement.unique_id for measurement in measurements]
@@ -122,7 +122,7 @@ function scan_source!(workspace::Workspace)::Nothing
                     on_measurements=(measurements) -> put!(events, (
                         kind=:measurements,
                         job_id=scan_id,
-                        measurements=[MeasurementInfo(m) for m in measurements],
+                        measurements=[ItemRecord(m) for m in measurements],
                     )),
                 )
             end
@@ -275,16 +275,16 @@ Replace the workspace measurement index with one complete hierarchy.
 """
 function replace_measurement_index!(
     workspace::Workspace,
-    hierarchy::MeasurementHierarchy,
+    hierarchy::Hierarchy,
 )::Nothing
-    measurements = Dict{String,MeasurementInfo}()
+    measurements = Dict{String,ItemRecord}()
     sizehint!(measurements, length(hierarchy.all_measurements))
     metadata_keys = Set{Symbol}()
     for measurement in hierarchy.all_measurements
         haskey(measurements, measurement.unique_id) &&
             error("Duplicate measurement id generated during scan: $(measurement.unique_id)")
         measurements[measurement.unique_id] = measurement
-        union!(metadata_keys, keys(measurement.device_info.parameters))
+        union!(metadata_keys, keys(measurement.collection_metadata))
     end
     workspace.index = WorkspaceIndex(
         hierarchy,
@@ -303,22 +303,22 @@ The completed source scan later replaces this hierarchy with the final sorted hi
 """
 function append_measurements!(
     workspace::Workspace,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::Bool
     isempty(measurements) && return false
     hierarchy = workspace.index.hierarchy
     measurement_index = workspace.index.measurements
-    metadata_keys = Set(workspace.index.device_metadata_keys)
+    metadata_keys = Set(workspace.index.collection_metadata_keys)
     changed = false
     for measurement in measurements
         haskey(measurement_index, measurement.unique_id) && continue
-        insert_measurement!(hierarchy, measurement)
+        insert_item!(hierarchy, measurement)
         measurement_index[measurement.unique_id] = measurement
-        union!(metadata_keys, keys(measurement.device_info.parameters))
+        union!(metadata_keys, keys(measurement.collection_metadata))
         changed = true
     end
     changed || return false
-    workspace.index.device_metadata_keys = sort!(collect(metadata_keys); by=String)
+    workspace.index.collection_metadata_keys = sort!(collect(metadata_keys); by=String)
     return true
 end
 
@@ -460,7 +460,7 @@ function poll_workspace!(workspace::Workspace)::Bool
 
     scan_events = workspace.scan.events
     if scan_events !== nothing
-        pending_measurements = MeasurementInfo[]
+        pending_measurements = ItemRecord[]
         while isready(scan_events)
             event = take!(scan_events)
             event.job_id == workspace.scan.id || continue

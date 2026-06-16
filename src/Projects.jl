@@ -4,9 +4,9 @@ module Projects
 # Project type
 #
 # A project is a value built by registration (define_project + register_*). It is the single project
-# type in the package. The struct and its recipe types live here, before MeasurementIndex/Workspace,
+# type in the package. The struct and its recipe types live here, before ItemIndex/Workspace,
 # so those modules can name the concrete type directly. The methods that operate on it (registration,
-# interpretation, plotting, serialization) are defined later, once MeasurementIndex types exist.
+# interpretation, plotting, serialization) are defined later, once ItemIndex types exist.
 # ---------------------------------------------------------------------------
 
 """One registered measurement recipe."""
@@ -63,7 +63,7 @@ mutable struct Project
     plots::Dict{Symbol,Dict{String,PlotRecipe}}
     # Transient per-measurement analysis failures gathered while interpreting files, as
     # (filepath, measurement id, message) tuples. Drained when device stats run. Plain string tuples
-    # so this early module needs no MeasurementIndex types.
+    # so this early module needs no ItemIndex types.
     stat_failures::Vector{Tuple{String,String,String}}
     stat_failures_lock::ReentrantLock
     # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
@@ -79,7 +79,7 @@ const DEFAULT_PROJECT = Ref{Union{Project,Nothing}}(nothing)
 # Interface functions
 #
 # Declared here so the package's submodules can call them; the methods are defined later, after the
-# types they depend on (MeasurementInfo, SourceFile, Workspace) are available.
+# types they depend on (ItemRecord, SourceFile, Workspace) are available.
 # ---------------------------------------------------------------------------
 
 """Return the stable name used to identify a project."""
@@ -89,7 +89,7 @@ function project_name end
 function project_description end
 
 """Parse the device represented by a project source file."""
-function parse_device_info end
+function parse_collection_info end
 
 """Classify the measurement represented by a project source filename."""
 function detect_kind end
@@ -107,13 +107,13 @@ function interpret_file end
 function load_source_data end
 
 """Convert direct measurement data into the reusable processed table defined by the project."""
-function process_measurement_data end
+function process_item_data end
 
 """Compute project-specific measurement statistics after the complete scan is known."""
-function compute_and_add_measurement_stats! end
+function compute_and_add_item_stats! end
 
 """Return the project-specific display label for one device path."""
-function device_path_label end
+function collection_path_label end
 
 """Clear any per-scan timing a project accumulates. Called once at the start of every scan."""
 function reset_scan_profile! end

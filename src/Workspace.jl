@@ -14,24 +14,24 @@ import ..Cache:
     project_cache_identity,
     write_measurement_data_cache!,
     write_project_cache!
-import ..MeasurementIndex:
+import ..ItemIndex:
     FileFingerprint,
-    MeasurementHierarchy,
-    MeasurementInfo,
+    Hierarchy,
+    ItemRecord,
     SourceFile,
     SourceScan,
     check_cancel,
     file_fingerprint,
-    has_device_metadata,
+    has_collection_metadata,
     index_source_file,
-    insert_measurement!,
+    insert_item!,
     is_job_cancelled,
     scan_source,
     with_cancel
 import ..Projects:
     Project,
     load_source_data,
-    process_measurement_data,
+    process_item_data,
     project_name
 
 """
@@ -79,9 +79,9 @@ WorkspaceJob()::WorkspaceJob =
 The progressively populated measurement index for one open source root.
 """
 mutable struct WorkspaceIndex
-    hierarchy::MeasurementHierarchy
-    measurements::Dict{String,MeasurementInfo}
-    device_metadata_keys::Vector{Symbol}
+    hierarchy::Hierarchy
+    measurements::Dict{String,ItemRecord}
+    collection_metadata_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
 end
@@ -90,7 +90,7 @@ end
 Stable selection identities owned by a workspace.
 """
 Base.@kwdef mutable struct WorkspaceSelection
-    device_paths::Vector{String} = String[]
+    collection_paths::Vector{String} = String[]
     measurement_ids::Vector{String} = String[]
 end
 
@@ -129,14 +129,14 @@ function Workspace(
     root_path::AbstractString,
 )::Workspace{P} where {P<:Project}
     root = normpath(abspath(expanduser(String(root_path))))
-    hierarchy = MeasurementHierarchy(root, has_device_metadata(root), project)
+    hierarchy = Hierarchy(root, has_collection_metadata(root), project)
     identity = project_cache_identity(project_cache_id(root), project, root)
     return Workspace(
         project,
         root,
         WorkspaceIndex(
             hierarchy,
-            Dict{String,MeasurementInfo}(),
+            Dict{String,ItemRecord}(),
             Symbol[],
             nothing,
             Dict{String,String}(),

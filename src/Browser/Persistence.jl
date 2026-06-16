@@ -3,7 +3,7 @@ using TOML
 using ..Projects:
     PROJECTS,
     project_name
-using ..MeasurementIndex: MeasurementInfo
+using ..ItemIndex: ItemRecord
 import ..Workspace
 using ..Visualization:
     PlotKind,
@@ -51,12 +51,6 @@ function _sanitize_project_preference(pref::AbstractString)::String
     return "auto"
 end
 
-"""Normalize the optional figure-script output directory."""
-function _sanitize_figure_script_output_dir(value::Any)::String
-    value isa AbstractString || return ""
-    return String(strip(String(value)))
-end
-
 """Decode recent-project entries from app preferences."""
 function _parse_recent_projects(
     prefs::Dict{String,Any},
@@ -73,13 +67,11 @@ function _parse_recent_projects(
         isempty(path) && continue
         pref = get(entry, "project_preference", "auto")
         pref = pref isa AbstractString ? pref : "auto"
-        figure_script_output_dir = _sanitize_figure_script_output_dir(get(entry, "figure_script_output_dir", ""))
         push!(
             recents,
             RecentProject(
                 path=_normalize_project_path(path),
                 project_preference=_sanitize_project_preference(pref),
-                figure_script_output_dir=figure_script_output_dir,
             ),
         )
     end
@@ -92,7 +84,6 @@ function _update_recent_projects!(
     recents::Vector{RecentProject},
     path::AbstractString,
     pref::AbstractString,
-    figure_script_output_dir::AbstractString,
 )::Nothing
     norm_path = _normalize_project_path(path)
     filter!(entry -> entry.path != norm_path, recents)
@@ -101,8 +92,6 @@ function _update_recent_projects!(
         RecentProject(
             path=norm_path,
             project_preference=String(pref),
-            figure_script_output_dir=
-                _sanitize_figure_script_output_dir(figure_script_output_dir),
         ),
     )
     length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
@@ -121,19 +110,11 @@ function _persist_preferences!(
 
     recents = _parse_recent_projects(prefs)
     if path !== nothing && !isempty(path)
-        _update_recent_projects!(
-            recents,
-            path,
-            pref,
-            _sanitize_figure_script_output_dir(
-                _buffer_string(state.figure_scripts.output_dir_buffer),
-            ),
-        )
+        _update_recent_projects!(recents, path, pref)
         prefs["recent_projects"] = [
             Dict{String,String}(
                 "path" => recent.path,
                 "project_preference" => recent.project_preference,
-                "figure_script_output_dir" => recent.figure_script_output_dir,
             )
             for recent in recents
         ]
@@ -162,16 +143,6 @@ function _project_preference_for_path(state::BrowserState, path::String)::String
         return _sanitize_project_preference(entry.project_preference)
     end
     return _sanitize_project_preference(state.project_preference)
-end
-
-"""Return the figure-script output directory saved for a source root."""
-function _figure_script_output_dir_for_path(
-    state::BrowserState,
-    path::String,
-)::String
-    entry = _recent_project_entry_for_path(state, path)
-    entry === nothing && return ""
-    return _sanitize_figure_script_output_dir(entry.figure_script_output_dir)
 end
 
 """Persist preferences associated with the currently open source root."""
@@ -258,9 +229,9 @@ end
 function _measurements_for_ids(
     state::BrowserState,
     ids::Vector{String},
-)::Vector{MeasurementInfo}
+)::Vector{ItemRecord}
     workspace = state.workspace
-    workspace isa Workspace.Workspace || return MeasurementInfo[]
+    workspace isa Workspace.Workspace || return ItemRecord[]
     index = workspace.index.measurements
     return [index[id] for id in ids if haskey(index, id)]
 end
@@ -287,8 +258,8 @@ function _project_view_from_browser(
     return PersistedProjectView(
         project=project_name(workspace.project),
         tree=PersistedTreeView(
-            expanded=copy(state.expanded_device_paths),
-            selected=copy(workspace.selection.device_paths),
+            expanded=copy(state.expanded_collection_paths),
+            selected=copy(workspace.selection.collection_paths),
             filter=state.tree_filter,
         ),
         measurements=PersistedMeasurementsView(
@@ -296,8 +267,8 @@ function _project_view_from_browser(
             filter=state.measurement_filter,
         ),
         plot_kinds=Dict(
-            String(measurement_kind) => plot_kind_name(plot_kind)
-            for (measurement_kind, plot_kind) in plots.kind_by_measurement
+            String(kind) => plot_kind_name(plot_kind)
+            for (kind, plot_kind) in plots.kind_by_measurement
         ),
         main_plot=_persisted_plot_view(plots.main),
         plot_windows=[_persisted_plot_view(view) for view in plots.windows],
@@ -311,17 +282,17 @@ function _apply_project_view!(
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
     plots = state.plots
-    state.expanded_device_paths = copy(view.tree.expanded)
-    workspace.selection.device_paths = copy(view.tree.selected)
+    state.expanded_collection_paths = copy(view.tree.expanded)
+    workspace.selection.collection_paths = copy(view.tree.selected)
     workspace.selection.measurement_ids = copy(view.measurements.selected)
     state.tree_filter = view.tree.filter
     state.measurement_filter = view.measurements.filter
     empty!(plots.kind_by_measurement)
-    for (measurement_kind, plot_kind_name) in view.plot_kinds
+    for (kind, plot_kind_name) in view.plot_kinds
         isempty(plot_kind_name) && continue
         plot_kind = plot_kind_from_name(plot_kind_name)
         plot_kind === nothing && continue
-        plots.kind_by_measurement[Symbol(measurement_kind)] = plot_kind
+        plots.kind_by_measurement[Symbol(kind)] = plot_kind
     end
     plots.main = PlotViewState(
         id="main",

@@ -18,7 +18,7 @@ register_plot!(project, :pund; label = "Q–V",       setup = …, draw = …)  
 ```
 
 - `setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills
-  it in. `items::Vector{<:DataItem}` are the loaded, data-bearing items for the current selection;
+  it in. `items::Vector{<:AbstractDataItem}` are the loaded, data-bearing items for the current selection;
   each carries its own `item.data` (see [data-model-generalization.md](data-model-generalization.md)).
   Callbacks never load data or zip a parallel array — data access and caching are package-owned.
 - Plots live in `project.plots :: Dict{Symbol, Dict{String, PlotRecipe}}` (kind → label → recipe).
@@ -133,5 +133,5 @@ This doc owns the **project-facing plot API** (`register_plot!` with `setup`/`dr
 **normal-vs-debug split**, and the **project↔package composition contract**. It does not own:
 
 - the generic built-in visualizers, figures, annotations, and workflows — [workspace-vision.md](workspace-vision.md);
-- the item/data model (`DataItem`, `item.data`, `kind`) the callbacks consume —
+- the item/data model (`AbstractDataItem`, `DataItem`, `item.data`, `kind`) the callbacks consume —
   [data-model-generalization.md](data-model-generalization.md).

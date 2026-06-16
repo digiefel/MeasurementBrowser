@@ -14,10 +14,10 @@ function _profile_project()
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        measurements=(file, data) -> [MB.MeasurementInfo(
+        measurements=(file, data) -> [MB.ItemRecord(
             filepath=file.filepath,
-            measurement_kind=:table,
-            device_info=MB.DeviceInfo(["dev", splitext(file.filename)[1]]),
+            kind=:table,
+            collection=["dev", splitext(file.filename)[1]],
             timestamp=file.timestamp,
             clean_title=file.filename,
         )],
@@ -125,10 +125,10 @@ end
             :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> DataFrame(CSV.File(file.filepath)),
-            measurements=(file, data) -> [MB.MeasurementInfo(
+            measurements=(file, data) -> [MB.ItemRecord(
                 filepath=file.filepath,
-                measurement_kind=:table,
-                device_info=MB.DeviceInfo(["dev", splitext(file.filename)[1]]),
+                kind=:table,
+                collection=["dev", splitext(file.filename)[1]],
                 timestamp=file.timestamp,
                 clean_title=file.filename,
             )],

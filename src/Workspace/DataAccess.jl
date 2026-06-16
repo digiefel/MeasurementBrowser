@@ -1,13 +1,13 @@
 """
 Package-owned data access for selected measurements.
 
-Returns one `DataFrame` per `MeasurementInfo`, in the same order. Valid cached data is used first.
+Returns one `DataFrame` per `ItemRecord`, in the same order. Valid cached data is used first.
 When the cache has no fresh data for a measurement, the source file is indexed and loaded through
 `load_source_data`.
 """
-function read_measurement_data(
+function read_item_data(
     workspace::Workspace,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::Vector{DataFrame}
     isempty(measurements) && return DataFrame[]
     result = Vector{DataFrame}(undef, length(measurements))
@@ -29,7 +29,7 @@ function read_measurement_data(
 
     unresolved = measurements[unresolved_positions]
     cached = cached_measurement_data(workspace.cache.index, unresolved)
-    missing_measurements = MeasurementInfo[]
+    missing_measurements = ItemRecord[]
     missing_data = DataFrame[]
     source_files = Dict{String,SourceFile}()
     for (offset, position) in pairs(unresolved_positions)
@@ -68,13 +68,13 @@ end
 """
 Package-owned processed data access for selected measurements.
 
-Returns one processed `DataFrame` per `MeasurementInfo`, in the same order. Valid cached processed
+Returns one processed `DataFrame` per `ItemRecord`, in the same order. Valid cached processed
 data is used first. Missing entries are produced by the project's single-measurement
-`process_measurement_data(workspace, measurement)` method.
+`process_item_data(workspace, measurement)` method.
 """
-function process_measurement_data(
+function process_item_data(
     workspace::Workspace,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::Vector{DataFrame}
     isempty(measurements) && return DataFrame[]
     result = Vector{DataFrame}(undef, length(measurements))
@@ -103,7 +103,7 @@ function process_measurement_data(
     for (position, offset) in pairs(missing_offsets)
         check_cancel()
         measurement = missing_measurements[position]
-        data = process_measurement_data(workspace, measurement)
+        data = process_item_data(workspace, measurement)
         push!(processed_data, data)
         result[unresolved_positions[offset]] = data
         workspace.processed_data[measurement.unique_id] = (
@@ -133,9 +133,9 @@ end
 """
 Return direct data when a project defines no additional processing.
 """
-function process_measurement_data(
+function process_item_data(
     workspace::Workspace,
-    measurement::MeasurementInfo,
+    measurement::ItemRecord,
 )::DataFrame
-    return only(read_measurement_data(workspace, [measurement]))
+    return only(read_item_data(workspace, [measurement]))
 end

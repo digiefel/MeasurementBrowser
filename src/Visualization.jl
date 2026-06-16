@@ -3,7 +3,7 @@ module Visualization
 using GLMakie: Figure
 using InteractiveUtils: subtypes
 
-import ..MeasurementIndex: MeasurementInfo
+import ..ItemIndex: ItemRecord
 import ..Projects: project_name
 import ..Workspace
 
@@ -42,7 +42,7 @@ end
 function setup_plot(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::Figure
     error(
         "No setup_plot implementation for $(project_name(workspace.project)) " *
@@ -54,7 +54,7 @@ end
 function plot_data!(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     figure::Figure,
 )::Nothing
     error(
@@ -71,15 +71,15 @@ end
 Build the figure for a registered plot by running its `setup` callback.
 
 The package resolves processed data (through its cache) before invoking the recipe, so `setup` can
-size the figure layout to the data without calling `process_measurement_data` itself.
+size the figure layout to the data without calling `process_item_data` itself.
 """
 function setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegistryPlot{Kind,Label}},
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
 )::Figure where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    processed = Workspace.process_measurement_data(workspace, measurements)
+    processed = Workspace.process_item_data(workspace, measurements)
     return recipe.setup(workspace, measurements, processed)::Figure
 end
 
@@ -87,27 +87,27 @@ end
 Draw a registered plot into its figure by running its `draw` callback.
 
 The package resolves processed data (through its cache) before invoking the recipe, so `draw`
-callbacks receive the processed `DataFrame`s directly and never call `process_measurement_data`
+callbacks receive the processed `DataFrame`s directly and never call `process_item_data`
 themselves.
 """
 function plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegistryPlot{Kind,Label}},
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    processed = Workspace.process_measurement_data(workspace, measurements)
+    processed = Workspace.process_item_data(workspace, measurements)
     recipe.draw(workspace, measurements, processed, figure)
     return nothing
 end
 
 """Every plot registered for a measurement kind, sorted by label."""
-function registered_plot_kinds(project, measurement_kind::Symbol)::Vector{Type{<:PlotKind}}
-    recipes = get(project.plots, measurement_kind, nothing)
+function registered_plot_kinds(project, kind::Symbol)::Vector{Type{<:PlotKind}}
+    recipes = get(project.plots, kind, nothing)
     recipes === nothing && return Type{<:PlotKind}[]
     return Type{<:PlotKind}[
-        RegistryPlot{measurement_kind,Symbol(label)}
+        RegistryPlot{kind,Symbol(label)}
         for label in sort!(collect(keys(recipes)))
     ]
 end
@@ -138,7 +138,7 @@ end
 """Draw source data directly while bypassing package caches and processed data."""
 function debug_plot(
     ::Workspace.Workspace,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     loaded;
     kwargs...,
 )

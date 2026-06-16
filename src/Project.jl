@@ -12,7 +12,7 @@ A project is built by mutation with `register_measurement!` / `register_device_s
 Pipeline per measurement kind (fixed order, each fed the previous output):
     detect(file)             -> Bool
     read(file)               -> DataFrame            # whole file, parsed once
-    measurements(file, data) -> Vector{MeasurementInfo}   # one entry per measurement (a single one is a vector of one)
+    measurements(file, data) -> Vector{ItemRecord}   # one entry per measurement (a single one is a vector of one)
     process(mi, data)        -> DataFrame            # optional; default passthrough
     stats(mi, processed)     -> Dict{Symbol,Any}     # optional
     label(mi)                -> String               # optional
@@ -180,7 +180,7 @@ end
 """
 Register (or replace) the recipe for one measurement kind.
 
-`detect`, `read`, and `measurements` are required. `measurements` builds the `MeasurementInfo`s
+`detect`, `read`, and `measurements` are required. `measurements` builds the `ItemRecord`s
 (including their device identity); a single-measurement file just returns a vector of one. Re-calling
 with the same `kind` replaces the recipe in place, so editing and re-running the line updates a live
 project.
@@ -204,7 +204,7 @@ end
 """
 Register (or replace) a cross-measurement stat folded over each device's measurements.
 
-`compute_stats` receives the group `Vector{MeasurementInfo}` and fills each `mi.stats` in place.
+`compute_stats` receives the group `Vector{ItemRecord}` and fills each `mi.stats` in place.
 The engine groups by `group_by` (default: device path) and runs this after the full scan. Re-calling
 with the same `measurement_kinds` replaces it.
 """
@@ -225,7 +225,7 @@ Register (or replace) one plot recipe for a measurement kind.
 `setup(workspace, measurements, processed_data)` builds and returns the `Figure`;
 `draw(workspace, measurements, processed_data, figure)` fills it in. The package resolves
 `processed_data` (a `Vector{DataFrame}`, one per measurement and in the same order, through its
-processed-data cache) before calling either callback, so neither calls `process_measurement_data`
+processed-data cache) before calling either callback, so neither calls `process_item_data`
 itself. A measurement kind may have multiple plots; re-registering the same `label` for the same
 kind replaces that plot, which keeps REPL iteration stable.
 """
@@ -244,7 +244,7 @@ function register_plot!(
     return project
 end
 
-_default_device_group(mi::MeasurementInfo)::String = device_path_key(mi.device_info)
+_default_device_group(mi::ItemRecord)::String = collection_path_key(mi.collection)
 
 # ---------------------------------------------------------------------------
 # Recipe lookup helpers
@@ -279,22 +279,22 @@ function detect_kind(project::Project, filename::String)::Symbol
     return recipe === nothing ? :unknown : recipe.kind
 end
 
-function parse_device_info(::Project, file::SourceFile)::DeviceInfo
-    error("Project sets device identity inside `measurements`, not via parse_device_info ($(file.filepath))")
+function parse_collection_info(::Project, file::SourceFile)::Vector{String}
+    error("Project sets collection placement inside `measurements`, not via parse_collection_info ($(file.filepath))")
 end
 
 function kind_label(::Project, kind::Symbol)::String
     return string(kind)
 end
 
-function display_label(project::Project, measurement::MeasurementInfo)::String
-    recipe = _recipe(project, measurement.measurement_kind)
+function display_label(project::Project, measurement::ItemRecord)::String
+    recipe = _recipe(project, measurement.kind)
     (recipe === nothing || recipe.label === nothing) && return _default_label(measurement)
     return recipe.label(measurement)::String
 end
 
-function _default_label(measurement::MeasurementInfo)::String
-    parts = Any[measurement.timestamp, string(measurement.measurement_kind)]
+function _default_label(measurement::ItemRecord)::String
+    parts = Any[measurement.timestamp, string(measurement.kind)]
     return join(filter(!isnothing, parts), " ")
 end
 
@@ -305,15 +305,15 @@ while the parse is still in hand.
 Folding stats into this single pass frees the (often large) parsed table as soon as the file's
 measurements are analyzed, instead of holding every file's parse until a separate stats pass — so
 scan memory stays bounded to the files in flight rather than the whole tree. Per-measurement failures
-are recorded on the project and drained by `compute_and_add_measurement_stats!`.
+are recorded on the project and drained by `compute_and_add_item_stats!`.
 """
-function interpret_file(project::Project, file::SourceFile)::Vector{MeasurementInfo}
+function interpret_file(project::Project, file::SourceFile)::Vector{ItemRecord}
     recipe = _detect_recipe(project, file)
-    recipe === nothing && return MeasurementInfo[]
+    recipe === nothing && return ItemRecord[]
     read_started = time_ns()
     data = recipe.read(file)::DataFrame
     read_seconds = (time_ns() - read_started) / 1e9
-    enumerated = recipe.measurements(file, data)::Vector{MeasurementInfo}
+    enumerated = recipe.measurements(file, data)::Vector{ItemRecord}
     measurements = [_stamp(recipe, mi) for mi in enumerated]
     _record_read!(project, recipe.kind, read_seconds, length(measurements))
     if recipe.stats !== nothing
@@ -322,7 +322,7 @@ function interpret_file(project::Project, file::SourceFile)::Vector{MeasurementI
                 stats_started = time_ns()
                 processed = recipe.process === nothing ? data : recipe.process(measurement, data)
                 merge!(measurement.stats, recipe.stats(measurement, processed))
-                _record_stats!(project, measurement.measurement_kind,
+                _record_stats!(project, measurement.kind,
                     (time_ns() - stats_started) / 1e9)
             catch err
                 is_job_cancelled(err) && rethrow()
@@ -335,9 +335,9 @@ function interpret_file(project::Project, file::SourceFile)::Vector{MeasurementI
 end
 
 """Re-stamp a user-built measurement with the recipe kind and an engine-minted id."""
-_stamp(recipe::MeasurementRecipe, mi::MeasurementInfo)::MeasurementInfo = MeasurementInfo(
+_stamp(recipe::MeasurementRecipe, mi::ItemRecord)::ItemRecord = ItemRecord(
     mi;
-    measurement_kind=recipe.kind,
+    kind=recipe.kind,
     unique_id=_mint_id(mi.filepath, recipe.kind, mi.parameters),
 )
 
@@ -345,23 +345,23 @@ _stamp(recipe::MeasurementRecipe, mi::MeasurementInfo)::MeasurementInfo = Measur
 function load_source_data(
     project::Project,
     source_file::SourceFile;
-    measurement::Union{Nothing,MeasurementInfo}=nothing,
+    measurement::Union{Nothing,ItemRecord}=nothing,
 )::DataFrame
     kind = measurement === nothing ?
-        detect_kind(project, source_file.filename) : measurement.measurement_kind
+        detect_kind(project, source_file.filename) : measurement.kind
     recipe = _recipe(project, kind)
     recipe === nothing && error("No registered measurement for kind $kind")
     return recipe.read(source_file)::DataFrame
 end
 
 """Processed data: run the recipe's `process` over the cached whole-file read."""
-function process_measurement_data(
+function process_item_data(
     workspace::Workspace.Workspace{Project},
-    measurement::MeasurementInfo,
+    measurement::ItemRecord,
 )::DataFrame
-    recipe = _recipe(workspace.project, measurement.measurement_kind)
-    recipe === nothing && error("No registered measurement for kind $(measurement.measurement_kind)")
-    raw = only(read_measurement_data(workspace, [measurement]))
+    recipe = _recipe(workspace.project, measurement.kind)
+    recipe === nothing && error("No registered measurement for kind $(measurement.kind)")
+    raw = only(read_item_data(workspace, [measurement]))
     recipe.process === nothing && return raw
     return recipe.process(measurement, raw)::DataFrame
 end
@@ -374,15 +374,15 @@ so this only does the disjoint device-scoped folds, which read the measurements'
 rather than any raw data. Per-measurement failures collected during interpretation are drained and
 returned alongside any device-fold failures.
 """
-function compute_and_add_measurement_stats!(
+function compute_and_add_item_stats!(
     project::Project,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     files::Vector{SourceFile};
     on_progress::Union{Nothing,Function}=nothing,
-)::Vector{MeasurementAnalysisFailure}
+)::Vector{ItemFailure}
     # The cancel callback lives in task-local storage, which spawned tasks do not inherit, so capture
     # it here and re-establish it inside each task via `with_cancel`.
-    failures = MeasurementAnalysisFailure[]
+    failures = ItemFailure[]
     failures_lock = ReentrantLock()
     add_failure! = (filepath, id, step, err) -> lock(failures_lock) do
         push!(failures, _step_failure(filepath, id, step, err))
@@ -417,7 +417,7 @@ function compute_and_add_measurement_stats!(
     # Drain the per-measurement failures gathered while interpreting files.
     lock(project.stat_failures_lock) do
         for (filepath, measurement_id, message) in project.stat_failures
-            push!(failures, MeasurementAnalysisFailure(filepath, measurement_id, message))
+            push!(failures, ItemFailure(filepath, measurement_id, message))
         end
         empty!(project.stat_failures)
     end
@@ -425,19 +425,19 @@ function compute_and_add_measurement_stats!(
 end
 
 function _group_for_device_stat(
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     recipe::DeviceStatRecipe,
-)::Dict{Any,Vector{MeasurementInfo}}
+)::Dict{Any,Vector{ItemRecord}}
     kinds = Set(recipe.measurement_kinds)
-    groups = Dict{Any,Vector{MeasurementInfo}}()
+    groups = Dict{Any,Vector{ItemRecord}}()
     for measurement in measurements
-        measurement.measurement_kind in kinds || continue
-        push!(get!(groups, recipe.group_by(measurement), MeasurementInfo[]), measurement)
+        measurement.kind in kinds || continue
+        push!(get!(groups, recipe.group_by(measurement), ItemRecord[]), measurement)
     end
     return groups
 end
 
-function _step_failure(filepath::String, measurement_id::String, step::Symbol, err)::MeasurementAnalysisFailure
+function _step_failure(filepath::String, measurement_id::String, step::Symbol, err)::ItemFailure
     @error("Measurement analysis failed", file=filepath, measurement=measurement_id, step, exception=(err, catch_backtrace()))
-    return MeasurementAnalysisFailure(filepath, measurement_id, "step=$step: " * sprint(showerror, err))
+    return ItemFailure(filepath, measurement_id, "step=$step: " * sprint(showerror, err))
 end

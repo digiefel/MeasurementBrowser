@@ -34,10 +34,10 @@ using DataFrames: DataFrame, nrow
                 end
                 DataFrame(i=first.(rows), v=last.(rows))
             end,
-            measurements=(file, _data) -> [MeasurementInfo(
+            measurements=(file, _data) -> [ItemRecord(
                 filepath=file.filepath,
-                measurement_kind=:iv,
-                device_info=DeviceInfo([splitext(file.filename)[1]]),
+                kind=:iv,
+                collection=[splitext(file.filename)[1]],
                 timestamp=file.timestamp,
                 clean_title=file.filename,
             )],
@@ -59,15 +59,14 @@ using DataFrames: DataFrame, nrow
         )
 
         measurements = [
-            only(measurements_for_file(project, joinpath(fixture_dir, filename)))
+            only(items_for_file(project, joinpath(fixture_dir, filename)))
             for filename in filenames
         ]
         workspace = Workspace.Workspace(project, fixture_dir)
-        read_measurement_data(workspace, measurements)
+        read_item_data(workspace, measurements)
         plot_kind = RegistryPlot{:iv,Symbol("I-V")}
         figure = setup_plot(workspace, plot_kind, measurements)
         plot_data!(workspace, plot_kind, measurements, figure)
-        infer_measurement_group("precompile_group", measurements[1:1], measurements)
         scan_source(scan_dir; project=project)
         scan_source(scan_dir; project=project, count_first=true)
     end

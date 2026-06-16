@@ -10,7 +10,7 @@ using ..Projects:
     project_description,
     project_name,
     scan_profile_summary
-using ..MeasurementIndex: SourceScan
+using ..ItemIndex: SourceScan
 using ..Cache:
     ProjectCacheIdentity,
     ProjectCacheStatus
@@ -39,11 +39,11 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
 
     if job_state == :loading
         progress_text = total > 0 ?
-            @sprintf("Read %d/%d cached files, loaded %d measurements", processed, total, loaded) :
-            @sprintf("Loaded %d measurements", loaded)
+            @sprintf("Read %d/%d cached files, loaded %d items", processed, total, loaded) :
+            @sprintf("Loaded %d items", loaded)
         return (
             title="Cache: Loading",
-            detail="Reading cached measurements from the HDF5 file.",
+            detail="Reading cached items from the HDF5 file.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Reload",
@@ -53,8 +53,8 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
         progress_text = phase == :cache_finalize ?
             "Finalizing cache metadata and indexes" :
             total > 0 ?
-            @sprintf("Processed %d/%d cache entries, cached %d measurements", processed, total, loaded) :
-            @sprintf("Cached %d measurements", loaded)
+            @sprintf("Processed %d/%d cache entries, cached %d items", processed, total, loaded) :
+            @sprintf("Cached %d items", loaded)
         operation = workspace.cache.operation
         title = phase == :cache_finalize ? "Cache: Finalizing" :
             operation == :build ? "Cache: Building" :
@@ -63,7 +63,7 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
             title,
             detail=phase == :cache_finalize ?
                 "Finalizing the HDF5 cache." :
-                "Writing source measurements into the HDF5 cache.",
+                "Writing source items into the HDF5 cache.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Cache Build",
@@ -139,24 +139,24 @@ function _source_rescan_progress_model(
         return (text=text, fraction=0.0f0, show_bar=false)
     elseif source_state == :scanning
         text = total > 0 ?
-            @sprintf("Reading %d/%d files, %d measurements", processed, total, loaded) :
+            @sprintf("Reading %d/%d files, %d items", processed, total, loaded) :
             "Reading files..."
         return (text=text, fraction=fraction, show_bar=total > 0)
     elseif source_state == :analyzing
         text = total > 0 ?
-            @sprintf("Analyzing %d/%d, %d measurements", processed, total, loaded) :
-            @sprintf("Analyzing %d measurements...", loaded)
+            @sprintf("Analyzing %d/%d, %d items", processed, total, loaded) :
+            @sprintf("Analyzing %d items...", loaded)
         return (text=text, fraction=fraction, show_bar=total > 0)
     elseif source_state == :unchanged
         return (
-            text=@sprintf("Up to date: %d measurements (%d files unchanged)", loaded, total),
+            text=@sprintf("Up to date: %d items (%d files unchanged)", loaded, total),
             fraction=0.0f0,
             show_bar=false,
         )
     else # :done
         text = skipped > 0 ?
-            @sprintf("Scanned %d files, %d measurements (%d skipped)", total, loaded, skipped) :
-            @sprintf("Scanned %d files, %d measurements", total, loaded)
+            @sprintf("Scanned %d files, %d items (%d skipped)", total, loaded, skipped) :
+            @sprintf("Scanned %d files, %d items", total, loaded)
         return (text=text, fraction=0.0f0, show_bar=false)
     end
 end
@@ -187,7 +187,7 @@ function _cache_toolbar_model(state::BrowserState)::NamedTuple
         return (
             label="Cache: Loading",
             color=(0.18, 0.42, 0.78, 1.0),
-            detail="Reading cached measurements from the HDF5 file.",
+            detail="Reading cached items from the HDF5 file.",
         )
     elseif cache_state == :missing
         message = workspace.cache_job.error
@@ -311,7 +311,7 @@ function render_perf_window(state::BrowserState)::Nothing
         ig.Text("Tree nodes rendered: $(performance.node_count)")
         rows_visible = performance.measurement_rows_visible
         rows_rendered = performance.measurement_rows_rendered
-        ig.Text("Measurements visible/rendered: $rows_visible / $rows_rendered")
+        ig.Text("Items visible/rendered: $rows_visible / $rows_rendered")
 
         mem = _memory_snapshot()
         if mem.vmrss_kb !== nothing
@@ -374,7 +374,7 @@ function render_perf_window(state::BrowserState)::Nothing
                 files = sum(row.files for row in scan_rows)
                 meas = sum(row.measurements for row in scan_rows)
                 ig.Text(@sprintf(
-                    "Last scan: %d files, %d measurements", files, meas,
+                    "Last scan: %d files, %d items", files, meas,
                 ))
                 # Reads and stats run across worker threads, so these are summed CPU-time, not
                 # wall-clock; the total can exceed elapsed time by up to the thread count.
@@ -391,53 +391,9 @@ function render_perf_window(state::BrowserState)::Nothing
             end
         end
 
-        profiles = state.figure_scripts.job_profiles
-        if ig.CollapsingHeader("Figure-Script Jobs", ig.ImGuiTreeNodeFlags_DefaultOpen)
-            if isempty(profiles)
-                ig.TextDisabled("No figure-script jobs profiled yet")
-            else
-                latest = profiles[end]
-                latest_profile = latest.profile
-                ig.Text(
-                    "Last: $(latest.operation) $(repr(latest_profile.group_name))  " *
-                    "$(round(latest_profile.total_ms; digits=1)) ms  " *
-                    "selected=$(latest_profile.selected_count) / total=$(latest_profile.measurement_count)",
-                )
-                if !isempty(latest_profile.sections)
-                    ig.Text("Sections")
-                    for section in latest_profile.sections
-                        ig.BulletText(
-                            "$(section.key): calls=$(section.calls)  " *
-                            "time=$(round(section.duration_ms; digits=2)) ms  " *
-                            "alloc=$(round(section.alloc_bytes / 1024; digits=1)) KB",
-                        )
-                    end
-                end
-                if !isempty(latest_profile.counters)
-                    ig.Text("Counters")
-                    for (key, value) in sort!(collect(latest_profile.counters); by=entry -> String(first(entry)))
-                        ig.BulletText("$(key): $(value)")
-                    end
-                end
-
-                if length(profiles) > 1
-                    ig.Text("History")
-                    for entry in Iterators.reverse(profiles[max(1, end - 5):end-1])
-                        profile = entry.profile
-                        ig.BulletText(
-                            "$(entry.operation) $(repr(profile.group_name)): " *
-                            "$(round(profile.total_ms; digits=1)) ms  " *
-                            "selected=$(profile.selected_count)",
-                        )
-                    end
-                end
-            end
-        end
-
         if ig.Button("Clear timings")
             empty!(performance.timings)
             empty!(performance.allocations)
-            empty!(state.figure_scripts.job_profiles)
         end
     end
     ig.End()
@@ -520,24 +476,6 @@ function render_menu_bar(state::BrowserState)::Nothing
             ig.EndDisabled()
             if ig.BeginItemTooltip()
                 ig.TextUnformatted("Fix tags.txt and rescan before hiding bad items")
-                ig.EndTooltip()
-            end
-        end
-        _, selected_measurements, _ = _project_visible_selection(state)
-        has_measurement_selection = !isempty(selected_measurements)
-        can_open_figure_scripts = has_measurement_selection ||
-                                  !isempty(state.figure_scripts.groups) ||
-                                  state.figure_scripts.visible
-        !can_open_figure_scripts && ig.BeginDisabled()
-        if ig.MenuItem("Figure Script", C_NULL, state.figure_scripts.visible)
-            state.figure_scripts.visible = !state.figure_scripts.visible
-            state.figure_scripts.root_path =
-                workspace isa Workspace.Workspace ? workspace.root_path : ""
-        end
-        if !can_open_figure_scripts
-            ig.EndDisabled()
-            if ig.BeginItemTooltip()
-                ig.TextUnformatted("Select one or more measurements to build a figure script")
                 ig.EndTooltip()
             end
         end
@@ -633,7 +571,7 @@ function _render_cache_controls!(
     if !isempty(cache_errors)
         ig.Separator()
         ig.TextColored((1.0, 0.35, 0.35, 1.0), "File Errors")
-        ig.TextDisabled("Select a file to show its measurements")
+        ig.TextDisabled("Select a file to show its items")
         for (index, file_error) in enumerate(cache_errors)
             index > 20 && break
             filepath, message = file_error
@@ -868,10 +806,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         end
         state.performance.frame += 1
         workspace = state.workspace
-        if workspace isa Workspace.Workspace && poll_workspace!(workspace)
-            _invalidate_figure_script_scan_cache!(state)
-        end
-        _poll_figure_script_job_events!(state)
+        workspace isa Workspace.Workspace && poll_workspace!(workspace)
         if first_frame[]
             state.performance.gl_info = _gl_info()
             _promote_to_foreground_app()
@@ -892,9 +827,6 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         _time!(state, :info) do
             render_info_window(state)
         end
-        _time!(state, :figure_scripts) do
-            render_figure_script_window(state)
-        end
         _time!(state, :table_inspector) do
             render_table_inspector_window(state)
         end
@@ -909,7 +841,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         end
         _save_project_view_if_changed!(state)
         # Show metadata guidance modal if needed
-        render_device_info_modal(state)
+        render_collection_metadata_modal(state)
     end
 end
 

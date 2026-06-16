@@ -4,7 +4,7 @@ using Serialization
 using DataFrames: DataFrame
 
 const PROJECT_CACHE_COMPRESSION = 3
-const PROJECT_CACHE_SCHEMA_VERSION = 7
+const PROJECT_CACHE_SCHEMA_VERSION = 8
 const PROJECT_CACHE_INDEX_DATASET = "index"
 const PROJECT_CACHE_LOCK = ReentrantLock()
 
@@ -336,7 +336,7 @@ when several measurements belong to the same physical file.
 """
 function valid_cached_source_file(
     index::ProjectCacheIndex,
-    measurement::MeasurementInfo,
+    measurement::ItemRecord,
     fingerprints::Dict{String,FileFingerprint},
 )::Union{Nothing,SourceFile}
     path = normpath(abspath(expanduser(measurement.filepath)))
@@ -355,7 +355,7 @@ Read every valid requested payload in one HDF5 operation. Missing or stale entri
 """
 function cached_measurement_data(
     index::Union{Nothing,ProjectCacheIndex},
-    measurements::Vector{MeasurementInfo};
+    measurements::Vector{ItemRecord};
     processed::Bool=false,
 )::Vector{Union{Nothing,DataFrame}}
     data = Union{Nothing,DataFrame}[nothing for _ in measurements]
@@ -397,7 +397,7 @@ Write valid measurement payloads to the specified loaded cache in one HDF5 opera
 """
 function write_measurement_data_cache!(
     index::Union{Nothing,ProjectCacheIndex},
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     data::Vector{DataFrame};
     processed::Bool=false,
 )::Nothing

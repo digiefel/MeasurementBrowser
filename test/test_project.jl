@@ -18,10 +18,10 @@ function _build_test_project()
         end,
         measurements=function (file, _data)
             name = splitext(file.filename)[1]
-            return [MeasurementInfo(
+            return [ItemRecord(
                 filepath=file.filepath,
-                measurement_kind=:table,
-                device_info=DeviceInfo(["test", name]),
+                kind=:table,
+                collection=["test", name],
                 timestamp=file.timestamp,
                 clean_title="Table $name",
             )]

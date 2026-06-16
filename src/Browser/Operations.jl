@@ -3,7 +3,7 @@ using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using ..MeasurementIndex: device_path_key
+using ..ItemIndex: collection_path_key
 import ..Workspace
 using ..Workspace:
     close_workspace!,
@@ -52,15 +52,9 @@ function _attach_workspace!(
     project = workspace.project
     norm_path = workspace.root_path
     previous_workspace = state.workspace
-    previous_root = previous_workspace isa Workspace.Workspace ?
-        previous_workspace.root_path :
-        ""
-    _cancel_figure_script_job!(state)
     previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
         close_workspace!(previous_workspace)
     state.plots = PlotState(debug=state.plots.debug)
-    previous_root == norm_path ||
-        _reset_figure_script_state!(state, norm_path)
     view = _load_project_view(norm_path)
     !isempty(view.project) && view.project != project_name(project) &&
         (view = PersistedProjectView(project=project_name(project)))
@@ -68,7 +62,6 @@ function _attach_workspace!(
     state.workspace = workspace
     _apply_project_view!(state, view)
     state.saved_project_view = view
-    _invalidate_figure_script_scan_cache!(state)
     persist && _persist_preferences!(state; path=norm_path)
     return nothing
 end
@@ -88,22 +81,22 @@ function select_source_file!(
     ]
     isempty(measurements) && return false
 
-    device_paths =
-        unique([device_path_key(measurement.device_info) for measurement in measurements])
-    expanded_paths = copy(state.expanded_device_paths)
-    for device_path in device_paths
-        parts = split(device_path, '/')
+    collection_paths =
+        unique([collection_path_key(measurement.collection) for measurement in measurements])
+    expanded_paths = copy(state.expanded_collection_paths)
+    for collection_path in collection_paths
+        parts = split(collection_path, '/')
         for depth in 1:(length(parts) - 1)
             parent_path = join(parts[1:depth], '/')
             parent_path in expanded_paths || push!(expanded_paths, parent_path)
         end
     end
 
-    state.expanded_device_paths = expanded_paths
-    workspace.selection.device_paths = device_paths
+    state.expanded_collection_paths = expanded_paths
+    workspace.selection.collection_paths = collection_paths
     workspace.selection.measurement_ids =
         [measurement.unique_id for measurement in measurements]
-    state.scroll_to_device_path = first(device_paths)
+    state.scroll_to_collection_path = first(collection_paths)
     state.scroll_to_measurement_id = first(measurements).unique_id
     return true
 end
@@ -111,7 +104,6 @@ end
 """Stop browser and workspace work before the render loop exits."""
 function _shutdown_background_jobs!(state::BrowserState)::Nothing
     state.shutdown_complete && return nothing
-    _cancel_figure_script_job!(state)
     workspace = state.workspace
     workspace isa Workspace.Workspace && close_workspace!(workspace)
     state.shutdown_complete = true

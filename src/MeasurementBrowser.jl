@@ -13,48 +13,47 @@ using .Projects:
     PlotRecipe,
     Project
 import .Projects:
-    compute_and_add_measurement_stats!,
+    compute_and_add_item_stats!,
     detect_kind,
-    device_path_label,
+    collection_path_label,
     display_label,
     interpret_file,
     kind_label,
     load_source_data,
-    parse_device_info,
-    process_measurement_data,
+    parse_collection_info,
+    process_item_data,
     project_description,
     project_name,
     reset_scan_profile!,
     scan_profile_summary
 
-include("MeasurementIndex.jl")
-using .MeasurementIndex:
+include("ItemIndex.jl")
+using .ItemIndex:
     CANCEL_CALLBACK_KEY,
-    DeviceInfo,
     HierarchyNode,
     JobCancelled,
-    MeasurementAnalysisFailure,
-    MeasurementHierarchy,
-    MeasurementInfo,
+    ItemFailure,
+    Hierarchy,
+    ItemRecord,
     SourceFile,
     SourceScan,
     build_clean_title,
     check_cancel,
     children,
     collect_source_files,
-    device_info_path,
-    device_path_key,
-    device_path_tuple,
+    collection_metadata_path,
+    collection_path_key,
+    collection_path_tuple,
     emit_progress,
     file_fingerprint,
-    has_device_metadata,
+    has_collection_metadata,
     index_source_file,
-    insert_measurement!,
-    interpret_measurements,
+    insert_item!,
+    interpret_items,
     is_job_cancelled,
     load_scan_metadata,
-    measurement_timestamp_key,
-    measurements_for_file,
+    item_timestamp_key,
+    items_for_file,
     parse_timestamp,
     scan_source,
     with_cancel
@@ -65,7 +64,7 @@ include("Workspace.jl")
 using .Workspace:
     close_workspace!,
     open_workspace,
-    read_measurement_data,
+    read_item_data,
     select_measurements!
 
 include("Visualization.jl")
@@ -87,18 +86,17 @@ include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
 include("Project.jl")
-include("FigureScripts.jl")
 include("Precompile.jl")
 include("Browser.jl")
 using .Browser: open_browser
 
 export open_browser
-export SourceFile, MeasurementInfo, DeviceInfo, MeasurementAnalysisFailure
+export SourceFile, ItemRecord, ItemFailure
 export PlotKind, plot_kinds
-export parse_device_info, detect_kind, kind_label, display_label, interpret_file
-export measurements_for_file
-export load_source_data, read_measurement_data, process_measurement_data, setup_plot, plot_data!
-export compute_and_add_measurement_stats!
+export parse_collection_info, detect_kind, kind_label, display_label, interpret_file
+export items_for_file
+export load_source_data, read_item_data, process_item_data, setup_plot, plot_data!
+export compute_and_add_item_stats!
 export debug_plot
 export TablePreview, inspect_table
 export project_name, project_description

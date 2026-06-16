@@ -4,11 +4,11 @@ using ..Projects:
     Project,
     display_label,
     kind_label
-using ..MeasurementIndex:
+using ..ItemIndex:
     HierarchyNode,
-    MeasurementInfo,
+    ItemRecord,
     children,
-    device_path_key
+    collection_path_key
 import ..Workspace
 
 """Destroy text-filter widgets before their saved text is replaced."""
@@ -46,7 +46,7 @@ end
 """Return whether a measurement's visible labels pass the measurement filter."""
 function _measurement_matches_filter(
     project::Project,
-    measurement::MeasurementInfo,
+    measurement::ItemRecord,
     filter_obj::Ptr{ig.lib.ImGuiTextFilter},
 )::Bool
     if !ig.ImGuiTextFilter_IsActive(filter_obj)
@@ -57,7 +57,7 @@ function _measurement_matches_filter(
         "\n",
         measurement.clean_title,
         "\n",
-        kind_label(project, measurement.measurement_kind),
+        kind_label(project, measurement.kind),
     )
     return ig.ImGuiTextFilter_PassFilter(filter_obj, text, C_NULL)
 end
@@ -66,14 +66,14 @@ end
 function _visible_measurements(
     state::BrowserState,
     project::Project,
-    measurements::Vector{MeasurementInfo},
+    measurements::Vector{ItemRecord},
     filter_meas::Ptr{ig.lib.ImGuiTextFilter},
-)::Vector{MeasurementInfo}
+)::Vector{ItemRecord}
     if _show_bad_effective(state) && !ig.ImGuiTextFilter_IsActive(filter_meas)
         return measurements
     end
 
-    visible = MeasurementInfo[]
+    visible = ItemRecord[]
     sizehint!(visible, length(measurements))
     for measurement in measurements
         _measurement_is_visible(state, measurement) || continue
@@ -89,39 +89,39 @@ function _render_hierarchy_tree_panel(
     filter_tree::Ptr{ig.lib.ImGuiTextFilter},
 )::Nothing
     ig.BeginChild("Tree", (0, 0), true)
-    ig.SeparatorText("Device Selection")
+    ig.SeparatorText("Collection Selection")
     _render_tag_state_error!(state)
 
     workspace = state.workspace
     root = workspace isa Workspace.Workspace ? workspace.index.hierarchy.root : nothing
     meta_keys = workspace isa Workspace.Workspace ?
-        workspace.index.device_metadata_keys :
+        workspace.index.collection_metadata_keys :
         Symbol[]
-    selected_devices, _, _ = _project_visible_selection(state)
+    selected_collections, _, _ = _project_visible_selection(state)
 
-    visible_devices = HierarchyNode[]
-    visible_device_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
-    expanded_device_path_set = Set(state.expanded_device_paths)
-    selected_device_path_set = workspace isa Workspace.Workspace ?
-        Set(workspace.selection.device_paths) :
+    visible_collections = HierarchyNode[]
+    visible_collection_keys_ref = Ref{Union{Nothing,Vector{String}}}(nothing)
+    expanded_collection_path_set = Set(state.expanded_collection_paths)
+    selected_collection_path_set = workspace isa Workspace.Workspace ?
+        Set(workspace.selection.collection_paths) :
         Set{String}()
-    all_device_count = 0
+    all_collection_count = 0
     filter_active = ig.ImGuiTextFilter_IsActive(filter_tree)
 
     if root !== nothing
         has_visible_leaf_cache = IdDict{HierarchyNode,Bool}()
         subtree_matches_cache = IdDict{HierarchyNode,Bool}()
-        device_key_cache = IdDict{HierarchyNode,String}()
+        collection_key_cache = IdDict{HierarchyNode,String}()
 
-        device_key(node::HierarchyNode) = get!(device_key_cache, node) do
-            _device_path_key(node)
+        collection_key(node::HierarchyNode) = get!(collection_key_cache, node) do
+            _collection_path_key(node)
         end
 
         """Return whether this subtree contains a visible device."""
         function has_visible_leaf(node::HierarchyNode)::Bool
             return get!(has_visible_leaf_cache, node) do
                 if isempty(children(node))
-                    return _device_is_visible(state, device_key(node))
+                    return _collection_is_visible(state, collection_key(node))
                 end
                 for child in children(node)
                     has_visible_leaf(child) && return true
@@ -142,7 +142,7 @@ function _render_hierarchy_tree_panel(
         end
 
         """Collect visible leaf devices while respecting inherited filter matches."""
-        function collect_visible_devices!(
+        function collect_visible_collections!(
             node::HierarchyNode,
             force_show::Bool=false,
         )::Nothing
@@ -151,11 +151,11 @@ function _render_hierarchy_tree_panel(
 
             direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
             if isempty(children(node))
-                push!(visible_devices, node)
+                push!(visible_collections, node)
                 return nothing
             end
             for child in children(node)
-                collect_visible_devices!(child, direct_match)
+                collect_visible_collections!(child, direct_match)
             end
             return nothing
         end
@@ -172,29 +172,29 @@ function _render_hierarchy_tree_panel(
             return total
         end
 
-        all_device_count = count_leaf_nodes(root)
+        all_collection_count = count_leaf_nodes(root)
         for child in children(root)
-            collect_visible_devices!(child, false)
+            collect_visible_collections!(child, false)
         end
 
-        visible_device_keys = function ()
-            keys = visible_device_keys_ref[]
+        visible_collection_keys = function ()
+            keys = visible_collection_keys_ref[]
             if keys === nothing
-                keys = [device_key(node) for node in visible_devices]
-                visible_device_keys_ref[] = keys
+                keys = [collection_key(node) for node in visible_collections]
+                visible_collection_keys_ref[] = keys
             end
             return keys
         end
 
         _render_selection_toolbar!(
-            length(selected_devices),
-            length(visible_devices),
-            all_device_count,
+            length(selected_collections),
+            length(visible_collections),
+            all_collection_count,
             filter_tree,
             () -> begin
-                workspace.selection.device_paths = copy(visible_device_keys())
+                workspace.selection.collection_paths = copy(visible_collection_keys())
             end;
-            item_label="devices", filter_id="##tree_filter"
+            item_label="collections", filter_id="##tree_filter"
         )
 
         node_seed = UInt64(0x9e3779b97f4a7c15)
@@ -219,8 +219,8 @@ function _render_hierarchy_tree_panel(
 
             is_leaf = isempty(children(node))
             path_key = join(path_segments, '/')
-            leaf_device_key = is_leaf ? device_key(node) : nothing
-            selected = is_leaf && (leaf_device_key in selected_device_path_set)
+            leaf_collection_key = is_leaf ? collection_key(node) : nothing
+            selected = is_leaf && (leaf_collection_key in selected_collection_path_set)
 
             flags = (
                 ig.ImGuiTreeNodeFlags_OpenOnArrow |
@@ -246,28 +246,28 @@ function _render_hierarchy_tree_panel(
 
             ig.TableSetColumnIndex(0)
             bad_text_pushed = false
-            if is_leaf && leaf_device_key !== nothing && _tag_state_ready(state)
+            if is_leaf && leaf_collection_key !== nothing && _tag_state_ready(state)
                 tag_state = _tag_state_or_error(state)
-                ancestor_keys = _ancestor_keys_for_path(leaf_device_key)
-                bad_text_pushed = _push_tag_text_style!(tag_state, leaf_device_key, ancestor_keys)
+                ancestor_keys = _ancestor_keys_for_path(leaf_collection_key)
+                bad_text_pushed = _push_tag_text_style!(tag_state, leaf_collection_key, ancestor_keys)
             end
             if !is_leaf && !filter_active
-                ig.SetNextItemOpen(path_key in expanded_device_path_set, ig.ImGuiCond_Always)
+                ig.SetNextItemOpen(path_key in expanded_collection_path_set, ig.ImGuiCond_Always)
             end
             opened = ig.TreeNodeEx(is_leaf ? "" : node.name, flags, node.name)
-            if is_leaf && state.scroll_to_device_path == leaf_device_key
+            if is_leaf && state.scroll_to_collection_path == leaf_collection_key
                 ig.SetScrollHereY(0.5)
-                state.scroll_to_device_path = nothing
+                state.scroll_to_collection_path = nothing
             end
             if !is_leaf && !filter_active && ig.IsItemToggledOpen()
-                expanded_device_paths = copy(state.expanded_device_paths)
+                expanded_collection_paths = copy(state.expanded_collection_paths)
                 if opened
-                    path_key in expanded_device_paths || push!(expanded_device_paths, path_key)
+                    path_key in expanded_collection_paths || push!(expanded_collection_paths, path_key)
                 else
-                    filter!(key -> key != path_key, expanded_device_paths)
+                    filter!(key -> key != path_key, expanded_collection_paths)
                 end
-                state.expanded_device_paths = expanded_device_paths
-                expanded_device_path_set = Set(expanded_device_paths)
+                state.expanded_collection_paths = expanded_collection_paths
+                expanded_collection_path_set = Set(expanded_collection_paths)
             end
             bad_text_pushed && ig.PopStyleColor()
 
@@ -276,19 +276,19 @@ function _render_hierarchy_tree_panel(
                     io = ig.GetIO()
                     shift_held = unsafe_load(io.KeyShift)
                     ctrl_held = unsafe_load(io.KeyCtrl)
-                    selected_device_paths = copy(workspace.selection.device_paths)
-                    _update_multi_selection!(selected_device_paths, leaf_device_key, visible_device_keys(), shift_held, ctrl_held)
-                    workspace.selection.device_paths = selected_device_paths
-                elseif !isempty(workspace.selection.device_paths)
-                    empty!(workspace.selection.device_paths)
+                    selected_collection_paths = copy(workspace.selection.collection_paths)
+                    _update_multi_selection!(selected_collection_paths, leaf_collection_key, visible_collection_keys(), shift_held, ctrl_held)
+                    workspace.selection.collection_paths = selected_collection_paths
+                elseif !isempty(workspace.selection.collection_paths)
+                    empty!(workspace.selection.collection_paths)
                 end
             end
 
             if is_leaf && ig.BeginPopupContextItem()
-                target_nodes = _selection_targets(selected_devices, node)
-                target_keys = [device_key(target) for target in target_nodes]
+                target_nodes = _selection_targets(selected_collections, node)
+                target_keys = [collection_key(target) for target in target_nodes]
                 selected_count = length(target_keys)
-                selected_count > 1 && ig.TextDisabled("Apply to $selected_count devices")
+                selected_count > 1 && ig.TextDisabled("Apply to $selected_count collections")
 
                 editable = _tag_state_ready(state)
                 if !editable
@@ -298,10 +298,10 @@ function _render_hierarchy_tree_panel(
 
                 !editable && ig.BeginDisabled()
                 if ig.MenuItem("Mark Bad")
-                    _set_devices_bad!(state, target_keys, true)
+                    _set_collections_bad!(state, target_keys, true)
                 end
                 if ig.MenuItem("Unmark Bad")
-                    _set_devices_bad!(state, target_keys, false)
+                    _set_collections_bad!(state, target_keys, false)
                 end
                 !editable && ig.EndDisabled()
                 ig.EndPopup()
@@ -309,7 +309,7 @@ function _render_hierarchy_tree_panel(
 
             dev_meta = nothing
             if is_leaf && !isempty(node.measurements)
-                dev_meta = first(node.measurements).device_info.parameters
+                dev_meta = first(node.measurements).collection_metadata
             end
             for (i, k) in enumerate(meta_keys)
                 ig.TableSetColumnIndex(i)
@@ -337,7 +337,7 @@ function _render_hierarchy_tree_panel(
         if ig.BeginTable("tree_table", ncols, table_flags)
             local index_flags = ig.ImGuiTableColumnFlags_NoHide | ig.ImGuiTableColumnFlags_NoReorder |
                                 ig.ImGuiTableColumnFlags_NoSort | ig.ImGuiTableColumnFlags_WidthStretch
-            ig.TableSetupColumn("Device", index_flags, 5.0)
+            ig.TableSetupColumn("Collection", index_flags, 5.0)
             for k in meta_keys
                 ig.TableSetupColumn(String(k), ig.ImGuiTableColumnFlags_AngledHeader | ig.ImGuiTableFlags_SizingFixedFit)
             end
@@ -356,12 +356,12 @@ function _render_hierarchy_tree_panel(
             0,
             filter_tree,
             () -> nothing;
-            item_label="devices", filter_id="##tree_filter"
+            item_label="collections", filter_id="##tree_filter"
         )
         ig.Text("No data loaded")
     end
 
-    isempty(visible_devices) && all_device_count > 0 && ig.TextDisabled("No devices match filter")
+    isempty(visible_collections) && all_collection_count > 0 && ig.TextDisabled("No collections match filter")
     ig.EndChild()
 end
 
@@ -464,18 +464,18 @@ function _render_measurements_panel(
     filter_meas::Ptr{ig.lib.ImGuiTextFilter},
 )::Nothing
     ig.BeginChild("Measurements", (0, 0), true)
-    ig.SeparatorText("Measurement Selection")
+    ig.SeparatorText("Item Selection")
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
-        ig.TextDisabled("Open a project folder to browse measurements")
+        ig.TextDisabled("Open a project folder to browse items")
         ig.EndChild()
         return nothing
     end
     proj = workspace.project
 
-    selected_devices, selected_measurements, selected_path =
+    selected_collections, selected_measurements, selected_path =
         _project_visible_selection(state)
-    all_measurements = _measurements_of_selected_devices(state)
+    all_measurements = _measurements_of_selected_collections(state)
     visible_measurements =
         _visible_measurements(state, proj, all_measurements, filter_meas)
     selected_measurement_id_set = Set(workspace.selection.measurement_ids)
@@ -490,24 +490,24 @@ function _render_measurements_panel(
             workspace.selection.measurement_ids =
                 [measurement.unique_id for measurement in visible_measurements]
         end;
-        item_label="measurements", filter_id="##measurements_filter"
+        item_label="items", filter_id="##measurements_filter"
     )
 
-    if !isempty(selected_devices)
-        if length(selected_devices) == 1
+    if !isempty(selected_collections)
+        if length(selected_collections) == 1
             sel_name = join(selected_path, "/")
-            ig.Text("Measurements for $sel_name")
+            ig.Text("Items for $sel_name")
             ig.Separator()
         else
-            shown = min(3, length(selected_devices))
-            first_names = join((selected_devices[i].name for i in 1:shown), ", ")
-            ig.Text("Measurements from $(length(selected_devices)) devices: $first_names$(length(selected_devices) > 3 ? "..." : "")")
+            shown = min(3, length(selected_collections))
+            first_names = join((selected_collections[i].name for i in 1:shown), ", ")
+            ig.Text("Items from $(length(selected_collections)) collections: $first_names$(length(selected_collections) > 3 ? "..." : "")")
             ig.Separator()
         end
     end
 
-    if isempty(selected_devices)
-        ig.Text("Select one or more devices to view their measurements")
+    if isempty(selected_collections)
+        ig.Text("Select one or more collections to view their items")
         ig.EndChild()
         return nothing
     end
@@ -519,7 +519,7 @@ function _render_measurements_panel(
         table_flags = ig.ImGuiTableFlags_BordersOuterH | ig.ImGuiTableFlags_BordersOuterV |
                       ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_SizingStretchProp
         if ig.BeginTable("measurements_table", 1, table_flags)
-            ig.TableSetupColumn("Measurement", ig.ImGuiTableColumnFlags_WidthStretch)
+            ig.TableSetupColumn("Item", ig.ImGuiTableColumnFlags_WidthStretch)
 
             rows_rendered = 0
             clipper = ig.lib.ImGuiListClipper()
@@ -539,7 +539,7 @@ function _render_measurements_panel(
                         bad_text_pushed = false
                         if registry_ready
                             tag_state = _tag_state_or_error(state)
-                            dev_key = device_path_key(measurement.device_info)
+                            dev_key = collection_path_key(measurement.collection)
                             ancestor_keys = _ancestor_keys_for_path(dev_key)
                             bad_text_pushed = _push_tag_text_style!(
                                 tag_state, measurement.unique_id, [dev_key; ancestor_keys])
@@ -570,7 +570,7 @@ function _render_measurements_panel(
                                 _selection_targets(selected_measurements, measurement)
                             target_ids = [target.unique_id for target in target_measurements]
                             selected_count = length(target_ids)
-                            selected_count > 1 && ig.TextDisabled("Apply to $selected_count measurements")
+                            selected_count > 1 && ig.TextDisabled("Apply to $selected_count items")
 
                             if ig.MenuItem("Open Plot in New Window")
                                 plots = state.plots
@@ -584,7 +584,7 @@ function _render_measurements_panel(
                                         measurement_ids=[measurement.unique_id],
                                         plot_kind=get(
                                             plots.kind_by_measurement,
-                                            measurement.measurement_kind,
+                                            measurement.kind,
                                             nothing,
                                         ),
                                     ),
@@ -619,7 +619,7 @@ function _render_measurements_panel(
             ig.EndTable()
         end
     else
-        ig.TextDisabled("No measurements match filter")
+        ig.TextDisabled("No items match filter")
     end
     ig.EndChild()
     return nothing
@@ -646,7 +646,7 @@ function render_selection_window(state::BrowserState)::Nothing
     if ig.Begin("Hierarchy", C_NULL, ig.ImGuiWindowFlags_MenuBar)
         render_menu_bar(state)
         ig.Columns(2, "main_layout")
-        _time!(state, :device_tree) do
+        _time!(state, :collection_tree) do
             _render_hierarchy_tree_panel(state, filter_tree)
         end
         ig.NextColumn()

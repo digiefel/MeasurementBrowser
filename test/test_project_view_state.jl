@@ -131,21 +131,21 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
     @test only(parsed.plot_windows).measurements == ["measurement-2"]
 
     project = MeasurementBrowser.define_project("ProjectViewTest")
-    measurement_1 = MeasurementBrowser.MeasurementInfo(;
+    measurement_1 = MeasurementBrowser.ItemRecord(;
         unique_id="measurement-1",
         filepath=joinpath(root_path, "measurement-1.csv"),
         clean_title="Measurement 1",
-        measurement_kind=:iv_sweep,
-        device_info=MeasurementBrowser.DeviceInfo(["chip", "device-1"]),
+        kind=:iv_sweep,
+        collection=["chip", "device-1"],
     )
-    measurement_2 = MeasurementBrowser.MeasurementInfo(;
+    measurement_2 = MeasurementBrowser.ItemRecord(;
         unique_id="measurement-2",
         filepath=joinpath(root_path, "measurement-2.csv"),
         clean_title="Measurement 2",
-        measurement_kind=:iv_sweep,
-        device_info=MeasurementBrowser.DeviceInfo(["chip", "device-2"]),
+        kind=:iv_sweep,
+        collection=["chip", "device-2"],
     )
-    hierarchy = MeasurementBrowser.MeasurementHierarchy(
+    hierarchy = MeasurementBrowser.Hierarchy(
         [measurement_1, measurement_2],
         root_path,
         true,
@@ -179,7 +179,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
     @test only(state.plots.windows).plot_kind === nothing
 
     Browser._apply_project_view!(state, view)
-    @test workspace.selection.device_paths == ["chip/device"]
+    @test workspace.selection.collection_paths == ["chip/device"]
     @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]
     @test state.tree_filter == "tlm"
     @test state.measurement_filter == "298K"

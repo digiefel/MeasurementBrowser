@@ -8,7 +8,7 @@ using Test
 
         source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
         @test source isa MeasurementBrowser.SourceScan
-        @test source.hierarchy isa MeasurementBrowser.MeasurementHierarchy
+        @test source.hierarchy isa MeasurementBrowser.Hierarchy
         @test source.hierarchy.skipped_count == 0
 
         events = NamedTuple[]
@@ -30,7 +30,7 @@ using Test
         source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
         @test length(source.files) == 2
 
-        streamed = Vector{MeasurementInfo}[]
+        streamed = Vector{ItemRecord}[]
         source = MeasurementBrowser.scan_source(
             dir;
             project=TEST_PROJECT,

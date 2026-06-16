@@ -1,11 +1,11 @@
-module MeasurementIndex
+module ItemIndex
 
 using Dates
 
 import ..Projects:
     Project,
-    compute_and_add_measurement_stats!,
-    device_path_label,
+    compute_and_add_item_stats!,
+    collection_path_label,
     interpret_file,
     kind_label,
     project_name,
@@ -14,7 +14,7 @@ import ..Projects:
 """
 Failure produced while interpreting or analyzing one physical source file.
 """
-struct MeasurementAnalysisFailure
+struct ItemFailure
     filepath::String
     measurement_id::String
     message::String
@@ -56,104 +56,97 @@ function check_cancel()::Nothing
     return nothing
 end
 
-"""
-Device identity and metadata shared by measurements from the same device path.
-"""
-struct DeviceInfo
-    location::Vector{String}
-    parameters::Dict{Symbol,Any}
-end
+collection_path_label(::Project, collection::AbstractVector{<:AbstractString})::String =
+    join(collection, "_")
 
-DeviceInfo(location::Vector{String}) = DeviceInfo(location, Dict{Symbol,Any}())
-
-device_path_label(::Project, device_info::DeviceInfo)::String =
-    join(device_info.location, "_")
-
-device_path_key(location::AbstractVector{<:AbstractString})::String = join(location, "/")
-device_path_key(device_info::DeviceInfo)::String = device_path_key(device_info.location)
+collection_path_key(collection::AbstractVector{<:AbstractString})::String = join(collection, "/")
 
 """
-Parse a stored slash-separated device key into the tuple used by the hierarchy index.
+Parse a stored slash-separated collection key into the tuple used by the hierarchy index.
 """
-function device_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
+function collection_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
     stripped = strip(String(key))
-    isempty(stripped) && error("Device path key cannot be empty")
+    isempty(stripped) && error("Collection path key cannot be empty")
     segments = split(stripped, '/')
-    any(isempty, segments) && error("Invalid device path key '$key'")
+    any(isempty, segments) && error("Invalid collection path key '$key'")
     return Tuple(String.(segments))
 end
 
 """
-One logical measurement discovered inside a physical source file.
+The internal metadata record for one logical item discovered inside a physical source file.
 
-`parameters` describe acquisition settings known while interpreting the file. `stats` contain values
-computed after the required measurement context is available.
+`collection` is the item's canonical placement in the tree (nested collection names);
+`collection_metadata` is per-collection metadata merged from source-root metadata sources.
+`parameters` describe acquisition settings known while interpreting the file; `stats` contain values
+computed after the required context is available.
 """
-struct MeasurementInfo
+struct ItemRecord
     unique_id::String
     filename::String
     filepath::String
     clean_title::String
-    measurement_kind::Symbol
+    kind::Symbol
     timestamp::Union{DateTime,Nothing}
-    device_info::DeviceInfo
+    collection::Vector{String}
+    collection_metadata::Dict{Symbol,Any}
     parameters::Dict{Symbol,Any}
     stats::Dict{Symbol,Any}
 end
 
 """
-Construct a logical measurement while normalizing its string fields.
+Construct an item record while normalizing its string fields.
 """
-function MeasurementInfo(;
+function ItemRecord(;
     filepath::AbstractString,
-    measurement_kind::Symbol,
-    device_info::DeviceInfo,
+    kind::Symbol,
+    collection::AbstractVector{<:AbstractString},
     clean_title::AbstractString,
     filename::AbstractString=basename(filepath),
     unique_id::AbstractString=filepath,
     timestamp::Union{DateTime,Nothing}=nothing,
+    collection_metadata::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
-)::MeasurementInfo
-    return MeasurementInfo(
+)::ItemRecord
+    return ItemRecord(
         String(unique_id),
         String(filename),
         String(filepath),
         String(clean_title),
-        measurement_kind,
+        kind,
         timestamp,
-        device_info,
+        String[String(segment) for segment in collection],
+        collection_metadata,
         parameters,
         stats,
     )
 end
 
 """
-Copy a measurement while replacing selected fields.
+Copy an item record while replacing selected fields.
 """
-function MeasurementInfo(
-    measurement::MeasurementInfo;
-    filepath::AbstractString=measurement.filepath,
-    filename::AbstractString=measurement.filename,
-    unique_id::AbstractString=measurement.unique_id,
-    clean_title::AbstractString=measurement.clean_title,
-    measurement_kind::Symbol=measurement.measurement_kind,
-    timestamp::Union{DateTime,Nothing}=measurement.timestamp,
-    device_info::DeviceInfo=DeviceInfo(
-        copy(measurement.device_info.location),
-        deepcopy(measurement.device_info.parameters),
-    ),
-    parameters::Dict{Symbol,Any}=deepcopy(measurement.parameters),
-    stats::Dict{Symbol,Any}=deepcopy(measurement.stats),
-)::MeasurementInfo
-    return MeasurementInfo(;
+function ItemRecord(
+    record::ItemRecord;
+    filepath::AbstractString=record.filepath,
+    filename::AbstractString=record.filename,
+    unique_id::AbstractString=record.unique_id,
+    clean_title::AbstractString=record.clean_title,
+    kind::Symbol=record.kind,
+    timestamp::Union{DateTime,Nothing}=record.timestamp,
+    collection::AbstractVector{<:AbstractString}=copy(record.collection),
+    collection_metadata::Dict{Symbol,Any}=deepcopy(record.collection_metadata),
+    parameters::Dict{Symbol,Any}=deepcopy(record.parameters),
+    stats::Dict{Symbol,Any}=deepcopy(record.stats),
+)::ItemRecord
+    return ItemRecord(;
         filepath,
         filename,
         unique_id,
         clean_title,
-        measurement_kind,
+        kind,
         timestamp,
-        device_info,
+        collection,
+        collection_metadata,
         parameters,
         stats,
     )
@@ -184,7 +177,7 @@ function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     end
 end
 
-include("MeasurementIndex/SourceFiles.jl")
+include("ItemIndex/SourceFiles.jl")
 
 """
 One node in the device hierarchy.
@@ -193,21 +186,21 @@ struct HierarchyNode
     name::String
     kind::Symbol
     children::Vector{HierarchyNode}
-    measurements::Vector{MeasurementInfo}
+    measurements::Vector{ItemRecord}
 end
 
 HierarchyNode(name::String, kind::Symbol) =
-    HierarchyNode(name, kind, HierarchyNode[], MeasurementInfo[])
+    HierarchyNode(name, kind, HierarchyNode[], ItemRecord[])
 
 """
 The complete device tree and its indexes for one source root.
 """
-struct MeasurementHierarchy
+struct Hierarchy
     root::HierarchyNode
-    all_measurements::Vector{MeasurementInfo}
+    all_measurements::Vector{ItemRecord}
     root_path::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
-    has_device_metadata::Bool
+    has_collection_metadata::Bool
     project::Project
     skipped_count::Int
 end
@@ -219,8 +212,8 @@ struct SourceScan
     root_path::String
     project::Project
     files::Vector{SourceFile}
-    hierarchy::MeasurementHierarchy
-    analysis_failures::Vector{MeasurementAnalysisFailure}
+    hierarchy::Hierarchy
+    analysis_failures::Vector{ItemFailure}
 end
 
 """Construct a successful scan with no recorded analysis failures."""
@@ -228,9 +221,9 @@ function SourceScan(
     root_path::String,
     project::Project,
     files::Vector{SourceFile},
-    hierarchy::MeasurementHierarchy,
+    hierarchy::Hierarchy,
 )::SourceScan
-    return SourceScan(root_path, project, files, hierarchy, MeasurementAnalysisFailure[])
+    return SourceScan(root_path, project, files, hierarchy, ItemFailure[])
 end
 
 """
@@ -264,7 +257,7 @@ function natural_key(text::AbstractString)::Tuple
     return Tuple(parts)
 end
 
-measurement_timestamp_key(measurement::MeasurementInfo)::DateTime =
+item_timestamp_key(measurement::ItemRecord)::DateTime =
     measurement.timestamp === nothing ?
     DateTime(Dates.year(typemax(Date))) :
     measurement.timestamp
@@ -283,13 +276,13 @@ function Base.sort!(node::HierarchyNode)::HierarchyNode
             child -> natural_key(child.name),
     )
     foreach(
-        child -> sort!(child.measurements; by=measurement_timestamp_key),
+        child -> sort!(child.measurements; by=item_timestamp_key),
         node.children,
     )
     return node
 end
 
-Base.sort!(hierarchy::MeasurementHierarchy)::MeasurementHierarchy = (
+Base.sort!(hierarchy::Hierarchy)::Hierarchy = (
     sort!(hierarchy.root);
     hierarchy
 )
@@ -297,18 +290,18 @@ Base.sort!(hierarchy::MeasurementHierarchy)::MeasurementHierarchy = (
 """
 Create an empty hierarchy ready for progressive scan results.
 """
-function MeasurementHierarchy(
+function Hierarchy(
     root_path::String,
-    has_device_metadata::Bool,
+    has_collection_metadata::Bool,
     project::Project,
     skipped_count::Int=0,
-)::MeasurementHierarchy
-    return MeasurementHierarchy(
+)::Hierarchy
+    return Hierarchy(
         HierarchyNode("/", :root),
-        MeasurementInfo[],
+        ItemRecord[],
         root_path,
         Dict{Tuple{Vararg{String}},HierarchyNode}(),
-        has_device_metadata,
+        has_collection_metadata,
         project,
         skipped_count,
     )
@@ -317,16 +310,16 @@ end
 """
 Insert one measurement into an existing hierarchy.
 """
-function insert_measurement!(
-    hierarchy::MeasurementHierarchy,
-    measurement::MeasurementInfo,
-)::MeasurementInfo
+function insert_item!(
+    hierarchy::Hierarchy,
+    measurement::ItemRecord,
+)::ItemRecord
     parent = hierarchy.root
-    for (depth, segment) in enumerate(measurement.device_info.location)
-        path = Tuple(measurement.device_info.location[1:depth])
+    for (depth, segment) in enumerate(measurement.collection)
+        path = Tuple(measurement.collection[1:depth])
         child = get(hierarchy.index, path, nothing)
         if child === nothing
-            kind = depth == length(measurement.device_info.location) ? :leaf : :level
+            kind = depth == length(measurement.collection) ? :leaf : :level
             child = HierarchyNode(segment, kind)
             push!(parent.children, child)
             hierarchy.index[path] = child
@@ -341,25 +334,25 @@ end
 """
 Build a complete device tree from a flat measurement list.
 """
-function MeasurementHierarchy(
-    measurements::Vector{MeasurementInfo},
+function Hierarchy(
+    measurements::Vector{ItemRecord},
     root_path::String,
-    has_device_metadata::Bool,
+    has_collection_metadata::Bool,
     project::Project,
     skipped_count::Int=0,
-)::MeasurementHierarchy
-    hierarchy = MeasurementHierarchy(
+)::Hierarchy
+    hierarchy = Hierarchy(
         root_path,
-        has_device_metadata,
+        has_collection_metadata,
         project,
         skipped_count,
     )
-    foreach(measurement -> insert_measurement!(hierarchy, measurement), measurements)
+    foreach(measurement -> insert_item!(hierarchy, measurement), measurements)
     return sort!(hierarchy)
 end
 
 children(node::HierarchyNode)::Vector{HierarchyNode} = node.children
 
-include("MeasurementIndex/Scanning.jl")
+include("ItemIndex/Scanning.jl")
 
 end
