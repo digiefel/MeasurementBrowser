@@ -220,14 +220,14 @@ function register_device_stat!(
 end
 
 """
-Register (or replace) one plot recipe for a measurement kind.
+Register (or replace) one plot recipe for an item kind.
 
-`setup(workspace, measurements, processed_data)` builds and returns the `Figure`;
-`draw(workspace, measurements, processed_data, figure)` fills it in. The package resolves
-`processed_data` (a `Vector{DataFrame}`, one per measurement and in the same order, through its
-processed-data cache) before calling either callback, so neither calls `process_item_data`
-itself. A measurement kind may have multiple plots; re-registering the same `label` for the same
-kind replaces that plot, which keeps REPL iteration stable.
+`setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills it
+in. `items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); each
+carries its processed payload as `item.data`, materialized by the package through its processed-data
+cache, so neither callback calls `process_item_data` itself. A kind may have multiple plots;
+re-registering the same `label` for the same kind replaces that plot, which keeps REPL iteration
+stable.
 """
 function register_plot!(
     project::Project,

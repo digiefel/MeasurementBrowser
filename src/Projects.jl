@@ -28,10 +28,11 @@ struct DeviceStatRecipe
 end
 
 """
-One registered plot recipe for a measurement kind.
+One registered plot recipe for an item kind.
 
-`setup(workspace, measurements, processed_data)` returns the `Figure`; `draw(workspace,
-measurements, processed_data, figure)` fills it. Both receive the package-resolved processed data.
+`setup(workspace, items)` returns the `Figure`; `draw(workspace, items, figure)` fills it. `items` are
+the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); each carries its
+processed payload as `item.data`. Neither callback resolves data itself.
 """
 struct PlotRecipe
     kind::Symbol
@@ -74,6 +75,51 @@ end
 
 const PROJECTS = Project[]
 const DEFAULT_PROJECT = Ref{Union{Project,Nothing}}(nothing)
+
+# ---------------------------------------------------------------------------
+# The AbstractDataItem contract
+#
+# `AbstractDataItem` is the interface the engine is written against. The package ships the concrete
+# `DataItem` (what `register_item!` produces and what the engine materializes for a view); a project
+# may subtype `AbstractDataItem` directly to go beyond it, answering the same contract from its own
+# typed fields. "item" is shorthand for an instance of `AbstractDataItem`. The metadata record the
+# index/cache store (`ItemRecord`) is internal and is never an `AbstractDataItem`.
+# ---------------------------------------------------------------------------
+
+abstract type AbstractDataItem end
+
+"""Nestable container an item is placed in. Future home for collection metadata/behaviour."""
+abstract type Collection end
+
+"""Stable string identity of an item."""
+function item_id end
+
+"""Human-readable label for an item."""
+function item_label end
+
+"""The kind symbol the plot registry is keyed on."""
+function kind end
+
+"""Canonical tree placement of an item, as nested collection names (`Vector{String}`)."""
+function collection end
+
+"""Parsed acquisition parameters of an item (`Dict{Symbol,Any}`)."""
+function parameters end
+
+"""Computed statistics of an item (`Dict{Symbol,Any}`)."""
+function stats end
+
+"""The materialized payload carried by an item (also reachable as `item.data`)."""
+function item_data end
+
+"""Engine-internal loader that materializes an item's payload (type API)."""
+function read_data end
+
+"""Process raw item data into the payload a view consumes. Optional; default passthrough."""
+process(::AbstractDataItem, data) = data
+
+"""Whether an item's payload should be persisted by the data cache. Optional; default `false`."""
+cacheable(::AbstractDataItem)::Bool = false
 
 # ---------------------------------------------------------------------------
 # Interface functions

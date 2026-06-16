@@ -9,6 +9,7 @@ using ..Projects:
     load_source_data,
     project_name
 using ..ItemIndex:
+    DataItem,
     ItemRecord,
     index_source_file
 import ..Workspace
@@ -56,13 +57,14 @@ function draw_plot_view!(
         figure = nothing
         draw_alloc = @allocated begin
             figure = if plots.debug
-                source_data = DataFrame[]
-                sizehint!(source_data, length(measurements))
+                raw_items = DataItem[]
+                sizehint!(raw_items, length(measurements))
                 for measurement in measurements
                     source_file = index_source_file(measurement.filepath)
-                    push!(source_data, load_source_data(project, source_file; measurement))
+                    raw = load_source_data(project, source_file; measurement)
+                    push!(raw_items, DataItem(measurement, raw))
                 end
-                debug_plot(workspace, measurements, source_data; plot_kind)
+                debug_plot(workspace, raw_items; plot_kind)
             else
                 result = setup_plot(workspace, plot_kind, measurements)
                 plot_data!(workspace, plot_kind, measurements, result)

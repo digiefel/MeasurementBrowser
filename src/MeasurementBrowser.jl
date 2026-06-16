@@ -5,22 +5,34 @@ using Annotations
 
 include("Projects.jl")
 using .Projects:
+    AbstractDataItem,
+    Collection,
     DEFAULT_PROJECT,
     DeviceStatRecipe,
     KindProfile,
     MeasurementRecipe,
     PROJECTS,
     PlotRecipe,
-    Project
+    Project,
+    cacheable,
+    collection,
+    item_data,
+    item_id,
+    item_label,
+    parameters,
+    read_data,
+    stats
 import .Projects:
     compute_and_add_item_stats!,
     detect_kind,
     collection_path_label,
     display_label,
     interpret_file,
+    kind,
     kind_label,
     load_source_data,
     parse_collection_info,
+    process,
     process_item_data,
     project_description,
     project_name,
@@ -30,6 +42,7 @@ import .Projects:
 include("ItemIndex.jl")
 using .ItemIndex:
     CANCEL_CALLBACK_KEY,
+    DataItem,
     HierarchyNode,
     JobCancelled,
     ItemFailure,
@@ -92,6 +105,8 @@ using .Browser: open_browser
 
 export open_browser
 export SourceFile, ItemRecord, ItemFailure
+export AbstractDataItem, DataItem, Collection
+export item_id, item_label, kind, collection, parameters, stats, item_data, read_data, process, cacheable
 export PlotKind, plot_kinds
 export parse_collection_info, detect_kind, kind_label, display_label, interpret_file
 export items_for_file

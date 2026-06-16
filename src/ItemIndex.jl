@@ -2,7 +2,9 @@ module ItemIndex
 
 using Dates
 
+import ..Projects
 import ..Projects:
+    AbstractDataItem,
     Project,
     compute_and_add_item_stats!,
     collection_path_label,
@@ -151,6 +153,46 @@ function ItemRecord(
         stats,
     )
 end
+
+"""
+The normal concrete item the package ships and `register_item!` produces: a loaded, data-bearing
+value handed to plot/view callbacks. It answers the `AbstractDataItem` contract from its own fields
+and carries its payload as `item.data`. A project that needs more subtypes `AbstractDataItem`
+directly instead, side by side with this type.
+
+The engine materializes a `DataItem` from an internal `ItemRecord` plus a data payload at view time,
+sharing the record's `collection`/`parameters`/`stats` so engine-computed metadata is already
+present. `ItemRecord` is never a field of a `DataItem`.
+"""
+struct DataItem <: AbstractDataItem
+    unique_id::String
+    label::String
+    kind::Symbol
+    collection::Vector{String}
+    parameters::Dict{Symbol,Any}
+    stats::Dict{Symbol,Any}
+    data::Any
+end
+
+"""Materialize a loaded item from an internal record and its (processed) payload."""
+DataItem(record::ItemRecord, data)::DataItem = DataItem(
+    record.unique_id,
+    record.clean_title,
+    record.kind,
+    record.collection,
+    record.parameters,
+    record.stats,
+    data,
+)
+
+Projects.item_id(item::DataItem)::String = item.unique_id
+Projects.item_label(item::DataItem)::String = item.label
+Projects.kind(item::DataItem)::Symbol = item.kind
+Projects.collection(item::DataItem)::Vector{String} = item.collection
+Projects.parameters(item::DataItem)::Dict{Symbol,Any} = item.parameters
+Projects.stats(item::DataItem)::Dict{Symbol,Any} = item.stats
+Projects.item_data(item::DataItem) = item.data
+Projects.read_data(item::DataItem) = item.data
 
 """
 Extract a measurement timestamp from the supported filename conventions.

@@ -65,10 +65,11 @@ function _tase_project()
         project,
         :four_terminal_iv;
         label="Four-Terminal I-V",
-        setup=(_ws, _ms, _processed) -> (figure = Figure(); Axis(figure[1, 1]); figure),
-        draw=function (_workspace, _measurements, processed, figure)
+        setup=(_ws, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
+        draw=function (_workspace, items, figure)
             axis = only(contents(figure[1, 1]))
-            for df in processed
+            for item in items
+                df = item.data
                 nrow(df) == 0 && continue
                 lines!(axis, df.i, df.v)
             end

@@ -1,6 +1,6 @@
 using MeasurementBrowser
 using CSV
-using DataFrames: DataFrame
+using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis
 using Test
 
@@ -25,26 +25,38 @@ const MB = MeasurementBrowser
         )],
     )
     drew = Ref(0)
+    drew_rows = Ref(0)
     MB.register_plot!(
         project,
         :table;
         label="Table Plot",
-        setup=(workspace, measurements, processed) -> Figure(),
-        draw=(workspace, measurements, processed, figure) -> (drew[] = length(processed); Axis(figure[1, 1]); nothing),
+        setup=(workspace, items) -> Figure(),
+        draw=function (workspace, items, figure)
+            drew[] = length(items)
+            # Each item is an AbstractDataItem carrying its own materialized payload as `item.data`,
+            # and answering the contract accessors.
+            @test all(it -> it isa MB.AbstractDataItem, items)
+            @test all(it -> MB.item_data(it) === it.data, items)
+            @test all(it -> MB.kind(it) === :table, items)
+            @test all(it -> !isempty(MB.collection(it)), items)
+            drew_rows[] = sum(nrow(item.data) for item in items)
+            Axis(figure[1, 1])
+            nothing
+        end,
     )
     MB.register_plot!(
         project,
         :table;
         label="Table Summary",
-        setup=(workspace, measurements, processed) -> Figure(),
-        draw=(workspace, measurements, processed, figure) -> nothing,
+        setup=(workspace, items) -> Figure(),
+        draw=(workspace, items, figure) -> nothing,
     )
     MB.register_plot!(
         project,
         :table;
         label="Table Summary",
-        setup=(workspace, measurements, processed) -> Figure(),
-        draw=(workspace, measurements, processed, figure) -> (drew[] = -1; nothing),
+        setup=(workspace, items) -> Figure(),
+        draw=(workspace, items, figure) -> (drew[] = -1; nothing),
     )
 
     # Identity helpers used by the GUI and persistence.
@@ -64,6 +76,7 @@ const MB = MeasurementBrowser
     @test figure isa Figure
     @test plot_data!(workspace, table_plot, measurements, figure) === nothing
     @test drew[] == length(measurements)
+    @test drew_rows[] == 2   # the 2-row fixture flowed through as item.data
     figure = setup_plot(workspace, table_summary, measurements)
     @test plot_data!(workspace, table_summary, measurements, figure) === nothing
     @test drew[] == -1

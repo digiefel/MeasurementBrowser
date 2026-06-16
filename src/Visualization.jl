@@ -3,8 +3,8 @@ module Visualization
 using GLMakie: Figure
 using InteractiveUtils: subtypes
 
-import ..ItemIndex: ItemRecord
-import ..Projects: project_name
+import ..ItemIndex: ItemRecord, DataItem
+import ..Projects: AbstractDataItem, project_name
 import ..Workspace
 
 """
@@ -68,10 +68,24 @@ end
 # callbacks. `project.plots` is the recipe table filled by register_plot!.
 
 """
+Materialize the loaded, data-bearing items for a selection of records.
+
+The package resolves each record's processed data (through its cache) and builds a transient
+`DataItem` carrying it as `item.data`, so callbacks read `item.data` instead of a parallel array.
+"""
+function _data_items(
+    workspace::Workspace.Workspace,
+    records::Vector{ItemRecord},
+)::Vector{DataItem}
+    processed = Workspace.process_item_data(workspace, records)
+    return DataItem[DataItem(record, data) for (record, data) in zip(records, processed)]
+end
+
+"""
 Build the figure for a registered plot by running its `setup` callback.
 
-The package resolves processed data (through its cache) before invoking the recipe, so `setup` can
-size the figure layout to the data without calling `process_item_data` itself.
+The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
+`setup` sizes the figure layout to the data without resolving it itself.
 """
 function setup_plot(
     workspace::Workspace.Workspace,
@@ -79,16 +93,14 @@ function setup_plot(
     measurements::Vector{ItemRecord},
 )::Figure where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    processed = Workspace.process_item_data(workspace, measurements)
-    return recipe.setup(workspace, measurements, processed)::Figure
+    return recipe.setup(workspace, _data_items(workspace, measurements))::Figure
 end
 
 """
 Draw a registered plot into its figure by running its `draw` callback.
 
-The package resolves processed data (through its cache) before invoking the recipe, so `draw`
-callbacks receive the processed `DataFrame`s directly and never call `process_item_data`
-themselves.
+The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
+`draw` reads `item.data` directly and never resolves data itself.
 """
 function plot_data!(
     workspace::Workspace.Workspace,
@@ -97,8 +109,7 @@ function plot_data!(
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    processed = Workspace.process_item_data(workspace, measurements)
-    recipe.draw(workspace, measurements, processed, figure)
+    recipe.draw(workspace, _data_items(workspace, measurements), figure)
     return nothing
 end
 
@@ -135,11 +146,14 @@ function plot_kinds()::Vector{Type{<:PlotKind}}
     return kinds
 end
 
-"""Draw source data directly while bypassing package caches and processed data."""
+"""
+Draw raw-data items directly while bypassing processed data.
+
+`items` carry the unprocessed payload as `item.data`, so a debug callback can tune the analysis live.
+"""
 function debug_plot(
     ::Workspace.Workspace,
-    measurements::Vector{ItemRecord},
-    loaded;
+    items::Vector{<:AbstractDataItem};
     kwargs...,
 )
     error("Debug plots are not implemented for this project")
