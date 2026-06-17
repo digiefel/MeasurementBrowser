@@ -9,7 +9,7 @@ These files annotate devices and measurements. Figure annotations are stored sep
 CSV. First column is a path (segment-joined with `/`); remaining columns are arbitrary key/value parameters merged into matching nodes.
 
 ```
-device_path,area_um2,t_HZO_nm,notes,active
+collection_path,area_um2,t_HZO_nm,notes,active
 D1,50.0,7.0,all exact D1 units,true
 A9,,legacy_site,
 RuO2test/A9/VI/D1,10.0,7.0,exact match wins,true
@@ -72,7 +72,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 | File | Concern | Read by | Written by |
 |---|---|---|---|
-| `device_info.txt` | Per-path parameters | `MeasurementIndex.load_scan_metadata` | Hand-edited |
+| `device_info.txt` | Per-collection parameters | `ItemIndex.load_scan_metadata` | Hand-edited |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
 | `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |
@@ -81,7 +81,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 - Live at source root. No subdirectories unless there's volume reason.
 - Prefer line-oriented text. CSV if there are columns; key/value with simple delimiters otherwise.
-- Use `device_path_key(location)` (slash-joined) for any path-keyed entry.
+- Use `collection_path_key(collection)` (slash-joined) for any path-keyed entry.
 - Provide a load + save function pair in a focused module/file.
 - Update this doc and any relevant cross-references in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Tolerate missing/malformed files quietly on read; fail loudly on write.

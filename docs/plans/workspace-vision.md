@@ -221,5 +221,5 @@ This affects architecture:
   plot annotations are a separate future layer.
 - [measurement-parameters-and-stats.md](measurement-parameters-and-stats.md) defines the metadata
   bucket semantics that selections, visualizers, workflows, and saved figures should rely on.
-- [figure_scripts.md](../figure_scripts.md) documents the deprecated script export path that
-  workflows should replace.
+- [figure_scripts.md](../figure_scripts.md) records the removed script-export path that workflows
+  replace.

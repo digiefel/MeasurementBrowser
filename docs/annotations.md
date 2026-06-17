@@ -10,7 +10,7 @@ The implementation is the path-dependency package
 [src/Annotations/](../src/Annotations/). Each namespace reads or writes one focused source-root
 format. Path keys are
 slash-joined strings such as `"RuO2test/A9/VI/D1"`, shared with the rest of the package through
-`device_path_key`.
+`collection_path_key`.
 
 ## Current API
 

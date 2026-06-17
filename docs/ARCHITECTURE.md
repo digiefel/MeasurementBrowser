@@ -45,15 +45,16 @@ metadata)       │  --------     -----------     ----          ----     │
                 └─────────────────────────────────────────────────────┘
 ```
 
-`scan_source` walks source CSVs, asks the active project which measurements each file contains, merges
-source-root metadata, computes project stats, and builds the hierarchy described in
-[data-model.md](data-model.md). The cache described in [cache.md](cache.md) can restore that
-hierarchy quickly while source scanning continues in the background.
+`scan_source` walks source files, asks the active project (via each recipe's `detect`/`read`/`entries`)
+which items each file contains, merges source-root metadata, computes project stats, and builds the
+hierarchy described in [data-model.md](data-model.md). The cache described in [cache.md](cache.md) can
+restore that hierarchy quickly while source scanning continues in the background. The project-facing
+registration API is documented in [api.md](api.md).
 
-When a view needs measurement data, it goes through
-`read_measurement_data(workspace, measurements)`. The workspace returns data already held in memory,
-then valid cached data, then asks the project to load missing data from its source file. GUI
-selection, background work, and Makie embedding are described in [gui.md](gui.md).
+When a view needs item data, the engine materializes data-bearing items for the selection
+(`materialize_items`): recipe-API items resolve through `read_item_data`/`process_item_data` (memory →
+cache → source) and become a `DataItem`; type-API items rebuild from source. Each item carries
+`item.data`. GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 ## Ownership Boundaries
 
@@ -84,8 +85,8 @@ should not know the experimental meaning of a project file beyond the project-fa
 calls.
 
 The package expresses that boundary through focused internal modules. `Project` defines the methods
-implemented by a measurement project. `MeasurementIndex` owns source-file records, logical
-measurements, hierarchy construction, and filesystem scanning. `Cache` owns generated HDF5 state.
+implemented by a project. `ItemIndex` owns source-file records, the internal `ItemRecord`, the
+concrete `DataItem`, hierarchy construction, and filesystem scanning. `Cache` owns generated HDF5 state.
 `Workspace` owns one open source root, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations used by projects and the browser.
 `Browser` owns typed frontend state and CImGui rendering. `MeasurementBrowser` exports the small
@@ -124,12 +125,12 @@ Current-state reference docs:
 
 | Topic | When to read |
 |---|---|
-| [data-model.md](data-model.md) | You're touching source-file records, measurements, hierarchy traversal, or paths/IDs. |
+| [api.md](api.md) | You're writing project code: registering item kinds, stats, or plots, or a custom `AbstractDataItem`. |
+| [data-model.md](data-model.md) | You're touching source-file records, items, hierarchy traversal, or paths/IDs. |
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
-| [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or measurement data. |
+| [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or item data. |
 | [annotations.md](annotations.md) | You're touching annotations: coordinates, layout, tags, or notes. |
-| [figure_scripts.md](figure_scripts.md) | You're working on the figure-script export feature. |
 
 Future-facing docs and roadmaps live under [plans/](plans/), separate from the current-state docs
 above. Start with [plans/README.md](plans/README.md) for the plan map and

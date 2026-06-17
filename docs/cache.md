@@ -46,8 +46,8 @@ The HDF5 file contains:
 |---|---|
 | `schema_version` attribute | Rejects old cache layouts before deserialization |
 | `/index` | One uncompressed serialized `ProjectCacheIndex` for fast startup |
-| `/direct/<file>/<measurement>` | Lazily cached data returned by `read_measurement_data` |
-| `/processed/<file>/<measurement>` | Lazily cached data returned by `process_measurement_data` |
+| `/direct/<file>/<measurement>` | Lazily cached data returned by `read_item_data` |
+| `/processed/<file>/<measurement>` | Lazily cached data returned by `process_item_data` |
 
 `ProjectCacheIndex` contains the completed source scan, a path lookup for its `SourceFile` entries,
 and analysis errors grouped by physical source file.
@@ -84,14 +84,14 @@ caller requests them.
 
 ## Measurement Data
 
-`read_measurement_data(workspace, measurements)` returns one direct dataframe per measurement, in
+`read_item_data(workspace, measurements)` returns one direct dataframe per measurement, in
 the requested order. It checks workspace memory, then reads all available cached payloads with one
 HDF5 open. Missing data is loaded through the workspace project's `load_source_data` method, kept in
 memory, and written back together with one HDF5 open.
 
-`process_measurement_data(workspace, measurements)` follows the same path for processed data.
+`process_item_data(workspace, measurements)` follows the same path for processed data.
 Missing entries are produced by the project's
-`process_measurement_data(workspace, measurement)` method and cached separately.
+`process_item_data(workspace, measurement)` method and cached separately.
 
 Before reading or writing a payload, the package checks the current source fingerprint against the
 in-memory cache index. Stale payloads are never returned.

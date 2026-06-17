@@ -30,9 +30,10 @@ These three decide every ambiguous call below.
    for their own domain (an RuO2 measurement, a device) — or in well-chosen `kind`s and `parameters`
    on the package's normal `DataItem`. The package ships `AbstractDataItem`, the interface, and the
    concrete `DataItem`; it ships **no** domain types.
-2. **Two first-party APIs, neither mandatory.** A type API (subtype `AbstractDataItem` + dispatch) and
-   a recipe API (register callbacks, get the package's `DataItem`). The recipe API is a *factory* for
-   a `DataItem`, not a competitor. The public contract is the `AbstractDataItem` interface (methods).
+2. **Two first-party APIs, neither mandatory.** Both register a kind through `register_item!`; they
+   differ only in what the `entries` callback returns — your own `AbstractDataItem` subtype (type API)
+   or the package's `DataItem` (recipe API). The recipe API is a *factory* for a `DataItem`, not a
+   competitor. The public contract is the `AbstractDataItem` interface (methods).
 3. **The tree is a view, not an identity.** Where an item sits in the hierarchy is *computed by a
    `collect` function*, not baked into the item. The filesystem tree is just the default collection.
 
@@ -141,24 +142,27 @@ Consequences:
 
 ## Two first-party APIs
 
-Both are first-party and supported. They are not competing models — the recipe API produces a
-`DataItem` that satisfies the same interface a project subtype implements directly, so nothing
-downstream can tell them apart.
+Both are first-party and supported, and they share **one entry point** — `register_item!(project,
+:kind; detect, read, entries, …)`. The difference is purely **what `entries(file, data)` returns**:
+the package's `DataItem` (recipe API) or your own `AbstractDataItem` subtype (type API). Both satisfy
+the same interface, so nothing downstream can tell them apart. (A subtype cannot be scanned by
+existence alone — going from files to items needs `detect`/`read`/`entries` — so the type API still
+registers a kind; it does not rely on reflection over `subtypes(AbstractDataItem)`.)
 
 | | Type API | Recipe API |
 |---|---|---|
-| You write | `struct CVImage <: AbstractDataItem` + interface methods | `register_item!(project, :image; read=…, build=…)` |
-| Meaning via | dispatch — interface methods on `::CVImage` | stored callbacks |
+| You write | `struct CVImage <: AbstractDataItem` + interface methods, and `entries` returns `CVImage`s | `entries` returns the package's `DataItem`s |
+| Meaning via | the subtype's interface methods | the generic `parameters` / `stats` dicts + optional `process`/`stats`/`label` callbacks |
 | Fields | typed (`width`, `height`, …) | the generic `parameters` / `stats` dicts (no declared schema) |
 | Used by | the package's own model, power users, plugins | quick projects, one-offs, scripts |
-| Produces | the subtype value directly | the package's `DataItem` forwarding to callbacks |
+| Produces | the subtype value directly (carries its own data) | a `DataItem` whose data the engine resolves via `read`/`process` |
 
 The package defines the model itself through the **type API** — the interface and the concrete
-`DataItem` — and projects or plugins reach for the same type API when they want typed,
-dispatch-driven kinds. This is the intentional version of what `AbstractProject` gestured at.
-Subtyping is **never mandatory**: the recipe API is the lightweight path most projects use, and
-recipe authors put their data in `parameters`/`stats` dicts (no schema — if you want typed named
-fields, that is precisely what the type API is for).
+`DataItem` — and projects or plugins reach for the same type API when they want typed kinds. This is
+the intentional version of what `AbstractProject` gestured at. Subtyping is **never mandatory**: the
+recipe API is the lightweight path most projects use, and recipe authors put their data in
+`parameters`/`stats` dicts (no schema — if you want typed named fields, that is precisely what the
+type API is for).
 
 ---
 
