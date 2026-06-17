@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using MeasurementBrowser: ItemRecord
 using Test
 
 @testset "scan_source progress and cancel" begin

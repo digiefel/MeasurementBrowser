@@ -4,7 +4,7 @@ using Serialization
 using DataFrames: DataFrame
 
 const PROJECT_CACHE_COMPRESSION = 3
-const PROJECT_CACHE_SCHEMA_VERSION = 8
+const PROJECT_CACHE_SCHEMA_VERSION = 9
 const PROJECT_CACHE_INDEX_DATASET = "index"
 const PROJECT_CACHE_LOCK = ReentrantLock()
 

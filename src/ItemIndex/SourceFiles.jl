@@ -66,9 +66,23 @@ function index_source_file(path::AbstractString)::SourceFile
     )
 end
 
-"""Return whether a directory entry is a visible CSV source file."""
+"""Package sidecar files that are never candidate source files."""
+const _SIDECAR_FILENAMES = Set([
+    "device_info.txt",          # collection metadata
+    "tags.txt", "notes.txt", "layout.txt",   # annotations
+    "measurementbrowser.toml",  # saved project view
+])
+
+"""
+Return whether a directory entry is a candidate source file.
+
+The package is data-agnostic, so every visible file is a candidate and each project's `detect`
+decides which recipe (if any) claims it — files no recipe detects are simply skipped. Hidden files
+and the package's own sidecars (collection metadata, annotations, saved view) are never candidates.
+"""
 function is_source_filename(name::AbstractString)::Bool
-    return endswith(lowercase(name), ".csv") && !startswith(name, ".")
+    startswith(name, ".") && return false
+    return !(lowercase(name) in _SIDECAR_FILENAMES)
 end
 
 """Collect every indexed source file below a root."""

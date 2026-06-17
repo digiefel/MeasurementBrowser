@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using MeasurementBrowser: items_for_file, setup_plot, plot_data!
 using CSV
 using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis

@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using MeasurementBrowser: items_for_file, read_item_data, setup_plot, plot_data!
 using Test
 using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis, lines!, contents

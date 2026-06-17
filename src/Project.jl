@@ -318,6 +318,9 @@ function interpret_file(project::Project, file::SourceFile)::Vector{ItemRecord}
     data = recipe.read(file)
     read_seconds = (time_ns() - read_started) / 1e9
     items = recipe.entries(file, data)::Vector{<:AbstractDataItem}
+    # Note which API this recipe uses, so the view path knows how to re-materialize data: a type-API
+    # `entries` returns data-bearing items, a recipe-API one returns metadata-only `DataItem`s.
+    isempty(items) || (recipe.entries_carry_data = item_data(first(items)) !== nothing)
     records = ItemRecord[_record_from_item(recipe, file, item) for item in items]
     _record_read!(project, recipe.kind, read_seconds, length(records))
     if recipe.stats !== nothing
@@ -371,6 +374,46 @@ function process_item_data(
     raw = only(read_item_data(workspace, [record]))
     recipe.process === nothing && return raw
     return recipe.process(DataItem(record, nothing), raw)
+end
+
+"""
+Materialize the loaded, data-bearing items for a selection of records.
+
+Recipe-API records resolve their payload through the cached `read`/`process` path and become a
+`DataItem` carrying it. Type-API records (whose `entries` returns data-bearing items) re-run
+`read`/`entries` for their file and return the rebuilt items directly, matched to records by id — the
+same re-read the recipe path already pays, with no parallel data array.
+"""
+function materialize_items(
+    workspace::Workspace.Workspace{Project},
+    records::Vector{ItemRecord},
+)::Vector{AbstractDataItem}
+    result = Vector{AbstractDataItem}(undef, length(records))
+    positions_by_file = Dict{String,Vector{Int}}()
+    for (position, record) in pairs(records)
+        push!(get!(positions_by_file, record.filepath, Int[]), position)
+    end
+    for (filepath, positions) in positions_by_file
+        recipe = _recipe(workspace.project, records[positions[1]].kind)
+        if recipe !== nothing && recipe.entries_carry_data
+            file = index_source_file(filepath)
+            raw = recipe.read(file)
+            built = Dict(
+                _mint_id(filepath, recipe.kind, parameters(item)) => item
+                for item in recipe.entries(file, raw)::Vector{<:AbstractDataItem}
+            )
+            for position in positions
+                result[position] = built[records[position].unique_id]
+            end
+        else
+            selected = records[positions]
+            processed = process_item_data(workspace, selected)
+            for (offset, position) in pairs(positions)
+                result[position] = DataItem(records[position], processed[offset])
+            end
+        end
+    end
+    return result
 end
 
 """

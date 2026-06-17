@@ -24,7 +24,13 @@ mutable struct ItemRecipe
     process::Union{Nothing,Function}
     stats::Union{Nothing,Function}
     label::Union{Nothing,Function}
+    # Set during the scan: whether `entries` returns data-bearing items (type API) rather than
+    # metadata-only `DataItem`s (recipe API). Decides how the engine materializes data at view time —
+    # re-run `entries` vs. resolve `read`/`process`. Persisted with the recipe.
+    entries_carry_data::Bool
 end
+ItemRecipe(kind, detect, read, entries, process, stats, label) =
+    ItemRecipe(kind, detect, read, entries, process, stats, label, false)
 
 """One registered cross-item, collection-scoped stat."""
 struct CollectionStatRecipe
@@ -160,6 +166,9 @@ function load_source_data end
 
 """Convert direct measurement data into the reusable processed table defined by the project."""
 function process_item_data end
+
+"""Materialize the loaded, data-bearing items (`item.data`) for a selection of records."""
+function materialize_items end
 
 """Compute project-specific measurement statistics after the complete scan is known."""
 function compute_and_add_item_stats! end

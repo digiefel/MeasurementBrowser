@@ -1,5 +1,6 @@
 using DataFrames: AbstractDataFrame, nrow
 using MeasurementBrowser
+using MeasurementBrowser: read_item_data, process_item_data, ItemFailure
 using Test
 
 const ProjectCache = MeasurementBrowser.Cache

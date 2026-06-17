@@ -31,6 +31,7 @@ import .Projects:
     kind,
     kind_label,
     load_source_data,
+    materialize_items,
     parse_collection_info,
     process,
     process_item_data,
@@ -103,20 +104,18 @@ include("Precompile.jl")
 include("Browser.jl")
 using .Browser: open_browser
 
-export open_browser
-export SourceFile, ItemRecord, ItemFailure
-export AbstractDataItem, DataItem, Collection
-export item_id, item_label, kind, collection, parameters, stats, item_data, read_data, process, cacheable
-export PlotKind, plot_kinds
-export parse_collection_info, detect_kind, kind_label, display_label, interpret_file
-export items_for_file
-export load_source_data, read_item_data, process_item_data, setup_plot, plot_data!
-export compute_and_add_item_stats!
-export debug_plot
-export TablePreview, inspect_table
-export project_name, project_description
-export open_workspace, close_workspace!, select_items!
+# Public API — exactly the contract. Everything else (engine internals: ItemRecord, the plot
+# dispatch, scan/data-access plumbing, table inspector, project introspection) stays un-exported and
+# is reachable only as `MeasurementBrowser.name` when genuinely needed.
+#
+# Run the app
+export open_browser, open_workspace, close_workspace!, select_items!
+# Build a project
 export define_project, register_item!, register_collection_stat!, register_plot!
-export Project
+# The AbstractDataItem contract — implement these for a custom item type
+export AbstractDataItem, Collection
+export item_id, item_label, kind, collection, parameters, stats, item_data, read_data, process, cacheable
+# Types you name
+export Project, SourceFile, DataItem
 
 end # module MeasurementBrowser

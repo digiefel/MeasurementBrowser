@@ -4,7 +4,7 @@ using GLMakie: Figure
 using InteractiveUtils: subtypes
 
 import ..ItemIndex: ItemRecord, DataItem
-import ..Projects: AbstractDataItem, project_name
+import ..Projects: AbstractDataItem, materialize_items, project_name
 import ..Workspace
 
 """
@@ -68,18 +68,13 @@ end
 # callbacks. `project.plots` is the recipe table filled by register_plot!.
 
 """
-Materialize the loaded, data-bearing items for a selection of records.
+Materialize the loaded, data-bearing items for a selection of records (engine-owned).
 
-The package resolves each record's processed data (through its cache) and builds a transient
-`DataItem` carrying it as `item.data`, so callbacks read `item.data` instead of a parallel array.
+Each item carries its payload as `item.data`, so callbacks read `item.data` instead of a parallel
+array. Recipe-API items resolve through the processed-data cache; type-API items rebuild from source.
 """
-function _data_items(
-    workspace::Workspace.Workspace,
-    records::Vector{ItemRecord},
-)::Vector{DataItem}
-    processed = Workspace.process_item_data(workspace, records)
-    return DataItem[DataItem(record, data) for (record, data) in zip(records, processed)]
-end
+_data_items(workspace::Workspace.Workspace, records::Vector{ItemRecord}) =
+    materialize_items(workspace, records)
 
 """
 Build the figure for a registered plot by running its `setup` callback.
