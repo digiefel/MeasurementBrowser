@@ -1,8 +1,14 @@
 # Annotation Storage
 
-> Files at the **source root** (the measurement folder the user opens, not the repo). All hand-editable plain text. Each file owns one orthogonal concern; resist the urge to merge them.
+> Plain-text files describing the formats below. Each file owns one orthogonal concern; resist the urge to merge them.
 
-These files annotate devices and measurements. Figure annotations are stored separately.
+These files annotate collections and items. Figure annotations are stored separately.
+
+> **Location (current, stopgap):** these files live **next to the cache**, keyed by `source_id`, so a
+> non-filesystem `AbstractDataSource` has somewhere to persist them. The regression is that they are no
+> longer hand-editable at a data folder; the intended fix makes annotation storage a source capability
+> (file-backed sources expose hand-editable source-root files). See the TODO in [cache.md](cache.md).
+> The formats below are unchanged regardless of where the files live.
 
 ## device_info.txt
 

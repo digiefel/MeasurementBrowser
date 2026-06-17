@@ -254,6 +254,56 @@ defined directly in the REPL has no file to fingerprint; rescan manually — it'
 
 ---
 
+## Source layer: `AbstractDataSource` (the low-level foundation)
+
+The item/record split above is necessary but not sufficient: it says what a browsable item *is*, but
+not where items come from or how their origin is opened, scanned, invalidated, and closed. The source
+layer makes that explicit and promotes it to the first-party low-level API the rest of the engine — and
+the callback API — is built on. Three abstract types:
+
+```text
+AbstractDataSource      → lifecycle + discovery   (dataset root, DB query, instrument, stream, service)
+AbstractDataSourceItem  → one discovered unit      (file, row, run id, channel, image-stack member)
+AbstractDataItem        → one logical browser item  (unchanged contract above)
+```
+
+The middle type earns its keep: scanning a source and interpreting one discovered unit are separate
+concerns, and the unit is the natural grain of scan progress, failure reporting, and invalidation —
+which the current code already treats `SourceFile` as, implicitly. `data_items(source, source_item)`
+maps one unit to zero/one/many data items; `load_data_item(source, source_item_id, item_id)` reloads
+one with its payload.
+
+**No registration in the low level.** The app starts from a configured source value
+(`open_workspace(mysource)`), never by walking `subtypes`. The exported callback API
+(`define_project` + `register_*`) becomes a *private adapter source*, `RegisteredProjectSource <:
+AbstractDataSource`, whose `source_items` walks a root into `SourceFile`s and whose `data_items` /
+`load_data_item` apply the recipes. `open_workspace`'s first argument is reinterpreted — a `String`
+(data root, with the `project` keyword) or an `AbstractDataSource` — so the callback call form is
+preserved while the type-based path is first-party.
+
+### Resolved decisions
+
+1. **Annotations + collection metadata: stored next to the cache, keyed by `source_id` (stopgap).**
+   The annotation/metadata system is currently filesystem-root-bound; a generic source has no root, so
+   for now these persist next to the cache. Known regression (no hand-editable source-root files);
+   fix later by making annotation storage a *source capability*. TODO-marked in code and docs.
+2. **The phase-3b "type API via `register_item!`" is superseded** by the source-value path — it is the
+   cleaner realization of "the type API does not call `register_item!`". Rework, not extend.
+3. **`collection_stats(source, collection, items)` is a low-level hook available everywhere**, stored
+   on the `HierarchyNode` (node-level `stats`), not folded into member records. `register_collection_stat!`
+   is its callback form. Bangless: it is a getter returning a `Dict`; the engine routine that writes the
+   node is the mutator (`add_collection_stats!`).
+4. **`load_data_item` takes id strings and re-looks-up / re-reads.** Accepted for now (FIXME-marked):
+   the alternative of threading a source-item handle through the index is deferred.
+5. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on
+   `SourceScan`** — no per-record duplication of `source_id`/`source_label`/`source_fingerprint`.
+6. **The low-level types are not exported yet** — reachable as `MeasurementBrowser.name`, staged for a
+   dedicated submodule. The exported surface stays the conservative high-level set; `PlotKind` stays
+   internal too.
+7. **`!` follows Julia's argument-mutation convention**, not "has side effects": `close_source!`
+   mutates the source → bang; `open_source`/`source_items`/`data_items`/`load_data_item`/`watch_source`
+   (default `nothing`) return values or observe → no bang.
+
 ## Anti-scope (what we are deliberately *not* doing)
 
 - No general "view engine" up front — built-in collections + a filter, not a query language.

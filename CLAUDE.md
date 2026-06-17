@@ -36,16 +36,24 @@ work and the TASE project are projects built on top, not part of the package.
 
 | Module | File | Owns |
 |---|---|---|
-| `Projects` | `Projects.jl` | The `Project` struct + recipe types + the `AbstractDataItem` contract + interface stubs. Defined early so other modules can name the concrete type; its methods live in `Project.jl`. |
-| `ItemIndex` | `ItemIndex.jl` (+ `SourceFiles.jl`, `Scanning.jl`) | `SourceFile`, the internal `ItemRecord`, the concrete `DataItem`, the hierarchy, and filesystem scanning. |
-| `Cache` | `Cache.jl`, `Cache/ProjectCache.jl` | Fingerprint-keyed HDF5 cache of the scan + item data. |
-| `Workspace` | `Workspace.jl` (+ `DataAccess.jl`, `Operations.jl`) | One open data root: index, selection, loaded/cached data access, background jobs. |
-| `Visualization` | `Visualization.jl` | Plot engine; `RegistryPlot{Kind}` adapter bridging registered plots to dispatch. |
+| `Projects` | `Projects.jl` | The low-level source contract (`AbstractDataSource`/`AbstractDataSourceItem`/`AbstractDataItem` + interface stubs), the `Project` recipe struct, and recipe types. Methods live in `Project.jl`. |
+| `ItemIndex` | `ItemIndex.jl` (+ `SourceFiles.jl`, `Scanning.jl`) | The built-in `SourceFile` source item, the internal `ItemRecord`, `ScannedSourceItem`, the concrete `DataItem`, the hierarchy, and filesystem discovery. |
+| `Cache` | `Cache.jl`, `Cache/ProjectCache.jl` | Source-identity-keyed HDF5 cache of the scan + item data. |
+| `Workspace` | `Workspace.jl` (+ `DataAccess.jl`, `Operations.jl`) | One open source: index, selection, loaded/cached data access, background jobs. |
+| `Visualization` | `Visualization.jl` | Plot engine; `RegistryPlot{Kind}` adapter bridging registered plots to source plot dispatch. |
 | `TableInspector` | `TableInspector.jl` | Tabular preview of a delimited file. |
-| (project methods) | `Project.jl` | `define_project`, the `register_*` functions, the engine-interface impls, and `Project` serialization. |
+| (source + recipes) | `Project.jl` | `define_project`, the `register_*` functions, the `RegisteredProjectSource` adapter implementing the source contract, and serialization. |
 | `Browser` | `Browser.jl` (+ `Browser/*`, `Gui/*`) | CImGui frontend: tree/plot/table panels, state, persistence, tags, Makie embedding. |
 
-### Project API
+### Two-layer API
+
+The engine is written against a **low-level source contract** (`AbstractDataSource` →
+`AbstractDataSourceItem` → `AbstractDataItem`; see [docs/api.md](docs/api.md)). The **high-level
+callback API** below (`define_project` + `register_*`) is a convenience implemented privately as the
+`RegisteredProjectSource` adapter. The callback API is the exported surface; the low-level types are
+internal for now (`MeasurementBrowser.name`), staged for a future submodule.
+
+### Project API (high-level callback convenience)
 
 Project code builds a `Project` by mutation, pointing each registration at plain callbacks:
 
@@ -61,7 +69,7 @@ register_item!(project, :iv;
     label   = item -> "…")                                       # optional
 
 register_collection_stat!(project; kinds=[:iv],                  # cross-item fold over a collection
-    compute_stats = group -> …)                                  # fills each record's `stats` in place
+    compute_stats = group -> …)                                  # returns a Dict stored on the collection node
 
 register_plot!(project, :iv; label="I–V", setup=…, draw=…)       # one plot recipe per kind
 ```
@@ -76,42 +84,49 @@ the recipe in place, so editing and re-running a line updates a live project.
 
 ### Data Flow
 
-1. **Scan:** `scan_source` walks the data root (every visible file except package sidecars is a
-   candidate), and for each file the project's first matching `detect` selects a recipe; files no
-   recipe claims are skipped. `interpret_file` runs `read → entries`, derives each item's internal
-   `ItemRecord` via the contract, and folds `process → stats` into the **same pass** (so the parse is
-   freed per file and scan memory stays bounded). Merges source-root `device_info.txt` metadata into
-   each record's `collection_metadata`.
-2. **Hierarchy:** records organize into a `Hierarchy` tree by their `collection::Vector{String}`.
-   Cross-item `register_collection_stat!` folds run after the full scan.
-3. **Cache:** the whole scan (including the `Project`'s recipes) is serialized into a fingerprint-keyed
-   HDF5 cache; a fresh cache restores the hierarchy quickly while scanning continues.
-4. **View:** the engine materializes data-bearing items for the selection (`materialize_items`): the
-   recipe API resolves data through `read_item_data`/`process_item_data` (memory → cache → source) and
-   wraps it in a `DataItem`; the type API re-runs `read`/`entries` and returns the project's own items.
-   Either way each item carries `item.data`. Registered plots render through the `RegistryPlot{Kind}`
-   adapter, with `setup(ws, items)` / `draw(ws, items, fig)` reading `item.data`.
+1. **Scan:** `scan_source!` calls `source_items(source)` for the discovered units. For each unit,
+   `data_items(source, source_item)` interprets it into data items (the adapter applies the first
+   matching `detect`'s `read → entries`, folding `process → stats` in the same pass so parses are freed
+   per unit and memory stays bounded). The engine derives each item's internal `ItemRecord` via the
+   contract; per-source-item failures are recorded and scanning continues. The file-backed adapter
+   merges `device_info.txt` metadata into each record's `collection_metadata`.
+2. **Hierarchy:** records organize into a `Hierarchy` tree by `collection::Vector{String}`. After the
+   tree is built, `collection_stats(source, collection, items)` (the callback form is
+   `register_collection_stat!`) folds each node's items and the result is stored on the node's `stats`.
+3. **Cache:** the whole `SourceScan` is serialized into a source-identity-keyed HDF5 cache
+   (`source_id` + `source_fingerprint`); a fresh cache restores the hierarchy quickly while scanning
+   continues.
+4. **View:** for the selection, the engine reloads items via
+   `load_data_item(source, source_item_id, item_id)` (memory → cache → origin); each carries `item.data`.
+   Registered plots render through the `RegistryPlot{Kind}` adapter onto the source plot interface, with
+   `setup(ws, items)` / `draw(ws, items, fig)` reading `item.data`.
 
 ### Key Types (`ItemIndex.jl`, `Projects.jl`)
 
-- `AbstractDataItem` — the contract every item answers: `item_id`, `item_label`, `kind`, `collection`,
-  `parameters`, `stats`, `item_data`, `read_data`, plus optional `process`/`cacheable`. The engine is
-  written against this, never a concrete item type.
-- `DataItem <: AbstractDataItem` — the normal item the package ships and `register_item!`'s `entries`
-  produces: `kind`, `collection`, `parameters`/`stats` dicts, and `data` (as `item.data`).
-- `ItemRecord` — **internal**, data-less metadata record the hierarchy/scan/cache store: ids,
-  `clean_title`, `kind`, `timestamp`, `collection`, `collection_metadata`, `parameters`, `stats`. Never
-  named by project code, never a field of any item; the engine converts item ↔ record via the contract.
-- `SourceFile` — one physical file: path, timestamp, fingerprint, and the records interpreted from it.
-- `Hierarchy` / `HierarchyNode` — the browsable collection tree.
-- `Project` / `ItemRecipe` / `CollectionStatRecipe` / `PlotRecipe` — the registry model.
+- `AbstractDataSource` / `AbstractDataSourceItem` / `AbstractDataItem` — the low-level contract: a
+  source owns lifecycle + discovery (`source_items`), a source item is one discovered unit
+  (`data_items`, `load_data_item`), a data item is one logical browser object (`item_id`, `item_label`,
+  `kind`, `collection`, `parameters`, `stats`, `item_data`, + optional `process`/`cacheable`/
+  `item_fingerprint`). The engine is written against these, never a concrete type.
+- `DataItem <: AbstractDataItem` — the normal item the recipe API's `entries` produces: `kind`,
+  `collection`, `parameters`/`stats` dicts, and `data` (as `item.data`).
+- `SourceFile <: AbstractDataSourceItem` — the built-in file-backed source item: path, filename,
+  timestamp, fingerprint. A bare `SourceFile` has no universal `data_items`.
+- `ItemRecord` — **internal**, data-less record the hierarchy/scan/cache store: source-item identity
+  (`source_item_id`/label/fingerprint/path/timestamp), item identity (`item_id`, `clean_title`,
+  `kind`), `collection`, `collection_metadata`, `parameters`, `stats`, `item_fingerprint`. Never named
+  by source/project code, never a field of any item; the engine converts item ↔ record via the contract.
+- `ScannedSourceItem` / `SourceScan` — internal scan containers (source-neutral; source-level identity
+  lives once on the scan). `Hierarchy` / `HierarchyNode` — the browsable collection tree.
+- `Project` / `ItemRecipe` / `CollectionStatRecipe` / `PlotRecipe` — the callback registry model;
+  `RegisteredProjectSource` is its `AbstractDataSource` adapter.
 
 ## Launching
 
 ```julia
 using MeasurementBrowser
 # … define_project + register_* …
-ws = open_workspace(project, "/path/to/data")
+ws = open_workspace("/path/to/data"; project)   # or open_workspace(mysource) for a low-level source
 open_browser(ws)
 ```
 

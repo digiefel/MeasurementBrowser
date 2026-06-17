@@ -1,24 +1,39 @@
 # Data Model
 
-`ItemIndex` defines physical source files, the internal item record, the concrete data item, and the
-collection hierarchy. Projects interpret indexed source files; package code stores and presents the
-resulting items. The project-facing API is in [api.md](api.md); the design rationale is in
-[plans/data-model-generalization.md](plans/data-model-generalization.md).
+The model has three public layers and one internal record, in increasing specificity:
+
+```text
+AbstractDataSource      → owns lifecycle + discovery               (a dataset root, DB query, stream)
+AbstractDataSourceItem  → one discovered unit                      (a file, row, run id, channel)
+AbstractDataItem        → one logical browsable item               (what you index/select/plot)
+ItemRecord              → internal, data-less index/cache record   (never seen by source/project code)
+```
+
+`ItemIndex` defines the built-in file-backed source item (`SourceFile`), the internal `ItemRecord`,
+the concrete `DataItem`, and the collection hierarchy. The project-facing API is in [api.md](api.md);
+the design rationale is in [plans/data-model-generalization.md](plans/data-model-generalization.md).
+
+## Source item vs. data item
+
+A **source item** is one addressable thing a source discovers — the unit of scan progress, failure
+reporting, and invalidation. A **data item** is one logical browsable object. The mapping is
+one-to-many: `data_items(source, source_item)` interprets a single unit into zero, one, or many data
+items. A `SourceFile` is a source item; the items a project reads out of it are data items.
 
 ## Two representations: record vs. item
 
 Metadata and data live in two forms, bridged by the engine via the `AbstractDataItem` contract:
 
 - **`ItemRecord`** — the **internal**, data-less metadata record the hierarchy, scan, and cache store.
-  Project code never constructs or names it.
-- **`AbstractDataItem`** instances — what callbacks see: the package's `DataItem` or a project's own
-  subtype. They carry `item.data`, materialized only for the viewed selection.
+  Source and project code never construct or name it.
+- **`AbstractDataItem`** instances — what callbacks and views see: the package's `DataItem` or a
+  source's own subtype. They carry `item.data`, materialized only for the viewed selection.
 
 ```julia
-abstract type AbstractDataItem end   # the contract: item_id, item_label, kind, collection,
-                                     # parameters, stats, item_data, read_data (+ optional process, cacheable)
+abstract type AbstractDataItem end   # contract: item_id, item_label, kind, collection, parameters,
+                                     # stats, item_data (+ optional process, cacheable, item_fingerprint)
 
-struct DataItem <: AbstractDataItem  # the normal item; register_item!'s `entries` produces it
+struct DataItem <: AbstractDataItem  # the normal item; the recipe API's `entries` produces it
     unique_id::String
     label::String
     kind::Symbol
@@ -28,51 +43,81 @@ struct DataItem <: AbstractDataItem  # the normal item; register_item!'s `entrie
     data::Any                        # the payload, reachable as `item.data`
 end
 
-struct ItemRecord                    # internal metadata record (never seen by project code)
-    unique_id::String                # stable identity for one logical item
-    filename::String
-    filepath::String
-    clean_title::String
+struct ItemRecord                    # internal metadata record (never seen by source/project code)
+    # source-item identity — which discovered unit produced this, and how to reload it
+    source_item_id::String
+    source_item_label::String
+    source_item_fingerprint::Any            # nothing → not persistently cacheable
+    source_item_path::Union{String,Nothing}
+    source_item_timestamp::Union{DateTime,Nothing}
+    # logical item identity + metadata
+    item_id::String                  # stable within its source item
+    clean_title::String              # backs item_label
     kind::Symbol
-    timestamp::Union{DateTime,Nothing}
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
     collection_metadata::Dict{Symbol,Any}   # merged from device_info.txt (area_um2, t_HZO_nm, …)
-    parameters::Dict{Symbol,Any}     # acquisition settings known while interpreting the file
+    parameters::Dict{Symbol,Any}     # acquisition settings known while interpreting the unit
     stats::Dict{Symbol,Any}          # values computed after the required context is available
+    item_fingerprint::Any            # nothing → payload not persistently cacheable
+end
+```
+
+Source-*level* identity (`source_id`, `source_label`, `source_fingerprint`) is **not** copied onto
+every record — it lives once on the `SourceScan`. A record carries only the source-*item* identity it
+needs to be reloaded.
+
+## Scan containers
+
+The discovered units and their interpreted records are held source-neutrally — no filesystem
+assumptions, no records stored on the public `SourceFile`:
+
+```julia
+struct ScannedSourceItem              # one discovered unit + the records it produced
+    source_item_id::String
+    source_item_label::String
+    source_item_fingerprint::Any
+    source_item_path::Union{String,Nothing}
+    source_item_timestamp::Union{DateTime,Nothing}
+    items::Vector{ItemRecord}
 end
 
-struct SourceFile
-    unique_id::String
-    filepath::String
-    filename::String
-    timestamp::Union{DateTime,Nothing}
-    fingerprint::FileFingerprint
-    measurements::Vector{ItemRecord}   # the records interpreted from this file
+struct SourceScan                     # the result of one full scan, source-neutral
+    source_id::String
+    source_label::String
+    source_fingerprint::Any
+    source_items::Vector{ScannedSourceItem}
+    hierarchy::Hierarchy
+    analysis_failures::Vector{ItemFailure}
 end
+```
 
+## Hierarchy
+
+Records organize into a tree by their `collection::Vector{String}`. Nodes carry their own
+collection-level stats (filled by the source's `collection_stats` hook / `register_collection_stat!`):
+
+```julia
 struct HierarchyNode
     name::String                       # one path segment
     kind::Symbol                       # :root | :level (intermediate) | :leaf (last segment)
     children::Vector{HierarchyNode}
-    measurements::Vector{ItemRecord}   # records, populated only on :leaf nodes
+    items::Vector{ItemRecord}          # records, populated only on :leaf nodes
+    stats::Dict{Symbol,Any}            # collection-level stats for this node
 end
 
 struct Hierarchy
     root::HierarchyNode
-    all_measurements::Vector{ItemRecord}
-    root_path::String
+    all_items::Vector{ItemRecord}
     index::Dict{Tuple{Vararg{String}}, HierarchyNode}   # path tuple → node
     has_collection_metadata::Bool
-    project::Project
     skipped_count::Int
 end
 ```
 
-(The hierarchy fields are still named `measurements`/`all_measurements`; they hold `ItemRecord`s.)
-
 ## Variable hierarchy depth
 
-Depth is **not** uniform. One branch may be `RuO2test/A9/VI/D1` (4 segments) while another is `RuO2test_A10/VI/25um/D1` (also 4) and another could be 3 or 5. Don't assume "level 3 = device".
+Depth is **not** uniform. One branch may be `RuO2test/A9/VI/D1` (4 segments) while another is
+`RuO2test_A10/VI/25um/D1` (also 4) and another could be 3 or 5. Don't assume "level 3 = device".
 
 - All items attach at `:leaf` nodes (the last segment).
 - Intermediate nodes are `:level`.
@@ -86,32 +131,42 @@ An item's `collection::Vector{String}` is its canonical placement. Two equivalen
 - **String** (used in on-disk files): `"RuO2test/A9/VI/D1"` — built by `collection_path_key(collection)`.
 - **Round-trip**: `collection_path_tuple("RuO2test/A9/VI/D1")` parses and validates the string form.
 
-The slash-joined string is the canonical identifier in any on-disk metadata file. New metadata systems should reuse it.
+The slash-joined string is the canonical identifier in any stored metadata. New metadata systems
+should reuse it.
 
-## Path-prefix matching
+## Collection metadata (path-prefix matching)
 
-`device_info.txt` rows are keyed by path; metadata applies to **all descendants whose collection is prefixed by that key**, with longer (more specific) keys overriding shorter ones, and is merged into each record's `collection_metadata`.
+`device_info.txt` rows are keyed by path; metadata applies to **all descendants whose collection is
+prefixed by that key**, with longer (more specific) keys overriding shorter ones, and is merged into
+each record's `collection_metadata`. The on-disk format is documented in [storage.md](storage.md).
+Collection metadata is a capability of the file-backed source; non-file sources need not provide it.
 
-The on-disk format is documented in [storage.md](storage.md). The scan applies matching parameters
-before records enter the hierarchy.
+Implication: hierarchical metadata is stored once at the highest applicable level. Inheritance is
+"lookup-time" — children don't physically carry parent metadata in their structs.
 
-Implication: hierarchical metadata is stored once at the highest applicable level. Inheritance is "lookup-time" — children don't physically carry parent metadata in their structs.
+## Collection stats
+
+Cross-item stats over one collection node are computed by the source's
+`collection_stats(source, collection, items)` hook after the hierarchy is built, and stored on the
+node's `stats` dict. The high-level `register_collection_stat!` is the callback form of the same hook.
+This is distinct from per-item `stats`: item stats describe one item; node stats describe a group.
 
 ## Virtual item expansion
 
-A single source file may yield several items when the project's `entries` callback returns a vector
-with more than one entry. They share a filepath but get distinct `unique_id` values, which the engine
-mints from filepath + kind + the `parameters` that distinguish siblings.
+A single source item may yield several data items when `data_items` returns more than one. They share
+a source-item identity but get distinct `item_id` values. The recipe API mints `item_id` from the
+source-item path + kind + the `parameters` that distinguish siblings.
 
-Expansion is purely a project concern. For example, a project may split a multi-device sweep into one
-entry per device, or expand a fatigue file into one entry per cycle (storing the cycle number in
-`parameters`).
+Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
+into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number
+in `parameters`).
 
-Item kinds and filename rules belong to project implementations. The package stores the resulting
-`Symbol` (`kind`) without assigning project-specific meaning to it.
+Item kinds and discovery rules belong to source/project implementations. The package stores the
+resulting `Symbol` (`kind`) without assigning it project-specific meaning.
 
 ## Direct I-V data
 
 DC current-voltage measurements use `:i` for current in amperes and `:v` for voltage in volts.
 Voltage-driven sweeps, four-terminal measurements, breakdown measurements, and their visualizers
 share these names so the same data can be reused across compatible views.
+</content>

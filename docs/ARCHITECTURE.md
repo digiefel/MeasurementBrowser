@@ -35,75 +35,86 @@ data feeds inspection and presentation tools.
 ## Core Flow
 
 ```
-                ┌─────────────────────────────────────────────────────┐
-disk (CSVs +    │  scan      →   hierarchy   →   data      →   view   │
-metadata)       │  --------     -----------     ----          ----     │
-                │  walk fs      build tree      cache or      Makie  │
-                │  interpret    per-leaf        source        figure │
-                │  source       measurements    load          table  │
-                │  files        + stats                      summary │
-                └─────────────────────────────────────────────────────┘
+                 ┌──────────────────────────────────────────────────────────┐
+AbstractDataSource│ scan          →  hierarchy  →  data       →  view        │
+(root, DB, stream)│ ----------       ----------    ----           ----        │
+                 │ source_items     build tree    load_data_item  Makie      │
+                 │ + data_items     per-leaf       (memory →       figure /   │
+                 │ per source item  items+stats    cache → source) table      │
+                 └──────────────────────────────────────────────────────────┘
 ```
 
-`scan_source` walks source files, asks the active project (via each recipe's `detect`/`read`/`entries`)
-which items each file contains, merges source-root metadata, computes project stats, and builds the
-hierarchy described in [data-model.md](data-model.md). The cache described in [cache.md](cache.md) can
-restore that hierarchy quickly while source scanning continues in the background. The project-facing
-registration API is documented in [api.md](api.md).
+The engine is written against the **low-level source contract** ([api.md](api.md)): an
+`AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
+and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
+interprets each unit with `data_items(source, source_item)`, records per-source-item failures,
+computes collection-node stats via `collection_stats`, and builds the hierarchy described in
+[data-model.md](data-model.md). The cache ([cache.md](cache.md)) restores that hierarchy quickly while
+scanning continues in the background.
 
-When a view needs item data, the engine materializes data-bearing items for the selection
-(`materialize_items`): recipe-API items resolve through `read_item_data`/`process_item_data` (memory →
-cache → source) and become a `DataItem`; type-API items rebuild from source. Each item carries
+When a view needs item data, the engine reloads the selected items via
+`load_data_item(source, source_item_id, item_id)` (memory → cache → source). Each item carries
 `item.data`. GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
+
+The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface) is
+implemented privately as the built-in `RegisteredProjectSource <: AbstractDataSource`: its
+`source_items` walks a data root into `SourceFile`s, `data_items` applies the recipes'
+`detect`/`read`/`entries`/`stats`, and `load_data_item` applies `read`/`process` with caching. Nothing
+downstream of the contract can tell a callback project from a hand-written source.
 
 ## Ownership Boundaries
 
-The most important boundary is between project meaning and package machinery.
+The most important boundary is between source meaning and package machinery.
 
-Project code owns:
+A source (a hand-written `AbstractDataSource` or the callback adapter) owns:
 
-- mapping source files to logical measurements
-- loading source data into reusable tables
-- computing project-specific stats or processed data
-- defining project-specific visualizers when generic ones are not enough
+- discovering source items and interpreting each into logical data items
+- loading one item's data on demand (`load_data_item`)
+- computing per-item and per-collection stats
+- defining its own visualizers when generic ones are not enough
 
 The workspace owns:
 
-- the open project and source root
-- the progressively populated measurement index
+- the open source and its identity
+- the progressively populated item index
 - selection identities
 - cache identity, freshness, storage, and repair
-- source scanning, cache work, progress, errors, and cancellation
+- scanning, cache work, progress, errors, and cancellation
 - direct and processed data already loaded in memory
 
 The browser owns windows, controls, filters, and temporary rendering state. Annotations store
-user-authored tags, notes, coordinates, and spatial positions at the source root. Other package
-modules own generic visualizers, workflow persistence, and figure composition.
+user-authored tags, notes, coordinates, and spatial positions (currently next to the cache, keyed by
+`source_id`; see [cache.md](cache.md)). Other package modules own generic visualizers, workflow
+persistence, and figure composition.
 
-Project code should not know whether data came from memory, cache, or source files. Package code
-should not know the experimental meaning of a project file beyond the project-facing functions it
-calls.
+Source code should not know whether data came from memory, cache, or the origin. Package code should
+not know the meaning of a source item beyond the contract methods it calls.
 
-The package expresses that boundary through focused internal modules. `Project` defines the methods
-implemented by a project. `ItemIndex` owns source-file records, the internal `ItemRecord`, the
-concrete `DataItem`, hierarchy construction, and filesystem scanning. `Cache` owns generated HDF5 state.
-`Workspace` owns one open source root, its index, selection, cache, loaded data, and background work.
-`Visualization` defines the shared plotting operations used by projects and the browser.
-`Browser` owns typed frontend state and CImGui rendering. `MeasurementBrowser` exports the small
-project-facing API while keeping these modules internal.
+The package expresses that boundary through focused internal modules. `Projects` defines the
+`AbstractDataItem` contract, the `Project` recipe type, and (with `Project`) the callback adapter.
+`ItemIndex` owns the built-in `SourceFile` source item, the internal `ItemRecord`, the concrete
+`DataItem`, hierarchy construction, and filesystem discovery. `Cache` owns generated HDF5 state.
+`Workspace` owns one open source, its index, selection, cache, loaded data, and background work.
+`Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and CImGui
+rendering. `MeasurementBrowser` exports the small high-level API while keeping the low-level source
+contract and these modules internal.
 
-`open_workspace(project, root_path)` creates that owner and immediately starts cache loading and
-source scanning. Project methods may receive the workspace to request measurement data, but project
-code does not manage its cache, jobs, or browser state.
+`open_workspace(source; project)` creates that owner and immediately starts cache loading and
+scanning. The source may receive the workspace to request item data, but source code does not manage
+its cache, jobs, or browser state.
 
 ## On-disk metadata
 
-All metadata lives at the **source root** alongside the CSVs (not inside the repo). Lean, hand-editable text. See [storage](storage.md) for formats.
+Annotations and collection metadata are lean text files (see [storage](storage.md) for formats):
 
-- `device_info.txt` — per-device parameters with path-fragment matching (area, thickness, etc.).
+- `device_info.txt` — per-collection parameters with path-fragment matching (area, thickness, etc.).
 - `tags.txt` — tag catalog and per-path assignments.
 
-The HDF5 cache is generated and lives outside the source root. See [cache](cache.md).
+These currently live **next to the cache**, keyed by `source_id`, so a non-filesystem source still
+has somewhere to persist them. That is a deliberate stopgap with a known regression (no longer
+hand-editable at a data folder) and the intended fix is to make annotation storage a source
+capability; see the TODO in [cache.md](cache.md). The HDF5 cache itself is generated and lives outside
+the source.
 
 ## Engineering Rules
 
