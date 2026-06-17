@@ -6,18 +6,20 @@ submodules can name the concrete type). This file defines the methods: `define_p
 `register_*` functions, and the project's implementation of the engine interface (interpretation,
 data access, plotting, serialization).
 
-A project is built by mutation with `register_measurement!` / `register_device_stat!` /
+A project is built by mutation with `register_item!` / `register_collection_stat!` /
 `register_plot!`, each pointing at plain callbacks, which the engine then drives:
 
-Pipeline per measurement kind (fixed order, each fed the previous output):
-    detect(file)             -> Bool
-    read(file)               -> DataFrame            # whole file, parsed once
-    measurements(file, data) -> Vector{ItemRecord}   # one entry per measurement (a single one is a vector of one)
-    process(mi, data)        -> DataFrame            # optional; default passthrough
-    stats(mi, processed)     -> Dict{Symbol,Any}     # optional
-    label(mi)                -> String               # optional
+Pipeline per item kind (fixed order, each fed the previous output):
+    detect(file)          -> Bool
+    read(file)            -> data               # whole file, parsed once
+    entries(file, data)   -> Vector{<:AbstractDataItem}  # one entry per item (a single one is a vector of one)
+    process(item, data)   -> data               # optional; default passthrough
+    stats(item, processed)-> Dict{Symbol,Any}   # optional
+    label(item)           -> String             # optional
 
-`file` is a `SourceFile` (has `.filename`, `.filepath`, `.timestamp`).
+`entries` returns the package's `DataItem` (recipe API) or a project subtype (type API); the engine
+derives the internal record from each via the `AbstractDataItem` contract. `file` is a `SourceFile`
+(has `.filename`, `.filepath`, `.timestamp`).
 """
 
 using DataFrames: DataFrame
@@ -35,15 +37,15 @@ function Serialization.serialize(s::Serialization.AbstractSerializer, project::P
     Serialization.serialize(s, project.name)
     Serialization.serialize(s, project.description)
     Serialization.serialize(s, project.recipes)
-    Serialization.serialize(s, project.device_stats)
+    Serialization.serialize(s, project.collection_stats)
     Serialization.serialize(s, project.plots)
     return nothing
 end
 
 function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{Project})
     project = Project(
-        "", "", MeasurementRecipe[],
-        Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(),
+        "", "", ItemRecipe[],
+        Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
         Tuple{String,String,String}[], ReentrantLock(),
         Dict{Symbol,KindProfile}(), ReentrantLock(),
@@ -52,7 +54,7 @@ function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{P
     project.name = Serialization.deserialize(s)
     project.description = Serialization.deserialize(s)
     project.recipes = Serialization.deserialize(s)
-    project.device_stats = Serialization.deserialize(s)
+    project.collection_stats = Serialization.deserialize(s)
     project.plots = Serialization.deserialize(s)
     return project
 end
@@ -68,13 +70,13 @@ _callback_name(f)::String = (n = string(nameof(f)); startswith(n, "#") ? "λ" : 
 _plural(n::Integer, word::AbstractString)::String = "$n $word" * (n == 1 ? "" : "s")
 
 Base.show(io::IO, project::Project) =
-    print(io, "Project(\"$(project.name)\", ", _plural(length(project.recipes), "measurement"), ")")
+    print(io, "Project(\"$(project.name)\", ", _plural(length(project.recipes), "item kind"), ")")
 
 function Base.show(io::IO, ::MIME"text/plain", project::Project)
     print(io, "Project \"$(project.name)\"")
     isempty(project.description) || print(io, " · ", project.description)
 
-    print(io, "\n  ", _plural(length(project.recipes), "measurement"))
+    print(io, "\n  ", _plural(length(project.recipes), "item kind"))
     isempty(project.recipes) || print(io, " (detection order):")
     pad = isempty(project.recipes) ? 0 : maximum(length(string(r.kind)) for r in project.recipes)
     for recipe in project.recipes
@@ -85,10 +87,10 @@ function Base.show(io::IO, ::MIME"text/plain", project::Project)
         print(io, "\n    ", rstrip(rpad(string(recipe.kind), pad) * steps))
     end
 
-    print(io, "\n  ", _plural(length(project.device_stats), "device stat"))
-    isempty(project.device_stats) || print(io, ":")
-    for recipe in values(project.device_stats)
-        print(io, "\n    (", join(recipe.measurement_kinds, ", "), ") → ", _callback_name(recipe.compute_stats))
+    print(io, "\n  ", _plural(length(project.collection_stats), "collection stat"))
+    isempty(project.collection_stats) || print(io, ":")
+    for recipe in values(project.collection_stats)
+        print(io, "\n    (", join(recipe.kinds, ", "), ") → ", _callback_name(recipe.compute_stats))
     end
 
     plot_count = sum(length, values(project.plots); init=0)
@@ -101,13 +103,13 @@ function Base.show(io::IO, ::MIME"text/plain", project::Project)
     end
 end
 
-"""Create an empty project. Register measurements/stats/plots into it afterwards."""
+"""Create an empty project. Register items/stats/plots into it afterwards."""
 function define_project(name::AbstractString; description::AbstractString="")::Project
     return Project(
         String(name),
         String(description),
-        MeasurementRecipe[],
-        Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}(),
+        ItemRecipe[],
+        Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
         Tuple{String,String,String}[],
         ReentrantLock(),
@@ -178,44 +180,45 @@ function scan_profile_summary(project::Project)::Vector{NamedTuple}
 end
 
 """
-Register (or replace) the recipe for one measurement kind.
+Register (or replace) the recipe for one item kind.
 
-`detect`, `read`, and `measurements` are required. `measurements` builds the `ItemRecord`s
-(including their device identity); a single-measurement file just returns a vector of one. Re-calling
-with the same `kind` replaces the recipe in place, so editing and re-running the line updates a live
-project.
+`detect`, `read`, and `entries` are required. `entries(file, data)` returns the per-item entries as
+`AbstractDataItem`s — the package's `DataItem` (recipe API) or your own subtype (type API); a
+single-item file just returns a vector of one. Optional `process`/`stats`/`label` refine the recipe
+API. Re-calling with the same `kind` replaces the recipe in place, so editing and re-running the line
+updates a live project.
 """
-function register_measurement!(
+function register_item!(
     project::Project,
     kind::Symbol;
     detect::Function,
     read::Function,
-    measurements::Function,
+    entries::Function,
     process::Union{Nothing,Function}=nothing,
     stats::Union{Nothing,Function}=nothing,
     label::Union{Nothing,Function}=nothing,
 )::Project
-    recipe = MeasurementRecipe(kind, detect, read, measurements, process, stats, label)
+    recipe = ItemRecipe(kind, detect, read, entries, process, stats, label)
     index = findfirst(r -> r.kind === kind, project.recipes)
     index === nothing ? push!(project.recipes, recipe) : (project.recipes[index] = recipe)
     return project
 end
 
 """
-Register (or replace) a cross-measurement stat folded over each device's measurements.
+Register (or replace) a cross-item stat folded over each collection's items.
 
-`compute_stats` receives the group `Vector{ItemRecord}` and fills each `mi.stats` in place.
-The engine groups by `group_by` (default: device path) and runs this after the full scan. Re-calling
-with the same `measurement_kinds` replaces it.
+`compute_stats` receives the group `Vector{ItemRecord}` and fills each item's `stats` in place.
+The engine groups by `group_by` (default: collection path) and runs this after the full scan.
+Re-calling with the same `kinds` replaces it.
 """
-function register_device_stat!(
+function register_collection_stat!(
     project::Project;
-    measurement_kinds::Vector{Symbol},
+    kinds::Vector{Symbol},
     compute_stats::Function,
-    group_by::Function=_default_device_group,
+    group_by::Function=_default_collection_group,
 )::Project
-    key = Tuple(sort(measurement_kinds))
-    project.device_stats[key] = DeviceStatRecipe(measurement_kinds, group_by, compute_stats)
+    key = Tuple(sort(kinds))
+    project.collection_stats[key] = CollectionStatRecipe(kinds, group_by, compute_stats)
     return project
 end
 
@@ -244,16 +247,16 @@ function register_plot!(
     return project
 end
 
-_default_device_group(mi::ItemRecord)::String = collection_path_key(mi.collection)
+_default_collection_group(record::ItemRecord)::String = collection_path_key(record.collection)
 
 # ---------------------------------------------------------------------------
 # Recipe lookup helpers
 # ---------------------------------------------------------------------------
 
-_recipe(project::Project, kind::Symbol)::Union{Nothing,MeasurementRecipe} =
+_recipe(project::Project, kind::Symbol)::Union{Nothing,ItemRecipe} =
     (i = findfirst(r -> r.kind === kind, project.recipes); i === nothing ? nothing : project.recipes[i])
 
-function _detect_recipe(project::Project, file::SourceFile)::Union{Nothing,MeasurementRecipe}
+function _detect_recipe(project::Project, file::SourceFile)::Union{Nothing,ItemRecipe}
     for recipe in project.recipes
         recipe.detect(file)::Bool && return recipe
     end
@@ -299,71 +302,75 @@ function _default_label(measurement::ItemRecord)::String
 end
 
 """
-Interpret one file: read it, enumerate its measurements, and compute their per-measurement stats
-while the parse is still in hand.
+Interpret one file: read it, enumerate its items, and compute their per-item stats while the parse is
+still in hand.
 
-Folding stats into this single pass frees the (often large) parsed table as soon as the file's
-measurements are analyzed, instead of holding every file's parse until a separate stats pass — so
-scan memory stays bounded to the files in flight rather than the whole tree. Per-measurement failures
-are recorded on the project and drained by `compute_and_add_item_stats!`.
+`entries` returns `AbstractDataItem`s (the package's `DataItem` or a project subtype); the engine
+derives the internal `ItemRecord` from each via the contract, stamping the file's path/timestamp and
+an engine-minted id. Folding stats into this single pass frees the (often large) parse as soon as the
+file's items are analyzed, so scan memory stays bounded to the files in flight. Per-item failures are
+recorded on the project and drained by `compute_and_add_item_stats!`.
 """
 function interpret_file(project::Project, file::SourceFile)::Vector{ItemRecord}
     recipe = _detect_recipe(project, file)
     recipe === nothing && return ItemRecord[]
     read_started = time_ns()
-    data = recipe.read(file)::DataFrame
+    data = recipe.read(file)
     read_seconds = (time_ns() - read_started) / 1e9
-    enumerated = recipe.measurements(file, data)::Vector{ItemRecord}
-    measurements = [_stamp(recipe, mi) for mi in enumerated]
-    _record_read!(project, recipe.kind, read_seconds, length(measurements))
+    items = recipe.entries(file, data)::Vector{<:AbstractDataItem}
+    records = ItemRecord[_record_from_item(recipe, file, item) for item in items]
+    _record_read!(project, recipe.kind, read_seconds, length(records))
     if recipe.stats !== nothing
-        for measurement in measurements
+        for (item, record) in zip(items, records)
             try
                 stats_started = time_ns()
-                processed = recipe.process === nothing ? data : recipe.process(measurement, data)
-                merge!(measurement.stats, recipe.stats(measurement, processed))
-                _record_stats!(project, measurement.kind,
-                    (time_ns() - stats_started) / 1e9)
+                processed = recipe.process === nothing ? data : recipe.process(item, data)
+                merge!(record.stats, recipe.stats(item, processed))
+                _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
             catch err
                 is_job_cancelled(err) && rethrow()
-                _record_stat_failure!(project, measurement.filepath, measurement.unique_id, :stats, err)
+                _record_stat_failure!(project, record.filepath, record.unique_id, :stats, err)
             end
         end
     end
     # `data` falls out of scope here, so the parse becomes collectable once this file is done.
-    return measurements
+    return records
 end
 
-"""Re-stamp a user-built measurement with the recipe kind and an engine-minted id."""
-_stamp(recipe::MeasurementRecipe, mi::ItemRecord)::ItemRecord = ItemRecord(
-    mi;
-    kind=recipe.kind,
-    unique_id=_mint_id(mi.filepath, recipe.kind, mi.parameters),
-)
+"""Derive the internal record from one `entries` item, stamping file context and a minted id."""
+_record_from_item(recipe::ItemRecipe, file::SourceFile, item::AbstractDataItem)::ItemRecord =
+    ItemRecord(
+        item;
+        filepath=file.filepath,
+        filename=file.filename,
+        timestamp=file.timestamp,
+        kind=recipe.kind,
+        unique_id=_mint_id(file.filepath, recipe.kind, parameters(item)),
+    )
 
-"""Direct data for a measurement is the whole-file read; `process` slices it later."""
+"""Direct data for an item is the whole-file read; `process` slices it later (recipe API)."""
 function load_source_data(
     project::Project,
     source_file::SourceFile;
-    measurement::Union{Nothing,ItemRecord}=nothing,
-)::DataFrame
-    kind = measurement === nothing ?
-        detect_kind(project, source_file.filename) : measurement.kind
+    record::Union{Nothing,ItemRecord}=nothing,
+)
+    kind = record === nothing ?
+        detect_kind(project, source_file.filename) : record.kind
     recipe = _recipe(project, kind)
-    recipe === nothing && error("No registered measurement for kind $kind")
-    return recipe.read(source_file)::DataFrame
+    recipe === nothing && error("No registered item recipe for kind $kind")
+    return recipe.read(source_file)
 end
 
-"""Processed data: run the recipe's `process` over the cached whole-file read."""
+"""Processed data: run the recipe's `process` over the cached whole-file read (recipe API)."""
 function process_item_data(
     workspace::Workspace.Workspace{Project},
-    measurement::ItemRecord,
-)::DataFrame
-    recipe = _recipe(workspace.project, measurement.kind)
-    recipe === nothing && error("No registered measurement for kind $(measurement.kind)")
-    raw = only(read_item_data(workspace, [measurement]))
+    record::ItemRecord,
+)
+    recipe = _recipe(workspace.project, record.kind)
+    recipe === nothing && error("No registered item recipe for kind $(record.kind)")
+    raw = only(read_item_data(workspace, [record]))
     recipe.process === nothing && return raw
-    return recipe.process(measurement, raw)::DataFrame
+    return recipe.process(DataItem(record, nothing), raw)
 end
 
 """
@@ -389,14 +396,14 @@ function compute_and_add_item_stats!(
     end
     cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
 
-    # Cross-measurement device-stat folds. Groups within one recipe are disjoint, so they fold in
+    # Cross-item collection-stat folds. Groups within one recipe are disjoint, so they fold in
     # parallel; separate stat recipes stay sequential.
-    recipes = collect(values(project.device_stats))
+    recipes = collect(values(project.collection_stats))
     total = length(recipes)
     done = Base.Threads.Atomic{Int}(0)
     for recipe in recipes
         check_cancel()
-        @sync for group in values(_group_for_device_stat(measurements, recipe))
+        @sync for group in values(_group_for_collection_stat(measurements, recipe))
             isempty(group) && continue
             Base.Threads.@spawn with_cancel(cancel_requested) do
                 check_cancel()
@@ -424,11 +431,11 @@ function compute_and_add_item_stats!(
     return failures
 end
 
-function _group_for_device_stat(
+function _group_for_collection_stat(
     measurements::Vector{ItemRecord},
-    recipe::DeviceStatRecipe,
+    recipe::CollectionStatRecipe,
 )::Dict{Any,Vector{ItemRecord}}
-    kinds = Set(recipe.measurement_kinds)
+    kinds = Set(recipe.kinds)
     groups = Dict{Any,Vector{ItemRecord}}()
     for measurement in measurements
         measurement.kind in kinds || continue

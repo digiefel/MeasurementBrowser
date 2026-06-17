@@ -11,17 +11,15 @@ const MB = MeasurementBrowser
     write(joinpath(dir, "m.csv"), "x,y\n1,2\n3,4\n")
 
     project = MB.define_project("PlotBridge")
-    MB.register_measurement!(
+    MB.register_item!(
         project,
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        measurements=(file, data) -> [MB.ItemRecord(
-            filepath=file.filepath,
+        entries=(file, data) -> [DataItem(
             kind=:table,
             collection=["dev"],
-            timestamp=file.timestamp,
-            clean_title=file.filename,
+            label=file.filename,
         )],
     )
     drew = Ref(0)

@@ -26,14 +26,14 @@ function close_workspace!(workspace::Workspace)::Nothing
 end
 
 """
-Replace the selected measurements with the supplied measurement identities.
+Replace the selection with the supplied item identities.
 """
-function select_measurements!(
+function select_items!(
     workspace::Workspace,
-    measurements::Vector{ItemRecord},
+    items::Vector{ItemRecord},
 )::Nothing
     workspace.selection.measurement_ids =
-        [measurement.unique_id for measurement in measurements]
+        [item.unique_id for item in items]
     return nothing
 end
 

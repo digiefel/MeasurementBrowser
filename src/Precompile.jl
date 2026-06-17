@@ -17,7 +17,7 @@ using DataFrames: DataFrame, nrow
     @compile_workload begin
         # Warm the registry pipeline (define -> register -> scan -> plot) the way real projects use it.
         project = define_project("Precompile")
-        register_measurement!(
+        register_item!(
             project,
             :iv;
             detect=file -> endswith(file.filename, ".csv"),
@@ -34,14 +34,12 @@ using DataFrames: DataFrame, nrow
                 end
                 DataFrame(i=first.(rows), v=last.(rows))
             end,
-            measurements=(file, _data) -> [ItemRecord(
-                filepath=file.filepath,
+            entries=(file, _data) -> [DataItem(
                 kind=:iv,
                 collection=[splitext(file.filename)[1]],
-                timestamp=file.timestamp,
-                clean_title=file.filename,
+                label=file.filename,
             )],
-            stats=(_mi, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+            stats=(_item, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
         )
         register_plot!(
             project,

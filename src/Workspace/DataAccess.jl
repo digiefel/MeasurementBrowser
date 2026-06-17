@@ -42,7 +42,7 @@ function read_item_data(
             data = load_source_data(
                 workspace.project,
                 source_file;
-                measurement,
+                record=measurement,
             )
             push!(missing_measurements, measurement)
             push!(missing_data, data)

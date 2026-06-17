@@ -8,7 +8,7 @@ beginning with `broken` fail their read so failure handling can be exercised.
 """
 function _build_test_project()
     project = define_project("TestProject"; description="Small project used to test package behavior")
-    register_measurement!(
+    register_item!(
         project,
         :table;
         detect=file -> endswith(lowercase(file.filename), ".csv"),
@@ -16,17 +16,15 @@ function _build_test_project()
             startswith(file.filename, "broken") && error("Broken test source file")
             return CSV.read(file.filepath, DataFrame)
         end,
-        measurements=function (file, _data)
+        entries=function (file, _data)
             name = splitext(file.filename)[1]
-            return [ItemRecord(
-                filepath=file.filepath,
+            return [DataItem(
                 kind=:table,
                 collection=["test", name],
-                timestamp=file.timestamp,
-                clean_title="Table $name",
+                label="Table $name",
             )]
         end,
-        process=function (_measurement, data)
+        process=function (_item, data)
             processed = DataFrame(data)
             processed.processed = data.x .+ data.y
             return processed

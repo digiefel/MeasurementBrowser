@@ -185,6 +185,66 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
     data,
 )
 
+"""
+Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
+
+The engine fills `filepath`/`timestamp` and mints `unique_id` from the `SourceFile`, so a recipe
+supplies only the metadata it knows: `kind`, `collection`, and optionally `label`/`parameters`. `data`
+is omitted at scan (the engine resolves it later via `read`/`process`).
+"""
+function DataItem(;
+    kind::Symbol,
+    collection::AbstractVector{<:AbstractString},
+    label::AbstractString="",
+    parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
+    stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
+    data=nothing,
+    unique_id::AbstractString="",
+)::DataItem
+    return DataItem(
+        String(unique_id),
+        String(label),
+        kind,
+        String[String(segment) for segment in collection],
+        parameters,
+        stats,
+        data,
+    )
+end
+
+"""
+Derive the internal `ItemRecord` from any item via the `AbstractDataItem` contract.
+
+The contract carries no file identity, so the engine supplies `filepath`/`filename`/`timestamp` and
+the minted `unique_id` from the scan-time `SourceFile`; the rest comes from the contract.
+`collection_metadata` starts empty and is filled later from source-root metadata.
+"""
+function ItemRecord(
+    item::AbstractDataItem;
+    filepath::AbstractString,
+    filename::AbstractString=basename(filepath),
+    timestamp::Union{DateTime,Nothing}=nothing,
+    kind::Symbol=Projects.kind(item),
+    unique_id::AbstractString=Projects.item_id(item),
+)::ItemRecord
+    label = Projects.item_label(item)
+    title = isempty(label) ?
+        strip(join(filter(!isnothing, Any[timestamp, string(kind)]), " ")) :
+        String(label)
+    return ItemRecord(
+        String(unique_id),
+        String(filename),
+        String(filepath),
+        title,
+        kind,
+        timestamp,
+        String[String(segment) for segment in Projects.collection(item)],
+        Dict{Symbol,Any}(),
+        Projects.parameters(item),
+        Projects.stats(item),
+    )
+end
+
 Projects.item_id(item::DataItem)::String = item.unique_id
 Projects.item_label(item::DataItem)::String = item.label
 Projects.kind(item::DataItem)::Symbol = item.kind

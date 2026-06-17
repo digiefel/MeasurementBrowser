@@ -7,10 +7,10 @@ include("Projects.jl")
 using .Projects:
     AbstractDataItem,
     Collection,
+    CollectionStatRecipe,
     DEFAULT_PROJECT,
-    DeviceStatRecipe,
+    ItemRecipe,
     KindProfile,
-    MeasurementRecipe,
     PROJECTS,
     PlotRecipe,
     Project,
@@ -78,7 +78,7 @@ using .Workspace:
     close_workspace!,
     open_workspace,
     read_item_data,
-    select_measurements!
+    select_items!
 
 include("Visualization.jl")
 using .Visualization:
@@ -115,8 +115,8 @@ export compute_and_add_item_stats!
 export debug_plot
 export TablePreview, inspect_table
 export project_name, project_description
-export open_workspace, close_workspace!, select_measurements!
-export define_project, register_measurement!, register_device_stat!, register_plot!
+export open_workspace, close_workspace!, select_items!
+export define_project, register_item!, register_collection_stat!, register_plot!
 export Project
 
 end # module MeasurementBrowser

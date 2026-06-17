@@ -9,19 +9,17 @@ const MB = MeasurementBrowser
 """Build a small registry project whose CSV reader expands one measurement per file."""
 function _profile_project()
     project = MB.define_project("ProfileProject")
-    MB.register_measurement!(
+    MB.register_item!(
         project,
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        measurements=(file, data) -> [MB.ItemRecord(
-            filepath=file.filepath,
+        entries=(file, data) -> [DataItem(
             kind=:table,
             collection=["dev", splitext(file.filename)[1]],
-            timestamp=file.timestamp,
-            clean_title=file.filename,
+            label=file.filename,
         )],
-        stats=(mi, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+        stats=(item, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
     )
     return project
 end
@@ -120,21 +118,19 @@ end
         write(joinpath(dir, "bad.csv"), "x,y\n1,2\n")
 
         project = MB.define_project("FailureProject")
-        MB.register_measurement!(
+        MB.register_item!(
             project,
             :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> DataFrame(CSV.File(file.filepath)),
-            measurements=(file, data) -> [MB.ItemRecord(
-                filepath=file.filepath,
+            entries=(file, data) -> [DataItem(
                 kind=:table,
                 collection=["dev", splitext(file.filename)[1]],
-                timestamp=file.timestamp,
-                clean_title=file.filename,
+                label=file.filename,
             )],
             # Stats throw only for bad.csv; ok.csv still gets its stats computed.
-            stats=function (mi, data)
-                startswith(basename(mi.filepath), "bad") && error("stats blew up")
+            stats=function (item, data)
+                startswith(item.label, "bad") && error("stats blew up")
                 return Dict{Symbol,Any}(:rows => nrow(data))
             end,
         )

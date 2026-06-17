@@ -9,20 +9,26 @@ module Projects
 # interpretation, plotting, serialization) are defined later, once ItemIndex types exist.
 # ---------------------------------------------------------------------------
 
-"""One registered measurement recipe."""
-mutable struct MeasurementRecipe
+"""
+One registered item recipe for a kind.
+
+`entries(file, data)` returns the per-item entries (`Vector{<:AbstractDataItem}`): the package's
+`DataItem` for the recipe API, or a project's own subtype for the type API. The engine derives the
+internal record from each via the contract.
+"""
+mutable struct ItemRecipe
     kind::Symbol
     detect::Function
     read::Function
-    measurements::Function
+    entries::Function
     process::Union{Nothing,Function}
     stats::Union{Nothing,Function}
     label::Union{Nothing,Function}
 end
 
-"""One registered cross-measurement (device-scoped) stat."""
-struct DeviceStatRecipe
-    measurement_kinds::Vector{Symbol}
+"""One registered cross-item, collection-scoped stat."""
+struct CollectionStatRecipe
+    kinds::Vector{Symbol}
     group_by::Function
     compute_stats::Function
 end
@@ -59,8 +65,8 @@ Package-owned cache, job, and browser state does not belong here.
 mutable struct Project
     name::String
     description::String
-    recipes::Vector{MeasurementRecipe}
-    device_stats::Dict{Tuple{Vararg{Symbol}},DeviceStatRecipe}
+    recipes::Vector{ItemRecipe}
+    collection_stats::Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}
     plots::Dict{Symbol,Dict{String,PlotRecipe}}
     # Transient per-measurement analysis failures gathered while interpreting files, as
     # (filepath, measurement id, message) tuples. Drained when device stats run. Plain string tuples

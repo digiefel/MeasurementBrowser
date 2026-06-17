@@ -44,20 +44,18 @@ end
 
 function _tase_project()
     project = MB.define_project("TASE")
-    MB.register_measurement!(
+    MB.register_item!(
         project,
         :four_terminal_iv;
         detect=file -> match(REGEX_TASE, file.filename) !== nothing,
         read=file -> _read_tase(file.filepath),
-        measurements=function (file, _data)
+        entries=function (file, _data)
             m = match(REGEX_TASE, file.filename)
             location = String.(collect(m.captures))
-            return [MB.ItemRecord(
-                filepath=file.filepath,
+            return [DataItem(
                 kind=:four_terminal_iv,
                 collection=location,
-                timestamp=file.timestamp,
-                clean_title=join(location, "_"),
+                label=join(location, "_"),
             )]
         end,
     )
