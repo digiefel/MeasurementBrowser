@@ -14,7 +14,7 @@ Pipeline per item kind (fixed order, each fed the previous output):
     read(file)            -> data               # whole file, parsed once
     entries(file, data)   -> Vector{<:AbstractDataItem}  # one entry per item (a single one is a vector of one)
     process(item)         -> AbstractDataItem    # optional; default passthrough
-    stats(item)           -> Dict{Symbol,Any}    # optional
+    stats(item)           -> Dict{Symbol,Any}    # optional, async after indexing
     label(item)           -> String             # optional
 
 `entries` returns the package's `DataItem` (recipe API) or a project subtype (type API); the engine
@@ -44,7 +44,6 @@ function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{P
         "", "", ItemRecipe[],
         Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Tuple{String,String,String}[], ReentrantLock(),
         Dict{Symbol,KindProfile}(), ReentrantLock(),
     )
     Serialization.deserialize_cycle(s, project)
@@ -108,8 +107,6 @@ function define_project(name::AbstractString; description::AbstractString="")::P
         ItemRecipe[],
         Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Tuple{String,String,String}[],
-        ReentrantLock(),
         Dict{Symbol,KindProfile}(),
         ReentrantLock(),
     )
@@ -143,25 +140,6 @@ end
 function reset_scan_profile!(project::Project)::Nothing
     lock(project.profile_lock) do
         empty!(project.scan_profile)
-    end
-    lock(project.stat_failures_lock) do
-        empty!(project.stat_failures)
-    end
-    return nothing
-end
-
-"""Log and record one per-item analysis failure raised while interpreting a source item."""
-function _record_stat_failure!(
-    project::Project,
-    filepath::String,
-    id::String,
-    step::Symbol,
-    err,
-)::Nothing
-    @error("Item analysis failed", source_item=filepath, item=id, step,
-        exception=(err, catch_backtrace()))
-    lock(project.stat_failures_lock) do
-        push!(project.stat_failures, (filepath, id, "step=$step: " * sprint(showerror, err)))
     end
     return nothing
 end
@@ -339,20 +317,6 @@ function Projects.data_items(
         for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
     ]
     _record_read!(project, recipe.kind, read_seconds, length(items))
-    if recipe.stats !== nothing
-        for index in eachindex(items)
-            try
-                stats_started = time_ns()
-                item = _processed_item(recipe, items[index])
-                items[index] = item
-                merge!(stats(item), recipe.stats(item))
-                _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
-            catch err
-                is_job_cancelled(err) && rethrow()
-                _record_stat_failure!(project, file.filepath, id(items[index]), :stats, err)
-            end
-        end
-    end
     return items
 end
 
@@ -384,7 +348,7 @@ function items_for_file(
 )::Vector{ItemRecord}
     source = DirectorySource(dirname(filepath); metadata_file=nothing)
     source.collection_metadata = meta
-    records, _ = ItemIndex.interpret_source_item(
+    records = ItemIndex.interpret_source_item(
         project,
         source,
         index_source_file(filepath),
@@ -409,23 +373,15 @@ function Projects.collection_stats(
     return merged
 end
 
-function ItemIndex.source_analysis_failures(
+function Projects.analysis_stats(
     project::Project,
-    source::AbstractDataSource,
-)::Vector{ItemFailure}
-    failures = ItemFailure[]
-    lock(project.stat_failures_lock) do
-        for (source_item_id, id, message) in project.stat_failures
-            push!(
-                failures,
-                ItemFailure(
-                    source_item_id,
-                    id,
-                    message,
-                ),
-            )
-        end
-        empty!(project.stat_failures)
-    end
-    return failures
+    ::AbstractDataSource,
+    item::AbstractDataItem,
+)::Dict{Symbol,Any}
+    recipe = _recipe(project, kind(item))
+    (recipe === nothing || recipe.stats === nothing) && return Dict{Symbol,Any}()
+    stats_started = time_ns()
+    result = recipe.stats(item)::Dict{Symbol,Any}
+    _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
+    return result
 end

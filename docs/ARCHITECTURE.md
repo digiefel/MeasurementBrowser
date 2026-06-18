@@ -40,17 +40,18 @@ AbstractDataSource│ scan          →  hierarchy  →  data       →  view   
 (root, DB, stream)│ ----------       ----------    ----           ----        │
                  │ source_items     build tree    load_data_item  Makie      │
                  │ + data_items     per-leaf       (memory →       figure /   │
-                 │ per source item  items+stats    cache → source) table      │
+                 │ per source item  items          cache → source) table      │
                  └──────────────────────────────────────────────────────────┘
 ```
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-interprets each unit with `data_items(project, source, source_item)`, records per-source-item failures,
-computes collection-node stats via `collection_stats(project, source, collection, items)`, and builds the hierarchy described in
-[data-model.md](data-model.md). The cache ([cache.md](cache.md)) restores that hierarchy quickly while
-scanning continues in the background.
+interprets each unit with `data_items(project, source, source_item)`, records per-source-item
+failures, and builds the hierarchy described in [data-model.md](data-model.md). Per-item stats and
+collection-node stats run as workspace background analysis after the tree exists. The cache
+([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues in the
+background.
 
 When a view needs item data, the engine reloads the selected items via
 `load_data_item(project, source, source_item_id, id)` (memory → cache → source). Each item carries
@@ -58,9 +59,9 @@ When a view needs item data, the engine reloads the selected items via
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
 uses the built-in `DirectorySource <: AbstractDataSource`: the source walks a data root into
-`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`stats` and
-`read`/`process` loading. Nothing downstream of the contract can tell a callback project from a
-hand-written project/source pair.
+`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries` during indexing and
+`read`/`process`/`stats` during background analysis or loading. Nothing downstream of the contract can
+tell a callback project from a hand-written project/source pair.
 
 ## Ownership Boundaries
 

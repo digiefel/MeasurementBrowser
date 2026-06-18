@@ -69,7 +69,7 @@ register_item!(project, :iv;
     process = item -> DataItem(                                  # optional; default passthrough
         kind=kind(item), collection=collection(item), label=item_label(item),
         parameters=parameters(item), stats=stats(item), data=clean(item.data), id=id(item)),
-    stats   = item -> Dict{Symbol,Any}(...),                     # optional
+    stats   = item -> Dict{Symbol,Any}(...),                     # optional; background analysis
     label   = item -> "…")                                       # optional
 
 register_collection_stat!(project; kinds=[:iv],                  # cross-item fold over a collection
@@ -82,7 +82,7 @@ The `entries` callback enumerates the items in a file and is where a single file
 entries (e.g. one item per fatigue cycle, distinguished by `parameters`). When an entry omits `id`,
 the directory adapter mints one from the source-item path, kind, and params. Entries attach the raw
 per-item payload as `item.data`; optional `process(item)` returns the item that stats and views
-receive, and optional `stats(item)` reads the item directly.
+receive, and optional `stats(item)` runs after indexing in workspace background analysis.
 `entries` returns the package's `DataItem` (the **recipe API**) — or, to go beyond it, a project's own
 `AbstractDataItem` subtype carrying typed fields and its data (the **type API**); the engine derives
 the internal record from either via the contract. Re-calling a `register_*` with the same key replaces
@@ -92,13 +92,13 @@ the recipe in place, so editing and re-running a line updates a live project.
 
 1. **Scan:** `scan_source!` calls `source_items(source)` for the discovered units. For each unit,
    `data_items(project, source, source_item)` interprets it into data items (the adapter applies the first
-   matching `detect`'s `read → entries`, folding `process → stats` in the same pass so parses are freed
-   per unit and memory stays bounded). The engine derives each item's internal `ItemRecord` via the
+   matching `detect`'s `read → entries`). The engine derives each item's internal `ItemRecord` via the
    contract; per-source-item failures are recorded and scanning continues. The file-backed adapter
    merges `metadata.txt` metadata into each record's `collection_metadata`.
-2. **Hierarchy:** records organize into a `Hierarchy` tree by `collection::Vector{String}`. After the
-   tree is built, `collection_stats(project, source, collection, items)` (the callback form is
-   `register_collection_stat!`) folds each node's items and the result is stored on the node's `stats`.
+2. **Analysis:** after the tree exists, a workspace background job materializes items with
+   `read → entries → process`, computes per-item `stats(item)`, then runs
+   `collection_stats(project, source, collection, items)` (the callback form is
+   `register_collection_stat!`) for collection nodes.
 3. **Cache:** the whole `SourceScan` is serialized into a source-id-keyed HDF5 cache; a fresh cache
    restores the hierarchy quickly while scanning continues.
 4. **View:** for the selection, the engine reloads items via

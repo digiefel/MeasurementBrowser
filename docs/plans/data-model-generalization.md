@@ -289,7 +289,7 @@ first; the second argument is either a data root or an explicit `AbstractDataSou
 3. **`collection_stats(project, source, collection, items)` is a low-level hook available everywhere**, stored
    on the `HierarchyNode` (node-level `stats`), not folded into member records. `register_collection_stat!`
    is its callback form. Bangless: it is a getter returning a `Dict`; the engine routine that writes the
-   node is the mutator (`add_collection_stats!`).
+   node is the mutator (now done by workspace background analysis).
 4. **`load_data_item` takes id strings and re-looks-up / re-reads.** Accepted for now (FIXME-marked):
    the alternative of threading a source-item handle through the index is deferred.
 5. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on

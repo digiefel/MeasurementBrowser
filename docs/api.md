@@ -54,7 +54,7 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `open_source(source)::AbstractDataSource` | yes | prepare resources; return the opened source (simple sources return themselves) |
 | `close_source!(source)::Nothing` | yes | release files, sockets, tasks, sessions, streams |
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
-| `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | cross-item fold over one collection node (see below) |
+| `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | background cross-item fold over one collection node |
 | `watch_source(source, on_change)` | no (→ `nothing`) | future live-update hook; `nothing` means static |
 
 `open_source` returns the opened source rather than mutating in place, so it carries no bang;
@@ -95,7 +95,7 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 | `kind(item)::Symbol` | yes | coarse UI/plot key — *not* the source of semantic truth |
 | `collection(item)::Vector{String}` | yes | canonical hierarchy path |
 | `parameters(item)::Dict{Symbol,Any}` | yes | metadata known at interpretation time |
-| `stats(item)::Dict{Symbol,Any}` | yes | computed values |
+| `stats(item)::Dict{Symbol,Any}` | yes | computed values, filled lazily after indexing when needed |
 | `item_data(item)` | yes | loaded payload consumed by views/plots (`nothing` on a data-less handle) |
 | `process(item)` | no (→ `item`) | optional transform returning the item views receive |
 | `cacheable(item)::Bool` | no (→ `false`) | opt into persistent payload caching |
@@ -183,7 +183,7 @@ register_item!(project, :iv;
     process = item -> DataItem(                          # optional; default passthrough
         kind=kind(item), collection=collection(item), label=item_label(item),
         parameters=parameters(item), stats=stats(item), data=clean(item.data), id=id(item)),
-    stats   = item -> Dict{Symbol,Any}(…),               # optional; merged into the item's stats
+    stats   = item -> Dict{Symbol,Any}(…),               # optional; computed after indexing
     label   = item -> "…")                               # optional; display label
 
 register_collection_stat!(project; kinds=[:iv],          # cross-item fold over each collection node
@@ -195,12 +195,14 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
 - **`entries(file, data)`** enumerates the items in one file, returning `Vector{<:AbstractDataItem}`
   — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). It attaches
   the raw per-item payload as `item.data`; optional `process(item)` returns the item that stats and
-  views receive. The adapter derives each internal record from the returned item and the
+  views receive. `stats(item)` runs in workspace background analysis, after the tree is already
+  populated. The adapter derives each internal record from the returned item and the
   `SourceFile`. When a recipe entry does not provide an id, the adapter mints one from the
   source-item path, kind, and `parameters`.
   **Project code never constructs or names the internal record.**
 - **`register_collection_stat!`** is the high-level form of the source's `collection_stats` hook: its
-  `compute_stats` fold runs over each collection node's items and the result is stored on the node.
+  `compute_stats` fold runs in background analysis over each collection node's items and the result
+  is stored on the node.
 - **`register_plot!`** `setup(workspace, items)` returns the `Figure`; `draw(workspace, items, figure)`
   fills it, each item carrying its payload as `item.data`. See
   [plans/plotting-api-design.md](plans/plotting-api-design.md).

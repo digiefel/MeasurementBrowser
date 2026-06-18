@@ -1,5 +1,5 @@
 """Return source-specific failures accumulated outside `data_items` itself."""
-function source_analysis_failures end
+source_analysis_failures(::Project, ::AbstractDataSource)::Vector{ItemFailure} = ItemFailure[]
 
 """
 Send one structured progress update when a callback is present.
@@ -47,24 +47,20 @@ function source_unchanged(
     return cached.source_item_fingerprints == fingerprints
 end
 
-"""Interpret one source item into records and keep the original handles for collection folds."""
+"""Interpret one source item into index records."""
 function interpret_source_item(
     project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
-)::Tuple{Vector{ItemRecord},Dict{String,AbstractDataItem}}
+)::Vector{ItemRecord}
     handles = data_items(project, source, source_item)::Vector{<:AbstractDataItem}
     records = ItemRecord[
         ItemRecord(handle; source_item)
         for handle in handles
     ]
     apply_collection_metadata!(records, metadata)
-    by_key = Dict{String,AbstractDataItem}()
-    for (record, handle) in zip(records, handles)
-        by_key[record.id] = handle
-    end
-    return records, by_key
+    return records
 end
 
 """
@@ -86,7 +82,6 @@ function interpret_source_items(
     cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
     failures = ItemFailure[]
     records_by_position = Vector{Vector{ItemRecord}}(undef, length(source_items))
-    handles_by_key = Dict{String,AbstractDataItem}()
 
     @sync for (index, source_item) in pairs(source_items)
         check_cancel()
@@ -94,7 +89,7 @@ function interpret_source_items(
         Base.Threads.@spawn try
             with_cancel(cancel_requested) do
                 check_cancel()
-                records, handles = try
+                records = try
                     interpret_source_item(project, source, source_item, metadata)
                 catch error
                     is_job_cancelled(error) && rethrow()
@@ -112,12 +107,11 @@ function interpret_source_items(
                             sprint(showerror, error),
                         ))
                     end
-                    ItemRecord[], Dict{String,AbstractDataItem}()
+                    ItemRecord[]
                 end
                 check_cancel()
                 records_by_position[index] = records
                 lock(callback_lock) do
-                    merge!(handles_by_key, handles)
                     isempty(records) || on_items === nothing || on_items(records)
                 end
                 isempty(records) ?
@@ -147,36 +141,7 @@ function interpret_source_items(
         total_source_items=length(source_items),
         failures,
         records,
-        handles_by_key,
     )
-end
-
-"""Apply collection-node stats supplied by the source."""
-function add_collection_stats!(
-    project::Project,
-    source::AbstractDataSource,
-    hierarchy::Hierarchy,
-    handles_by_key::Dict{String,AbstractDataItem},
-)::Vector{ItemFailure}
-    failures = ItemFailure[]
-    for (path, node) in hierarchy.index
-        isempty(node.items) && continue
-        handles = AbstractDataItem[
-            handles_by_key[record.id]
-            for record in node.items
-        ]
-        try
-            merge!(node.stats, collection_stats(project, source, collect(path), handles))
-        catch error
-            first_item = first(node.items)
-            push!(failures, ItemFailure(
-                first_item.source_item_id,
-                first_item.id,
-                "collection_stats: " * sprint(showerror, error),
-            ))
-        end
-    end
-    return failures
 end
 
 """
@@ -261,15 +226,6 @@ function scan_source(
         source_collection_metadata(source) !== nothing,
         summary.skipped_source_items,
     )
-    emit_progress(
-        on_progress;
-        phase=:analyzing,
-        total_source_items=length(discovered),
-        processed_source_items=length(discovered),
-        loaded_items=length(summary.records),
-        skipped_source_items=summary.skipped_source_items,
-    )
-    append!(summary.failures, add_collection_stats!(project, source, hierarchy, summary.handles_by_key))
     append!(summary.failures, source_analysis_failures(project, source))
     return SourceScan(
         source_id(source),

@@ -14,6 +14,7 @@ import ..Cache:
     write_project_cache!
 import ..ItemIndex:
     Hierarchy,
+    ItemFailure,
     ItemRecord,
     SourceScan,
     check_cancel,
@@ -25,7 +26,9 @@ import ..Projects:
     AbstractDataSource,
     AbstractDataItem,
     Project,
+    analysis_stats,
     close_source!,
+    collection_stats,
     id,
     item_data,
     load_data_item,
@@ -113,6 +116,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     selection::WorkspaceSelection
     cache::WorkspaceCache
     scan::WorkspaceJob
+    analysis::WorkspaceJob
     cache_job::WorkspaceJob
     loaded_items::Dict{String,Tuple{Any,Any}}
     background_tasks::Vector{Task}
@@ -142,6 +146,7 @@ function Workspace(
         WorkspaceCache(identity, nothing, nothing, :load),
         WorkspaceJob(),
         WorkspaceJob(),
+        WorkspaceJob(),
         Dict{String,Tuple{Any,Any}}(),
         Task[],
         false,
@@ -158,7 +163,7 @@ function _scan_summary(workspace::Workspace)::String
     progress = workspace.scan.progress
     if state in (:counting, :discovering)
         return "$state ($(progress.processed_source_items) source items found)"
-    elseif state in (:scanning, :analyzing)
+    elseif state == :scanning
         return "$state ($(progress.processed_source_items)/$(progress.total_source_items) source items)"
     else
         return string(state)

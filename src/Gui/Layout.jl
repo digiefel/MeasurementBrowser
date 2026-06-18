@@ -118,7 +118,7 @@ function _source_rescan_progress_model(
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     source_state = workspace.scan.state
-    source_state in (:counting, :discovering, :scanning, :analyzing,
+    source_state in (:counting, :discovering, :scanning,
                      :canceling, :canceled, :done, :unchanged, :error) || return nothing
 
     progress = workspace.scan.progress
@@ -128,7 +128,7 @@ function _source_rescan_progress_model(
     skipped = progress.skipped_source_items
     fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
-    # A single status line; the bar appears only while files are actively being read or analyzed.
+    # A single status line; the bar appears only while files are actively being read.
     if source_state == :error
         return (text=workspace.scan.error, fraction=0.0f0, show_bar=false)
     elseif source_state == :canceling
@@ -143,11 +143,18 @@ function _source_rescan_progress_model(
             @sprintf("Reading %d/%d source items, %d items", processed, total, loaded) :
             "Reading source items..."
         return (text=text, fraction=fraction, show_bar=total > 0)
-    elseif source_state == :analyzing
+    elseif workspace.analysis.state == :analyzing
+        analysis = workspace.analysis.progress
+        total = analysis.total_source_items
+        processed = analysis.processed_source_items
+        loaded = analysis.loaded_items
+        fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
         text = total > 0 ?
             @sprintf("Analyzing %d/%d, %d items", processed, total, loaded) :
             @sprintf("Analyzing %d items...", loaded)
         return (text=text, fraction=fraction, show_bar=total > 0)
+    elseif workspace.analysis.state == :error
+        return (text=workspace.analysis.error, fraction=0.0f0, show_bar=false)
     elseif source_state == :unchanged
         return (
             text=@sprintf("Up to date: %d items (%d source items unchanged)", loaded, total),

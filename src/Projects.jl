@@ -69,11 +69,6 @@ mutable struct Project
     recipes::Vector{ItemRecipe}
     collection_stats::Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}
     plots::Dict{Symbol,Dict{String,PlotRecipe}}
-    # Transient per-item analysis failures gathered while interpreting source items, as
-    # (source item id, item id, message) tuples. Plain string tuples
-    # so this early module needs no ItemIndex types.
-    stat_failures::Vector{Tuple{String,String,String}}
-    stat_failures_lock::ReentrantLock
     # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
     # start of each scan and replaced wholesale, so it stays bounded to one row per item kind.
     scan_profile::Dict{Symbol,KindProfile}
@@ -180,6 +175,9 @@ fingerprint(::AbstractDataItem) = nothing
 
 """Optional fold over one collection node's data-less item handles."""
 function collection_stats end
+
+"""Extra per-item stats computed after indexing. Internal workspace hook."""
+function analysis_stats end
 
 # ---------------------------------------------------------------------------
 # Interface functions

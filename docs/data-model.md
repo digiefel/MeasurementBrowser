@@ -57,7 +57,7 @@ struct ItemRecord                    # internal metadata record (never seen by s
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
     collection_metadata::Dict{Symbol,Any}   # merged from metadata.txt (area_um2, t_HZO_nm, …)
     parameters::Dict{Symbol,Any}     # acquisition settings known while interpreting the unit
-    stats::Dict{Symbol,Any}          # values computed after the required context is available
+    stats::Dict{Symbol,Any}          # values filled by background analysis
     item_fingerprint::Any            # nothing → payload not persistently cacheable
 end
 ```
@@ -84,7 +84,7 @@ end
 ## Hierarchy
 
 Records organize into a tree by their `collection::Vector{String}`. Nodes carry their own
-collection-level stats (filled by the source's `collection_stats` hook / `register_collection_stat!`):
+collection-level stats, filled by workspace background analysis:
 
 ```julia
 struct HierarchyNode
@@ -139,10 +139,10 @@ Implication: hierarchical metadata is stored once at the highest applicable leve
 ## Collection stats
 
 Cross-item stats over one collection node are computed by the
-`collection_stats(project, source, collection, items)` hook after the hierarchy is built, and stored
-on the node's `stats` dict. The high-level `register_collection_stat!` is the callback form of the
-same hook. This is distinct from per-item `stats`: item stats describe one item; node stats describe a
-group.
+`collection_stats(project, source, collection, items)` hook after the hierarchy is built, in the
+workspace's background analysis job, and stored on the node's `stats` dict. The high-level
+`register_collection_stat!` is the callback form of the same hook. This is distinct from per-item
+`stats`: item stats describe one item; node stats describe a group.
 
 ## Virtual item expansion
 

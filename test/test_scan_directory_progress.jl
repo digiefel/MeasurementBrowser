@@ -22,7 +22,6 @@ using Test
         @test any(event -> event.phase == :counting, events)
         @test any(event -> event.phase == :discovering, events)
         @test any(event -> event.phase == :scanning, events)
-        @test any(event -> event.phase == :analyzing, events)
         scanning = filter(event -> event.phase == :scanning, events)
         @test maximum(event -> event.processed_source_items, scanning) == 2
         @test all(event -> event.total_source_items == 2, scanning)

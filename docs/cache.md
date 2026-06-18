@@ -1,8 +1,9 @@
 # Source Cache
 
 Scanning a source is inherently slow: the engine must enumerate every source item, interpret each one
-into data items, and finish analysis before the final tree is known. The cache stores the result of
-that work so the previous tree can appear immediately while a new scan checks the source.
+into data items, and then compute analysis values. The tree is known before analysis finishes. The
+cache stores the result of that work so the previous tree can appear immediately while a new scan
+checks the source.
 
 The source remains authoritative. The cache is generated package data, stored outside the source, and
 never exposed to source or project code.
@@ -16,8 +17,9 @@ workspace index immediately with the previous hierarchy, parameters, stats, skip
 fingerprints, and analysis failures.
 
 The scan independently streams current items into the same workspace index and eventually produces
-the authoritative `SourceScan`. The engine compares that scan with the cached index and updates the
-cache when source items were added, changed, deleted, or produced a different analysis result.
+the authoritative `SourceScan`. Workspace analysis then fills per-item and collection stats in the
+background. The engine updates the cache after analysis, when source items were added, changed,
+deleted, or produced a different analysis result.
 
 ## Identity
 

@@ -83,7 +83,6 @@ end
 @testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.
-    push!(project.stat_failures, ("/tmp/x.csv", "id", "boom"))
     project.scan_profile[:table] = MB.KindProfile(2, 5, 1.0, 0.5)
 
     io = IOBuffer()
@@ -96,7 +95,6 @@ end
     @test length(restored.recipes) == 1
     @test restored.recipes[1].kind == :table
     # Transient state is rebuilt empty rather than carried across the cache boundary.
-    @test isempty(restored.stat_failures)
     @test isempty(restored.scan_profile)
 
     # Project serialization should preserve shared references.
@@ -107,7 +105,7 @@ end
     @test a === b
 end
 
-@testset "per-item stat failure surfaces through the source scan" begin
+@testset "per-item stats run after workspace scan" begin
     mktempdir() do dir
         write(joinpath(dir, "ok.csv"), "x,y\n1,2\n")
         write(joinpath(dir, "bad.csv"), "x,y\n1,2\n")
@@ -131,13 +129,27 @@ end
             end,
         )
 
-        source = scan_test_source(project, dir)
-        @test length(source.analysis_failures) == 1
-        failure = only(source.analysis_failures)
-        @test basename(failure.source_item_id) == "bad.csv"
-        @test occursin("step=stats", failure.message)
+        workspace = MB.open_workspace(project, test_source(project, dir))
+        try
+            deadline = time() + 10
+            while time() < deadline
+                MB.Workspace.poll_workspace!(workspace)
+                workspace.analysis.state in (:done, :error) && break
+                sleep(0.02)
+            end
 
-        ok = only(item for item in source.hierarchy.all_items if endswith(item.source_item_path, "ok.csv"))
-        @test ok.stats[:rows] == 1
+            @test workspace.scan.state == :done
+            @test workspace.analysis.state == :done
+            @test length(workspace.index.analysis_errors) == 1
+            failure = only(collect(workspace.index.analysis_errors))
+            @test basename(workspace.index.items[first(failure)].source_item_id) == "bad.csv"
+            @test occursin("stats blew up", last(failure))
+
+            ok = only(item for item in workspace.index.hierarchy.all_items
+                if endswith(item.source_item_path, "ok.csv"))
+            @test ok.stats[:rows] == 1
+        finally
+            MB.close_workspace!(workspace)
+        end
     end
 end
