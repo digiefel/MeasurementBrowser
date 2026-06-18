@@ -1,7 +1,5 @@
-const COLLECTION_METADATA_FILENAME = "device_info.txt"
-
 """Return source-specific failures accumulated outside `data_items` itself."""
-source_analysis_failures(::Project, ::AbstractDataSource)::Vector{ItemFailure} = ItemFailure[]
+function source_analysis_failures end
 
 """
 Send one structured progress update when a callback is present.
@@ -27,120 +25,10 @@ function emit_progress(
     return nothing
 end
 
-"""
-Parse one collection-metadata cell into a primitive Julia value.
-"""
-function parse_metadata_value(text::AbstractString)::Any
-    value = strip(text)
-    isempty(value) && return nothing
-    lowercase_value = lowercase(value)
-    lowercase_value in ("true", "t", "yes", "y", "1") && return true
-    lowercase_value in ("false", "f", "no", "n", "0") && return false
-    for type in (Int, Float64)
-        parsed = tryparse(type, value)
-        parsed === nothing || return parsed
-    end
-    for format in (dateformat"yyyy-mm-dd", dateformat"yyyy/mm/dd")
-        parsed = tryparse(Date, value, format)
-        parsed === nothing || return parsed
-    end
-    for format in (
-        dateformat"yyyy-mm-dd HH:MM:SS",
-        dateformat"yyyy-mm-ddTHH:MM:SS",
-    )
-        parsed = tryparse(DateTime, value, format)
-        parsed === nothing || return parsed
-    end
-    return value
-end
-
-"""
-Read collection metadata keyed by exact slash-separated path fragments.
-"""
-function load_collection_metadata(
-    path::AbstractString,
-)::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
-    lines = readlines(path)
-    isempty(lines) && return Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
-    header = strip.(split(first(lines), ','))
-    length(header) >= 2 ||
-        return Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
-    parameter_names = header[2:end]
-    metadata = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
-    for line in Iterators.drop(lines, 1)
-        isempty(strip(line)) && continue
-        cells = split(line, ',')
-        path_text = strip(first(cells))
-        isempty(path_text) && continue
-        parameters = Dict{Symbol,Any}()
-        for (offset, name) in enumerate(parameter_names)
-            index = offset + 1
-            index > length(cells) && continue
-            value = parse_metadata_value(cells[index])
-            value === nothing || (parameters[Symbol(strip(name))] = value)
-        end
-        metadata[Tuple(filter(!isempty, split(path_text, '/')))] = parameters
-    end
-    return metadata
-end
-
-"""
-Merge every metadata fragment matching a parsed collection path.
-"""
-function matching_collection_parameters(
-    metadata::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
-    location::Vector{String},
-)::Union{Nothing,Dict{Symbol,Any}}
-    merged = Dict{Symbol,Any}()
-    for width in eachindex(location)
-        for start in 1:(length(location) - width + 1)
-            parameters = get(
-                metadata,
-                Tuple(location[start:(start + width - 1)]),
-                nothing,
-            )
-            parameters === nothing || merge!(merged, parameters)
-        end
-    end
-    return isempty(merged) ? nothing : merged
-end
-
-collection_metadata_path(root_path::AbstractString)::String =
-    joinpath(root_path, COLLECTION_METADATA_FILENAME)
-
-has_collection_metadata(root_path::AbstractString)::Bool =
-    isfile(collection_metadata_path(root_path))
-
-"""
-Read optional source-root collection metadata.
-"""
-function load_scan_metadata(
-    root_path::String,
-)::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}
-    path = collection_metadata_path(root_path)
-    return isfile(path) ? load_collection_metadata(path) : nothing
-end
-
 """Return the metadata table a source wants applied during indexing."""
 source_collection_metadata(::AbstractDataSource) = nothing
 
-"""
-Apply source-level collection metadata to indexed records.
-
-TODO: collection metadata currently remains file-adapter rooted. Move annotations and metadata to a
-source capability so generic sources can choose their own hand-editable storage later.
-"""
-function apply_collection_metadata!(
-    records::Vector{ItemRecord},
-    metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
-)::Nothing
-    metadata === nothing && return nothing
-    for record in records
-        parameters = matching_collection_parameters(metadata, record.collection)
-        parameters === nothing || merge!(record.collection_metadata, parameters)
-    end
-    return nothing
-end
+apply_collection_metadata!(::Vector{ItemRecord}, ::Nothing)::Nothing = nothing
 
 """Return the current source-item fingerprints keyed by source-item id."""
 function source_item_fingerprints(

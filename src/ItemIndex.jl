@@ -272,33 +272,6 @@ Projects.item_data(item::DataItem) = item.data
 Projects.item_fingerprint(item::DataItem) = nothing
 
 """
-Extract a source-item timestamp from the supported filename conventions.
-"""
-function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
-    if (result = match(
-        r"; (\d{4}-\d{2}-\d{2}) (\d{2})_(\d{2})_(\d{2})\]",
-        filename,
-    )) !== nothing
-        date, hour, minute, second = result.captures
-        return try
-            DateTime("$date $hour:$minute:$second", "yyyy-mm-dd HH:MM:SS")
-        catch
-            nothing
-        end
-    end
-    result = match(r"_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})_", filename)
-    result === nothing && return nothing
-    year, month, day, hour, minute, second = result.captures
-    return try
-        DateTime("$year-$month-$day $hour:$minute:$second", "yyyy-mm-dd HH:MM:SS")
-    catch
-        nothing
-    end
-end
-
-include("ItemIndex/SourceFiles.jl")
-
-"""
 One node in the device hierarchy.
 """
 struct HierarchyNode

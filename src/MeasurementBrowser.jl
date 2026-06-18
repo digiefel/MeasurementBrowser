@@ -60,26 +60,20 @@ using .ItemIndex:
     ItemFailure,
     Hierarchy,
     ItemRecord,
-    SourceFile,
     SourceScan,
     check_cancel,
     children,
-    collect_source_files,
-    collection_metadata_path,
     collection_path_key,
     collection_path_tuple,
     emit_progress,
-    file_fingerprint,
-    has_collection_metadata,
-    index_source_file,
     insert_item!,
     item_record_key,
     is_job_cancelled,
-    load_scan_metadata,
     item_timestamp_key,
-    parse_timestamp,
     scan_source,
     with_cancel
+
+include("DataSources/DirectorySource.jl")
 
 include("Cache.jl")
 
@@ -125,6 +119,6 @@ export define_project, register_item!, register_collection_stat!, register_plot!
 export AbstractDataItem, Collection
 export item_id, item_label, kind, collection, parameters, stats, item_data, process, cacheable
 # Types you name
-export Project, SourceFile, DataItem
+export Project, DirectorySource, SourceFile, DataItem
 
 end # module MeasurementBrowser

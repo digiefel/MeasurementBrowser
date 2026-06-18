@@ -190,12 +190,7 @@ cacheable(::AbstractDataItem)::Bool = false
 item_fingerprint(::AbstractDataItem) = nothing
 
 """Optional fold over one collection node's data-less item handles."""
-collection_stats(
-    ::Project,
-    ::AbstractDataSource,
-    ::Vector{String},
-    ::Vector{<:AbstractDataItem},
-)::Dict{Symbol,Any} = Dict{Symbol,Any}()
+function collection_stats end
 
 # ---------------------------------------------------------------------------
 # Interface functions

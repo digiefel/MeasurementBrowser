@@ -297,8 +297,9 @@ Projects.source_fingerprint(::RegisteredProjectSource) = nothing
 
 function Projects.source_items(source::RegisteredProjectSource)::Vector{SourceFile}
     reset_scan_profile!(source.project)
-    source.collection_metadata = load_scan_metadata(source.root_path)
-    return collect_source_files(source.root_path)
+    directory = DirectorySource(source.root_path)
+    source.collection_metadata = load_scan_metadata(directory)
+    return collect_source_files(directory)
 end
 
 ItemIndex.source_collection_metadata(source::RegisteredProjectSource) = source.collection_metadata
@@ -319,7 +320,7 @@ end
 
 function Projects.data_items(
     project::Project,
-    source::RegisteredProjectSource,
+    source::AbstractDataSource,
     file::SourceFile,
 )::Vector{<:AbstractDataItem}
     recipe = _detect_recipe(project, file)
@@ -350,7 +351,7 @@ end
 
 function Projects.load_data_item(
     project::Project,
-    source::RegisteredProjectSource,
+    source::AbstractDataSource,
     source_item_id::AbstractString,
     id::AbstractString,
 )::AbstractDataItem
@@ -399,7 +400,7 @@ end
 
 function Projects.collection_stats(
     project::Project,
-    source::RegisteredProjectSource,
+    source::AbstractDataSource,
     ::Vector{String},
     items::Vector{<:AbstractDataItem},
 )::Dict{Symbol,Any}
@@ -419,7 +420,7 @@ end
 
 function ItemIndex.source_analysis_failures(
     project::Project,
-    source::RegisteredProjectSource,
+    source::AbstractDataSource,
 )::Vector{ItemFailure}
     failures = ItemFailure[]
     lock(project.stat_failures_lock) do

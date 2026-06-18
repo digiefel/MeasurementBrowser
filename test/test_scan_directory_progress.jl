@@ -69,3 +69,40 @@ using Test
         end
     end
 end
+
+@testset "DirectorySource discovery and metadata" begin
+    mktempdir() do dir
+        write_test_source(joinpath(dir, "root.csv"))
+        mkdir(joinpath(dir, "nested"))
+        write_test_source(joinpath(dir, "nested", "nested.csv"), 10)
+        write(joinpath(dir, "device_info.txt"), "collection_path,area_um2\ntest/root,12.5\ntest/nested,99\n")
+        write(joinpath(dir, "tags.txt"), "ignored")
+        write(joinpath(dir, "measurementbrowser.toml"), "ignored")
+
+        source = MeasurementBrowser.DirectorySource(dir)
+        scan = MeasurementBrowser.scan_source(TEST_PROJECT, source)
+        @test source isa MeasurementBrowser.DirectorySource
+        @test length(scan.source_item_fingerprints) == 2
+        @test scan.hierarchy.has_collection_metadata
+        metadata_by_label = Dict(
+            record.item_label => record.collection_metadata
+            for record in scan.hierarchy.all_items
+        )
+        @test metadata_by_label["Table root"][:area_um2] == 12.5
+        @test metadata_by_label["Table nested"][:area_um2] == 99
+
+        shallow = MeasurementBrowser.scan_source(
+            TEST_PROJECT,
+            MeasurementBrowser.DirectorySource(dir; recursive=false),
+        )
+        @test length(shallow.source_item_fingerprints) == 1
+        @test only(shallow.hierarchy.all_items).item_label == "Table root"
+
+        without_metadata = MeasurementBrowser.scan_source(
+            TEST_PROJECT,
+            MeasurementBrowser.DirectorySource(dir; metadata_file=nothing),
+        )
+        @test !without_metadata.hierarchy.has_collection_metadata
+        @test all(isempty(record.collection_metadata) for record in without_metadata.hierarchy.all_items)
+    end
+end
