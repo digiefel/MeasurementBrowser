@@ -51,13 +51,12 @@ end
 
 Projects.source_item_id(file::SourceFile)::String = file.filepath
 Projects.source_item_label(file::SourceFile)::String = file.filename
-Projects.source_item_fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
+Projects.fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
 Projects.source_item_path(file::SourceFile)::String = file.filepath
 Projects.source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
 
 Projects.source_id(source::DirectorySource)::String = source.root_path
 Projects.source_label(source::DirectorySource)::String = basename(source.root_path)
-Projects.source_fingerprint(::DirectorySource) = nothing
 
 """Extract a source-item timestamp from the supported filename conventions."""
 function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}

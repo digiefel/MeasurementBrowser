@@ -30,21 +30,20 @@ source_collection_metadata(::AbstractDataSource) = nothing
 
 apply_collection_metadata!(::Vector{ItemRecord}, ::Nothing)::Nothing = nothing
 
-"""Return the current source-item fingerprints keyed by source-item id."""
-function source_item_fingerprints(
+"""Return current source-item fingerprints keyed by source-item id."""
+function fingerprints_by_source_item(
     items::Vector{<:AbstractDataSourceItem},
 )::Dict{String,Any}
-    return Dict(source_item_id(item) => source_item_fingerprint(item) for item in items)
+    return Dict(source_item_id(item) => fingerprint(item) for item in items)
 end
 
-"""Whether a cached scan still matches the source-level and source-item fingerprints."""
+"""Whether a cached scan still matches the current source items."""
 function source_unchanged(
     source::AbstractDataSource,
     fingerprints::Dict{String,Any},
     cached::SourceScan,
 )::Bool
     cached.source_id == source_id(source) || return false
-    cached.source_fingerprint == source_fingerprint(source) || return false
     return cached.source_item_fingerprints == fingerprints
 end
 
@@ -209,7 +208,7 @@ function scan_source(
         skipped_source_items=0,
     )
     discovered = source_items(source)
-    fingerprints = source_item_fingerprints(discovered)
+    fingerprints = fingerprints_by_source_item(discovered)
     check_cancel()
     if cached_source !== nothing && source_unchanged(source, fingerprints, cached_source)
         emit_progress(
@@ -275,7 +274,6 @@ function scan_source(
     return SourceScan(
         source_id(source),
         source_label(source),
-        source_fingerprint(source),
         fingerprints,
         hierarchy,
         summary.failures,

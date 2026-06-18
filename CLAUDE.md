@@ -95,9 +95,8 @@ the recipe in place, so editing and re-running a line updates a live project.
 2. **Hierarchy:** records organize into a `Hierarchy` tree by `collection::Vector{String}`. After the
    tree is built, `collection_stats(project, source, collection, items)` (the callback form is
    `register_collection_stat!`) folds each node's items and the result is stored on the node's `stats`.
-3. **Cache:** the whole `SourceScan` is serialized into a source-identity-keyed HDF5 cache
-   (`source_id` + `source_fingerprint`); a fresh cache restores the hierarchy quickly while scanning
-   continues.
+3. **Cache:** the whole `SourceScan` is serialized into a source-id-keyed HDF5 cache; a fresh cache
+   restores the hierarchy quickly while scanning continues.
 4. **View:** for the selection, the engine reloads items via
    `load_data_item(project, source, source_item_id, id)` (memory → cache → origin); each carries `item.data`.
    Registered plots render through the internal plot dispatch, with
@@ -109,7 +108,7 @@ the recipe in place, so editing and re-running a line updates a live project.
   source owns lifecycle + discovery (`source_items`), a source item is one discovered unit
   (`data_items`, `load_data_item`), a data item is one logical browser object (`id`, `item_label`,
   `kind`, `collection`, `parameters`, `stats`, `item_data`, + optional `process`/`cacheable`/
-  `item_fingerprint`). The engine is written against these, never a concrete type.
+  `fingerprint`). The engine is written against these, never a concrete type.
 - `DataItem <: AbstractDataItem` — the normal item the recipe API's `entries` produces: `kind`,
   `collection`, `parameters`/`stats` dicts, and `data` (as `item.data`).
 - `SourceFile <: AbstractDataSourceItem` — the built-in file-backed source item: path, filename,

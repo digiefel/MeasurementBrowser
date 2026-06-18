@@ -21,16 +21,14 @@ using .Projects:
     collection,
     collection_stats,
     data_items,
+    fingerprint,
     id,
     item_data,
-    item_fingerprint,
     item_label,
     load_data_item,
     open_source,
     parameters,
-    source_fingerprint,
     source_id,
-    source_item_fingerprint,
     source_item_id,
     source_item_label,
     source_item_path,
@@ -115,7 +113,7 @@ export open_browser, open_workspace, close_workspace!, select_items!
 export define_project, register_item!, register_collection_stat!, register_plot!
 # The AbstractDataItem contract — implement these for a custom item type
 export AbstractDataItem, Collection
-export id, item_label, kind, collection, parameters, stats, item_data, process, cacheable
+export id, item_label, kind, collection, parameters, stats, item_data, process, cacheable, fingerprint
 # Types you name
 export Project, DirectorySource, SourceFile, DataItem
 

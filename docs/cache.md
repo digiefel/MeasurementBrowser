@@ -34,23 +34,21 @@ Cache files live under:
 DEPOT_PATH[1]/measurementbrowser/cache/<source-label>/<cache-id>.h5
 ```
 
-Scan/index ownership is keyed by `source_id` + `source_fingerprint`. A cache is accepted only when the
-identity fields and the schema version match. For `DirectorySource`, `source_id` is the normalized
-root path.
+Scan/index ownership is keyed by `source_id`. A cache is accepted only when the identity fields and
+the schema version match. For `DirectorySource`, `source_id` is the normalized root path.
 
 ## Fingerprints and what they invalidate
 
 | Fingerprint | Scope | Missing (`=== nothing`) means |
 |---|---|---|
-| `source_fingerprint(source)` | whole scan + all payloads | skip persistent scan/payload caching for this source |
-| `source_item_fingerprint(item)` | records + payloads from one source item | skip persistent payload caching for that item's data |
-| `item_fingerprint(item)` | one item's payload | skip persistent payload caching for that item |
+| `fingerprint(item::AbstractDataSourceItem)` | records + payloads from one source item | skip persistent payload caching for that item's data |
+| `fingerprint(item::AbstractDataItem)` | one item's payload | skip persistent payload caching for that item |
 
 A changed `source_item_fingerprint` invalidates only the records and payloads derived from that source
 item. Item payloads are keyed by the full tuple:
 
 ```text
-source_id + source_fingerprint + source_item_id + source_item_fingerprint + id + item_fingerprint
+source_id + source_item_id + source_item_fingerprint + id + item_fingerprint
 ```
 
 This generalizes the previous file-fingerprint behavior: for a file-backed source the source-item

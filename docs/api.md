@@ -55,7 +55,6 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `close_source!(source)::Nothing` | yes | release files, sockets, tasks, sessions, streams |
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
 | `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | cross-item fold over one collection node (see below) |
-| `source_fingerprint(source)` | no (→ `nothing`) | invalidation token for the whole source |
 | `watch_source(source, on_change)` | no (→ `nothing`) | future live-update hook; `nothing` means static |
 
 `open_source` returns the opened source rather than mutating in place, so it carries no bang;
@@ -75,7 +74,7 @@ data items.
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
 | `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | interpret one unit into lightweight (data-less) logical items for indexing |
 | `load_data_item(project, source, source_item_id, id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
-| `source_item_fingerprint(item)` | no (→ `nothing`) | invalidates records/payloads from this source item |
+| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | invalidates records/payloads from this source item |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
 
@@ -100,7 +99,7 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 | `item_data(item)` | yes | loaded payload consumed by views/plots (`nothing` on a data-less handle) |
 | `process(item, data)` | no (→ `data`) | optional transform applied to loaded data |
 | `cacheable(item)::Bool` | no (→ `false`) | opt into persistent payload caching |
-| `item_fingerprint(item)` | no (→ `nothing`) | invalidates this item's cached payload |
+| `fingerprint(item::AbstractDataItem)` | no (→ `nothing`) | invalidates this item's cached payload |
 
 ### A complete low-level source
 
@@ -130,7 +129,7 @@ source_items(ds::PhotoDataset) = [PhotoFile(p, file_fingerprint(p)) for p in pho
 # source item
 source_item_id(f::PhotoFile)          = f.path
 source_item_label(f::PhotoFile)       = basename(f.path)
-source_item_fingerprint(f::PhotoFile) = f.fingerprint
+fingerprint(f::PhotoFile) = f.fingerprint
 function data_items(::Project, ::PhotoDataset, f::PhotoFile)
     m = read_photo_header(f.path)                                   # cheap, data-less
     [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path, nothing)]

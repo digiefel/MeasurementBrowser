@@ -293,7 +293,7 @@ first; the second argument is either a data root or an explicit `AbstractDataSou
 4. **`load_data_item` takes id strings and re-looks-up / re-reads.** Accepted for now (FIXME-marked):
    the alternative of threading a source-item handle through the index is deferred.
 5. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on
-   `SourceScan`** — no per-record duplication of `source_id`/`source_label`/`source_fingerprint`.
+   `SourceScan`** — no per-record duplication of `source_id`/`source_label`.
 6. **The low-level types are not exported yet** — reachable as `MeasurementBrowser.name`, staged for a
    dedicated submodule. The exported surface stays the conservative high-level set; `PlotKind` stays
    internal too.

@@ -62,9 +62,8 @@ struct ItemRecord                    # internal metadata record (never seen by s
 end
 ```
 
-Source-*level* identity (`source_id`, `source_label`, `source_fingerprint`) is **not** copied onto
-every record — it lives once on the `SourceScan`. A record carries only the source-*item* identity it
-needs to be reloaded.
+Source-*level* identity (`source_id`, `source_label`) is **not** copied onto every record — it lives
+once on the `SourceScan`. A record carries only the source-*item* identity it needs to be reloaded.
 
 ## Scan Result
 
@@ -76,7 +75,6 @@ for invalidation, and the hierarchy of `ItemRecord`s. No records are stored on t
 struct SourceScan                     # the result of one full scan, source-neutral
     source_id::String
     source_label::String
-    source_fingerprint::Any
     source_item_fingerprints::Dict{String,Any}
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}

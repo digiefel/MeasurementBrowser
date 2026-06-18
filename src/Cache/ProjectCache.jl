@@ -2,7 +2,7 @@ using HDF5
 using SHA
 using Serialization
 const PROJECT_CACHE_COMPRESSION = 3
-const PROJECT_CACHE_SCHEMA_VERSION = 10
+const PROJECT_CACHE_SCHEMA_VERSION = 11
 const PROJECT_CACHE_INDEX_DATASET = "index"
 const PROJECT_CACHE_LOCK = ReentrantLock()
 

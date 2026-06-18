@@ -11,15 +11,13 @@ import ..Projects:
     collection_path_label,
     collection_stats,
     data_items,
+    fingerprint,
     id,
-    item_fingerprint,
     kind_label,
     load_data_item,
     project_name,
     reset_scan_profile!,
-    source_fingerprint,
     source_id,
-    source_item_fingerprint,
     source_item_id,
     source_item_label,
     source_item_path,
@@ -246,7 +244,7 @@ function ItemRecord(
         String(label)
     return ItemRecord(;
         source_item_id=source_item_id(source_item),
-        source_item_fingerprint=source_item_fingerprint(source_item),
+        source_item_fingerprint=fingerprint(source_item),
         source_item_path=source_item_path(source_item),
         source_item_timestamp=source_item_timestamp(source_item),
         id=Projects.id(item),
@@ -256,7 +254,7 @@ function ItemRecord(
         collection_metadata=Dict{Symbol,Any}(),
         parameters=Projects.parameters(item),
         stats=Projects.stats(item),
-        item_fingerprint=item_fingerprint(item),
+        item_fingerprint=fingerprint(item),
     )
 end
 
@@ -267,7 +265,7 @@ Projects.collection(item::DataItem)::Vector{String} = item.collection
 Projects.parameters(item::DataItem)::Dict{Symbol,Any} = item.parameters
 Projects.stats(item::DataItem)::Dict{Symbol,Any} = item.stats
 Projects.item_data(item::DataItem) = item.data
-Projects.item_fingerprint(item::DataItem) = nothing
+Projects.fingerprint(item::DataItem) = nothing
 
 """
 One node in the collection hierarchy.
@@ -301,7 +299,6 @@ The authoritative result of one completed source scan.
 struct SourceScan
     source_id::String
     source_label::String
-    source_fingerprint::Any
     source_item_fingerprints::Dict{String,Any}
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
@@ -316,7 +313,6 @@ function SourceScan(
     return SourceScan(
         source_id(source),
         source_label(source),
-        source_fingerprint(source),
         source_item_fingerprints,
         hierarchy,
         ItemFailure[],

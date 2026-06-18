@@ -76,7 +76,6 @@ const ProjectCache = MeasurementBrowser.Cache
             failed_source = MeasurementBrowser.SourceScan(
                 updated_source.source_id,
                 updated_source.source_label,
-                updated_source.source_fingerprint,
                 updated_source.source_item_fingerprints,
                 updated_source.hierarchy,
                 [ItemFailure(

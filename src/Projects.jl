@@ -113,17 +113,16 @@ function source_items end
 """Future live-update hook. `nothing` means the source is static."""
 watch_source(::AbstractDataSource, ::Function) = nothing
 
-"""Optional source-wide invalidation token."""
-source_fingerprint(::AbstractDataSource) = nothing
-
 """Stable source-item identity within a source."""
 function source_item_id end
 
 """Human-readable source-item label."""
 function source_item_label end
 
-"""Optional source-item invalidation token."""
-source_item_fingerprint(::AbstractDataSourceItem) = nothing
+"""Optional invalidation token for source items and data items."""
+function fingerprint end
+
+fingerprint(::AbstractDataSourceItem) = nothing
 
 """Filesystem path for a source item, when one exists."""
 source_item_path(::AbstractDataSourceItem)::Union{Nothing,String} = nothing
@@ -176,8 +175,7 @@ process(::AbstractDataItem, data) = data
 """Whether an item's payload should be persisted by the data cache. Optional; default `false`."""
 cacheable(::AbstractDataItem)::Bool = false
 
-"""Optional item-level invalidation token."""
-item_fingerprint(::AbstractDataItem) = nothing
+fingerprint(::AbstractDataItem) = nothing
 
 """Optional fold over one collection node's data-less item handles."""
 function collection_stats end
