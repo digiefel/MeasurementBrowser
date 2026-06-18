@@ -66,8 +66,8 @@ MB.item_data(p::Photo) = p.data
 
     # Plot: the bridge re-runs read+entries for the type API and matches items to records by id,
     # so draw receives the Photos with item.data populated.
-    workspace = MB.Workspace.Workspace(test_source(project, dir))
-    plot_kind = MB.RegistryPlot{:photo,Symbol("Image")}
+    workspace = MB.Workspace.Workspace(project, test_source(project, dir))
+    plot_kind = MB.RegisteredPlot{:photo,Symbol("Image")}
     figure = MB.setup_plot(workspace, plot_kind, records)
     @test figure isa Figure
     @test MB.plot_data!(workspace, plot_kind, records, figure) === nothing

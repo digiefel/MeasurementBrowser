@@ -273,13 +273,13 @@ which the current code already treats `SourceFile` as, implicitly. `data_items(s
 maps one unit to zero/one/many data items; `load_data_item(source, source_item_id, item_id)` reloads
 one with its payload.
 
-**No registration in the low level.** The app starts from a configured source value
-(`open_workspace(mysource)`), never by walking `subtypes`. The exported callback API
+**No item registration in the low level.** A workspace still starts from a user-created project plus a
+configured source value (`open_workspace(project, mysource)`), never by walking `subtypes`. The
+exported callback API
 (`define_project` + `register_*`) becomes a *private adapter source*, `RegisteredProjectSource <:
 AbstractDataSource`, whose `source_items` walks a root into `SourceFile`s and whose `data_items` /
-`load_data_item` apply the recipes. `open_workspace`'s first argument is reinterpreted — a `String`
-(data root, with the `project` keyword) or an `AbstractDataSource` — so the callback call form is
-preserved while the type-based path is first-party.
+`load_data_item` apply the recipes. `open_workspace` always takes the project first; the second
+argument is either a data root or an explicit `AbstractDataSource`.
 
 ### Resolved decisions
 

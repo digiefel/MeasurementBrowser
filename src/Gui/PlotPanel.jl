@@ -113,14 +113,14 @@ function render_plot_toolbar!(
     available::Vector{Type{<:PlotKind}},
 )::Nothing
     plots = state.plots
-    source = (state.workspace::Workspace.Workspace).source
+    project = (state.workspace::Workspace.Workspace).project
     current = view.plot_kind
     if ig.BeginCombo(
         "##plot_kind_$(view.id)",
-        current === nothing ? "Choose plot kind" : plot_kind_label(source, current),
+        current === nothing ? "Choose plot kind" : plot_kind_label(project, current),
     )
         for candidate in available
-            if ig.Selectable(plot_kind_label(source, candidate), current === candidate)
+            if ig.Selectable(plot_kind_label(project, candidate), current === candidate)
                 view.plot_kind = candidate
                 view.last_key = nothing
                 view.error = ""
@@ -268,7 +268,9 @@ function render_plot_view!(
         selected_records :
         _items_for_keys(state, view.item_keys)
 
-    source = (state.workspace::Workspace.Workspace).source
+    workspace = state.workspace::Workspace.Workspace
+    source = workspace.source
+    project = workspace.project
     kind = if isempty(records)
         nothing
     else
@@ -277,7 +279,7 @@ function render_plot_view!(
     end
     available = kind === nothing ?
         Type{<:PlotKind}[] :
-        registered_plot_kinds(source, kind)
+        registered_plot_kinds(project, kind)
     if view === plots.main && view.live
         if view.kind !== kind
             view.kind = kind
@@ -306,7 +308,6 @@ function render_plot_view!(
         :empty :
         view.plot_kind === nothing ? :needs_kind : :ready
     if status == :ready
-        workspace = state.workspace::Workspace.Workspace
         plot_key = (
             source_label(workspace.source),
             view.id,

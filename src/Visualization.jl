@@ -12,7 +12,7 @@ Base type for visualizers selectable by the browser and Julia API.
 
 `PlotKind` is an internal identity used by the engine to dispatch plotting. Projects do not define
 their own subtypes; they call `register_plot!`, and the engine represents each registered plot as a
-`RegistryPlot{kind,label}` (below).
+`RegisteredPlot{kind,label}` (below).
 """
 abstract type PlotKind end
 
@@ -20,14 +20,14 @@ abstract type PlotKind end
 Internal plot identity for a plot registered with `register_plot!`, parameterized by the item kind
 it applies to and the label that distinguishes plots for that kind.
 """
-struct RegistryPlot{Kind,Label} <: PlotKind end
+struct RegisteredPlot{Kind,Label} <: PlotKind end
 
-"""The item-kind symbol a `RegistryPlot` draws."""
-plot_kind_symbol(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} = Kind
+"""The item-kind symbol a `RegisteredPlot` draws."""
+plot_kind_symbol(::Type{RegisteredPlot{Kind,Label}}) where {Kind,Label} = Kind
 
 """Stable name used to persist a plot choice in `measurementbrowser.toml`."""
 plot_kind_name(plot_kind::Type{<:PlotKind})::String = String(nameof(plot_kind))
-plot_kind_name(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} =
+plot_kind_name(::Type{RegisteredPlot{Kind,Label}}) where {Kind,Label} =
     string(Kind, "::", Label)
 
 """Resolve a persisted plot name back to its internal identity (a registered plot kind)."""
@@ -35,7 +35,7 @@ function plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKin
     parts = split(name, "::"; limit=2)
     length(parts) == 2 || return nothing
     kind, label = parts
-    return RegistryPlot{Symbol(kind),Symbol(label)}
+    return RegisteredPlot{Symbol(kind),Symbol(label)}
 end
 
 """Create the figure layout required by a visualizer."""
@@ -64,7 +64,7 @@ function plot_data!(
 end
 
 # --- Registered-plot bridge ------------------------------------------------
-# A RegistryPlot{kind,label} dispatches the engine's plot calls to the project's registered setup/draw
+# A RegisteredPlot{kind,label} dispatches the engine's plot calls to the project's registered setup/draw
 # callbacks. `project.plots` is the recipe table filled by register_plot!.
 
 """
@@ -84,10 +84,10 @@ The package materializes the loaded `items` (each with `item.data`) before invok
 """
 function setup_plot(
     workspace::Workspace.Workspace,
-    ::Type{RegistryPlot{Kind,Label}},
+    ::Type{RegisteredPlot{Kind,Label}},
     records::Vector{ItemRecord},
 )::Figure where {Kind,Label}
-    recipe = workspace.source.project.plots[Kind][String(Label)]
+    recipe = workspace.project.plots[Kind][String(Label)]
     return recipe.setup(workspace, _data_items(workspace, records))::Figure
 end
 
@@ -99,28 +99,28 @@ The package materializes the loaded `items` (each with `item.data`) before invok
 """
 function plot_data!(
     workspace::Workspace.Workspace,
-    ::Type{RegistryPlot{Kind,Label}},
+    ::Type{RegisteredPlot{Kind,Label}},
     records::Vector{ItemRecord},
     figure::Figure,
 )::Nothing where {Kind,Label}
-    recipe = workspace.source.project.plots[Kind][String(Label)]
+    recipe = workspace.project.plots[Kind][String(Label)]
     recipe.draw(workspace, _data_items(workspace, records), figure)
     return nothing
 end
 
 """Every plot registered for an item kind, sorted by label."""
-function registered_plot_kinds(source, kind::Symbol)::Vector{Type{<:PlotKind}}
-    recipes = get(source.project.plots, kind, nothing)
+function registered_plot_kinds(project, kind::Symbol)::Vector{Type{<:PlotKind}}
+    recipes = get(project.plots, kind, nothing)
     recipes === nothing && return Type{<:PlotKind}[]
     return Type{<:PlotKind}[
-        RegistryPlot{kind,Symbol(label)}
+        RegisteredPlot{kind,Symbol(label)}
         for label in sort!(collect(keys(recipes)))
     ]
 end
 
 """Human label for a registered plot kind, taken from its recipe."""
-function plot_kind_label(source, ::Type{RegistryPlot{Kind,Label}})::String where {Kind,Label}
-    return source.project.plots[Kind][String(Label)].label
+function plot_kind_label(project, ::Type{RegisteredPlot{Kind,Label}})::String where {Kind,Label}
+    return project.plots[Kind][String(Label)].label
 end
 
 """

@@ -24,7 +24,7 @@ register_plot!(project, :pund; label = "Q–V",       setup = …, draw = …)  
 - Plots live in `project.plots :: Dict{Symbol, Dict{String, PlotRecipe}}` (kind → label → recipe).
   Re-registering the same `(kind, label)` replaces that one plot in place, so REPL iteration stays
   stable. `registered_plot_kinds(project, kind)` lists every plot for a kind, sorted by label.
-- The engine represents each registered plot internally as `RegistryPlot{kind, label}` and dispatches
+- The engine represents each registered plot internally as `RegisteredPlot{kind, label}` and dispatches
   `setup_plot`/`plot_data!` to the recipe callbacks; choices persist as `"kind::label"`. **`PlotKind`
   is internal**; projects do not subtype it, and the old "discover plot-kind types by reflection" path
   is gone.

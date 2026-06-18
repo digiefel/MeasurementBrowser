@@ -66,17 +66,16 @@ The exact API is not decided, but it should feel like normal Julia composition r
 control protocol. This sketch is illustrative:
 
 ```julia
-workspace = open_workspace(RuO2Project(), root)
+project = define_project("RuO2")
+workspace = open_workspace(project, root)
 browser = open_browser(workspace; wait=false)
 
-selection = select_items!(workspace;
-    kind=:pund,
-    collection=r"RuO2test/A9",
-)
+records = workspace.index.hierarchy.all_items
+select_items!(workspace, records)
 
 fig = Figure(workspace)
-plot!(fig, selection, X(:voltage_V), Y(:polarization_uCcm2); visualizer=LinePlot)
-fit = linear_fit!(fig, selection, X(:voltage_V), Y(:current_A))
+plot!(fig, records, X(:voltage_V), Y(:polarization_uCcm2); visualizer=LinePlot)
+fit = linear_fit!(fig, records, X(:voltage_V), Y(:current_A))
 annotate!(fig, Arrow(fit, label="linear region"))
 
 save_workflow("pund_review.mbflow", fig)

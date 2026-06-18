@@ -25,12 +25,10 @@ derives the internal record from each via the `AbstractDataItem` contract. `file
 using DataFrames: DataFrame
 import Serialization
 
-# The project is reachable from a cached SourceScan (twice: source.project and hierarchy.project), so
-# it is serialized into the HDF5 cache. Only the registered recipes are persisted; transient scan
-# state (read cache, profiling, locks) is rebuilt empty on load. This keeps the cache format stable
-# when transient fields change, so adding scan instrumentation never silently invalidates a cache.
-# serialize_cycle/deserialize_cycle preserve object identity, so the two references still resolve to
-# one project after load.
+# RegisteredProjectSource serializes its project into the HDF5 cache. Only registered recipes are
+# persisted; transient scan state (read cache, profiling, locks) is rebuilt empty on load. This keeps
+# the cache format stable when transient fields change, so adding scan instrumentation never silently
+# invalidates a cache.
 function Serialization.serialize(s::Serialization.AbstractSerializer, project::Project)
     Serialization.serialize_cycle(s, project) && return nothing
     Serialization.serialize_type(s, Project, true)

@@ -29,8 +29,8 @@ and presentation details that are specific to the experiment.
 
 Keep this boundary small. It should be possible to evolve project code toward hot reloading,
 interpreted execution, or an out-of-process implementation without changing what a project author is
-trying to express: source files become measurements, measurements provide reusable data, and reusable
-data feeds inspection and presentation tools.
+trying to express: source items become logical items, loaded item data feeds inspection and
+presentation tools.
 
 ## Core Flow
 
@@ -80,7 +80,7 @@ The workspace owns:
 - selection identities
 - cache identity, freshness, storage, and repair
 - scanning, cache work, progress, errors, and cancellation
-- direct and processed data already loaded in memory
+- loaded items already materialized in memory
 
 The browser owns windows, controls, filters, and temporary rendering state. Annotations store
 user-authored tags, notes, coordinates, and spatial positions (currently next to the cache, keyed by
@@ -94,14 +94,14 @@ The package expresses that boundary through focused internal modules. `Projects`
 `AbstractDataItem` contract, the `Project` recipe type, and (with `Project`) the callback adapter.
 `ItemIndex` owns the built-in `SourceFile` source item, the internal `ItemRecord`, the concrete
 `DataItem`, hierarchy construction, and filesystem discovery. `Cache` owns generated HDF5 state.
-`Workspace` owns one open source, its index, selection, cache, loaded data, and background work.
+`Workspace` owns one project/source pair, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and CImGui
 rendering. `MeasurementBrowser` exports the small high-level API while keeping the low-level source
 contract and these modules internal.
 
-`open_workspace(source; project)` creates that owner and immediately starts cache loading and
-scanning. The source may receive the workspace to request item data, but source code does not manage
-its cache, jobs, or browser state.
+`open_workspace(project, source)` or `open_workspace(project, root_path)` creates that owner and
+immediately starts cache loading and scanning. Source code does not manage its cache, jobs, or browser
+state.
 
 ## On-disk metadata
 

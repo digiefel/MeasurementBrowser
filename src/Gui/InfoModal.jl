@@ -15,7 +15,6 @@ function render_info_window(state::BrowserState)::Nothing
         ig.End()
         return nothing
     end
-    source = workspace.source
     selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
     if ig.Begin("Information Panel")
@@ -54,9 +53,7 @@ function render_info_window(state::BrowserState)::Nothing
             m = selected_items[1]
             ig.Text("Title: $(m.item_label)")
             ig.Separator()
-            kind_text = hasproperty(source, :project) ?
-                kind_label(source.project, m.kind) :
-                String(m.kind)
+            kind_text = kind_label(workspace.project, m.kind)
             ig.BulletText("Type: $(kind_text)")
             ig.BulletText("Timestamp: $(m.source_item_timestamp)")
             if m.source_item_path !== nothing

@@ -2,8 +2,7 @@ using TOML
 
 using ..Projects:
     PROJECTS,
-    project_name,
-    source_label
+    project_name
 using ..ItemIndex: ItemRecord, item_record_key
 import ..Workspace
 using ..Visualization:
@@ -258,7 +257,7 @@ function _project_view_from_browser(
     plots = state.plots
 
     return PersistedProjectView(
-        project=source_label(workspace.source),
+        project=project_name(workspace.project),
         tree=PersistedTreeView(
             expanded=copy(state.expanded_collection_paths),
             selected=copy(workspace.selection.collection_paths),

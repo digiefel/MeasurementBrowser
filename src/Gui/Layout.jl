@@ -367,9 +367,7 @@ function render_perf_window(state::BrowserState)::Nothing
 
         workspace = state.workspace
         scan_rows = workspace isa Workspace.Workspace ?
-            hasproperty(workspace.source, :project) ?
-                scan_profile_summary(workspace.source.project) :
-                NamedTuple[] :
+            scan_profile_summary(workspace.project) :
             NamedTuple[]
         if ig.CollapsingHeader("Scan timings (per kind)", ig.ImGuiTreeNodeFlags_DefaultOpen)
             if isempty(scan_rows)
@@ -868,9 +866,7 @@ function open_browser(
     prefs = _load_prefs()
     state = BrowserState(
         project_locked=true,
-        project_preference=hasproperty(workspace.source, :project) ?
-            project_name(workspace.source.project) :
-            "auto",
+        project_preference=project_name(workspace.project),
         recent_projects=_parse_recent_projects(prefs),
     )
     ctx = _init_browser_context!()

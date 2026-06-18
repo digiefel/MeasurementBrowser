@@ -1,6 +1,6 @@
 # Data Model
 
-The model has three public layers and one internal record, in increasing specificity:
+The model has three core source/data layers and one internal record, in increasing specificity:
 
 ```text
 AbstractDataSource      → owns lifecycle + discovery               (a dataset root, DB query, stream)

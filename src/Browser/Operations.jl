@@ -2,8 +2,7 @@ using ..Projects:
     Project,
     DEFAULT_PROJECT,
     PROJECTS,
-    project_name,
-    source_label
+    project_name
 using ..ItemIndex: collection_path_key, item_record_key
 import ..Workspace
 using ..Workspace:
@@ -29,10 +28,10 @@ function _open_project_path!(
     norm_path = _normalize_project_path(path)
     if project === nothing && state.project_locked
         workspace = state.workspace
-        if workspace isa Workspace.Workspace && hasproperty(workspace.source, :project)
-            project = workspace.source.project
+        if workspace isa Workspace.Workspace
+            project = workspace.project
         else
-            error("Cannot open a new folder from a workspace whose source is not a registered project")
+            error("Cannot open a new folder before a project workspace exists")
         end
     end
     if project === nothing
@@ -63,8 +62,9 @@ function _attach_workspace!(
     state.plots = PlotState(debug=state.plots.debug)
     state.workspace = workspace
     view = isempty(source_root) ? PersistedProjectView() : _load_project_view(source_root)
-    !isempty(view.project) && view.project != source_label(source) &&
-        (view = PersistedProjectView(project=source_label(source)))
+    project = project_name(workspace.project)
+    !isempty(view.project) && view.project != project &&
+        (view = PersistedProjectView(project=project))
     _load_tag_state_for_root!(state, _annotation_root(workspace))
     _apply_project_view!(state, view)
     state.saved_project_view = view

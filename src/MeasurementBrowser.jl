@@ -93,7 +93,7 @@ using .Workspace:
 include("Visualization.jl")
 using .Visualization:
     PlotKind,
-    RegistryPlot,
+    RegisteredPlot,
     plot_kind_from_name,
     plot_kind_label,
     plot_kind_name,

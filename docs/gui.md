@@ -4,18 +4,16 @@
 
 ## Entry point and frame loop
 
-`start_browser(root_path; project)` creates one `BrowserState` and runs the render loop. External
-project code passes its project object directly; the browser then uses that project for every source
-root opened in the window. Without that argument, the browser uses its saved bundled-project
-preference. Docking layout is configured once at startup: left side for navigation and information,
-right side for plot-oriented work.
+`open_browser(workspace)` creates one `BrowserState` and runs the render loop for an already-opened
+workspace. The folder-open UI still uses the high-level callback project path internally:
+`open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
+navigation and information, right side for plot-oriented work.
 
 ## State boundary
 
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
-to the open workspace. `PlotState` owns plot windows and choices, `FigureScriptState` isolates the
-interface that Workflow will replace, `TableInspectorState` owns the generic file-inspection window,
-and `PerformanceState` owns samples used only for diagnostics.
+to the open workspace. `PlotState` owns plot windows and choices, `TableInspectorState` owns the
+generic file-inspection window, and `PerformanceState` owns samples used only for diagnostics.
 
 The workspace owns the source, item index, selected collection and item identities, loaded cache,
 loaded item memory, and the state of source-scan and cache work. Those values must not be copied
@@ -30,7 +28,7 @@ ownership. This prevents one operation from overwriting the status shown for the
 |---|---|
 | Hierarchy tree | Multi-select tree, primary navigation. |
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
-| Information | Device modal and figure scripts. |
+| Information | Selected collection and item details. |
 | Table Inspector | Generic delimited-text preview and quick X/Y plot. |
 
 ### Selection flow (tree → plot)

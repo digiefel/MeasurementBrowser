@@ -46,20 +46,12 @@ end
 
 """Return the label shown for one item in the item list."""
 function _item_display_label(workspace::Workspace.Workspace, item::ItemRecord)::String
-    source = workspace.source
-    if hasproperty(source, :project)
-        return display_label(source.project, item)
-    end
-    return item.item_label
+    return display_label(workspace.project, item)
 end
 
 """Return the kind label shown for one item."""
 function _item_kind_label(workspace::Workspace.Workspace, item::ItemRecord)::String
-    source = workspace.source
-    if hasproperty(source, :project)
-        return kind_label(source.project, item.kind)
-    end
-    return String(item.kind)
+    return kind_label(workspace.project, item.kind)
 end
 
 """Return whether an item's visible labels pass the item filter."""

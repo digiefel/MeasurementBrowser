@@ -4,9 +4,9 @@ using Test
 const Browser = MeasurementBrowser.Browser
 
 # Persisted plot choices include measurement-kind and label names; on load they resolve to the
-# internal RegistryPlot identity for that plot.
-const ProjectViewIVPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectViewIVPlot}
-const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectViewTLMPlot}
+# internal RegisteredPlot identity for that plot.
+const ProjectViewIVPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectViewIVPlot}
+const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectViewTLMPlot}
 
 @testset "project view state" begin
     root_path = mktempdir()
@@ -132,7 +132,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
 
     project = MeasurementBrowser.define_project("ProjectViewTest")
     source = test_source(project, root_path)
-    workspace = MeasurementBrowser.Workspace.Workspace(source)
+    workspace = MeasurementBrowser.Workspace.Workspace(project, source)
     item_1 = MeasurementBrowser.ItemRecord(;
         source_item_id="file-1",
         source_item_path=joinpath(root_path, "item-1.csv"),

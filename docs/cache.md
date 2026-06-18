@@ -103,8 +103,8 @@ failed source item cannot invalidate the rest.
 A normal update uses the completed `SourceScan` already owned by the workspace. It never starts
 another scan. It replaces the compact index, preserves payloads for unchanged source items, and
 deletes payload groups for changed, deleted, or newly failing ones. A rebuild replaces the whole HDF5
-file. Index writing does not load item data; direct and processed payloads are cached only when a
-caller requests them.
+file. Index writing does not load item data; payloads are cached only when a caller requests them
+and both source-item and item fingerprints are available.
 
 ## Item data
 

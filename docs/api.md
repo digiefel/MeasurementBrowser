@@ -18,16 +18,21 @@ and plots.
 ## Run the app
 
 ```julia
-ws = open_workspace(mysource)                       # low level: any AbstractDataSource
-ws = open_workspace("/path/to/data"; project)       # high level: a project on a data root
+ws = open_workspace(project, mysource)              # project-owned low-level source
+ws = open_workspace(project, "/path/to/data")       # high level: a project on a data root
 open_browser(ws)                                    # launch the CImGui browser on the workspace
 close_workspace!(ws)                                # stop background work and release the source
-select_items!(ws, items)                            # set the selection (Vector{<:AbstractDataItem})
+select_items!(ws, items_or_records)                 # programmatic selection
 ```
 
-`open_workspace`'s first argument is reinterpreted: a `String` is a data root (the high-level path —
-the `project` keyword's recipes interpret it, via the built-in `RegisteredProjectSource` adapter), an
-`AbstractDataSource` is opened directly (no `project` needed). `project` stays a keyword.
+Every workspace is associated with a `Project`; the first argument to `open_workspace` is always that
+project. Passing `root_path` is the exported high-level convenience path: it wraps the project and
+root in the built-in `RegisteredProjectSource` adapter. Passing an `AbstractDataSource` keeps the
+source explicit while still associating the workspace with the project that owns labels, registered
+plots, and browser state.
+
+`select_items!` accepts indexed records, exact workspace item keys, or loaded `AbstractDataItem`
+values whose `item_id` is unambiguous in the current workspace.
 
 ---
 
@@ -98,7 +103,8 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 
 ### A complete low-level source
 
-No `register!` anywhere — a configured value passed to `open_workspace`:
+No item registration is involved — the project still owns the workspace, while the configured source
+value supplies discovery and loading:
 
 ```julia
 struct PhotoDataset <: AbstractDataSource
@@ -142,22 +148,21 @@ parameters(p::Photo) = Dict{Symbol,Any}(:exposure => p.exposure)
 stats(p::Photo)      = Dict{Symbol,Any}()
 item_data(p::Photo)  = p.data
 
-ws = open_workspace(PhotoDataset("/path/to/photos"))
+project = define_project("Photos")
+ws = open_workspace(project, PhotoDataset("/path/to/photos"))
 open_browser(ws)
 ```
 
-### Low-level plotting
+### Plotting
 
-Plots receive loaded data items, never internal records. The source declares and draws them:
+The external plot API is `register_plot!(project, kind; label, setup, draw)`. The workspace
+materializes selected records into loaded data items before invoking the callbacks, so
+`setup(workspace, items)` and `draw(workspace, items, figure)` receive loaded `AbstractDataItem`s and
+never internal records.
 
-```julia
-plot_kinds(source, items)::Vector{Type{<:PlotKind}}            # available plots for these items
-plot_kind_label(source, plot_kind)::String                    # menu label
-setup_plot(source, plot_kind, items)::Figure                  # build the figure
-plot_data!(source, plot_kind, items, figure)::Nothing         # fill it; reads item_data
-```
-
-`PlotKind` and these methods are engine-internal for now (staged with the rest of the low level).
+`PlotKind`, `RegisteredPlot`, `setup_plot`, and `plot_data!` are engine internals used by the GUI to
+dispatch registered plot callbacks. A source-level plot hook belongs with the future low-level export,
+not the exported API today.
 
 ---
 

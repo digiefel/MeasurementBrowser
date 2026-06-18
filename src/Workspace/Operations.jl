@@ -1,15 +1,15 @@
 """
 Start cache loading and source scanning for one new workspace.
 """
-function open_workspace(source::AbstractDataSource)::Workspace
-    workspace = Workspace(source)
+function open_workspace(project::Project, source::AbstractDataSource)::Workspace
+    workspace = Workspace(project, source)
     load_cache!(workspace)
     scan_source!(workspace)
     return workspace
 end
 
 open_workspace(project::Project, root_path::AbstractString)::Workspace =
-    open_workspace(RegisteredProjectSource(project, root_path))
+    open_workspace(project, RegisteredProjectSource(project, root_path))
 
 """
 Cancel all work owned by a workspace and wait for it to stop.
@@ -26,13 +26,83 @@ function close_workspace!(workspace::Workspace)::Nothing
     return nothing
 end
 
-"""Replace the selection with the supplied item records."""
+"""Replace the selection with the supplied indexed item records."""
 function select_items!(
     workspace::Workspace,
-    items::Vector{ItemRecord},
+    items::AbstractVector{ItemRecord},
 )::Nothing
     workspace.selection.item_keys = [item_record_key(item) for item in items]
     return nothing
+end
+
+"""Replace the selection with exact workspace item keys."""
+function select_items!(
+    workspace::Workspace,
+    item_keys::AbstractVector{<:AbstractString},
+)::Nothing
+    keys = String[item_key for item_key in item_keys]
+    missing_keys = String[item_key for item_key in keys if !haskey(workspace.index.items, item_key)]
+    isempty(missing_keys) || error(
+        "Cannot select $(length(missing_keys)) item key(s) that are not in this workspace: " *
+        join(missing_keys, ", "),
+    )
+    workspace.selection.item_keys = keys
+    return nothing
+end
+
+"""Replace the selection with data items whose `item_id` is unambiguous in the workspace."""
+function select_items!(
+    workspace::Workspace,
+    items::AbstractVector{<:AbstractDataItem},
+)::Nothing
+    records_by_item_id = Dict{String,Vector{ItemRecord}}()
+    for record in values(workspace.index.items)
+        records = get!(records_by_item_id, record.item_id) do
+            ItemRecord[]
+        end
+        push!(records, record)
+    end
+
+    keys = String[]
+    for item in items
+        id = item_id(item)
+        records = get(records_by_item_id, id, nothing)
+        records === nothing && error(
+            "Cannot select item_id '$id': no indexed item with that id exists in this workspace",
+        )
+        length(records) == 1 || error(
+            "Cannot select item_id '$id' because it matches $(length(records)) indexed items; " *
+            "select by ItemRecord or exact workspace item key instead",
+        )
+        push!(keys, item_record_key(only(records)))
+    end
+
+    workspace.selection.item_keys = keys
+    return nothing
+end
+
+"""Clear the selection, or fail clearly for unsupported item selectors."""
+function select_items!(
+    workspace::Workspace,
+    items::AbstractVector,
+)::Nothing
+    if isempty(items)
+        empty!(workspace.selection.item_keys)
+        return nothing
+    end
+    if all(item -> item isa ItemRecord, items)
+        return select_items!(workspace, ItemRecord[item for item in items])
+    end
+    if all(item -> item isa AbstractString, items)
+        return select_items!(workspace, String[item for item in items])
+    end
+    if all(item -> item isa AbstractDataItem, items)
+        return select_items!(workspace, AbstractDataItem[item for item in items])
+    end
+    error(
+        "Cannot select values of type $(eltype(items)); pass ItemRecord values, " *
+        "exact workspace item keys, or AbstractDataItem values",
+    )
 end
 
 source_scan_running(workspace::Workspace)::Bool =

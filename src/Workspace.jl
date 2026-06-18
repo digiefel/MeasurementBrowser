@@ -24,11 +24,14 @@ import ..ItemIndex:
     with_cancel
 import ..Projects:
     AbstractDataSource,
+    AbstractDataItem,
     Project,
     RegisteredProjectSource,
     close_source!,
     item_data,
+    item_id,
     load_data_item,
+    project_name,
     source_id,
     source_label
 
@@ -103,9 +106,10 @@ mutable struct WorkspaceCache
 end
 
 """
-One open source and all package-managed state belonging to it.
+One open project/source pair and all package-managed state belonging to it.
 """
 mutable struct Workspace{S<:AbstractDataSource}
+    project::Project
     source::S
     index::WorkspaceIndex
     selection::WorkspaceSelection
@@ -118,14 +122,16 @@ mutable struct Workspace{S<:AbstractDataSource}
 end
 
 """
-Create the empty state for one project and normalized source root.
+Create the empty state for one project-owned source.
 """
 function Workspace(
+    project::Project,
     source::S,
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_cache_id(source), source)
     return Workspace(
+        project,
         source,
         WorkspaceIndex(
             hierarchy,
@@ -145,7 +151,7 @@ function Workspace(
 end
 
 Workspace(project::Project, root_path::AbstractString) =
-    Workspace(RegisteredProjectSource(project, root_path))
+    Workspace(project, RegisteredProjectSource(project, root_path))
 
 # ---------------------------------------------------------------------------
 # Pretty printing
@@ -166,12 +172,13 @@ end
 
 Base.show(io::IO, workspace::Workspace) = print(
     io,
-    "Workspace(", source_label(workspace.source),
+    "Workspace(", project_name(workspace.project), ", ", source_label(workspace.source),
     ", ", length(workspace.index.items), " items)",
 )
 
 function Base.show(io::IO, ::MIME"text/plain", workspace::Workspace)
-    println(io, "Workspace · ", source_label(workspace.source))
+    println(io, "Workspace · ", project_name(workspace.project))
+    println(io, "  source label: ", source_label(workspace.source))
     println(io, "  source:       ", source_id(workspace.source))
     println(io, "  scan:         ", _scan_summary(workspace))
     println(io, "  cache:        ", workspace.cache_job.state)

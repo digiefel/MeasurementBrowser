@@ -63,7 +63,7 @@ using DataFrames: DataFrame, nrow
         ]
         workspace = Workspace.Workspace(project, fixture_dir)
         read_item_data(workspace, records)
-        plot_kind = RegistryPlot{:iv,Symbol("I-V")}
+        plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
         figure = setup_plot(workspace, plot_kind, records)
         plot_data!(workspace, plot_kind, records, figure)
         source = RegisteredProjectSource(project, scan_dir)
