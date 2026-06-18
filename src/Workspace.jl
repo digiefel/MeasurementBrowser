@@ -18,7 +18,6 @@ import ..ItemIndex:
     SourceScan,
     check_cancel,
     insert_item!,
-    item_record_key,
     is_job_cancelled,
     scan_source,
     with_cancel
@@ -27,8 +26,8 @@ import ..Projects:
     AbstractDataItem,
     Project,
     close_source!,
+    id,
     item_data,
-    item_id,
     load_data_item,
     project_name,
     source_id,
@@ -91,7 +90,7 @@ Stable selection identities owned by a workspace.
 """
 Base.@kwdef mutable struct WorkspaceSelection
     collection_paths::Vector{String} = String[]
-    item_keys::Vector{String} = String[]
+    item_ids::Vector{String} = String[]
 end
 
 """

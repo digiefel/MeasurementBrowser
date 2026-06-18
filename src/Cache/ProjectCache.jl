@@ -345,7 +345,7 @@ function cached_item_data(
             group_key = cache_object_key(item.source_item_id)
             haskey(group, group_key) || continue
             item_group = group[group_key]
-            data_key = cache_object_key(item_record_key(item))
+            data_key = cache_object_key(item.id)
             haskey(item_group, data_key) || continue
             value = read_serialized_dataset(
                 item_group,
@@ -386,7 +386,7 @@ function write_item_data_cache!(
             item_group = haskey(group, group_key) ? group[group_key] : create_group(group, group_key)
             write_serialized_dataset!(
                 item_group,
-                cache_object_key(item_record_key(item)),
+                cache_object_key(item.id),
                 value,
             )
         end

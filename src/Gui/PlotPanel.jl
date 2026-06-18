@@ -6,9 +6,7 @@ using NativeFileDialog: save_file
 
 using ..Projects:
     source_label
-using ..ItemIndex:
-    ItemRecord,
-    item_record_key
+using ..ItemIndex: ItemRecord
 import ..Workspace
 using ..Visualization:
     PlotKind,
@@ -138,8 +136,7 @@ function render_plot_toolbar!(
         view.live = live
         view.last_key = nothing
         if !live
-            view.item_keys =
-                [item_record_key(record) for record in selected_records]
+            view.item_ids = [record.id for record in selected_records]
         end
     end
 
@@ -157,9 +154,7 @@ function render_plot_toolbar!(
                           only(records).item_label :
                           "$(length(records)) items",
                     live=false,
-                    item_keys=[
-                        item_record_key(record) for record in records
-                    ],
+                    item_ids=[record.id for record in records],
                     plot_kind=current,
                 ),
             )
@@ -173,7 +168,7 @@ function render_plot_toolbar!(
     if ig.Button("Export##export_$(view.id)") && can_export
         name = current === nothing ? "plot" : plot_kind_name(current)
         default_name = length(records) == 1 ?
-            "$(only(records).item_id)-$name.png" :
+            "$(only(records).id)-$name.png" :
             "$(length(records))-items-$name.png"
         path = save_file(default_name; filterlist="png,jpg,jpeg,svg,pdf")
         if !isempty(path)
@@ -249,7 +244,7 @@ end
 """
 Update and render one plot window.
 
-Live views use the current browser selection. Static views resolve their saved item keys against the
+Live views use the current browser selection. Static views resolve their saved item ids against the
 current workspace index.
 """
 function render_plot_view!(
@@ -260,13 +255,11 @@ function render_plot_view!(
     plots = state.plots
 
     if view.live
-        view.item_keys = [
-            item_record_key(record) for record in selected_records
-        ]
+        view.item_ids = [record.id for record in selected_records]
     end
     records = view.live ?
         selected_records :
-        _items_for_keys(state, view.item_keys)
+        _items_for_ids(state, view.item_ids)
 
     workspace = state.workspace::Workspace.Workspace
     source = workspace.source
@@ -312,7 +305,7 @@ function render_plot_view!(
             source_label(workspace.source),
             view.id,
             plot_kind_name(view.plot_kind),
-            [item_record_key(record) for record in records],
+            [record.id for record in records],
             plots.debug,
         )
         view.last_key == plot_key ||

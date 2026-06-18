@@ -45,10 +45,10 @@ const ProjectCache = MeasurementBrowser.Cache
 
             loaded = ProjectCache.load_project_cache(identity)
             @test Set(
-                MeasurementBrowser.item_record_key(item)
+                item.id
                 for item in loaded.source.hierarchy.all_items
             ) == Set(
-                MeasurementBrowser.item_record_key(item)
+                item.id
                 for item in source.hierarchy.all_items
             )
             @test ProjectCache.cached_item_data(
@@ -81,7 +81,7 @@ const ProjectCache = MeasurementBrowser.Cache
                 updated_source.hierarchy,
                 [ItemFailure(
                     first(updated_source.hierarchy.all_items).source_item_id,
-                    MeasurementBrowser.item_record_key(first(updated_source.hierarchy.all_items)),
+                    first(updated_source.hierarchy.all_items).id,
                     "synthetic analysis failure",
                 )],
             )

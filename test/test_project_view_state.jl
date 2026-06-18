@@ -24,7 +24,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
             filter="tlm",
         ),
         items=Browser.PersistedItemsView(
-            selected=["6:file-1item-1", "6:file-2item-2"],
+            selected=["item-1", "item-2"],
             filter="298K",
         ),
         plot_kinds=Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
@@ -33,7 +33,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
             title="Plot Area",
             plot_kind="iv_sweep::ProjectViewTLMPlot",
             live=true,
-            items=["6:file-1item-1"],
+            items=["item-1"],
         ),
         plot_windows=[
             Browser.PersistedPlotView(
@@ -41,7 +41,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
                 title="Detached",
                 plot_kind="iv_sweep::ProjectViewIVPlot",
                 live=false,
-                items=["6:file-2item-2"],
+                items=["item-2"],
             ),
         ],
     )
@@ -78,7 +78,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
             "filter" => "tlm",
         ),
         "items" => Dict{String,Any}(
-            "selected" => ["6:file-1item-1"],
+            "selected" => ["item-1"],
             "filter" => "298K",
         ),
         "plot_kinds" => Dict{String,Any}("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
@@ -87,7 +87,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
             "title" => "Plot Area",
             "plot_kind" => "iv_sweep::ProjectViewTLMPlot",
             "live" => true,
-            "items" => ["6:file-1item-1"],
+            "items" => ["item-1"],
         ),
         "plot_windows" => Any[
             Dict{String,Any}(
@@ -95,7 +95,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
                 "title" => "Detached",
                 "plot_kind" => "iv_sweep::ProjectViewIVPlot",
                 "live" => false,
-                "items" => ["6:file-2item-2"],
+                "items" => ["item-2"],
             ),
         ],
     ))
@@ -108,7 +108,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
             "filter" => "tlm",
         ),
         "items" => Dict{String,Any}(
-            "selected" => ["6:file-1item-1"],
+            "selected" => ["item-1"],
             "filter" => "298K",
         ),
         "plot_kinds" => Dict{String,Any}("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
@@ -117,18 +117,18 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
             "title" => "Plot Area",
             "plot_kind" => "iv_sweep::ProjectViewTLMPlot",
             "live" => true,
-            "items" => ["6:file-1item-1"],
+            "items" => ["item-1"],
         ),
         "plot_windows" => Any[],
     ))
 
     @test parsed.project == "ProjectViewTest"
     @test parsed.tree.expanded == ["chip/device"]
-    @test parsed.items.selected == ["6:file-1item-1"]
+    @test parsed.items.selected == ["item-1"]
     @test parsed.main_plot.id == "main"
     @test parsed.main_plot.title == "Plot Area"
     @test parsed.main_plot.live == true
-    @test only(parsed.plot_windows).items == ["6:file-2item-2"]
+    @test only(parsed.plot_windows).items == ["item-2"]
 
     project = MeasurementBrowser.define_project("ProjectViewTest")
     source = test_source(project, root_path)
@@ -136,7 +136,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
     item_1 = MeasurementBrowser.ItemRecord(;
         source_item_id="file-1",
         source_item_path=joinpath(root_path, "item-1.csv"),
-        item_id="item-1",
+        id="item-1",
         item_label="Item 1",
         kind=:iv_sweep,
         collection=["chip", "device-1"],
@@ -144,13 +144,11 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
     item_2 = MeasurementBrowser.ItemRecord(;
         source_item_id="file-2",
         source_item_path=joinpath(root_path, "item-2.csv"),
-        item_id="item-2",
+        id="item-2",
         item_label="Item 2",
         kind=:iv_sweep,
         collection=["chip", "device-2"],
     )
-    item_key_1 = MeasurementBrowser.item_record_key(item_1)
-    item_key_2 = MeasurementBrowser.item_record_key(item_2)
     hierarchy = MeasurementBrowser.Hierarchy(root_path, true)
     MeasurementBrowser.insert_item!(hierarchy, item_1)
     MeasurementBrowser.insert_item!(hierarchy, item_2)
@@ -182,7 +180,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
 
     Browser._apply_project_view!(state, view)
     @test workspace.selection.collection_paths == ["chip/device"]
-    @test workspace.selection.item_keys == [item_key_1, item_key_2]
+    @test workspace.selection.item_ids == ["item-1", "item-2"]
     @test state.tree_filter == "tlm"
     @test state.item_filter == "298K"
     plots = state.plots
@@ -190,15 +188,15 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
           Dict(:iv_sweep => ProjectViewIVPlot)
     @test plots.main.live == true
     @test plots.main.plot_kind == ProjectViewTLMPlot
-    @test plots.main.item_keys == [item_key_1]
+    @test plots.main.item_ids == ["item-1"]
     @test only(plots.windows).id == "plot_1"
-    @test only(plots.windows).item_keys == [item_key_2]
+    @test only(plots.windows).item_ids == ["item-2"]
 
     saved_view = Browser._project_view_from_browser(state)
     @test saved_view.project == "ProjectViewTest"
     @test saved_view.tree.selected == ["chip/device"]
     @test saved_view.tree.expanded == ["chip/device"]
-    @test saved_view.items.selected == [item_key_1, item_key_2]
+    @test saved_view.items.selected == ["item-1", "item-2"]
     @test saved_view.plot_kinds == Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot")
     @test saved_view.main_plot.plot_kind == "iv_sweep::ProjectViewTLMPlot"
     @test only(saved_view.plot_windows).plot_kind == "iv_sweep::ProjectViewIVPlot"

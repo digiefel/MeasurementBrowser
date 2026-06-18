@@ -12,7 +12,7 @@ struct Photo <: MB.AbstractDataItem
     exposure::Float64
     data::Matrix{Float64}
 end
-MB.item_id(p::Photo) = p.id
+MB.id(p::Photo) = p.id
 MB.item_label(p::Photo) = "exp=$(p.exposure)"
 MB.kind(::Photo) = :photo
 MB.collection(p::Photo) = p.collection

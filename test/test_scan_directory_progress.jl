@@ -39,11 +39,11 @@ using Test
         )
         @test sum(length, streamed) == length(source.hierarchy.all_items)
         @test Set(
-            MeasurementBrowser.item_record_key(item)
+            item.id
             for batch in streamed
             for item in batch
         ) == Set(
-            MeasurementBrowser.item_record_key(item)
+            item.id
             for item in source.hierarchy.all_items
         )
 

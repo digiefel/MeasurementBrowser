@@ -11,6 +11,7 @@ import ..Projects:
     collection_path_label,
     collection_stats,
     data_items,
+    id,
     item_fingerprint,
     kind_label,
     load_data_item,
@@ -31,7 +32,7 @@ Failure produced while interpreting or analyzing one source item.
 """
 struct ItemFailure
     source_item_id::String
-    item_key::String
+    id::String
     message::String
 end
 
@@ -91,11 +92,11 @@ end
 The internal metadata record for one logical item discovered inside one source item.
 """
 struct ItemRecord
+    id::String
     source_item_id::String
     source_item_fingerprint::Any
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
-    item_id::String
     item_label::String
     kind::Symbol
     collection::Vector{String}
@@ -109,11 +110,11 @@ end
 Construct an item record while normalizing its string fields.
 """
 function ItemRecord(;
+    id::AbstractString,
     source_item_id::AbstractString,
     source_item_fingerprint=nothing,
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
-    item_id::AbstractString,
     item_label::AbstractString,
     kind::Symbol,
     collection::AbstractVector{<:AbstractString},
@@ -122,12 +123,14 @@ function ItemRecord(;
     stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     item_fingerprint=nothing,
 )::ItemRecord
+    record_id = String(id)
+    isempty(record_id) && error("ItemRecord id cannot be empty")
     return ItemRecord(
+        record_id,
         String(source_item_id),
         source_item_fingerprint,
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
-        String(item_id),
         String(item_label),
         kind,
         String[String(segment) for segment in collection],
@@ -143,11 +146,11 @@ Copy an item record while replacing selected fields.
 """
 function ItemRecord(
     record::ItemRecord;
+    id::AbstractString=record.id,
     source_item_id::AbstractString=record.source_item_id,
     source_item_fingerprint=record.source_item_fingerprint,
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
-    item_id::AbstractString=record.item_id,
     item_label::AbstractString=record.item_label,
     kind::Symbol=record.kind,
     collection::AbstractVector{<:AbstractString}=copy(record.collection),
@@ -157,11 +160,11 @@ function ItemRecord(
     item_fingerprint=record.item_fingerprint,
 )::ItemRecord
     return ItemRecord(;
+        id,
         source_item_id,
         source_item_fingerprint,
         source_item_path,
         source_item_timestamp,
-        item_id,
         item_label,
         kind,
         collection,
@@ -170,11 +173,6 @@ function ItemRecord(
         stats,
         item_fingerprint,
     )
-end
-
-"""Stable opaque key for selection, workspace indexes, and persisted view state."""
-function item_record_key(record::ItemRecord)::String
-    return "$(ncodeunits(record.source_item_id)):$(record.source_item_id)$(record.item_id)"
 end
 
 """
@@ -188,7 +186,7 @@ sharing the record's `collection`/`parameters`/`stats` so engine-computed metada
 present. `ItemRecord` is never a field of a `DataItem`.
 """
 struct DataItem <: AbstractDataItem
-    unique_id::String
+    id::String
     label::String
     kind::Symbol
     collection::Vector{String}
@@ -199,7 +197,7 @@ end
 
 """Materialize a loaded item from an internal record and its (processed) payload."""
 DataItem(record::ItemRecord, data)::DataItem = DataItem(
-    record.item_id,
+    record.id,
     record.item_label,
     record.kind,
     record.collection,
@@ -212,7 +210,7 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
 Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
 
 A recipe supplies the metadata it knows: `kind`, `collection`, and optionally
-`label`/`parameters`/`unique_id`. `data` is omitted at scan and attached later by the source.
+`label`/`parameters`/`id`. `data` is omitted at scan and attached later by the source.
 """
 function DataItem(;
     kind::Symbol,
@@ -221,10 +219,10 @@ function DataItem(;
     parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     data=nothing,
-    unique_id::AbstractString="",
+    id::AbstractString="",
 )::DataItem
     return DataItem(
-        String(unique_id),
+        String(id),
         String(label),
         kind,
         String[String(segment) for segment in collection],
@@ -251,7 +249,7 @@ function ItemRecord(
         source_item_fingerprint=source_item_fingerprint(source_item),
         source_item_path=source_item_path(source_item),
         source_item_timestamp=source_item_timestamp(source_item),
-        item_id=Projects.item_id(item),
+        id=Projects.id(item),
         item_label=title,
         kind,
         collection=Projects.collection(item),
@@ -262,7 +260,7 @@ function ItemRecord(
     )
 end
 
-Projects.item_id(item::DataItem)::String = item.unique_id
+Projects.id(item::DataItem)::String = item.id
 Projects.item_label(item::DataItem)::String = item.label
 Projects.kind(item::DataItem)::Symbol = item.kind
 Projects.collection(item::DataItem)::Vector{String} = item.collection

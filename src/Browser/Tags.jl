@@ -6,7 +6,6 @@ using ..ItemIndex:
     ItemRecord,
     collection_path_key,
     collection_path_tuple,
-    item_record_key,
     item_timestamp_key
 
 const BAD_TAG_NAME = "bad"
@@ -119,7 +118,7 @@ function _item_is_visible(
     tag_state = _tag_state_or_error(state)
     collection_key = collection_path_key(item.collection)
     ancestors = [collection_key; _ancestor_keys_for_path(collection_key)]
-    return !_has_bad_tag(tag_state, item_record_key(item), ancestors)
+    return !_has_bad_tag(tag_state, item.id, ancestors)
 end
 
 """
@@ -148,8 +147,8 @@ function _project_visible_selection(
     visible_collection_keys = Set(_collection_path_key(node) for node in selected_collections)
     item_index = workspace.index.items
     selected_items = ItemRecord[]
-    for item_key in workspace.selection.item_keys
-        item = get(item_index, item_key, nothing)
+    for id in workspace.selection.item_ids
+        item = get(item_index, id, nothing)
         item === nothing && continue
         collection_path_key(item.collection) in visible_collection_keys || continue
         !_item_is_visible(state, item) && continue
@@ -230,11 +229,11 @@ Returns `false` when tag state is unavailable or there is nothing to change.
 """
 function _set_items_bad!(
     state::BrowserState,
-    item_keys::Vector{String},
+    item_ids::Vector{String},
     bad::Bool,
 )::Bool
-    unique_keys = unique(copy(item_keys))
-    isempty(unique_keys) && return false
+    unique_ids = unique(copy(item_ids))
+    isempty(unique_ids) && return false
     _tag_state_ready(state) || return false
 
     workspace = state.workspace::Workspace.Workspace
@@ -242,15 +241,15 @@ function _set_items_bad!(
     tag_state = _tag_state_or_error(state)
     _ensure_bad_catalog_entry!(tag_state)
 
-    for item_key in unique_keys
+    for id in unique_ids
         if bad
-            set = get!(() -> Set{String}(), tag_state.assignments, item_key)
+            set = get!(() -> Set{String}(), tag_state.assignments, id)
             push!(set, BAD_TAG_NAME)
         else
-            tags = get(tag_state.assignments, item_key, nothing)
+            tags = get(tag_state.assignments, id, nothing)
             if tags !== nothing
                 delete!(tags, BAD_TAG_NAME)
-                isempty(tags) && delete!(tag_state.assignments, item_key)
+                isempty(tags) && delete!(tag_state.assignments, id)
             end
         end
     end

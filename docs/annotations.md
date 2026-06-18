@@ -50,10 +50,10 @@ spatial browser and should not be described as existing user-facing features.
 ### `Tags`
 
 - `TagDef(name, color::NTuple{3,UInt8}, priority::Int)` — single catalog entry.
-- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string: collection-path keys (slash-joined segments, e.g. `"RuO2test/A9/VI/D1"`) and item keys share the same map and never collide. `TagState()` is the empty state.
+- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string: collection paths (slash-joined segments, e.g. `"RuO2test/A9/VI/D1"`) and item ids share the same map and never collide. `TagState()` is the empty state.
 - `load(root) -> TagState`. Reads `tags.txt` when present. Missing file returns an empty state.
 - `save(root, state)` — writes `tags.txt`. Empty state removes the file.
-- `effective(state, key, ancestor_keys) -> Set{String}` — union of `key`'s own assignments with assignments on every entry of `ancestor_keys`. To get the full applicable tag set for an item, call `effective(state, item_key, [collection_path; collection_ancestors...])`: the item key and the collection-path ancestors are looked up uniformly in the same map.
+- `effective(state, key, ancestor_keys) -> Set{String}` — union of `key`'s own assignments with assignments on every entry of `ancestor_keys`. To get the full applicable tag set for an item, call `effective(state, id, [collection_path; collection_ancestors...])`: the item id and the collection-path ancestors are looked up uniformly in the same map.
 - `dominant_color(state, effective_tags) -> Union{Nothing, NTuple{3,UInt8}}` — highest-priority hit's color among catalog entries whose name is in `effective_tags`. Returns `nothing` for an empty input or no catalog matches.
 
 ### `Notes`

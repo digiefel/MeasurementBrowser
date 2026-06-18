@@ -8,17 +8,17 @@ function materialize_items(
     loaded = Any[]
     sizehint!(loaded, length(records))
     for record in records
-        key = item_record_key(record)
+        id = record.id
         fingerprint = (record.source_item_fingerprint, record.item_fingerprint)
-        cached = get(workspace.loaded_items, key, nothing)
+        cached = get(workspace.loaded_items, id, nothing)
         if cached !== nothing && first(cached) == fingerprint
             push!(loaded, last(cached))
             continue
         end
-        # FIXME: The low-level contract reloads by source-item id and item id, so sources may need
+        # FIXME: The low-level contract reloads by source-item id and id, so sources may need
         # to re-find context they had during discovery. Pass a richer handle if this becomes painful.
-        item = load_data_item(workspace.project, workspace.source, record.source_item_id, record.item_id)
-        workspace.loaded_items[key] = (fingerprint, item)
+        item = load_data_item(workspace.project, workspace.source, record.source_item_id, record.id)
+        workspace.loaded_items[id] = (fingerprint, item)
         push!(loaded, item)
     end
     return loaded

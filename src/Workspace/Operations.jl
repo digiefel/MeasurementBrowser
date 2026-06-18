@@ -28,46 +28,40 @@ function select_items!(
     workspace::Workspace,
     items::AbstractVector{ItemRecord},
 )::Nothing
-    workspace.selection.item_keys = [item_record_key(item) for item in items]
+    workspace.selection.item_ids = [item.id for item in items]
     return nothing
 end
 
-"""Replace the selection with exact workspace item keys."""
+"""Replace the selection with exact item ids in this workspace."""
 function select_items!(
     workspace::Workspace,
-    item_keys::AbstractVector{<:AbstractString},
+    ids::AbstractVector{<:AbstractString},
 )::Nothing
-    keys = String[item_key for item_key in item_keys]
-    missing_keys = String[item_key for item_key in keys if !haskey(workspace.index.items, item_key)]
-    isempty(missing_keys) || error(
-        "Cannot select $(length(missing_keys)) item key(s) that are not in this workspace: " *
-        join(missing_keys, ", "),
+    selected = String[id for id in ids]
+    missing = String[id for id in selected if !haskey(workspace.index.items, id)]
+    isempty(missing) || error(
+        "Cannot select $(length(missing)) item id(s) that are not in this workspace: " *
+        join(missing, ", "),
     )
-    workspace.selection.item_keys = keys
+    workspace.selection.item_ids = selected
     return nothing
 end
 
-"""Replace the selection with data items whose `item_id` is unambiguous in the workspace."""
+"""Replace the selection with data items whose ids are present in the workspace."""
 function select_items!(
     workspace::Workspace,
     items::AbstractVector{<:AbstractDataItem},
 )::Nothing
-    keys = String[]
+    selected = String[]
     for item in items
-        id = item_id(item)
-        # ponytail: linear scan per requested item; add an item_id index if bulk selection gets slow.
-        matches = [record for record in values(workspace.index.items) if record.item_id == id]
-        isempty(matches) && error(
-            "Cannot select item_id '$id': no indexed item with that id exists in this workspace",
+        selected_id = id(item)
+        haskey(workspace.index.items, selected_id) || error(
+            "Cannot select item id '$selected_id': no indexed item with that id exists in this workspace",
         )
-        length(matches) == 1 || error(
-            "Cannot select item_id '$id' because it matches $(length(matches)) indexed items; " *
-            "select by ItemRecord or exact workspace item key instead",
-        )
-        push!(keys, item_record_key(only(matches)))
+        push!(selected, selected_id)
     end
 
-    workspace.selection.item_keys = keys
+    workspace.selection.item_ids = selected
     return nothing
 end
 
@@ -77,7 +71,7 @@ function select_items!(
     items::AbstractVector,
 )::Nothing
     if isempty(items)
-        empty!(workspace.selection.item_keys)
+        empty!(workspace.selection.item_ids)
         return nothing
     end
     if all(item -> item isa ItemRecord, items)
@@ -91,7 +85,7 @@ function select_items!(
     end
     error(
         "Cannot select values of type $(eltype(items)); pass ItemRecord values, " *
-        "exact workspace item keys, or AbstractDataItem values",
+        "exact item ids, or AbstractDataItem values",
     )
 end
 
@@ -310,9 +304,8 @@ function replace_item_index!(
     sizehint!(items, length(hierarchy.all_items))
     metadata_keys = Set{Symbol}()
     for item in hierarchy.all_items
-        key = item_record_key(item)
-        haskey(items, key) && error("Duplicate item key generated during scan: $(key)")
-        items[key] = item
+        haskey(items, item.id) && error("Duplicate item id generated during scan: $(item.id)")
+        items[item.id] = item
         union!(metadata_keys, keys(item.collection_metadata))
     end
     workspace.index = WorkspaceIndex(
@@ -336,10 +329,9 @@ function append_items!(
     metadata_keys = Set(workspace.index.collection_metadata_keys)
     changed = false
     for item in items
-        key = item_record_key(item)
-        haskey(item_index, key) && continue
+        haskey(item_index, item.id) && continue
         insert_item!(hierarchy, item)
-        item_index[key] = item
+        item_index[item.id] = item
         union!(metadata_keys, keys(item.collection_metadata))
         changed = true
     end

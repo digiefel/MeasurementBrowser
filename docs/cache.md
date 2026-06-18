@@ -50,7 +50,7 @@ A changed `source_item_fingerprint` invalidates only the records and payloads de
 item. Item payloads are keyed by the full tuple:
 
 ```text
-source_id + source_fingerprint + source_item_id + source_item_fingerprint + item_id + item_fingerprint
+source_id + source_fingerprint + source_item_id + source_item_fingerprint + id + item_fingerprint
 ```
 
 This generalizes the previous file-fingerprint behavior: for a file-backed source the source-item

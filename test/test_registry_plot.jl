@@ -72,18 +72,18 @@ const MB = MeasurementBrowser
     items = items_for_file(project, joinpath(dir, "m.csv"))
     workspace = MB.Workspace.Workspace(project, test_source(project, dir))
     for item in items
-        workspace.index.items[MB.item_record_key(item)] = item
+        workspace.index.items[item.id] = item
     end
-    keys = [MB.item_record_key(item) for item in items]
+    ids = [item.id for item in items]
     @test MB.select_items!(workspace, items) === nothing
-    @test workspace.selection.item_keys == keys
-    @test MB.select_items!(workspace, keys[1:1]) === nothing
-    @test workspace.selection.item_keys == keys[1:1]
+    @test workspace.selection.item_ids == ids
+    @test MB.select_items!(workspace, ids[1:1]) === nothing
+    @test workspace.selection.item_ids == ids[1:1]
     loaded_items = MB.Workspace.materialize_items(workspace, items)
     @test MB.select_items!(workspace, loaded_items) === nothing
-    @test workspace.selection.item_keys == keys
+    @test workspace.selection.item_ids == ids
     @test MB.select_items!(workspace, []) === nothing
-    @test isempty(workspace.selection.item_keys)
+    @test isempty(workspace.selection.item_ids)
 
     figure = setup_plot(workspace, table_plot, items)
     @test figure isa Figure

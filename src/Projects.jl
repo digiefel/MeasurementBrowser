@@ -150,7 +150,7 @@ abstract type AbstractDataItem end
 abstract type Collection end
 
 """Stable string identity of an item."""
-function item_id end
+function id end
 
 """Human-readable label for an item."""
 function item_label end

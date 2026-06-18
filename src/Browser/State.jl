@@ -16,7 +16,7 @@ Base.@kwdef mutable struct PlotViewState
     id::String
     title::String
     live::Bool
-    item_keys::Vector{String} = String[]
+    item_ids::Vector{String} = String[]
     kind::Union{Nothing,Symbol} = nothing
     plot_kind::Union{Nothing,Type{<:PlotKind}} = nothing
     figure::Union{Nothing,Figure} = nothing
@@ -138,7 +138,7 @@ Base.@kwdef mutable struct BrowserState
     item_filter_widget::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}} = nothing
     reset_project_filters::Bool = false
     scroll_to_collection_path::Union{Nothing,String} = nothing
-    scroll_to_item_key::Union{Nothing,String} = nothing
+    scroll_to_item_id::Union{Nothing,String} = nothing
     show_bad::Bool = true
     tag_state::Union{Nothing,Annotations.Tags.TagState} = nothing
     tag_state_error::String = ""

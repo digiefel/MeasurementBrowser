@@ -31,11 +31,11 @@ Metadata and data live in two forms, bridged by the engine via the `AbstractData
   source's own subtype. They carry `item.data`, materialized only for the viewed selection.
 
 ```julia
-abstract type AbstractDataItem end   # contract: item_id, item_label, kind, collection, parameters,
+abstract type AbstractDataItem end   # contract: id, item_label, kind, collection, parameters,
                                      # stats, item_data (+ optional process, cacheable, item_fingerprint)
 
 struct DataItem <: AbstractDataItem  # the normal item; the recipe API's `entries` produces it
-    unique_id::String
+    id::String
     label::String
     kind::Symbol
     collection::Vector{String}
@@ -51,7 +51,7 @@ struct ItemRecord                    # internal metadata record (never seen by s
     source_item_path::Union{String,Nothing}
     source_item_timestamp::Union{DateTime,Nothing}
     # logical item identity + metadata
-    item_id::String                  # stable within its source item
+    id::String                         # stable within its source
     item_label::String
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
@@ -149,8 +149,8 @@ group.
 ## Virtual item expansion
 
 A single source item may yield several data items when `data_items` returns more than one. They share
-a source-item identity but get distinct `item_id` values. The recipe API mints `item_id` from the
-source-item path + kind + the `parameters` that distinguish siblings.
+a source-item identity but must have distinct `id` values within the source. The recipe API mints
+missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
 into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number

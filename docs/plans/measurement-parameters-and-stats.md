@@ -127,7 +127,7 @@ The existing fixture tests are the contract for the first migration.
 ## Current State
 
 Project parsers now return `MeasurementInfo` records directly. `MeasurementItem` was removed, and
-measurement identity is exposed as `unique_id`.
+measurement identity is exposed as `id`.
 
 RuO2 PUND-family logical measurements use one full-list post-processing step for wakeup/fatigue
 history and waveform stats after all measurements for a device are known.

@@ -60,7 +60,7 @@ abstract type Collection end         # a semantic, metadata-bearing node in the 
 
 # The interface IS the contract — a subtype indexes if it answers these. A type implements them
 # however it likes: the package's DataItem reads dicts; a project subtype reads its own typed fields.
-item_id(::AbstractDataItem)::String              # stable identity
+id(::AbstractDataItem)::String              # stable identity
 item_label(::AbstractDataItem)::String           # display title
 kind(::AbstractDataItem)::Symbol                 # coarse tag for icons / UI bucketing / register_plot! key
 collection(::AbstractDataItem)::Vector{String}   # canonical placement (see "The tree is a view")
@@ -119,7 +119,7 @@ The bridge is engine-owned and uses **the contract, never a shared field**:
 
 ```
 index : ItemRecord built from any item by calling the contract
-        → ItemRecord(item_id(x), item_label(x), kind(x), collection(x), parameters(x), stats(x))
+        → ItemRecord(id(x), item_label(x), kind(x), collection(x), parameters(x), stats(x))
 view  : a DataItem built from a stored record + freshly loaded data
         → DataItem(record, data); item.data is a plain field on the result
 ```
@@ -271,7 +271,7 @@ The middle type earns its keep: scanning a source and interpreting one discovere
 concerns, and the unit is the natural grain of scan progress, failure reporting, and invalidation —
 which the current code already treats `SourceFile` as, implicitly.
 `data_items(project, source, source_item)` maps one unit to zero/one/many data items;
-`load_data_item(project, source, source_item_id, item_id)` reloads one with its payload.
+`load_data_item(project, source, source_item_id, id)` reloads one with its payload.
 
 **No item registration in the low level.** A workspace still starts from a user-created project plus a
 configured source value (`open_workspace(project, mysource)`), never by walking `subtypes`. The

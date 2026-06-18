@@ -129,7 +129,7 @@ Because `read` runs once per file and its output is threaded into `measurements`
 file is parsed once and sliced many times. That is the old multiple-reads-during-expansion problem solved by
 construction.
 
-Identity. `unique_id` is engine-generated, not user-facing: derived from (filepath, kind, params).
+Identity. `id` is engine-generated, not user-facing: derived from (filepath, kind, params).
 `measurements` returns the existing `MeasurementInfo` (it already carries `parameters` and `stats`); the project
 sets kind + params, the engine sets the id. Sibling measurements from one file must differ in params (they must,
 or they are the same measurement).

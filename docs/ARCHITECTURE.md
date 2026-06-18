@@ -53,7 +53,7 @@ computes collection-node stats via `collection_stats(project, source, collection
 scanning continues in the background.
 
 When a view needs item data, the engine reloads the selected items via
-`load_data_item(project, source, source_item_id, item_id)` (memory → cache → source). Each item carries
+`load_data_item(project, source, source_item_id, id)` (memory → cache → source). Each item carries
 `item.data`. GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)

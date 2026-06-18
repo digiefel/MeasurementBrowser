@@ -21,9 +21,9 @@ using .Projects:
     collection,
     collection_stats,
     data_items,
+    id,
     item_data,
     item_fingerprint,
-    item_id,
     item_label,
     load_data_item,
     open_source,
@@ -66,7 +66,6 @@ using .ItemIndex:
     collection_path_tuple,
     emit_progress,
     insert_item!,
-    item_record_key,
     is_job_cancelled,
     item_timestamp_key,
     scan_source,
@@ -116,7 +115,7 @@ export open_browser, open_workspace, close_workspace!, select_items!
 export define_project, register_item!, register_collection_stat!, register_plot!
 # The AbstractDataItem contract — implement these for a custom item type
 export AbstractDataItem, Collection
-export item_id, item_label, kind, collection, parameters, stats, item_data, process, cacheable
+export id, item_label, kind, collection, parameters, stats, item_data, process, cacheable
 # Types you name
 export Project, DirectorySource, SourceFile, DataItem
 

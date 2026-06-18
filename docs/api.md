@@ -32,8 +32,8 @@ project. Passing `root_path` is the exported directory convenience path: it cons
 `AbstractDataSource` keeps the source explicit while still associating the workspace with the project
 that owns labels, registered plots, and browser state.
 
-`select_items!` accepts indexed records, exact workspace item keys, or loaded `AbstractDataItem`
-values whose `item_id` is unambiguous in the current workspace.
+`select_items!` accepts indexed records, exact item ids, or loaded `AbstractDataItem` values whose
+ids are present in the current workspace.
 
 ---
 
@@ -74,7 +74,7 @@ data items.
 | `source_item_id(item)::String` | yes | stable within `source_id(source)` |
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
 | `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | interpret one unit into lightweight (data-less) logical items for indexing |
-| `load_data_item(project, source, source_item_id, item_id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
+| `load_data_item(project, source, source_item_id, id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
 | `source_item_fingerprint(item)` | no (→ `nothing`) | invalidates records/payloads from this source item |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
@@ -91,7 +91,7 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 
 | Method | Required | Meaning |
 |---|---|---|
-| `item_id(item)::String` | yes | stable within its source item |
+| `id(item)::String` | yes | stable within its source |
 | `item_label(item)::String` | yes | display title |
 | `kind(item)::Symbol` | yes | coarse UI/plot key — *not* the source of semantic truth |
 | `collection(item)::Vector{String}` | yes | canonical hierarchy path |
@@ -135,13 +135,13 @@ function data_items(::Project, ::PhotoDataset, f::PhotoFile)
     m = read_photo_header(f.path)                                   # cheap, data-less
     [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path, nothing)]
 end
-function load_data_item(::Project, ds::PhotoDataset, source_item_id, item_id)
+function load_data_item(::Project, ds::PhotoDataset, source_item_id, id)
     m = read_photo_header(source_item_id)
-    Photo(item_id, m.label, m.collection, m.exposure, source_item_id, read_photo_matrix(source_item_id))
+    Photo(id, m.label, m.collection, m.exposure, source_item_id, read_photo_matrix(source_item_id))
 end
 
 # data item
-item_id(p::Photo)    = p.id
+id(p::Photo)    = p.id
 item_label(p::Photo) = p.label
 kind(::Photo)        = :photo
 collection(p::Photo) = p.collection
@@ -193,8 +193,8 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
 
 - **`entries(file, data)`** enumerates the items in one file, returning `Vector{<:AbstractDataItem}`
   — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). The adapter
-  fills each item's source-item identity (`filepath`/`timestamp`) from the `SourceFile` and mints
-  `item_id` from filepath + kind + `parameters`, then derives the internal record via the contract.
+  derives each internal record from the returned item and the `SourceFile`. When a recipe entry does
+  not provide an id, the adapter mints one from the source-item path, kind, and `parameters`.
   **Project code never constructs or names the internal record.**
 - **`register_collection_stat!`** is the high-level form of the source's `collection_stats` hook: its
   `compute_stats` fold runs over each collection node's items and the result is stored on the node.

@@ -154,14 +154,14 @@ end
 function _record_stat_failure!(
     project::Project,
     filepath::String,
-    item_id::String,
+    id::String,
     step::Symbol,
     err,
 )::Nothing
-    @error("Item analysis failed", source_item=filepath, item=item_id, step,
+    @error("Item analysis failed", source_item=filepath, item=id, step,
         exception=(err, catch_backtrace()))
     lock(project.stat_failures_lock) do
-        push!(project.stat_failures, (filepath, item_id, "step=$step: " * sprint(showerror, err)))
+        push!(project.stat_failures, (filepath, id, "step=$step: " * sprint(showerror, err)))
     end
     return nothing
 end
@@ -261,11 +261,16 @@ function _detect_recipe(project::Project, file::SourceFile)::Union{Nothing,ItemR
     return nothing
 end
 
-"""Engine-generated item identity within one source item."""
-function _mint_item_id(kind::Symbol, params::Dict{Symbol,Any})::String
-    isempty(params) && return "kind=$(kind)"
+"""Default item identity for recipe entries that do not provide one."""
+function _mint_id(
+    source_item_id::AbstractString,
+    kind::Symbol,
+    params::Dict{Symbol,Any},
+)::String
+    source_id = String(source_item_id)
+    isempty(params) && return source_id
     ordered = sort!(collect(keys(params)))
-    return "kind=$(kind)," * join(("$(k)=$(params[k])" for k in ordered), ",")
+    return "$source_id#kind=$(kind)," * join(("$(k)=$(params[k])" for k in ordered), ",")
 end
 
 # ---------------------------------------------------------------------------
@@ -290,9 +295,13 @@ function display_label(project::Project, item::ItemRecord)::String
     return recipe.label(DataItem(item, nothing))::String
 end
 
-function _normalize_entry(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDataItem
-    id = item_id(item)
-    isempty(id) || return item
+function _normalize_entry(
+    recipe::ItemRecipe,
+    source_item_id::AbstractString,
+    item::AbstractDataItem,
+)::AbstractDataItem
+    entry_id = id(item)
+    isempty(entry_id) || return item
     return DataItem(;
         kind=recipe.kind,
         collection=collection(item),
@@ -300,7 +309,7 @@ function _normalize_entry(recipe::ItemRecipe, item::AbstractDataItem)::AbstractD
         parameters=parameters(item),
         stats=stats(item),
         data=item_data(item),
-        unique_id=_mint_item_id(recipe.kind, parameters(item)),
+        id=_mint_id(source_item_id, recipe.kind, parameters(item)),
     )
 end
 
@@ -315,7 +324,7 @@ function Projects.data_items(
     data = recipe.read(file)
     read_seconds = (time_ns() - read_started) / 1e9
     items = AbstractDataItem[
-        _normalize_entry(recipe, item)
+        _normalize_entry(recipe, file.filepath, item)
         for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
     ]
     _record_read!(project, recipe.kind, read_seconds, length(items))
@@ -328,7 +337,7 @@ function Projects.data_items(
                 _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
             catch err
                 is_job_cancelled(err) && rethrow()
-                _record_stat_failure!(project, file.filepath, item_id(item), :stats, err)
+                _record_stat_failure!(project, file.filepath, id(item), :stats, err)
             end
         end
     end
@@ -339,18 +348,19 @@ function Projects.load_data_item(
     project::Project,
     source::AbstractDataSource,
     source_item_id::AbstractString,
-    id::AbstractString,
+    requested_id::AbstractString,
 )::AbstractDataItem
     file = index_source_file(source_item_id)
     recipe = _detect_recipe(project, file)
     recipe === nothing && error("No registered item recipe for source item $(source_item_id)")
     raw = recipe.read(file)
     items = AbstractDataItem[
-        _normalize_entry(recipe, item)
+        _normalize_entry(recipe, source_item_id, item)
         for item in recipe.entries(file, raw)::Vector{<:AbstractDataItem}
     ]
-    index = findfirst(item -> item_id(item) == id, items)
-    index === nothing && error("Source item $(source_item_id) did not produce item id $(id)")
+    index = findfirst(item -> id(item) == requested_id, items)
+    index === nothing &&
+        error("Source item $(source_item_id) did not produce item id $(requested_id)")
     item = items[index]
     processed = recipe.process === nothing ? raw : recipe.process(item, raw)
     if recipe.process === nothing && !(item isa DataItem)
@@ -363,7 +373,7 @@ function Projects.load_data_item(
         parameters=parameters(item),
         stats=stats(item),
         data=processed,
-        unique_id=item_id(item),
+        id=id(item),
     )
 end
 
@@ -400,22 +410,18 @@ function Projects.collection_stats(
     return merged
 end
 
-function _item_key(source_item_id::AbstractString, item_id::AbstractString)::String
-    return "$(ncodeunits(source_item_id)):$(source_item_id)$(item_id)"
-end
-
 function ItemIndex.source_analysis_failures(
     project::Project,
     source::AbstractDataSource,
 )::Vector{ItemFailure}
     failures = ItemFailure[]
     lock(project.stat_failures_lock) do
-        for (source_item_id, item_id, message) in project.stat_failures
+        for (source_item_id, id, message) in project.stat_failures
             push!(
                 failures,
                 ItemFailure(
                     source_item_id,
-                    _item_key(source_item_id, item_id),
+                    id,
                     message,
                 ),
             )

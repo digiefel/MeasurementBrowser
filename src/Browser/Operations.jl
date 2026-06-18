@@ -3,7 +3,7 @@ using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using ..ItemIndex: collection_path_key, item_record_key
+using ..ItemIndex: collection_path_key
 import ..Workspace
 using ..Workspace:
     close_workspace!,
@@ -100,10 +100,9 @@ function select_source_item!(
 
     state.expanded_collection_paths = expanded_paths
     workspace.selection.collection_paths = collection_paths
-    workspace.selection.item_keys =
-        [item_record_key(item) for item in items]
+    workspace.selection.item_ids = [item.id for item in items]
     state.scroll_to_collection_path = first(collection_paths)
-    state.scroll_to_item_key = item_record_key(first(items))
+    state.scroll_to_item_id = first(items).id
     return true
 end
 

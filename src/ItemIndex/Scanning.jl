@@ -63,7 +63,7 @@ function interpret_source_item(
     apply_collection_metadata!(records, metadata)
     by_key = Dict{String,AbstractDataItem}()
     for (record, handle) in zip(records, handles)
-        by_key[item_record_key(record)] = handle
+        by_key[record.id] = handle
     end
     return records, by_key
 end
@@ -163,7 +163,7 @@ function add_collection_stats!(
     for (path, node) in hierarchy.index
         isempty(node.items) && continue
         handles = AbstractDataItem[
-            handles_by_key[item_record_key(record)]
+            handles_by_key[record.id]
             for record in node.items
         ]
         try
@@ -172,7 +172,7 @@ function add_collection_stats!(
             first_item = first(node.items)
             push!(failures, ItemFailure(
                 first_item.source_item_id,
-                item_record_key(first_item),
+                first_item.id,
                 "collection_stats: " * sprint(showerror, error),
             ))
         end
@@ -248,6 +248,14 @@ function scan_source(
         ),
     )
     check_cancel()
+    seen_ids = Set{String}()
+    for record in summary.records
+        record.id in seen_ids && error(
+            "Duplicate item id '$(record.id)' produced while scanning source item " *
+            "'$(record.source_item_id)'. Item ids must be unique within a source.",
+        )
+        push!(seen_ids, record.id)
+    end
     hierarchy = Hierarchy(
         summary.records,
         source_id(source),

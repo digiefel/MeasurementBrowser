@@ -186,9 +186,9 @@ assignments on ancestor paths. The caller supplies `ancestor_paths`
 
 To get the full applicable set for an item, call:
 
-    effective(state, item_key, [collection_path; collection_ancestors...])
+    effective(state, id, [collection_path; collection_ancestors...])
 
-This works because all keys — collection paths and item keys — live in the
+This works because collection paths and item ids live in the
 same `assignments` map and are looked up uniformly.
 """
 function effective(state::TagState, path::AbstractString, ancestor_paths)::Set{String}

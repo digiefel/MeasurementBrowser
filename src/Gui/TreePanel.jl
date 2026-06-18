@@ -8,8 +8,7 @@ using ..ItemIndex:
     HierarchyNode,
     ItemRecord,
     children,
-    collection_path_key,
-    item_record_key
+    collection_path_key
 import ..Workspace
 
 """Destroy text-filter widgets before their saved text is replaced."""
@@ -470,7 +469,7 @@ function _render_items_panel(
         _project_visible_selection(state)
     all_items = _items_of_selected_collections(state)
     visible_items = _visible_items(state, workspace, all_items, filter_item)
-    selected_item_key_set = Set(workspace.selection.item_keys)
+    selected_id_set = Set(workspace.selection.item_ids)
     registry_ready = _tag_state_ready(state)
 
     _render_selection_toolbar!(
@@ -479,8 +478,7 @@ function _render_items_panel(
         length(all_items),
         filter_item,
         () -> begin
-            workspace.selection.item_keys =
-                [item_record_key(item) for item in visible_items]
+            workspace.selection.item_ids = [item.id for item in visible_items]
         end;
         item_label="items", filter_id="##items_filter"
     )
@@ -522,20 +520,20 @@ function _render_items_panel(
                     end_idx = Int(unsafe_load(clipper.DisplayEnd))
                     for idx in start_idx:end_idx
                         item = visible_items[idx]
-                        item_key = item_record_key(item)
-                        ig.PushID(item_key)
+                        id = item.id
+                        ig.PushID(id)
                         ig.TableNextRow()
                         ig.TableSetColumnIndex(0)
                         rows_rendered += 1
 
-                        is_selected = item_key in selected_item_key_set
+                        is_selected = id in selected_id_set
                         bad_text_pushed = false
                         if registry_ready
                             tag_state = _tag_state_or_error(state)
                             dev_key = collection_path_key(item.collection)
                             ancestor_keys = _ancestor_keys_for_path(dev_key)
                             bad_text_pushed = _push_tag_text_style!(
-                                tag_state, item_key, [dev_key; ancestor_keys])
+                                tag_state, id, [dev_key; ancestor_keys])
                         end
                         if ig.Selectable(
                             display_label(workspace.project, item),
@@ -545,27 +543,27 @@ function _render_items_panel(
                             io = ig.GetIO()
                             shift_held = unsafe_load(io.KeyShift)
                             ctrl_held = unsafe_load(io.KeyCtrl)
-                            selected_item_keys = copy(workspace.selection.item_keys)
-                            visible_item_keys = [item_record_key(visible) for visible in visible_items]
+                            selected_ids = copy(workspace.selection.item_ids)
+                            visible_ids = [visible.id for visible in visible_items]
                             _update_multi_selection!(
-                                selected_item_keys,
-                                item_key,
-                                visible_item_keys,
+                                selected_ids,
+                                id,
+                                visible_ids,
                                 shift_held,
                                 ctrl_held,
                             )
-                            workspace.selection.item_keys = selected_item_keys
+                            workspace.selection.item_ids = selected_ids
                         end
-                        if state.scroll_to_item_key == item_key
+                        if state.scroll_to_item_id == id
                             ig.SetScrollHereY(0.5)
-                            state.scroll_to_item_key = nothing
+                            state.scroll_to_item_id = nothing
                         end
                         bad_text_pushed && ig.PopStyleColor()
 
                         if ig.BeginPopupContextItem()
                             target_items = _selection_targets(selected_items, item)
-                            target_keys = [item_record_key(target) for target in target_items]
-                            selected_count = length(target_keys)
+                            target_ids = [target.id for target in target_items]
+                            selected_count = length(target_ids)
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count items")
 
                             if ig.MenuItem("Open Plot in New Window")
@@ -577,7 +575,7 @@ function _render_items_panel(
                                         id="plot_$(plots.next_window_id)",
                                         title=item.item_label,
                                         live=false,
-                                        item_keys=[item_key],
+                                        item_ids=[id],
                                         plot_kind=get(
                                             plots.kind_by_item,
                                             item.kind,
@@ -595,10 +593,10 @@ function _render_items_panel(
 
                             !editable && ig.BeginDisabled()
                             if ig.MenuItem("Mark Bad")
-                                _set_items_bad!(state, target_keys, true)
+                                _set_items_bad!(state, target_ids, true)
                             end
                             if ig.MenuItem("Unmark Bad")
-                                _set_items_bad!(state, target_keys, false)
+                                _set_items_bad!(state, target_ids, false)
                             end
                             !editable && ig.EndDisabled()
                             ig.EndPopup()
