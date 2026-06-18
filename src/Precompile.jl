@@ -34,12 +34,13 @@ using DataFrames: DataFrame, nrow
                 end
                 DataFrame(i=first.(rows), v=last.(rows))
             end,
-            entries=(file, _data) -> [DataItem(
+            entries=(file, data) -> [DataItem(
                 kind=:iv,
                 collection=[splitext(file.filename)[1]],
                 label=file.filename,
+                data=data,
             )],
-            stats=(_item, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+            stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
         )
         register_plot!(
             project,

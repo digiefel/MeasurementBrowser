@@ -97,7 +97,7 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 | `parameters(item)::Dict{Symbol,Any}` | yes | metadata known at interpretation time |
 | `stats(item)::Dict{Symbol,Any}` | yes | computed values |
 | `item_data(item)` | yes | loaded payload consumed by views/plots (`nothing` on a data-less handle) |
-| `process(item, data)` | no (→ `data`) | optional transform applied to loaded data |
+| `process(item)` | no (→ `item`) | optional transform applied to `item.data` |
 | `cacheable(item)::Bool` | no (→ `false`) | opt into persistent payload caching |
 | `fingerprint(item::AbstractDataItem)` | no (→ `nothing`) | invalidates this item's cached payload |
 
@@ -179,9 +179,9 @@ project = define_project("MyProject"; description="…")
 register_item!(project, :iv;
     detect  = file -> endswith(file.filename, ".csv"),   # Bool; first matching recipe wins
     read    = file -> DataFrame(...),                    # whole file, parsed once
-    entries = (file, data) -> [DataItem(kind=:iv, collection=[dev], parameters=p) for …],
-    process = (item, data) -> data,                      # optional; default passthrough
-    stats   = (item, processed) -> Dict{Symbol,Any}(…),  # optional; merged into the item's stats
+    entries = (file, data) -> [DataItem(kind=:iv, collection=[dev], parameters=p, data=slice) for …],
+    process = item -> clean(item.data),                  # optional; default passthrough
+    stats   = item -> Dict{Symbol,Any}(…),               # optional; merged into the item's stats
     label   = item -> "…")                               # optional; display label
 
 register_collection_stat!(project; kinds=[:iv],          # cross-item fold over each collection node
@@ -191,9 +191,11 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
 ```
 
 - **`entries(file, data)`** enumerates the items in one file, returning `Vector{<:AbstractDataItem}`
-  — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). The adapter
-  derives each internal record from the returned item and the `SourceFile`. When a recipe entry does
-  not provide an id, the adapter mints one from the source-item path, kind, and `parameters`.
+  — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). It attaches
+  the raw per-item payload as `item.data`; optional `process(item)` replaces that payload before
+  views receive the item. The adapter derives each internal record from the returned item and the
+  `SourceFile`. When a recipe entry does not provide an id, the adapter mints one from the
+  source-item path, kind, and `parameters`.
   **Project code never constructs or names the internal record.**
 - **`register_collection_stat!`** is the high-level form of the source's `collection_stats` hook: its
   `compute_stats` fold runs over each collection node's items and the result is stored on the node.

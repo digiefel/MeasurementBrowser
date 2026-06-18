@@ -13,8 +13,8 @@ module Projects
 One registered item recipe for a kind.
 
 `entries(file, data)` returns the per-item entries (`Vector{<:AbstractDataItem}`): the package's
-`DataItem` for the recipe API, or a project's own subtype for the type API. The engine derives the
-internal record from each via the contract.
+`DataItem` for the recipe API, or a project's own subtype for the type API. Later callbacks receive
+items and read `item.data`.
 """
 mutable struct ItemRecipe
     kind::Symbol
@@ -169,8 +169,8 @@ function stats end
 """The materialized payload carried by an item (also reachable as `item.data`)."""
 function item_data end
 
-"""Process raw item data into the payload a view consumes. Optional; default passthrough."""
-process(::AbstractDataItem, data) = data
+"""Process an item into the payload or item a view consumes. Optional; default identity."""
+process(item::AbstractDataItem) = item
 
 """Whether an item's payload should be persisted by the data cache. Optional; default `false`."""
 cacheable(::AbstractDataItem)::Bool = false

@@ -71,7 +71,7 @@ read_data(::AbstractDataItem)                    # engine-internal loader
 # Drawing is NOT part of this interface. Items are drawn by plots registered through
 # `register_plot!` (see plotting-api-design.md), whose `draw` reads item.data.
 # Optional, with sensible defaults:
-process(::AbstractDataItem, data)                # default: passthrough
+process(::AbstractDataItem)                      # default: identity
 cacheable(::AbstractDataItem)::Bool              # default: false (cache deferred; DataFrame path unchanged)
 ```
 

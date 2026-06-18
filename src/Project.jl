@@ -13,8 +13,8 @@ Pipeline per item kind (fixed order, each fed the previous output):
     detect(file)          -> Bool
     read(file)            -> data               # whole file, parsed once
     entries(file, data)   -> Vector{<:AbstractDataItem}  # one entry per item (a single one is a vector of one)
-    process(item, data)   -> data               # optional; default passthrough
-    stats(item, processed)-> Dict{Symbol,Any}   # optional
+    process(item)         -> data or item        # optional; default passthrough
+    stats(item)           -> Dict{Symbol,Any}    # optional
     label(item)           -> String             # optional
 
 `entries` returns the package's `DataItem` (recipe API) or a project subtype (type API); the engine
@@ -181,7 +181,8 @@ Register (or replace) the recipe for one item kind.
 
 `detect`, `read`, and `entries` are required. `entries(file, data)` returns the per-item entries as
 `AbstractDataItem`s — the package's `DataItem` (recipe API) or your own subtype (type API); a
-single-item file just returns a vector of one. Optional `process`/`stats`/`label` refine the recipe
+single-item file just returns a vector of one. Attach the raw per-item payload as `item.data`;
+optional `process`/`stats`/`label` refine the recipe
 API. Re-calling with the same `kind` replaces the recipe in place, so editing and re-running the line
 updates a live project.
 """
@@ -313,6 +314,24 @@ function _normalize_entry(
     )
 end
 
+function _data_item_from(item::AbstractDataItem, data)::DataItem
+    return DataItem(;
+        kind=kind(item),
+        collection=collection(item),
+        label=item_label(item),
+        parameters=parameters(item),
+        stats=stats(item),
+        data=data,
+        id=id(item),
+    )
+end
+
+function _processed_item(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDataItem
+    recipe.process === nothing && return item
+    result = recipe.process(item)
+    return result isa AbstractDataItem ? result : _data_item_from(item, result)
+end
+
 function Projects.data_items(
     project::Project,
     source::AbstractDataSource,
@@ -329,15 +348,16 @@ function Projects.data_items(
     ]
     _record_read!(project, recipe.kind, read_seconds, length(items))
     if recipe.stats !== nothing
-        for item in items
+        for index in eachindex(items)
             try
                 stats_started = time_ns()
-                processed = recipe.process === nothing ? data : recipe.process(item, data)
-                merge!(stats(item), recipe.stats(item, processed))
+                item = _processed_item(recipe, items[index])
+                items[index] = item
+                merge!(stats(item), recipe.stats(item))
                 _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
             catch err
                 is_job_cancelled(err) && rethrow()
-                _record_stat_failure!(project, file.filepath, id(item), :stats, err)
+                _record_stat_failure!(project, file.filepath, id(items[index]), :stats, err)
             end
         end
     end
@@ -361,20 +381,7 @@ function Projects.load_data_item(
     index = findfirst(item -> id(item) == requested_id, items)
     index === nothing &&
         error("Source item $(source_item_id) did not produce item id $(requested_id)")
-    item = items[index]
-    processed = recipe.process === nothing ? raw : recipe.process(item, raw)
-    if recipe.process === nothing && !(item isa DataItem)
-        return item
-    end
-    return DataItem(;
-        kind=kind(item),
-        collection=collection(item),
-        label=item_label(item),
-        parameters=parameters(item),
-        stats=stats(item),
-        data=processed,
-        id=id(item),
-    )
+    return _processed_item(recipe, items[index])
 end
 
 """Interpret one physical file through the high-level callback adapter."""

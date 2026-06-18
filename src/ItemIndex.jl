@@ -208,7 +208,8 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
 Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
 
 A recipe supplies the metadata it knows: `kind`, `collection`, and optionally
-`label`/`parameters`/`id`. `data` is omitted at scan and attached later by the source.
+`label`/`parameters`/`id`. `data` carries the raw per-item payload; an optional `process` callback
+can replace it before views receive the item.
 """
 function DataItem(;
     kind::Symbol,

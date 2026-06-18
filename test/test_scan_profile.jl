@@ -18,8 +18,9 @@ function _profile_project()
             kind=:table,
             collection=["dev", splitext(file.filename)[1]],
             label=file.filename,
+            data=data,
         )],
-        stats=(item, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
     )
     return project
 end
@@ -121,11 +122,12 @@ end
                 kind=:table,
                 collection=["dev", splitext(file.filename)[1]],
                 label=file.filename,
+                data=data,
             )],
             # Stats throw only for bad.csv; ok.csv still gets its stats computed.
-            stats=function (item, data)
+            stats=function (item)
                 startswith(item.label, "bad") && error("stats blew up")
-                return Dict{Symbol,Any}(:rows => nrow(data))
+                return Dict{Symbol,Any}(:rows => nrow(item.data))
             end,
         )
 

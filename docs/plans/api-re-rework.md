@@ -75,8 +75,8 @@ register_measurement!(project, :pund;
     read = file -> read_pund(file)::DataFrame, # usually just file -> CSV.read(file, DataFrame)
     measurements = (file, data) -> pund_measurements(file, data)::Vector{MeasurementInfo},
     label = mi -> "FE PUND $(mi.params[:device]) $(mi.params[:temperature])",
-    process = (mi, data) -> analyze_pund(mi, data)::DataFrame,   # data = cached whole-file read; mi.params picks the slice
-    stats = (mi, processed) -> pund_stats(mi, processed)::Dict{Symbol,Any}, # takes process's output, not raw
+    process = mi -> analyze_pund(mi)::DataFrame,                 # reads mi.data
+    stats = mi -> pund_stats(mi)::Dict{Symbol,Any},              # reads processed mi.data
 )
 # re-calling it updates everything on the fly whether the browser is open or not,
 # but using Revise to re-define the individual functions is also enough to update information on its own.
@@ -122,8 +122,8 @@ Pipeline (per measurement kind). The callbacks run in a fixed order, each fed th
                                                           # wakeup voltages, paired breakdown devices). Omit when
                                                           # one file is one measurement.
 - per measurement (cached by id):
-    process(mi, data) -> processed                       # `data` is the cached whole-file read; mi.parameters selects the slice
-    stats(mi, processed) -> Dict                         # takes process's output, not raw
+    process(mi) -> processed                             # reads mi.data
+    stats(mi) -> Dict                                    # reads processed mi.data
     label(mi) -> String
 Because `read` runs once per file and its output is threaded into `measurements` and every `process` call, a
 file is parsed once and sliced many times. That is the old multiple-reads-during-expansion problem solved by

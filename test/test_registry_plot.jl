@@ -21,6 +21,7 @@ const MB = MeasurementBrowser
             kind=:table,
             collection=["dev"],
             label=file.filename,
+            data=data,
         )],
     )
     drew = Ref(0)

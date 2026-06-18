@@ -16,15 +16,17 @@ function _build_test_project()
             startswith(file.filename, "broken") && error("Broken test source file")
             return CSV.read(file.filepath, DataFrame)
         end,
-        entries=function (file, _data)
+        entries=function (file, data)
             name = splitext(file.filename)[1]
             return [DataItem(
                 kind=:table,
                 collection=["test", name],
                 label="Table $name",
+                data=data,
             )]
         end,
-        process=function (_item, data)
+        process=function (item)
+            data = item.data
             processed = DataFrame(data)
             processed.processed = data.x .+ data.y
             return processed

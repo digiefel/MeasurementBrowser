@@ -50,13 +50,14 @@ function _tase_project()
         :four_terminal_iv;
         detect=file -> match(REGEX_TASE, file.filename) !== nothing,
         read=file -> _read_tase(file.filepath),
-        entries=function (file, _data)
+        entries=function (file, data)
             m = match(REGEX_TASE, file.filename)
             location = String.(collect(m.captures))
             return [DataItem(
                 kind=:four_terminal_iv,
                 collection=location,
                 label=join(location, "_"),
+                data=data,
             )]
         end,
     )
