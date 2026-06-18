@@ -13,7 +13,7 @@ Pipeline per item kind (fixed order, each fed the previous output):
     detect(file)          -> Bool
     read(file)            -> data               # whole file, parsed once
     entries(file, data)   -> Vector{<:AbstractDataItem}  # one entry per item (a single one is a vector of one)
-    process(item)         -> data or item        # optional; default passthrough
+    process(item)         -> AbstractDataItem    # optional; default passthrough
     stats(item)           -> Dict{Symbol,Any}    # optional
     label(item)           -> String             # optional
 
@@ -226,10 +226,9 @@ Register (or replace) one plot recipe for an item kind.
 
 `setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills it
 in. `items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); each
-carries its processed payload as `item.data`, materialized by the package through its processed-data
-cache, so neither callback resolves item data itself. A kind may have multiple plots;
-re-registering the same `label` for the same kind replaces that plot, which keeps REPL iteration
-stable.
+has already passed through `process(item)`, if registered, so neither callback resolves item data
+itself. A kind may have multiple plots; re-registering the same `label` for the same kind replaces
+that plot, which keeps REPL iteration stable.
 """
 function register_plot!(
     project::Project,
@@ -314,22 +313,15 @@ function _normalize_entry(
     )
 end
 
-function _data_item_from(item::AbstractDataItem, data)::DataItem
-    return DataItem(;
-        kind=kind(item),
-        collection=collection(item),
-        label=item_label(item),
-        parameters=parameters(item),
-        stats=stats(item),
-        data=data,
-        id=id(item),
-    )
-end
-
 function _processed_item(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDataItem
     recipe.process === nothing && return item
     result = recipe.process(item)
-    return result isa AbstractDataItem ? result : _data_item_from(item, result)
+    result isa AbstractDataItem && return result
+    error(
+        "process callback for kind $(recipe.kind) must return an AbstractDataItem; " *
+        "got $(typeof(result)). Return DataItem(..., data=processed) or a custom " *
+        "AbstractDataItem instead."
+    )
 end
 
 function Projects.data_items(

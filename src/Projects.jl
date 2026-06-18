@@ -37,8 +37,9 @@ end
 One registered plot recipe for an item kind.
 
 `setup(workspace, items)` returns the `Figure`; `draw(workspace, items, figure)` fills it. `items` are
-the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); each carries its
-processed payload as `item.data`. Neither callback resolves data itself.
+the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); `process(item)`, if
+registered, already returned the item shape these callbacks receive. Neither callback resolves data
+itself.
 """
 struct PlotRecipe
     kind::Symbol
@@ -169,7 +170,7 @@ function stats end
 """The materialized payload carried by an item (also reachable as `item.data`)."""
 function item_data end
 
-"""Process an item into the payload or item a view consumes. Optional; default identity."""
+"""Process an item into the item a view consumes. Optional; default identity."""
 process(item::AbstractDataItem) = item
 
 """Whether an item's payload should be persisted by the data cache. Optional; default `false`."""

@@ -66,7 +66,9 @@ register_item!(project, :iv;
     detect  = file -> occursin("iv", lowercase(file.filename)),  # Bool; first match wins
     read    = file -> DataFrame(...),                            # whole file, parsed once
     entries = (file, data) -> [DataItem(kind=:iv, collection=[...], parameters=..., data=data)],
-    process = item -> clean(item.data),                          # optional; default passthrough
+    process = item -> DataItem(                                  # optional; default passthrough
+        kind=kind(item), collection=collection(item), label=item_label(item),
+        parameters=parameters(item), stats=stats(item), data=clean(item.data), id=id(item)),
     stats   = item -> Dict{Symbol,Any}(...),                     # optional
     label   = item -> "…")                                       # optional
 
@@ -79,8 +81,8 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)       # one plo
 The `entries` callback enumerates the items in a file and is where a single file expands into multiple
 entries (e.g. one item per fatigue cycle, distinguished by `parameters`). When an entry omits `id`,
 the directory adapter mints one from the source-item path, kind, and params. Entries attach the raw
-per-item payload as `item.data`; optional `process(item)` replaces that payload before views receive
-the item, and optional `stats(item)` reads the item directly.
+per-item payload as `item.data`; optional `process(item)` returns the item that stats and views
+receive, and optional `stats(item)` reads the item directly.
 `entries` returns the package's `DataItem` (the **recipe API**) — or, to go beyond it, a project's own
 `AbstractDataItem` subtype carrying typed fields and its data (the **type API**); the engine derives
 the internal record from either via the contract. Re-calling a `register_*` with the same key replaces

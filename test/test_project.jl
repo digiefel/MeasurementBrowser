@@ -29,7 +29,15 @@ function _build_test_project()
             data = item.data
             processed = DataFrame(data)
             processed.processed = data.x .+ data.y
-            return processed
+            return DataItem(;
+                kind=kind(item),
+                collection=collection(item),
+                label=item_label(item),
+                parameters=parameters(item),
+                stats=stats(item),
+                data=processed,
+                id=id(item),
+            )
         end,
     )
     return project
