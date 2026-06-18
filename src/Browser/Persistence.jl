@@ -167,7 +167,7 @@ end
 """
 Decode TOML values according to the fields of the requested browser-state type.
 
-Missing or incorrectly typed fields are errors because no compatibility format is supported.
+Missing fields use the type defaults; incorrectly typed fields are errors.
 """
 function _project_view_from_toml(::Type{String}, value::Any)::String
     value isa AbstractString || error("Expected string, got $(typeof(value))")
@@ -191,8 +191,14 @@ end
 
 function _project_view_from_toml(::Type{T}, data::Any)::T where {T}
     data isa AbstractDict || error("Expected table for $T, got $(typeof(data))")
+    defaults = T()
     return T(; (
-        name => _project_view_from_toml(fieldtype(T, name), data[String(name)])
+        name => begin
+            key = String(name)
+            haskey(data, key) ?
+                _project_view_from_toml(fieldtype(T, name), data[key]) :
+                getfield(defaults, name)
+        end
         for name in fieldnames(T)
     )...)
 end
@@ -215,7 +221,10 @@ end
 function _load_project_view(root_path::AbstractString)::PersistedProjectView
     path = _project_view_file_path(root_path)
     isfile(path) || return PersistedProjectView()
-    return _project_view_from_toml(PersistedProjectView, TOML.parsefile(path))
+    return _project_view_from_toml(
+        PersistedProjectView,
+        TOML.parsefile(path),
+    )
 end
 
 """Write project-local browser state beside the source data."""

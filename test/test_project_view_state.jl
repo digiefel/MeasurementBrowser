@@ -60,6 +60,32 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
     @test only(loaded.plot_windows).plot_kind == only(view.plot_windows).plot_kind
     @test only(loaded.plot_windows).items == only(view.plot_windows).items
 
+    legacy_root_path = mktempdir()
+    write(joinpath(legacy_root_path, "measurementbrowser.toml"), """
+    project = "ProjectViewTest"
+
+    [measurements]
+    selected = ["item-1"]
+    filter = "298K"
+
+    [main_plot]
+    id = "main"
+    title = "Plot Area"
+    live = true
+    measurements = ["item-1"]
+
+    [[plot_windows]]
+    id = "plot_1"
+    title = "Detached"
+    live = false
+    measurements = ["item-2"]
+    """)
+    legacy_loaded = Browser._load_project_view(legacy_root_path)
+    @test isempty(legacy_loaded.items.selected)
+    @test legacy_loaded.items.filter == ""
+    @test isempty(legacy_loaded.main_plot.items)
+    @test isempty(only(legacy_loaded.plot_windows).items)
+
     toml_data = Browser._project_view_to_toml(view)
     @test Set(keys(toml_data)) == Set([
         "project",
