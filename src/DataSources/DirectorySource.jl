@@ -249,3 +249,15 @@ function Projects.source_items(source::DirectorySource)::Vector{SourceFile}
 end
 
 ItemIndex.source_collection_metadata(source::DirectorySource) = source.collection_metadata
+
+function Workspace.open_workspace(
+    project::Project,
+    root_path::AbstractString;
+    recursive::Bool=true,
+    metadata_file::Union{Nothing,AbstractString}=DEFAULT_DIRECTORY_METADATA_FILE,
+)::Workspace.Workspace
+    return Workspace.open_workspace(
+        project,
+        DirectorySource(root_path; recursive, metadata_file),
+    )
+end

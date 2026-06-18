@@ -1,15 +1,15 @@
 """
-Coords — spatial coordinates pulled from a parsed device_info table.
+Coords — spatial coordinates pulled from collection metadata.
 
-device_info rows may carry optional columns `x_um`, `y_um`, `w_um`, `h_um`.
-This module reads them out into path-keyed dictionaries and computes
-axis-aligned bounding boxes from descendant positions.
+Collection metadata rows may carry optional columns `x_um`, `y_um`, `w_um`, `h_um`. This module
+reads them out into path-keyed dictionaries and computes axis-aligned bounding boxes from descendant
+positions.
 """
 module Coords
 
 export read_positions, read_overrides, bounding_box, Rect
 
-const DevicesInfoTable = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
+const CollectionMetadataTable = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
 
 """
     Rect
@@ -48,14 +48,14 @@ function _pair(params::Dict{Symbol,Any}, kx::Symbol, ky::Symbol)
 end
 
 """
-    read_positions(device_info) -> Dict{String, Tuple{Float64,Float64}}
+    read_positions(metadata) -> Dict{String, Tuple{Float64,Float64}}
 
 Pull `(x_um, y_um)` for every row that supplies both columns. Keys are the
 slash-joined path strings used elsewhere in the codebase.
 """
-function read_positions(device_info::DevicesInfoTable)
+function read_positions(metadata::CollectionMetadataTable)
     out = Dict{String,Tuple{Float64,Float64}}()
-    for (segs, params) in device_info
+    for (segs, params) in metadata
         isempty(segs) && continue
         pair = _pair(params, :x_um, :y_um)
         pair === nothing && continue
@@ -67,14 +67,14 @@ end
 read_positions(::Nothing) = Dict{String,Tuple{Float64,Float64}}()
 
 """
-    read_overrides(device_info) -> Dict{String, Tuple{Float64,Float64}}
+    read_overrides(metadata) -> Dict{String, Tuple{Float64,Float64}}
 
 Pull `(w_um, h_um)` for every row that supplies both columns. These act as
 explicit bounding-box dimensions overriding any computed value.
 """
-function read_overrides(device_info::DevicesInfoTable)
+function read_overrides(metadata::CollectionMetadataTable)
     out = Dict{String,Tuple{Float64,Float64}}()
-    for (segs, params) in device_info
+    for (segs, params) in metadata
         isempty(segs) && continue
         pair = _pair(params, :w_um, :h_um)
         pair === nothing && continue

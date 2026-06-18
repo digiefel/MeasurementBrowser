@@ -25,10 +25,9 @@ derives the internal record from each via the `AbstractDataItem` contract. `file
 using DataFrames: DataFrame
 import Serialization
 
-# RegisteredProjectSource serializes its project into the HDF5 cache. Only registered recipes are
-# persisted; transient scan state (read cache, profiling, locks) is rebuilt empty on load. This keeps
-# the cache format stable when transient fields change, so adding scan instrumentation never silently
-# invalidates a cache.
+# Only registered recipes are persisted; transient scan state (read cache, profiling, locks) is
+# rebuilt empty on load. This keeps the cache format stable when transient fields change, so adding
+# scan instrumentation never silently invalidates a cache.
 function Serialization.serialize(s::Serialization.AbstractSerializer, project::Project)
     Serialization.serialize_cycle(s, project) && return nothing
     Serialization.serialize_type(s, Project, true)
@@ -207,8 +206,8 @@ Register (or replace) a cross-item stat folded over each collection's items.
 
 `compute_stats` receives the group `Vector{<:AbstractDataItem}` for one collection and returns a
 `Dict{Symbol,Any}` stored on that collection node. The callback adapter implements this through the
-low-level `collection_stats(source, collection, items)` hook. Re-calling with the same `kinds`
-replaces the recipe.
+low-level `collection_stats(project, source, collection, items)` hook. Re-calling with the same
+`kinds` replaces the recipe.
 """
 function register_collection_stat!(
     project::Project;
@@ -290,19 +289,6 @@ function display_label(project::Project, item::ItemRecord)::String
     (recipe === nothing || recipe.label === nothing) && return item.item_label
     return recipe.label(DataItem(item, nothing))::String
 end
-
-Projects.source_id(source::RegisteredProjectSource)::String = source.root_path
-Projects.source_label(source::RegisteredProjectSource)::String = project_name(source.project)
-Projects.source_fingerprint(::RegisteredProjectSource) = nothing
-
-function Projects.source_items(source::RegisteredProjectSource)::Vector{SourceFile}
-    reset_scan_profile!(source.project)
-    directory = DirectorySource(source.root_path)
-    source.collection_metadata = load_scan_metadata(directory)
-    return collect_source_files(directory)
-end
-
-ItemIndex.source_collection_metadata(source::RegisteredProjectSource) = source.collection_metadata
 
 function _normalize_entry(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDataItem
     id = item_id(item)
@@ -387,7 +373,7 @@ function items_for_file(
     filepath::AbstractString;
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
 )::Vector{ItemRecord}
-    source = RegisteredProjectSource(project, dirname(filepath))
+    source = DirectorySource(dirname(filepath); metadata_file=nothing)
     source.collection_metadata = meta
     records, _ = ItemIndex.interpret_source_item(
         project,

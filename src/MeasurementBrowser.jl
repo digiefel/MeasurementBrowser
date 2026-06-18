@@ -16,7 +16,6 @@ using .Projects:
     PROJECTS,
     PlotRecipe,
     Project,
-    RegisteredProjectSource,
     cacheable,
     close_source!,
     collection,
@@ -73,8 +72,6 @@ using .ItemIndex:
     scan_source,
     with_cancel
 
-include("DataSources/DirectorySource.jl")
-
 include("Cache.jl")
 
 include("Workspace.jl")
@@ -83,6 +80,8 @@ using .Workspace:
     open_workspace,
     read_item_data,
     select_items!
+
+include("DataSources/DirectorySource.jl")
 
 include("Visualization.jl")
 using .Visualization:

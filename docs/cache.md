@@ -35,8 +35,8 @@ DEPOT_PATH[1]/measurementbrowser/cache/<source-label>/<cache-id>.h5
 ```
 
 Scan/index ownership is keyed by `source_id` + `source_fingerprint`. A cache is accepted only when the
-identity fields and the schema version match. For the file-backed `RegisteredProjectSource`,
-`source_id` is the normalized root path, so this reproduces the previous root-based behavior exactly.
+identity fields and the schema version match. For `DirectorySource`, `source_id` is the normalized
+root path.
 
 ## Fingerprints and what they invalidate
 
@@ -72,15 +72,16 @@ The HDF5 file contains:
 Payloads are grouped by source item, so changing or deleting one unit invalidates its payload group
 regardless of how many logical items it contains.
 
-## Annotations and collection metadata
+## Annotations
 
 > **TODO (source-agnostic storage, deferred):** annotations (`tags.txt`, `notes.txt`, `layout.txt`)
-> and collection metadata (`device_info.txt`) are currently stored **next to the cache**, keyed by
-> `source_id`, rather than at a filesystem source root. This is the simplest thing that works for a
-> generic `AbstractDataSource` (a DB query or stream has no root). The regression is that these files
-> are no longer hand-editable at the data folder. The intended fix is to make annotation storage a
-> *source capability* — a file-backed source exposes hand-editable source-root files; other sources
-> persist next to the cache — so this is a stopgap, not the final design.
+> are currently stored **next to the cache**, keyed by `source_id`, rather than through a source-owned
+> storage capability. This gives non-filesystem sources somewhere to persist user-authored state. The
+> intended fix is to make annotation storage a source capability, so file-backed sources can expose
+> hand-editable source-root files while other sources can persist elsewhere.
+
+`DirectorySource` owns `device_info.txt` collection metadata separately from the HDF5 cache; see
+[storage.md](storage.md).
 
 ## Freshness
 

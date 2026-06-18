@@ -92,16 +92,6 @@ const DEFAULT_PROJECT = Ref{Union{Project,Nothing}}(nothing)
 """A data origin with lifecycle and discovery of source items."""
 abstract type AbstractDataSource end
 
-"""Private source adapter implementing the high-level callback API."""
-mutable struct RegisteredProjectSource <: AbstractDataSource
-    project::Project
-    root_path::String
-    collection_metadata::Any
-end
-
-RegisteredProjectSource(project::Project, root_path::AbstractString)::RegisteredProjectSource =
-    RegisteredProjectSource(project, normpath(abspath(expanduser(String(root_path)))), nothing)
-
 """One addressable unit discovered inside a data source."""
 abstract type AbstractDataSourceItem end
 

@@ -35,9 +35,9 @@ end
 
 const TEST_PROJECT = _build_test_project()
 
-"""Build the private callback-adapter source used by high-level project tests."""
-function test_source(project::Project, root_path::AbstractString)
-    return MeasurementBrowser.RegisteredProjectSource(project, root_path)
+"""Build the directory source used by high-level project tests."""
+function test_source(_project::Project, root_path::AbstractString)
+    return MeasurementBrowser.DirectorySource(root_path)
 end
 
 """Scan a registered test project through the source-first engine API."""

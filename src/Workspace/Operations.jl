@@ -8,9 +8,6 @@ function open_workspace(project::Project, source::AbstractDataSource)::Workspace
     return workspace
 end
 
-open_workspace(project::Project, root_path::AbstractString)::Workspace =
-    open_workspace(project, RegisteredProjectSource(project, root_path))
-
 """
 Cancel all work owned by a workspace and wait for it to stop.
 """

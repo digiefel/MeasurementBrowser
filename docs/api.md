@@ -4,10 +4,11 @@ MeasurementBrowser has **two layers**:
 
 - a **low-level, type-based source API** — the foundation the engine is written against. You model a
   data origin as an `AbstractDataSource`, the units it discovers as `AbstractDataSourceItem`s, and the
-  logical browsable objects as `AbstractDataItem`s. No registration, no callbacks: you implement an
-  interface and hand the engine a configured source value.
-- a **high-level callback API** — a convenience built privately on top of the low level. You
-  `define_project` and `register_*` callbacks; the engine wraps that in a built-in source adapter.
+  logical browsable objects as `AbstractDataItem`s. A workspace is still opened for a `Project`; the
+  source supplies discovery while project/source methods interpret and load items.
+- a **high-level callback API** — a convenience built on the same source engine. You `define_project`
+  and `register_*` callbacks; the built-in `DirectorySource` discovers files and the project recipes
+  interpret them.
 
 The high-level callback API is the **exported** surface today and is what most projects use. The
 low-level types are currently engine-internal — reachable as `MeasurementBrowser.name` and staged for
@@ -26,10 +27,10 @@ select_items!(ws, items_or_records)                 # programmatic selection
 ```
 
 Every workspace is associated with a `Project`; the first argument to `open_workspace` is always that
-project. Passing `root_path` is the exported high-level convenience path: it wraps the project and
-root in the built-in `RegisteredProjectSource` adapter. Passing an `AbstractDataSource` keeps the
-source explicit while still associating the workspace with the project that owns labels, registered
-plots, and browser state.
+project. Passing `root_path` is the exported directory convenience path: it constructs a
+`DirectorySource(root_path)` and opens the workspace with that source. Passing an
+`AbstractDataSource` keeps the source explicit while still associating the workspace with the project
+that owns labels, registered plots, and browser state.
 
 `select_items!` accepts indexed records, exact workspace item keys, or loaded `AbstractDataItem`
 values whose `item_id` is unambiguous in the current workspace.
@@ -53,7 +54,7 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `open_source(source)::AbstractDataSource` | yes | prepare resources; return the opened source (simple sources return themselves) |
 | `close_source!(source)::Nothing` | yes | release files, sockets, tasks, sessions, streams |
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
-| `collection_stats(source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | cross-item fold over one collection node (see below) |
+| `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | cross-item fold over one collection node (see below) |
 | `source_fingerprint(source)` | no (→ `nothing`) | invalidation token for the whole source |
 | `watch_source(source, on_change)` | no (→ `nothing`) | future live-update hook; `nothing` means static |
 
@@ -72,8 +73,8 @@ data items.
 |---|---|---|
 | `source_item_id(item)::String` | yes | stable within `source_id(source)` |
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
-| `data_items(source, source_item)::Vector{<:AbstractDataItem}` | yes | interpret one unit into lightweight (data-less) logical items for indexing |
-| `load_data_item(source, source_item_id, item_id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
+| `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | interpret one unit into lightweight (data-less) logical items for indexing |
+| `load_data_item(project, source, source_item_id, item_id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
 | `source_item_fingerprint(item)` | no (→ `nothing`) | invalidates records/payloads from this source item |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
@@ -130,11 +131,11 @@ source_items(ds::PhotoDataset) = [PhotoFile(p, file_fingerprint(p)) for p in pho
 source_item_id(f::PhotoFile)          = f.path
 source_item_label(f::PhotoFile)       = basename(f.path)
 source_item_fingerprint(f::PhotoFile) = f.fingerprint
-function data_items(::PhotoDataset, f::PhotoFile)
+function data_items(::Project, ::PhotoDataset, f::PhotoFile)
     m = read_photo_header(f.path)                                   # cheap, data-less
     [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path, nothing)]
 end
-function load_data_item(ds::PhotoDataset, source_item_id, item_id)
+function load_data_item(::Project, ds::PhotoDataset, source_item_id, item_id)
     m = read_photo_header(source_item_id)
     Photo(item_id, m.label, m.collection, m.exposure, source_item_id, read_photo_matrix(source_item_id))
 end
@@ -170,7 +171,8 @@ not the exported API today.
 
 The exported, batteries-included path. A project is a value built by mutation; each `register_*`
 points at plain callbacks. Re-calling with the same key replaces that recipe in place, so editing and
-re-running a line updates a live project. Internally a project becomes a `RegisteredProjectSource`.
+re-running a line updates a live project. `open_workspace(project, root_path)` uses `DirectorySource`
+for directory discovery; project recipes interpret each discovered `SourceFile`.
 
 ```julia
 project = define_project("MyProject"; description="…")
@@ -204,7 +206,7 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
 
 - **`Project`** — the value `define_project` returns and `register_*` mutate.
 - **`SourceFile`** — the built-in file-backed `AbstractDataSourceItem` (`.filename`, `.filepath`,
-  `.timestamp`, `.fingerprint`), passed to callbacks.
+  `.timestamp`, `.fingerprint`) discovered by `DirectorySource` and passed to callbacks.
 - **`DataItem`** — the normal concrete `AbstractDataItem`; subtype `AbstractDataItem` for the type API,
   or let `entries` build a `DataItem`.
 

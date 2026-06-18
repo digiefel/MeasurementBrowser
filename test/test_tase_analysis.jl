@@ -90,7 +90,7 @@ end
     @test items[1].collection == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
 
     @testset "plot data api" begin
-        workspace = MB.Workspace.Workspace(project, dirname(fixture1))
+        workspace = MB.Workspace.Workspace(project, MB.DirectorySource(dirname(fixture1)))
         data = read_item_data(workspace, items)
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)

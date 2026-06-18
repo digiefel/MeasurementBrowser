@@ -26,7 +26,6 @@ import ..Projects:
     AbstractDataSource,
     AbstractDataItem,
     Project,
-    RegisteredProjectSource,
     close_source!,
     item_data,
     item_id,
@@ -149,9 +148,6 @@ function Workspace(
         false,
     )
 end
-
-Workspace(project::Project, root_path::AbstractString) =
-    Workspace(project, RegisteredProjectSource(project, root_path))
 
 # ---------------------------------------------------------------------------
 # Pretty printing

@@ -269,27 +269,24 @@ AbstractDataItem        → one logical browser item  (unchanged contract above)
 
 The middle type earns its keep: scanning a source and interpreting one discovered unit are separate
 concerns, and the unit is the natural grain of scan progress, failure reporting, and invalidation —
-which the current code already treats `SourceFile` as, implicitly. `data_items(source, source_item)`
-maps one unit to zero/one/many data items; `load_data_item(source, source_item_id, item_id)` reloads
-one with its payload.
+which the current code already treats `SourceFile` as, implicitly.
+`data_items(project, source, source_item)` maps one unit to zero/one/many data items;
+`load_data_item(project, source, source_item_id, item_id)` reloads one with its payload.
 
 **No item registration in the low level.** A workspace still starts from a user-created project plus a
 configured source value (`open_workspace(project, mysource)`), never by walking `subtypes`. The
-exported callback API
-(`define_project` + `register_*`) becomes a *private adapter source*, `RegisteredProjectSource <:
-AbstractDataSource`, whose `source_items` walks a root into `SourceFile`s and whose `data_items` /
-`load_data_item` apply the recipes. `open_workspace` always takes the project first; the second
-argument is either a data root or an explicit `AbstractDataSource`.
+exported callback API (`define_project` + `register_*`) uses `DirectorySource` for directory
+discovery and project methods for recipe interpretation. `open_workspace` always takes the project
+first; the second argument is either a data root or an explicit `AbstractDataSource`.
 
 ### Resolved decisions
 
-1. **Annotations + collection metadata: stored next to the cache, keyed by `source_id` (stopgap).**
-   The annotation/metadata system is currently filesystem-root-bound; a generic source has no root, so
-   for now these persist next to the cache. Known regression (no hand-editable source-root files);
-   fix later by making annotation storage a *source capability*. TODO-marked in code and docs.
+1. **Directory metadata belongs to `DirectorySource`; annotations remain a cache-adjacent stopgap.**
+   `device_info.txt` is loaded by the directory source. Tags/notes/layout still need a generalized
+   source-owned storage capability later.
 2. **The phase-3b "type API via `register_item!`" is superseded** by the source-value path — it is the
    cleaner realization of "the type API does not call `register_item!`". Rework, not extend.
-3. **`collection_stats(source, collection, items)` is a low-level hook available everywhere**, stored
+3. **`collection_stats(project, source, collection, items)` is a low-level hook available everywhere**, stored
    on the `HierarchyNode` (node-level `stats`), not folded into member records. `register_collection_stat!`
    is its callback form. Bangless: it is a getter returning a `Dict`; the engine routine that writes the
    node is the mutator (`add_collection_stats!`).

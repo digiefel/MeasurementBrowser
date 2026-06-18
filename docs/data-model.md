@@ -9,16 +9,17 @@ AbstractDataItem        → one logical browsable item               (what you i
 ItemRecord              → internal, data-less index/cache record   (never seen by source/project code)
 ```
 
-`ItemIndex` defines the built-in file-backed source item (`SourceFile`), the internal `ItemRecord`,
-the concrete `DataItem`, and the collection hierarchy. The project-facing API is in [api.md](api.md);
-the design rationale is in [plans/data-model-generalization.md](plans/data-model-generalization.md).
+`DataSources/DirectorySource.jl` defines the built-in file-backed source item (`SourceFile`).
+`ItemIndex` defines the internal `ItemRecord`, the concrete `DataItem`, and the collection hierarchy.
+The project-facing API is in [api.md](api.md); the design rationale is in
+[plans/data-model-generalization.md](plans/data-model-generalization.md).
 
 ## Source item vs. data item
 
 A **source item** is one addressable thing a source discovers — the unit of scan progress, failure
 reporting, and invalidation. A **data item** is one logical browsable object. The mapping is
-one-to-many: `data_items(source, source_item)` interprets a single unit into zero, one, or many data
-items. A `SourceFile` is a source item; the items a project reads out of it are data items.
+one-to-many: `data_items(project, source, source_item)` interprets a single unit into zero, one, or
+many data items. A `SourceFile` is a source item; the items a project reads out of it are data items.
 
 ## Two representations: record vs. item
 
@@ -138,10 +139,11 @@ Implication: hierarchical metadata is stored once at the highest applicable leve
 
 ## Collection stats
 
-Cross-item stats over one collection node are computed by the source's
-`collection_stats(source, collection, items)` hook after the hierarchy is built, and stored on the
-node's `stats` dict. The high-level `register_collection_stat!` is the callback form of the same hook.
-This is distinct from per-item `stats`: item stats describe one item; node stats describe a group.
+Cross-item stats over one collection node are computed by the
+`collection_stats(project, source, collection, items)` hook after the hierarchy is built, and stored
+on the node's `stats` dict. The high-level `register_collection_stat!` is the callback form of the
+same hook. This is distinct from per-item `stats`: item stats describe one item; node stats describe a
+group.
 
 ## Virtual item expansion
 

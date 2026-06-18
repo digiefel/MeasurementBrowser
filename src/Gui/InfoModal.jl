@@ -96,7 +96,7 @@ function render_info_window(state::BrowserState)::Nothing
     return nothing
 end
 
-"""Explain how to add collection metadata when the current source root has none."""
+"""Tell the user when the current source did not provide collection metadata."""
 function render_collection_metadata_modal(state::BrowserState)::Nothing
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
@@ -120,25 +120,12 @@ function render_collection_metadata_modal(state::BrowserState)::Nothing
     opened = state.collection_metadata_modal
 
     if @c ig.BeginPopupModal("Collection Metadata Missing", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
-        ig.Text("No collection metadata file (device_info.txt) was found.")
+        ig.Text("No collection metadata was provided by this source.")
         ig.Separator()
-        ig.TextWrapped("Create a simple text file named device_info.txt in the TOP folder you opened to add extra info (area, thickness, notes, etc.) for each collection.")
-        ig.Spacing()
-        ig.TextWrapped("How to do it:")
-        ig.BulletText("Create a new text file: device_info.txt")
-        ig.BulletText("First line (header): collection_path, area_um2, t_HZO_nm, ...")
-        ig.BulletText("Add a column for each property you want to track.")
-        ig.BulletText("Add one line per scope. collection_path is matched as an exact slash-separated unit sequence.")
-        ig.BulletText("Single units match only exact units, never substrings inside another unit.")
-        ig.BulletText("Examples: D1, A9, VI/25um, RuO2test/A9/VI/D1, RuO2test_A10/VI/25um/D1")
-        ig.BulletText("Longer exact unit sequences override shorter matches when they set the same field.")
-        ig.Spacing()
-        ig.TextDisabled("Example:")
-        ig.TextDisabled("collection_path,   area_um2,   t_HZO_nm,   notes,   active")
-        ig.TextDisabled("D1,    12.5,   7.0,   all exact D1 units,   true")
-        ig.TextDisabled("RuO2test_A10/VI/25um/D1,    12.4,   7.0,   exact collection,  true")
-        ig.Spacing()
-        ig.TextWrapped("Save the file, then rescan or reopen the folder to load these values.")
+        ig.TextWrapped(
+            "The browser will still work, but collection-level fields such as area, thickness, " *
+            "or layout coordinates will be empty until the source supplies them.",
+        )
         ig.Spacing()
         if ig.Button("Got it")
             opened = false

@@ -4,11 +4,9 @@
 
 These files annotate collections and items. Figure annotations are stored separately.
 
-> **Location (current, stopgap):** these files live **next to the cache**, keyed by `source_id`, so a
-> non-filesystem `AbstractDataSource` has somewhere to persist them. The regression is that they are no
-> longer hand-editable at a data folder; the intended fix makes annotation storage a source capability
-> (file-backed sources expose hand-editable source-root files). See the TODO in [cache.md](cache.md).
-> The formats below are unchanged regardless of where the files live.
+`device_info.txt` is `DirectorySource` collection metadata and lives at that source root. User
+annotation files (`layout.txt`, `tags.txt`, `notes.txt`) currently live next to the cache, keyed by
+`source_id`; see [cache.md](cache.md).
 
 ## device_info.txt
 
@@ -78,7 +76,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 | File | Concern | Read by | Written by |
 |---|---|---|---|
-| `device_info.txt` | Per-collection parameters | `ItemIndex.load_scan_metadata` | Hand-edited |
+| `device_info.txt` | Per-collection parameters | `DirectorySource` | Hand-edited |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
 | `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |

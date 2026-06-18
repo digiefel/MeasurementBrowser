@@ -191,6 +191,7 @@ function scan_source(
     on_items::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
+    reset_scan_profile!(project)
     count_first && emit_progress(
         on_progress;
         phase=:counting,
