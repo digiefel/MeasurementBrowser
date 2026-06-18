@@ -75,7 +75,7 @@ end
         write_test_source(joinpath(dir, "root.csv"))
         mkdir(joinpath(dir, "nested"))
         write_test_source(joinpath(dir, "nested", "nested.csv"), 10)
-        write(joinpath(dir, "device_info.txt"), "collection_path,area_um2\ntest/root,12.5\ntest/nested,99\n")
+        write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ntest/root,12.5\ntest/nested,99\n")
         write(joinpath(dir, "tags.txt"), "ignored")
         write(joinpath(dir, "measurementbrowser.toml"), "ignored")
 

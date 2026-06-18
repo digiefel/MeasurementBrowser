@@ -67,13 +67,13 @@ function _tag_state_or_error(state::BrowserState)::Annotations.Tags.TagState
     return state.tag_state
 end
 
-"""Return the stable device path represented by a leaf hierarchy node."""
+"""Return the stable collection path represented by a leaf hierarchy node."""
 function _collection_path_key(node::HierarchyNode)::String
     isempty(node.items) && error("Leaf node '$(node.name)' has no items")
     return collection_path_key(first(node.items).collection)
 end
 
-"""Return the device path segments represented by a leaf hierarchy node."""
+"""Return the collection path segments represented by a leaf hierarchy node."""
 function _collection_location(node::HierarchyNode)::Vector{String}
     isempty(node.items) && error("Leaf node '$(node.name)' has no items")
     return copy(first(node.items).collection)
@@ -99,7 +99,7 @@ function _has_bad_tag(
     return "bad" in Annotations.Tags.effective(tag_state, key, ancestor_keys)
 end
 
-"""Return whether a device remains visible after applying the bad-tag filter."""
+"""Return whether a collection remains visible after applying the bad-tag filter."""
 function _collection_is_visible(state::BrowserState, collection_key::String)::Bool
     _show_bad_effective(state) && return true
     tag_state = _tag_state_or_error(state)
@@ -139,7 +139,8 @@ function _project_visible_selection(
     for path_key in workspace.selection.collection_paths
         node = get(hierarchy.index, collection_path_tuple(path_key), nothing)
         node === nothing && continue
-        node.kind == :leaf || error("Selected device path '$path_key' does not point to a leaf device")
+        node.kind == :leaf ||
+            error("Selected collection path '$path_key' does not point to a leaf collection")
         !_collection_is_visible(state, path_key) && continue
         push!(selected_collections, node)
     end
@@ -189,7 +190,7 @@ function _ensure_bad_catalog_entry!(
 end
 
 """
-Set or clear the bad tag on devices and persist the updated tag file.
+Set or clear the bad tag on collections and persist the updated tag file.
 Returns `false` when tag state is unavailable or there is nothing to change.
 """
 function _set_collections_bad!(

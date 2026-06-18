@@ -3,7 +3,7 @@ using DataFrames: DataFrame
 using MeasurementBrowser
 
 """
-A small registry project used across the package tests. One `:table` measurement per CSV; filenames
+A small registry project used across the package tests. One `:table` item per CSV; filenames
 beginning with `broken` fail their read so failure handling can be exercised.
 """
 function _build_test_project()

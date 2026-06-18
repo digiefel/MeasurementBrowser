@@ -10,7 +10,7 @@ annotations, figure files, or workflow persistence.
 
 `MeasurementBrowser` currently navigates devices through a tree panel. It works, but doesn't reflect the **spatial** reality of measurements on a chip — where devices physically sit, which sites are clustered, which chips are in flight together. The user wants a hybrid file-browser + GDS-style canvas where:
 
-- Positioned items (devices, sites, sub-sites) render at hierarchical XY coordinates from `device_info.txt`.
+- Positioned items (devices, sites, sub-sites) render at hierarchical XY coordinates from `metadata.txt`.
 - Unpositioned items (chips) get an initial grid layout but are then freely draggable like icons in a macOS file browser; a "reset layout" button reapplies the grid on demand.
 - A "level" indicator + `+/-` controls let the user descend/ascend the hierarchy, with deeper levels rendering as dots, shallower levels as bounding boxes.
 - Tags (generalizing the current "bad" flag) drive per-node color via a priority-ordered catalog and inherit to descendants.
@@ -23,7 +23,7 @@ spatial browser panel, notes UI, and polishing the tag/layout workflows around t
 ## Decisions locked in
 
 - **Renderer**: ImDrawList (CImGui primitives). No Makie second canvas.
-- **Storage**: focused files at the source root, lean and human-editable — `device_info.txt` extended with `x_um/y_um/w_um/h_um`; new `layout.txt`, `tags.txt` (catalog + assignments in one file), `notes.txt`.
+- **Storage**: focused files at the source root, lean and human-editable — `metadata.txt` extended with `x_um/y_um/w_um/h_um`; new `layout.txt`, `tags.txt` (catalog + assignments in one file), `notes.txt`.
 - **Tree panel**: stays. Spatial browser is an additional dockable panel sharing `ui_state[:selected_device_paths]`.
 - **Level semantics**: depth from root. Level 0 = top containers; level N = "focusable" depth, deeper hidden, shallower rendered as bboxes.
 
@@ -37,7 +37,7 @@ camera, selection, drag, and open-window state.
 
 **Key APIs (sketch):**
 
-- `Coords.node_position(node) :: Maybe{(x, y)}` — explicit if in `device_info.txt`, `nothing` otherwise.
+- `Coords.node_position(node) :: Maybe{(x, y)}` — explicit if in `metadata.txt`, `nothing` otherwise.
 - `Coords.bounding_box(hierarchy, path) :: Rect` — computed from descendant positions; cached per scan.
 - `Layout.load(root) :: Dict{String, (x, y)}` / `Layout.save(root, dict)`.
 - `Layout.reset!(state, paths)` — re-seeds positions for the given paths using a default grid, called by the UI's "reset layout" button.
@@ -54,7 +54,7 @@ camera, selection, drag, and open-window state.
 
 All files live at the source root, kept lean so they read well in any text editor.
 
-- `device_info.txt` — extended with optional `x_um, y_um, w_um, h_um` columns. Positioned entries set `x_um, y_um`; container entries can additionally set `w_um, h_um` to override computed bbox.
+- `metadata.txt` — extended with optional `x_um, y_um, w_um, h_um` columns. Positioned entries set `x_um, y_um`; container entries can additionally set `w_um, h_um` to override computed bbox.
 - `layout.txt` — `<path>\t<x_um>\t<y_um>` lines for the user-arranged unpositioned containers.
 - `tags.txt` — single file with two top sections, `[catalog]` and `[assignments]`. Catalog rows: `<name>\t<color_hex>\t<priority>`. Assignment rows: `<path>\t<tag_name>`. Ships with a default `bad` catalog entry.
 - `notes.txt` — fenced sections, robust against `[brackets]` appearing inside note bodies:

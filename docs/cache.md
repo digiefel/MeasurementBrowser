@@ -80,7 +80,7 @@ regardless of how many logical items it contains.
 > intended fix is to make annotation storage a source capability, so file-backed sources can expose
 > hand-editable source-root files while other sources can persist elsewhere.
 
-`DirectorySource` owns `device_info.txt` collection metadata separately from the HDF5 cache; see
+`DirectorySource` owns `metadata.txt` collection metadata separately from the HDF5 cache; see
 [storage.md](storage.md).
 
 ## Freshness

@@ -55,7 +55,7 @@ struct ItemRecord                    # internal metadata record (never seen by s
     item_label::String
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
-    collection_metadata::Dict{Symbol,Any}   # merged from device_info.txt (area_um2, t_HZO_nm, …)
+    collection_metadata::Dict{Symbol,Any}   # merged from metadata.txt (area_um2, t_HZO_nm, …)
     parameters::Dict{Symbol,Any}     # acquisition settings known while interpreting the unit
     stats::Dict{Symbol,Any}          # values computed after the required context is available
     item_fingerprint::Any            # nothing → payload not persistently cacheable
@@ -110,7 +110,8 @@ end
 ## Variable hierarchy depth
 
 Depth is **not** uniform. One branch may be `RuO2test/A9/VI/D1` (4 segments) while another is
-`RuO2test_A10/VI/25um/D1` (also 4) and another could be 3 or 5. Don't assume "level 3 = device".
+`RuO2test_A10/VI/25um/D1` (also 4) and another could be 3 or 5. Don't assign semantic meaning to a
+fixed depth.
 
 - All items attach at `:leaf` nodes (the last segment).
 - Intermediate nodes are `:level`.
@@ -129,7 +130,7 @@ should reuse it.
 
 ## Collection metadata (path-prefix matching)
 
-`device_info.txt` rows are keyed by path; metadata applies to **all descendants whose collection is
+`metadata.txt` rows are keyed by path; metadata applies to **all descendants whose collection is
 prefixed by that key**, with longer (more specific) keys overriding shorter ones, and is merged into
 each record's `collection_metadata`. The on-disk format is documented in [storage.md](storage.md).
 Collection metadata is a capability of the file-backed source; non-file sources need not provide it.

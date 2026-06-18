@@ -186,7 +186,7 @@ Two roles, kept distinct:
 
 - **Canonical collection** — the project's default (filesystem, or RuO2's device path). Its output is
   stored as each item's `collection` at scan time. This is the **identity / metadata anchor**:
-  `device_info.txt` path matching, tag assignments, and annotations all key off `collection`.
+  `metadata.txt` path matching, tag assignments, and annotations all key off `collection`.
 - **View collections** — any built-in or project-provided `collect_by` axis the UI applies for
   *presentation*. Computed on demand from item fields; they never touch the stored canonical
   `collection`.
@@ -282,7 +282,7 @@ first; the second argument is either a data root or an explicit `AbstractDataSou
 ### Resolved decisions
 
 1. **Directory metadata belongs to `DirectorySource`; annotations remain a cache-adjacent stopgap.**
-   `device_info.txt` is loaded by the directory source. Tags/notes/layout still need a generalized
+   `metadata.txt` is loaded by the directory source. Tags/notes/layout still need a generalized
    source-owned storage capability later.
 2. **The phase-3b "type API via `register_item!`" is superseded** by the source-value path — it is the
    cleaner realization of "the type API does not call `register_item!`". Rework, not extend.
@@ -348,7 +348,7 @@ Each step is independently testable and ends at a clean, restart-and-run state.
    generic `DataItem`.
 3. **Collection model.** Replace stored `DeviceInfo.location` with a derived `collection` produced by
    a `collect` function: default = filesystem, project-overridable. Keep canonical vs. view
-   distinction; re-key `device_info.txt`/annotations off `collection`.
+   distinction; re-key `metadata.txt`/annotations off `collection`.
 4. **Data `Any` + cache trait.** Loosen the data type from `DataFrame` to `Any`; add `cacheable`/
    `store_data`/`load_data` and the `cache=` opt-out; add the project-source fingerprint to the cache
    key. Land whenever convenient — the DataFrame cache keeps working untouched until then.

@@ -6,7 +6,7 @@ using Test
 
 const MB = MeasurementBrowser
 
-"""Build a small registry project whose CSV reader expands one measurement per file."""
+"""Build a small registry project whose CSV reader expands one item per file."""
 function _profile_project()
     project = MB.define_project("ProfileProject")
     MB.register_item!(

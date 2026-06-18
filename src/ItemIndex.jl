@@ -272,7 +272,7 @@ Projects.item_data(item::DataItem) = item.data
 Projects.item_fingerprint(item::DataItem) = nothing
 
 """
-One node in the device hierarchy.
+One node in the collection hierarchy.
 """
 struct HierarchyNode
     name::String
@@ -286,7 +286,7 @@ HierarchyNode(name::String, kind::Symbol) =
     HierarchyNode(name, kind, HierarchyNode[], ItemRecord[], Dict{Symbol,Any}())
 
 """
-The complete device tree and its indexes for one source root.
+The complete collection tree and its indexes for one source.
 """
 struct Hierarchy
     root::HierarchyNode

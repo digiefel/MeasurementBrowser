@@ -27,8 +27,8 @@ open a workspace on a data root, and open the browser. See "Launching" below.
 ## Architecture
 
 MeasurementBrowser is a **project-agnostic** Julia GUI engine for browsing and analyzing
-measurement data. It combines GLMakie plotting with a CImGui UI. The package ships **no
-domain knowledge** — no measurement kinds, readers, analyzers, or plotters. All of that lives in
+item data. It combines GLMakie plotting with a CImGui UI. The package ships **no
+domain knowledge** — no item kinds, readers, analyzers, or plotters. All of that lives in
 *project code* (external scripts) registered through the project API. RuO2 ferroelectric/semiconductor
 work and the TASE project are projects built on top, not part of the package.
 
@@ -89,7 +89,7 @@ the recipe in place, so editing and re-running a line updates a live project.
    matching `detect`'s `read → entries`, folding `process → stats` in the same pass so parses are freed
    per unit and memory stays bounded). The engine derives each item's internal `ItemRecord` via the
    contract; per-source-item failures are recorded and scanning continues. The file-backed adapter
-   merges `device_info.txt` metadata into each record's `collection_metadata`.
+   merges `metadata.txt` metadata into each record's `collection_metadata`.
 2. **Hierarchy:** records organize into a `Hierarchy` tree by `collection::Vector{String}`. After the
    tree is built, `collection_stats(source, collection, items)` (the callback form is
    `register_collection_stat!`) folds each node's items and the result is stored on the node's `stats`.
@@ -152,7 +152,7 @@ pixel-perfect checks.
 ## Notes
 
 - UI requires an OpenGL-capable environment (GLMakie + CImGui).
-- Scanning large measurement trees is slow; point at a small subfolder or `test/` fixtures during
+- Scanning large source trees is slow; point at a small subfolder or `test/` fixtures during
   development.
 - **Detection order matters:** recipes are checked in registration order and the first `detect`
   returning `true` wins — register more specific patterns (e.g. `pund_fatigue`) before general ones

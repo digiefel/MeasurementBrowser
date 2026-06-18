@@ -18,7 +18,7 @@ Code imports `Annotations` and uses four namespaces:
 
 | API | Purpose |
 |---|---|
-| `Annotations.Coords` | Reads `x_um`, `y_um`, `w_um`, and `h_um` from parsed `device_info.txt` metadata and computes bounding boxes. |
+| `Annotations.Coords` | Reads `x_um`, `y_um`, `w_um`, and `h_um` from parsed `metadata.txt` metadata and computes bounding boxes. |
 | `Annotations.Layout` | Reads and writes user-arranged positions in `layout.txt`. |
 | `Annotations.Tags` | Reads and writes tag definitions and collection/item assignments in `tags.txt`. |
 | `Annotations.Notes` | Reads and writes inherited per-path notes in `notes.txt`. |
@@ -36,8 +36,8 @@ spatial browser and should not be described as existing user-facing features.
 
 ### `Coords`
 
-- `read_positions(device_info) -> Dict{String, (x, y)}` — rows that supply both `x_um` and `y_um`.
-- `read_overrides(device_info) -> Dict{String, (w, h)}` — rows that supply both `w_um` and `h_um`.
+- `read_positions(metadata) -> Dict{String, (x, y)}` — rows that supply both `x_um` and `y_um`.
+- `read_overrides(metadata) -> Dict{String, (w, h)}` — rows that supply both `w_um` and `h_um`.
 - `bounding_box(positions, descendant_paths; override=nothing) -> Union{Rect, Nothing}` — minima/maxima over the positions of `descendant_paths`. Missing paths are skipped. Returns `nothing` when no descendants resolve. `override=(w, h)` keeps the lower-left corner from the descendants but uses the given size for the width/height.
 - `Rect(x, y, w, h)` — value type; `(x, y)` is the lower-left corner, in micrometres.
 
@@ -64,7 +64,7 @@ spatial browser and should not be described as existing user-facing features.
 
 ## File formats
 
-See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, `notes.txt`, plus the `x_um, y_um, w_um, h_um` columns on `device_info.txt`.
+See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, `notes.txt`, plus the `x_um, y_um, w_um, h_um` columns on `metadata.txt`.
 
 ## Inheritance semantics
 

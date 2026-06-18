@@ -3,7 +3,7 @@ using Test
 
 const Browser = MeasurementBrowser.Browser
 
-# Persisted plot choices include measurement-kind and label names; on load they resolve to the
+# Persisted plot choices include item-kind and label names; on load they resolve to the
 # internal RegisteredPlot identity for that plot.
 const ProjectViewIVPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectViewIVPlot}
 const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectViewTLMPlot}

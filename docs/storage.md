@@ -4,11 +4,11 @@
 
 These files annotate collections and items. Figure annotations are stored separately.
 
-`device_info.txt` is `DirectorySource` collection metadata and lives at that source root. User
+`metadata.txt` is `DirectorySource` collection metadata and lives at that source root. User
 annotation files (`layout.txt`, `tags.txt`, `notes.txt`) currently live next to the cache, keyed by
 `source_id`; see [cache.md](cache.md).
 
-## device_info.txt
+## metadata.txt
 
 CSV. First column is a path (segment-joined with `/`); remaining columns are arbitrary key/value parameters merged into matching nodes.
 
@@ -21,8 +21,8 @@ RuO2test_A10/VI/25um/D1,25.0,7.0,nested scope,
 ```
 
 **Path-fragment matching**: a row applies when its slash-separated path exactly matches a
-contiguous fragment of the parsed device location. Longer matches are merged later, so more specific
-rows override shorter ones. `D1` applies to every device path containing a `D1` segment, while
+contiguous fragment of the parsed collection path. Longer matches are merged later, so more specific
+rows override shorter ones. `D1` applies to every collection path containing a `D1` segment, while
 `RuO2test/A9/VI/D1` applies to that exact sequence.
 
 Field types are inferred (bool / int / float / date / string).
@@ -76,7 +76,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 | File | Concern | Read by | Written by |
 |---|---|---|---|
-| `device_info.txt` | Per-collection parameters | `DirectorySource` | Hand-edited |
+| `metadata.txt` | Per-collection parameters | `DirectorySource` | Hand-edited |
 | `layout.txt` | User-arranged XY positions | `Annotations.Layout.load` | `Annotations.Layout.save` |
 | `tags.txt` | Tag catalog + assignments | `Annotations.Tags.load` | `Annotations.Tags.save` |
 | `notes.txt` | Per-path note bodies | `Annotations.Notes.read_section`, `Annotations.Notes.merged_view` | `Annotations.Notes.write_section!` |

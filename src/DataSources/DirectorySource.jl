@@ -1,6 +1,6 @@
 using Dates
 
-const DEFAULT_DIRECTORY_METADATA_FILE = "device_info.txt"
+const DEFAULT_DIRECTORY_METADATA_FILE = "metadata.txt"
 
 """
 Directory-backed source scanned into `SourceFile` source items.

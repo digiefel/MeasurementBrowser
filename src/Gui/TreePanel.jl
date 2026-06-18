@@ -75,7 +75,7 @@ function _visible_items(
     return visible
 end
 
-"""Render the device hierarchy and write device selection into the workspace."""
+"""Render the collection hierarchy and write collection selection into the workspace."""
 function _render_hierarchy_tree_panel(
     state::BrowserState,
     filter_tree::Ptr{ig.lib.ImGuiTextFilter},
@@ -109,7 +109,7 @@ function _render_hierarchy_tree_panel(
             _collection_path_key(node)
         end
 
-        """Return whether this subtree contains a visible device."""
+        """Return whether this subtree contains a visible collection."""
         function has_visible_leaf(node::HierarchyNode)::Bool
             return get!(has_visible_leaf_cache, node) do
                 if isempty(children(node))
@@ -133,7 +133,7 @@ function _render_hierarchy_tree_panel(
             end
         end
 
-        """Collect visible leaf devices while respecting inherited filter matches."""
+        """Collect visible leaf collections while respecting inherited filter matches."""
         function collect_visible_collections!(
             node::HierarchyNode,
             force_show::Bool=false,
@@ -153,7 +153,7 @@ function _render_hierarchy_tree_panel(
             return nothing
         end
 
-        """Count device leaves below one hierarchy node."""
+        """Count leaf collections below one hierarchy node."""
         function count_leaf_nodes(node::HierarchyNode)::Int
             if isempty(children(node))
                 return 1

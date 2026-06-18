@@ -5,24 +5,24 @@
 
 ## What this is
 
-MeasurementBrowser is a Julia working environment for measurement projects. It should be strictly
+MeasurementBrowser is a Julia working environment for data projects. It should be strictly
 better than opening a REPL, finding files, loading them, extracting useful tables, computing values,
 and writing figure code by hand. The app makes that workflow interactive: open a project, browse the
-measurement structure, select measurements or devices, inspect data-derived values, and switch plots
-or views without repeating the same parsing work.
+source structure, select collections or items, inspect data-derived values, and switch plots or views
+without repeating the same parsing work.
 
 CImGui drives the UI; GLMakie renders plots embedded in the UI via a custom integration layer. CSV
-files on disk are the source data; source-root text files are metadata; the generated cache lets the
-package reuse project structure and measurement data without making cache storage part of project
-code.
+files on disk are one possible source; source-root text files can provide metadata; the generated
+cache lets the package reuse project structure and item data without making cache storage part of
+project code.
 
-Project code should describe the project in the same terms a script would use: which measurements a
-source file contains, how to load the data for those measurements, and how to present that data. The
+Project code should describe the project in the same terms a script would use: which logical items a
+source item contains, how to load data for those items, and how to present that data. The
 package owns scanning, cache storage, background jobs, and UI state.
 
 The intended experience is live and composable. A project can stay open while source files are added
 or changed, and the browser should update without forcing the user back through startup or manual
-reload steps. Views should be able to follow selections, devices, or matching rules, so a plot or
+reload steps. Views should be able to follow selections, collections, or matching rules, so a plot or
 inspection tool can continue to show the relevant data as the source tree changes. Built-in
 visualizers should handle common inspection tasks, while project code adds only the interpretation
 and presentation details that are specific to the experiment.
@@ -69,7 +69,7 @@ The most important boundary is between source meaning and package machinery.
 A source owns:
 
 - discovering source items
-- source-specific metadata, such as `DirectorySource` loading `device_info.txt`
+- source-specific metadata, such as `DirectorySource` loading `metadata.txt`
 
 A project/source implementation owns:
 
@@ -98,7 +98,7 @@ not know the meaning of a source item beyond the contract methods it calls.
 The package expresses that boundary through focused internal modules. `Projects` defines the
 `AbstractDataItem` contract and the `Project` recipe type. `DataSources/DirectorySource.jl` owns the
 built-in directory source, `SourceFile`, file fingerprints, directory traversal, sidecar exclusion,
-and `device_info.txt` collection metadata. `ItemIndex` owns the internal `ItemRecord`, the concrete
+and `metadata.txt` collection metadata. `ItemIndex` owns the internal `ItemRecord`, the concrete
 `DataItem`, hierarchy construction, and scanning. `Cache` owns generated HDF5 state. `Workspace` owns
 one project/source pair, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and
@@ -114,10 +114,10 @@ state.
 Directory-backed collection metadata and annotations are lean text files (see [storage](storage.md)
 for formats):
 
-- `device_info.txt` — `DirectorySource` source-root parameters with path-fragment matching.
+- `metadata.txt` — `DirectorySource` source-root parameters with path-fragment matching.
 - `tags.txt` — tag catalog and per-path assignments.
 
-`device_info.txt` belongs to `DirectorySource`; sources without that file simply have no collection
+`metadata.txt` belongs to `DirectorySource`; sources without that file simply have no collection
 metadata. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
 source still has somewhere to persist user-authored notes/tags/layout. The HDF5 cache itself is
 generated and lives outside the source.
