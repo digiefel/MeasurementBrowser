@@ -318,10 +318,10 @@ function _normalize_entry(recipe::ItemRecipe, item::AbstractDataItem)::AbstractD
 end
 
 function Projects.data_items(
+    project::Project,
     source::RegisteredProjectSource,
     file::SourceFile,
 )::Vector{<:AbstractDataItem}
-    project = source.project
     recipe = _detect_recipe(project, file)
     recipe === nothing && return DataItem[]
     read_started = time_ns()
@@ -349,12 +349,13 @@ function Projects.data_items(
 end
 
 function Projects.load_data_item(
+    project::Project,
     source::RegisteredProjectSource,
     source_item_id::AbstractString,
     id::AbstractString,
 )::AbstractDataItem
     file = index_source_file(source_item_id)
-    recipe = _detect_recipe(source.project, file)
+    recipe = _detect_recipe(project, file)
     recipe === nothing && error("No registered item recipe for source item $(source_item_id)")
     raw = recipe.read(file)
     items = AbstractDataItem[
@@ -388,6 +389,7 @@ function items_for_file(
     source = RegisteredProjectSource(project, dirname(filepath))
     source.collection_metadata = meta
     records, _ = ItemIndex.interpret_source_item(
+        project,
         source,
         index_source_file(filepath),
         source.collection_metadata,
@@ -396,12 +398,13 @@ function items_for_file(
 end
 
 function Projects.collection_stats(
+    project::Project,
     source::RegisteredProjectSource,
     ::Vector{String},
     items::Vector{<:AbstractDataItem},
 )::Dict{Symbol,Any}
     merged = Dict{Symbol,Any}()
-    for recipe in values(source.project.collection_stats)
+    for recipe in values(project.collection_stats)
         selected = AbstractDataItem[item for item in items if kind(item) in recipe.kinds]
         isempty(selected) && continue
         stats = recipe.compute_stats(selected)::Dict{Symbol,Any}
@@ -415,11 +418,12 @@ function _item_key(source_item_id::AbstractString, item_id::AbstractString)::Str
 end
 
 function ItemIndex.source_analysis_failures(
+    project::Project,
     source::RegisteredProjectSource,
 )::Vector{ItemFailure}
     failures = ItemFailure[]
-    lock(source.project.stat_failures_lock) do
-        for (source_item_id, item_id, message) in source.project.stat_failures
+    lock(project.stat_failures_lock) do
+        for (source_item_id, item_id, message) in project.stat_failures
             push!(
                 failures,
                 ItemFailure(
@@ -429,7 +433,7 @@ function ItemIndex.source_analysis_failures(
                 ),
             )
         end
-        empty!(source.project.stat_failures)
+        empty!(project.stat_failures)
     end
     return failures
 end

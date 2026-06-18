@@ -149,6 +149,7 @@ function scan_source!(workspace::Workspace)::Nothing
             end
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
+                    workspace.project,
                     workspace.source;
                     cached_source=cached === nothing ? nothing : cached.source,
                     on_progress=(progress) -> put!(events, (

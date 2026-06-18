@@ -67,7 +67,7 @@ using DataFrames: DataFrame, nrow
         figure = setup_plot(workspace, plot_kind, records)
         plot_data!(workspace, plot_kind, records, figure)
         source = RegisteredProjectSource(project, scan_dir)
-        scan_source(source)
-        scan_source(source; count_first=true)
+        scan_source(project, source)
+        scan_source(project, source; count_first=true)
     end
 end

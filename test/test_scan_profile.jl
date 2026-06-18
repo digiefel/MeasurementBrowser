@@ -33,6 +33,7 @@ end
 
         # Nothing changed: the scan must short-circuit to the very same cached object.
         skipped = MB.scan_source(
+            TEST_PROJECT,
             test_source(TEST_PROJECT, dir);
             cached_source=source,
         )
@@ -41,6 +42,7 @@ end
         # A changed fingerprint forces a real scan that returns a fresh object.
         write_test_source(joinpath(dir, "second.csv"), 99)
         rescanned = MB.scan_source(
+            TEST_PROJECT,
             test_source(TEST_PROJECT, dir);
             cached_source=source,
         )
@@ -69,6 +71,7 @@ end
 
         # A cache hit does no per-kind work, so the profile resets to empty.
         MB.scan_source(
+            project,
             test_source(project, dir);
             cached_source=source,
         )

@@ -42,7 +42,7 @@ end
 
 """Scan a registered test project through the source-first engine API."""
 function scan_test_source(project::Project, root_path::AbstractString; kwargs...)
-    return MeasurementBrowser.scan_source(test_source(project, root_path); kwargs...)
+    return MeasurementBrowser.scan_source(project, test_source(project, root_path); kwargs...)
 end
 
 """Write one small source table for scan and cache tests."""

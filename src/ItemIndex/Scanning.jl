@@ -1,7 +1,7 @@
 const COLLECTION_METADATA_FILENAME = "device_info.txt"
 
 """Return source-specific failures accumulated outside `data_items` itself."""
-source_analysis_failures(::AbstractDataSource)::Vector{ItemFailure} = ItemFailure[]
+source_analysis_failures(::Project, ::AbstractDataSource)::Vector{ItemFailure} = ItemFailure[]
 
 """
 Send one structured progress update when a callback is present.
@@ -162,11 +162,12 @@ end
 
 """Interpret one source item into records and keep the original handles for collection folds."""
 function interpret_source_item(
+    project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
 )::Tuple{Vector{ItemRecord},Dict{String,AbstractDataItem}}
-    handles = data_items(source, source_item)::Vector{<:AbstractDataItem}
+    handles = data_items(project, source, source_item)::Vector{<:AbstractDataItem}
     records = ItemRecord[
         ItemRecord(handle; source_item)
         for handle in handles
@@ -183,6 +184,7 @@ end
 Interpret source items concurrently and stream each successful record batch.
 """
 function interpret_source_items(
+    project::Project,
     source::AbstractDataSource,
     source_items::Vector{<:AbstractDataSourceItem},
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
@@ -206,7 +208,7 @@ function interpret_source_items(
             with_cancel(cancel_requested) do
                 check_cancel()
                 records, handles = try
-                    interpret_source_item(source, source_item, metadata)
+                    interpret_source_item(project, source, source_item, metadata)
                 catch error
                     is_job_cancelled(error) && rethrow()
                     backtrace = catch_backtrace()
@@ -264,6 +266,7 @@ end
 
 """Apply collection-node stats supplied by the source."""
 function add_collection_stats!(
+    project::Project,
     source::AbstractDataSource,
     hierarchy::Hierarchy,
     handles_by_key::Dict{String,AbstractDataItem},
@@ -276,7 +279,7 @@ function add_collection_stats!(
             for record in node.items
         ]
         try
-            merge!(node.stats, collection_stats(source, collect(path), handles))
+            merge!(node.stats, collection_stats(project, source, collect(path), handles))
         catch error
             first_item = first(node.items)
             push!(failures, ItemFailure(
@@ -293,6 +296,7 @@ end
 Scan one source into its complete item hierarchy.
 """
 function scan_source(
+    project::Project,
     source::AbstractDataSource;
     cached_source::Union{Nothing,SourceScan}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
@@ -339,6 +343,7 @@ function scan_source(
         skipped_source_items=0,
     )
     summary = interpret_source_items(
+        project,
         source,
         discovered,
         source_collection_metadata(source);
@@ -368,8 +373,8 @@ function scan_source(
         loaded_items=length(summary.records),
         skipped_source_items=summary.skipped_source_items,
     )
-    append!(summary.failures, add_collection_stats!(source, hierarchy, summary.handles_by_key))
-    append!(summary.failures, source_analysis_failures(source))
+    append!(summary.failures, add_collection_stats!(project, source, hierarchy, summary.handles_by_key))
+    append!(summary.failures, source_analysis_failures(project, source))
     return SourceScan(
         source_id(source),
         source_label(source),

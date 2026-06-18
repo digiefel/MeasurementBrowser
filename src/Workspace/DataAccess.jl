@@ -17,7 +17,7 @@ function materialize_items(
         end
         # FIXME: The low-level contract reloads by source-item id and item id, so sources may need
         # to re-find context they had during discovery. Pass a richer handle if this becomes painful.
-        item = load_data_item(workspace.source, record.source_item_id, record.item_id)
+        item = load_data_item(workspace.project, workspace.source, record.source_item_id, record.item_id)
         workspace.loaded_items[key] = (fingerprint, item)
         push!(loaded, item)
     end

@@ -14,6 +14,7 @@ using Test
 
         events = NamedTuple[]
         MeasurementBrowser.scan_source(
+            TEST_PROJECT,
             test_source(TEST_PROJECT, dir);
             on_progress=progress -> push!(events, progress),
             count_first=true,
@@ -32,6 +33,7 @@ using Test
 
         streamed = Vector{ItemRecord}[]
         source = MeasurementBrowser.scan_source(
+            TEST_PROJECT,
             test_source(TEST_PROJECT, dir);
             on_items=items -> push!(streamed, copy(items)),
         )
@@ -60,6 +62,7 @@ using Test
             end,
         ) do
             MeasurementBrowser.scan_source(
+                TEST_PROJECT,
                 test_source(TEST_PROJECT, dir);
                 count_first=true,
             )
