@@ -5,6 +5,8 @@ using Annotations
 
 include("Projects.jl")
 using .Projects:
+    AbstractDataSource,
+    AbstractDataSourceItem,
     AbstractDataItem,
     Collection,
     CollectionStatRecipe,
@@ -14,27 +16,36 @@ using .Projects:
     PROJECTS,
     PlotRecipe,
     Project,
+    RegisteredProjectSource,
     cacheable,
+    close_source!,
     collection,
+    collection_stats,
+    data_items,
     item_data,
+    item_fingerprint,
     item_id,
     item_label,
+    load_data_item,
+    open_source,
     parameters,
-    read_data,
+    source_fingerprint,
+    source_id,
+    source_item_fingerprint,
+    source_item_id,
+    source_item_label,
+    source_item_path,
+    source_item_timestamp,
+    source_items,
+    source_label,
     stats
 import .Projects:
-    compute_and_add_item_stats!,
     detect_kind,
     collection_path_label,
     display_label,
-    interpret_file,
     kind,
     kind_label,
-    load_source_data,
-    materialize_items,
-    parse_collection_info,
     process,
-    process_item_data,
     project_description,
     project_name,
     reset_scan_profile!,
@@ -51,7 +62,6 @@ using .ItemIndex:
     ItemRecord,
     SourceFile,
     SourceScan,
-    build_clean_title,
     check_cancel,
     children,
     collect_source_files,
@@ -63,11 +73,10 @@ using .ItemIndex:
     has_collection_metadata,
     index_source_file,
     insert_item!,
-    interpret_items,
+    item_record_key,
     is_job_cancelled,
     load_scan_metadata,
     item_timestamp_key,
-    items_for_file,
     parse_timestamp,
     scan_source,
     with_cancel
@@ -114,7 +123,7 @@ export open_browser, open_workspace, close_workspace!, select_items!
 export define_project, register_item!, register_collection_stat!, register_plot!
 # The AbstractDataItem contract — implement these for a custom item type
 export AbstractDataItem, Collection
-export item_id, item_label, kind, collection, parameters, stats, item_data, read_data, process, cacheable
+export item_id, item_label, kind, collection, parameters, stats, item_data, process, cacheable
 # Types you name
 export Project, SourceFile, DataItem
 

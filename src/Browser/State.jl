@@ -16,7 +16,7 @@ Base.@kwdef mutable struct PlotViewState
     id::String
     title::String
     live::Bool
-    measurement_ids::Vector{String} = String[]
+    item_keys::Vector{String} = String[]
     kind::Union{Nothing,Symbol} = nothing
     plot_kind::Union{Nothing,Type{<:PlotKind}} = nothing
     figure::Union{Nothing,Figure} = nothing
@@ -35,7 +35,7 @@ when writing `measurementbrowser.toml`.
 Base.@kwdef mutable struct PlotState
     main::PlotViewState = PlotViewState(id="main", title="Plot Area", live=true)
     windows::Vector{PlotViewState} = PlotViewState[]
-    kind_by_measurement::Dict{Symbol,DataType} = Dict{Symbol,DataType}()
+    kind_by_item::Dict{Symbol,DataType} = Dict{Symbol,DataType}()
     debug::Bool = false
     next_window_id::Int = 0
     runtime_warmed::Bool = false
@@ -49,8 +49,8 @@ Base.@kwdef struct PersistedTreeView
     filter::String = ""
 end
 
-"""Saved measurement controls from `measurementbrowser.toml`."""
-Base.@kwdef struct PersistedMeasurementsView
+"""Saved item controls from `measurementbrowser.toml`."""
+Base.@kwdef struct PersistedItemsView
     selected::Vector{String} = String[]
     filter::String = ""
 end
@@ -61,7 +61,7 @@ Base.@kwdef struct PersistedPlotView
     title::String = ""
     plot_kind::String = ""
     live::Bool = false
-    measurements::Vector{String} = String[]
+    items::Vector{String} = String[]
 end
 
 """
@@ -73,7 +73,7 @@ remain in memory.
 Base.@kwdef struct PersistedProjectView
     project::String = ""
     tree::PersistedTreeView = PersistedTreeView()
-    measurements::PersistedMeasurementsView = PersistedMeasurementsView()
+    items::PersistedItemsView = PersistedItemsView()
     plot_kinds::Dict{String,String} = Dict{String,String}()
     main_plot::PersistedPlotView =
         PersistedPlotView(id="main", title="Plot Area", live=true)
@@ -107,8 +107,8 @@ Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
     gl_info::Dict{Symbol,String} = Dict{Symbol,String}()
     node_count::Int = 0
-    measurement_rows_visible::Int = 0
-    measurement_rows_rendered::Int = 0
+    item_rows_visible::Int = 0
+    item_rows_rendered::Int = 0
     memory_start_rss_kb::Union{Nothing,Int} = nothing
     memory_peak_rss_kb::Union{Nothing,Int} = nothing
     memory_start_read_bytes::Union{Nothing,Int} = nothing
@@ -119,7 +119,7 @@ end
 """
 Runtime state owned by the browser.
 
-The workspace owns measurements, selection, cache state, data, and background work. This type owns
+The workspace owns items, selection, cache state, data, and background work. This type owns
 only controls, windows, local persistence, annotations, and rendering state.
 """
 Base.@kwdef mutable struct BrowserState
@@ -133,12 +133,12 @@ Base.@kwdef mutable struct BrowserState
     saved_project_view::PersistedProjectView = PersistedProjectView()
     expanded_collection_paths::Vector{String} = String[]
     tree_filter::String = ""
-    measurement_filter::String = ""
+    item_filter::String = ""
     tree_filter_widget::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}} = nothing
-    measurement_filter_widget::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}} = nothing
+    item_filter_widget::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}} = nothing
     reset_project_filters::Bool = false
     scroll_to_collection_path::Union{Nothing,String} = nothing
-    scroll_to_measurement_id::Union{Nothing,String} = nothing
+    scroll_to_item_key::Union{Nothing,String} = nothing
     show_bad::Bool = true
     tag_state::Union{Nothing,Annotations.Tags.TagState} = nothing
     tag_state_error::String = ""

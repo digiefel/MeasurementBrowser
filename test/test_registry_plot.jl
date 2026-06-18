@@ -59,31 +59,32 @@ const MB = MeasurementBrowser
     )
 
     # Identity helpers used by the GUI and persistence.
+    source = test_source(project, dir)
     table_plot = MB.RegistryPlot{:table,Symbol("Table Plot")}
     table_summary = MB.RegistryPlot{:table,Symbol("Table Summary")}
-    @test MB.registered_plot_kinds(project, :table) == [table_plot, table_summary]
-    @test MB.registered_plot_kinds(project, :missing) == Type{<:MB.PlotKind}[]
-    @test MB.plot_kind_label(project, table_plot) == "Table Plot"
+    @test MB.registered_plot_kinds(source, :table) == [table_plot, table_summary]
+    @test MB.registered_plot_kinds(source, :missing) == Type{<:MB.PlotKind}[]
+    @test MB.plot_kind_label(source, table_plot) == "Table Plot"
     @test MB.plot_kind_name(table_plot) == "table::Table Plot"
     @test MB.plot_kind_from_name("table::Table Plot") === table_plot
     @test MB.plot_kind_from_name("table") === nothing
 
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
-    measurements = items_for_file(project, joinpath(dir, "m.csv"))
-    workspace = MB.Workspace.Workspace(project, dir)
-    figure = setup_plot(workspace, table_plot, measurements)
+    items = items_for_file(project, joinpath(dir, "m.csv"))
+    workspace = MB.Workspace.Workspace(source)
+    figure = setup_plot(workspace, table_plot, items)
     @test figure isa Figure
-    @test plot_data!(workspace, table_plot, measurements, figure) === nothing
-    @test drew[] == length(measurements)
+    @test plot_data!(workspace, table_plot, items, figure) === nothing
+    @test drew[] == length(items)
     @test drew_rows[] == 2   # the 2-row fixture flowed through as item.data
-    figure = setup_plot(workspace, table_summary, measurements)
-    @test plot_data!(workspace, table_summary, measurements, figure) === nothing
+    figure = setup_plot(workspace, table_summary, items)
+    @test plot_data!(workspace, table_summary, items, figure) === nothing
     @test drew[] == -1
 
     # An unregistered kind errors clearly rather than dispatching nowhere.
     @test_throws KeyError setup_plot(
         workspace,
         MB.RegistryPlot{:missing,Symbol("Missing")},
-        measurements,
+        items,
     )
 end

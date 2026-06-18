@@ -46,13 +46,12 @@ end
 struct ItemRecord                    # internal metadata record (never seen by source/project code)
     # source-item identity — which discovered unit produced this, and how to reload it
     source_item_id::String
-    source_item_label::String
     source_item_fingerprint::Any            # nothing → not persistently cacheable
     source_item_path::Union{String,Nothing}
     source_item_timestamp::Union{DateTime,Nothing}
     # logical item identity + metadata
     item_id::String                  # stable within its source item
-    clean_title::String              # backs item_label
+    item_label::String
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
     collection_metadata::Dict{Symbol,Any}   # merged from device_info.txt (area_um2, t_HZO_nm, …)
@@ -66,26 +65,18 @@ Source-*level* identity (`source_id`, `source_label`, `source_fingerprint`) is *
 every record — it lives once on the `SourceScan`. A record carries only the source-*item* identity it
 needs to be reloaded.
 
-## Scan containers
+## Scan Result
 
-The discovered units and their interpreted records are held source-neutrally — no filesystem
-assumptions, no records stored on the public `SourceFile`:
+The completed scan is source-neutral. It stores source-level identity once, source-item fingerprints
+for invalidation, and the hierarchy of `ItemRecord`s. No records are stored on the public
+`SourceFile`:
 
 ```julia
-struct ScannedSourceItem              # one discovered unit + the records it produced
-    source_item_id::String
-    source_item_label::String
-    source_item_fingerprint::Any
-    source_item_path::Union{String,Nothing}
-    source_item_timestamp::Union{DateTime,Nothing}
-    items::Vector{ItemRecord}
-end
-
 struct SourceScan                     # the result of one full scan, source-neutral
     source_id::String
     source_label::String
     source_fingerprint::Any
-    source_items::Vector{ScannedSourceItem}
+    source_item_fingerprints::Dict{String,Any}
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
 end
@@ -108,6 +99,7 @@ end
 struct Hierarchy
     root::HierarchyNode
     all_items::Vector{ItemRecord}
+    source_id::String
     index::Dict{Tuple{Vararg{String}}, HierarchyNode}   # path tuple → node
     has_collection_metadata::Bool
     skipped_count::Int

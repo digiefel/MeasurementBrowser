@@ -118,18 +118,18 @@ function define_project(name::AbstractString; description::AbstractString="")::P
     )
 end
 
-"""Accumulate one timed file read (and the measurements it expanded to) into the scan profile."""
+"""Accumulate one timed source-item read and the items it expanded to into the scan profile."""
 function _record_read!(
     project::Project,
     kind::Symbol,
     seconds::Float64,
-    measurements::Int,
+    item_count::Int,
 )::Nothing
     lock(project.profile_lock) do
         entry = get!(KindProfile, project.scan_profile, kind)
-        entry.files += 1
+        entry.source_items += 1
         entry.read_seconds += seconds
-        entry.measurements += measurements
+        entry.items += item_count
     end
     return nothing
 end
@@ -153,25 +153,25 @@ function reset_scan_profile!(project::Project)::Nothing
     return nothing
 end
 
-"""Log and record one per-measurement analysis failure raised while interpreting a file."""
+"""Log and record one per-item analysis failure raised while interpreting a source item."""
 function _record_stat_failure!(
     project::Project,
     filepath::String,
-    measurement_id::String,
+    item_id::String,
     step::Symbol,
     err,
 )::Nothing
-    @error("Measurement analysis failed", file=filepath, measurement=measurement_id, step,
+    @error("Item analysis failed", source_item=filepath, item=item_id, step,
         exception=(err, catch_backtrace()))
     lock(project.stat_failures_lock) do
-        push!(project.stat_failures, (filepath, measurement_id, "step=$step: " * sprint(showerror, err)))
+        push!(project.stat_failures, (filepath, item_id, "step=$step: " * sprint(showerror, err)))
     end
     return nothing
 end
 
 function scan_profile_summary(project::Project)::Vector{NamedTuple}
     rows = lock(project.profile_lock) do
-        [(; kind, files=p.files, measurements=p.measurements,
+        [(; kind, source_items=p.source_items, items=p.items,
             read_seconds=p.read_seconds, stats_seconds=p.stats_seconds)
          for (kind, p) in project.scan_profile]
     end
@@ -207,9 +207,10 @@ end
 """
 Register (or replace) a cross-item stat folded over each collection's items.
 
-`compute_stats` receives the group `Vector{ItemRecord}` and fills each item's `stats` in place.
-The engine groups by `group_by` (default: collection path) and runs this after the full scan.
-Re-calling with the same `kinds` replaces it.
+`compute_stats` receives the group `Vector{<:AbstractDataItem}` for one collection and returns a
+`Dict{Symbol,Any}` stored on that collection node. The callback adapter implements this through the
+low-level `collection_stats(source, collection, items)` hook. Re-calling with the same `kinds`
+replaces the recipe.
 """
 function register_collection_stat!(
     project::Project;
@@ -228,7 +229,7 @@ Register (or replace) one plot recipe for an item kind.
 `setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills it
 in. `items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); each
 carries its processed payload as `item.data`, materialized by the package through its processed-data
-cache, so neither callback calls `process_item_data` itself. A kind may have multiple plots;
+cache, so neither callback resolves item data itself. A kind may have multiple plots;
 re-registering the same `label` for the same kind replaces that plot, which keeps REPL iteration
 stable.
 """
@@ -247,7 +248,7 @@ function register_plot!(
     return project
 end
 
-_default_collection_group(record::ItemRecord)::String = collection_path_key(record.collection)
+_default_collection_group(item::AbstractDataItem)::String = collection_path_key(collection(item))
 
 # ---------------------------------------------------------------------------
 # Recipe lookup helpers
@@ -263,11 +264,11 @@ function _detect_recipe(project::Project, file::SourceFile)::Union{Nothing,ItemR
     return nothing
 end
 
-"""Engine-generated stable identity: file + kind + the params that distinguish siblings."""
-function _mint_id(filepath::AbstractString, kind::Symbol, params::Dict{Symbol,Any})::String
-    isempty(params) && return "$(filepath)#kind=$(kind)"
+"""Engine-generated item identity within one source item."""
+function _mint_item_id(kind::Symbol, params::Dict{Symbol,Any})::String
+    isempty(params) && return "kind=$(kind)"
     ordered = sort!(collect(keys(params)))
-    return "$(filepath)#kind=$(kind)," * join(("$(k)=$(params[k])" for k in ordered), ",")
+    return "kind=$(kind)," * join(("$(k)=$(params[k])" for k in ordered), ",")
 end
 
 # ---------------------------------------------------------------------------
@@ -282,212 +283,155 @@ function detect_kind(project::Project, filename::String)::Symbol
     return recipe === nothing ? :unknown : recipe.kind
 end
 
-function parse_collection_info(::Project, file::SourceFile)::Vector{String}
-    error("Project sets collection placement inside `measurements`, not via parse_collection_info ($(file.filepath))")
-end
-
 function kind_label(::Project, kind::Symbol)::String
     return string(kind)
 end
 
-function display_label(project::Project, measurement::ItemRecord)::String
-    recipe = _recipe(project, measurement.kind)
-    (recipe === nothing || recipe.label === nothing) && return _default_label(measurement)
-    return recipe.label(measurement)::String
+function display_label(project::Project, item::ItemRecord)::String
+    recipe = _recipe(project, item.kind)
+    (recipe === nothing || recipe.label === nothing) && return item.item_label
+    return recipe.label(DataItem(item, nothing))::String
 end
 
-function _default_label(measurement::ItemRecord)::String
-    parts = Any[measurement.timestamp, string(measurement.kind)]
-    return join(filter(!isnothing, parts), " ")
+Projects.source_id(source::RegisteredProjectSource)::String = source.root_path
+Projects.source_label(source::RegisteredProjectSource)::String = project_name(source.project)
+Projects.source_fingerprint(::RegisteredProjectSource) = nothing
+
+function Projects.source_items(source::RegisteredProjectSource)::Vector{SourceFile}
+    reset_scan_profile!(source.project)
+    source.collection_metadata = load_scan_metadata(source.root_path)
+    return collect_source_files(source.root_path)
 end
 
-"""
-Interpret one file: read it, enumerate its items, and compute their per-item stats while the parse is
-still in hand.
+ItemIndex.source_collection_metadata(source::RegisteredProjectSource) = source.collection_metadata
 
-`entries` returns `AbstractDataItem`s (the package's `DataItem` or a project subtype); the engine
-derives the internal `ItemRecord` from each via the contract, stamping the file's path/timestamp and
-an engine-minted id. Folding stats into this single pass frees the (often large) parse as soon as the
-file's items are analyzed, so scan memory stays bounded to the files in flight. Per-item failures are
-recorded on the project and drained by `compute_and_add_item_stats!`.
-"""
-function interpret_file(project::Project, file::SourceFile)::Vector{ItemRecord}
+function _normalize_entry(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDataItem
+    id = item_id(item)
+    isempty(id) || return item
+    return DataItem(;
+        kind=recipe.kind,
+        collection=collection(item),
+        label=item_label(item),
+        parameters=parameters(item),
+        stats=stats(item),
+        data=item_data(item),
+        unique_id=_mint_item_id(recipe.kind, parameters(item)),
+    )
+end
+
+function Projects.data_items(
+    source::RegisteredProjectSource,
+    file::SourceFile,
+)::Vector{<:AbstractDataItem}
+    project = source.project
     recipe = _detect_recipe(project, file)
-    recipe === nothing && return ItemRecord[]
+    recipe === nothing && return DataItem[]
     read_started = time_ns()
     data = recipe.read(file)
     read_seconds = (time_ns() - read_started) / 1e9
-    items = recipe.entries(file, data)::Vector{<:AbstractDataItem}
-    # Note which API this recipe uses, so the view path knows how to re-materialize data: a type-API
-    # `entries` returns data-bearing items, a recipe-API one returns metadata-only `DataItem`s.
-    isempty(items) || (recipe.entries_carry_data = item_data(first(items)) !== nothing)
-    records = ItemRecord[_record_from_item(recipe, file, item) for item in items]
-    _record_read!(project, recipe.kind, read_seconds, length(records))
+    items = AbstractDataItem[
+        _normalize_entry(recipe, item)
+        for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
+    ]
+    _record_read!(project, recipe.kind, read_seconds, length(items))
     if recipe.stats !== nothing
-        for (item, record) in zip(items, records)
+        for item in items
             try
                 stats_started = time_ns()
                 processed = recipe.process === nothing ? data : recipe.process(item, data)
-                merge!(record.stats, recipe.stats(item, processed))
+                merge!(stats(item), recipe.stats(item, processed))
                 _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
             catch err
                 is_job_cancelled(err) && rethrow()
-                _record_stat_failure!(project, record.filepath, record.unique_id, :stats, err)
+                _record_stat_failure!(project, file.filepath, item_id(item), :stats, err)
             end
         end
     end
-    # `data` falls out of scope here, so the parse becomes collectable once this file is done.
+    return items
+end
+
+function Projects.load_data_item(
+    source::RegisteredProjectSource,
+    source_item_id::AbstractString,
+    id::AbstractString,
+)::AbstractDataItem
+    file = index_source_file(source_item_id)
+    recipe = _detect_recipe(source.project, file)
+    recipe === nothing && error("No registered item recipe for source item $(source_item_id)")
+    raw = recipe.read(file)
+    items = AbstractDataItem[
+        _normalize_entry(recipe, item)
+        for item in recipe.entries(file, raw)::Vector{<:AbstractDataItem}
+    ]
+    index = findfirst(item -> item_id(item) == id, items)
+    index === nothing && error("Source item $(source_item_id) did not produce item id $(id)")
+    item = items[index]
+    processed = recipe.process === nothing ? raw : recipe.process(item, raw)
+    if recipe.process === nothing && !(item isa DataItem)
+        return item
+    end
+    return DataItem(;
+        kind=kind(item),
+        collection=collection(item),
+        label=item_label(item),
+        parameters=parameters(item),
+        stats=stats(item),
+        data=processed,
+        unique_id=item_id(item),
+    )
+end
+
+"""Interpret one physical file through the high-level callback adapter."""
+function items_for_file(
+    project::Project,
+    filepath::AbstractString;
+    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
+)::Vector{ItemRecord}
+    source = RegisteredProjectSource(project, dirname(filepath))
+    source.collection_metadata = meta
+    records, _ = ItemIndex.interpret_source_item(
+        source,
+        index_source_file(filepath),
+        source.collection_metadata,
+    )
     return records
 end
 
-"""Derive the internal record from one `entries` item, stamping file context and a minted id."""
-_record_from_item(recipe::ItemRecipe, file::SourceFile, item::AbstractDataItem)::ItemRecord =
-    ItemRecord(
-        item;
-        filepath=file.filepath,
-        filename=file.filename,
-        timestamp=file.timestamp,
-        kind=recipe.kind,
-        unique_id=_mint_id(file.filepath, recipe.kind, parameters(item)),
-    )
-
-"""Direct data for an item is the whole-file read; `process` slices it later (recipe API)."""
-function load_source_data(
-    project::Project,
-    source_file::SourceFile;
-    record::Union{Nothing,ItemRecord}=nothing,
-)
-    kind = record === nothing ?
-        detect_kind(project, source_file.filename) : record.kind
-    recipe = _recipe(project, kind)
-    recipe === nothing && error("No registered item recipe for kind $kind")
-    return recipe.read(source_file)
-end
-
-"""Processed data: run the recipe's `process` over the cached whole-file read (recipe API)."""
-function process_item_data(
-    workspace::Workspace.Workspace{Project},
-    record::ItemRecord,
-)
-    recipe = _recipe(workspace.project, record.kind)
-    recipe === nothing && error("No registered item recipe for kind $(record.kind)")
-    raw = only(read_item_data(workspace, [record]))
-    recipe.process === nothing && return raw
-    return recipe.process(DataItem(record, nothing), raw)
-end
-
-"""
-Materialize the loaded, data-bearing items for a selection of records.
-
-Recipe-API records resolve their payload through the cached `read`/`process` path and become a
-`DataItem` carrying it. Type-API records (whose `entries` returns data-bearing items) re-run
-`read`/`entries` for their file and return the rebuilt items directly, matched to records by id — the
-same re-read the recipe path already pays, with no parallel data array.
-"""
-function materialize_items(
-    workspace::Workspace.Workspace{Project},
-    records::Vector{ItemRecord},
-)::Vector{AbstractDataItem}
-    result = Vector{AbstractDataItem}(undef, length(records))
-    positions_by_file = Dict{String,Vector{Int}}()
-    for (position, record) in pairs(records)
-        push!(get!(positions_by_file, record.filepath, Int[]), position)
+function Projects.collection_stats(
+    source::RegisteredProjectSource,
+    ::Vector{String},
+    items::Vector{<:AbstractDataItem},
+)::Dict{Symbol,Any}
+    merged = Dict{Symbol,Any}()
+    for recipe in values(source.project.collection_stats)
+        selected = AbstractDataItem[item for item in items if kind(item) in recipe.kinds]
+        isempty(selected) && continue
+        stats = recipe.compute_stats(selected)::Dict{Symbol,Any}
+        merge!(merged, stats)
     end
-    for (filepath, positions) in positions_by_file
-        recipe = _recipe(workspace.project, records[positions[1]].kind)
-        if recipe !== nothing && recipe.entries_carry_data
-            file = index_source_file(filepath)
-            raw = recipe.read(file)
-            built = Dict(
-                _mint_id(filepath, recipe.kind, parameters(item)) => item
-                for item in recipe.entries(file, raw)::Vector{<:AbstractDataItem}
-            )
-            for position in positions
-                result[position] = built[records[position].unique_id]
-            end
-        else
-            selected = records[positions]
-            processed = process_item_data(workspace, selected)
-            for (offset, position) in pairs(positions)
-                result[position] = DataItem(records[position], processed[offset])
-            end
-        end
-    end
-    return result
+    return merged
 end
 
-"""
-Run the cross-measurement device stats, then return every analysis failure for the scan.
+function _item_key(source_item_id::AbstractString, item_id::AbstractString)::String
+    return "$(ncodeunits(source_item_id)):$(source_item_id)$(item_id)"
+end
 
-Per-measurement process/stats already ran inside `interpret_file` (one pass over each file's parse),
-so this only does the disjoint device-scoped folds, which read the measurements' computed `stats`
-rather than any raw data. Per-measurement failures collected during interpretation are drained and
-returned alongside any device-fold failures.
-"""
-function compute_and_add_item_stats!(
-    project::Project,
-    measurements::Vector{ItemRecord},
-    files::Vector{SourceFile};
-    on_progress::Union{Nothing,Function}=nothing,
+function ItemIndex.source_analysis_failures(
+    source::RegisteredProjectSource,
 )::Vector{ItemFailure}
-    # The cancel callback lives in task-local storage, which spawned tasks do not inherit, so capture
-    # it here and re-establish it inside each task via `with_cancel`.
     failures = ItemFailure[]
-    failures_lock = ReentrantLock()
-    add_failure! = (filepath, id, step, err) -> lock(failures_lock) do
-        push!(failures, _step_failure(filepath, id, step, err))
-    end
-    cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
-
-    # Cross-item collection-stat folds. Groups within one recipe are disjoint, so they fold in
-    # parallel; separate stat recipes stay sequential.
-    recipes = collect(values(project.collection_stats))
-    total = length(recipes)
-    done = Base.Threads.Atomic{Int}(0)
-    for recipe in recipes
-        check_cancel()
-        @sync for group in values(_group_for_collection_stat(measurements, recipe))
-            isempty(group) && continue
-            Base.Threads.@spawn with_cancel(cancel_requested) do
-                check_cancel()
-                try
-                    recipe.compute_stats(group)
-                catch err
-                    is_job_cancelled(err) && rethrow()
-                    add_failure!(group[1].filepath, group[1].unique_id, :compute_stats, err)
-                end
-            end
+    lock(source.project.stat_failures_lock) do
+        for (source_item_id, item_id, message) in source.project.stat_failures
+            push!(
+                failures,
+                ItemFailure(
+                    source_item_id,
+                    _item_key(source_item_id, item_id),
+                    message,
+                ),
+            )
         end
-        if on_progress !== nothing
-            processed = Base.Threads.atomic_add!(done, 1) + 1
-            on_progress((total=total, processed=processed, current_path=""))
-        end
-    end
-
-    # Drain the per-measurement failures gathered while interpreting files.
-    lock(project.stat_failures_lock) do
-        for (filepath, measurement_id, message) in project.stat_failures
-            push!(failures, ItemFailure(filepath, measurement_id, message))
-        end
-        empty!(project.stat_failures)
+        empty!(source.project.stat_failures)
     end
     return failures
-end
-
-function _group_for_collection_stat(
-    measurements::Vector{ItemRecord},
-    recipe::CollectionStatRecipe,
-)::Dict{Any,Vector{ItemRecord}}
-    kinds = Set(recipe.kinds)
-    groups = Dict{Any,Vector{ItemRecord}}()
-    for measurement in measurements
-        measurement.kind in kinds || continue
-        push!(get!(groups, recipe.group_by(measurement), ItemRecord[]), measurement)
-    end
-    return groups
-end
-
-function _step_failure(filepath::String, measurement_id::String, step::Symbol, err)::ItemFailure
-    @error("Measurement analysis failed", file=filepath, measurement=measurement_id, step, exception=(err, catch_backtrace()))
-    return ItemFailure(filepath, measurement_id, "step=$step: " * sprint(showerror, err))
 end

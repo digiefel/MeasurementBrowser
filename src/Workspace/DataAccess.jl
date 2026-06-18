@@ -1,141 +1,35 @@
 """
-Package-owned data access for selected measurements.
+Materialize the loaded items for selected records.
+"""
+function materialize_items(
+    workspace::Workspace,
+    records::Vector{ItemRecord},
+)::Vector{Any}
+    loaded = Any[]
+    sizehint!(loaded, length(records))
+    for record in records
+        key = item_record_key(record)
+        fingerprint = (record.source_item_fingerprint, record.item_fingerprint)
+        cached = get(workspace.loaded_items, key, nothing)
+        if cached !== nothing && first(cached) == fingerprint
+            push!(loaded, last(cached))
+            continue
+        end
+        # FIXME: The low-level contract reloads by source-item id and item id, so sources may need
+        # to re-find context they had during discovery. Pass a richer handle if this becomes painful.
+        item = load_data_item(workspace.source, record.source_item_id, record.item_id)
+        workspace.loaded_items[key] = (fingerprint, item)
+        push!(loaded, item)
+    end
+    return loaded
+end
 
-Returns one `DataFrame` per `ItemRecord`, in the same order. Valid cached data is used first.
-When the cache has no fresh data for a measurement, the source file is indexed and loaded through
-`load_source_data`.
+"""
+Return loaded item payloads for callers that inspect raw tabular data.
 """
 function read_item_data(
     workspace::Workspace,
-    measurements::Vector{ItemRecord},
-)::Vector{DataFrame}
-    isempty(measurements) && return DataFrame[]
-    result = Vector{DataFrame}(undef, length(measurements))
-    unresolved_positions = Int[]
-    fingerprints = Dict{String,FileFingerprint}()
-    for (position, measurement) in pairs(measurements)
-        check_cancel()
-        path = normpath(abspath(expanduser(measurement.filepath)))
-        fingerprint = get!(fingerprints, path) do
-            file_fingerprint(path)
-        end
-        loaded = get(workspace.direct_data, measurement.unique_id, nothing)
-        if loaded === nothing || first(loaded) != fingerprint
-            push!(unresolved_positions, position)
-        else
-            result[position] = last(loaded)
-        end
-    end
-
-    unresolved = measurements[unresolved_positions]
-    cached = cached_measurement_data(workspace.cache.index, unresolved)
-    missing_measurements = ItemRecord[]
-    missing_data = DataFrame[]
-    source_files = Dict{String,SourceFile}()
-    for (offset, position) in pairs(unresolved_positions)
-        check_cancel()
-        measurement = measurements[position]
-        if cached[offset] === nothing
-            source_file = get!(source_files, measurement.filepath) do
-                index_source_file(measurement.filepath)
-            end
-            data = load_source_data(
-                workspace.project,
-                source_file;
-                record=measurement,
-            )
-            push!(missing_measurements, measurement)
-            push!(missing_data, data)
-            result[position] = data
-            workspace.direct_data[measurement.unique_id] = (source_file.fingerprint, data)
-        else
-            data = cached[offset]
-            result[position] = data
-            workspace.direct_data[measurement.unique_id] = (
-                fingerprints[normpath(abspath(expanduser(measurement.filepath)))],
-                data,
-            )
-        end
-    end
-    write_measurement_data_cache!(
-        workspace.cache.index,
-        missing_measurements,
-        missing_data,
-    )
-    return result
-end
-
-"""
-Package-owned processed data access for selected measurements.
-
-Returns one processed `DataFrame` per `ItemRecord`, in the same order. Valid cached processed
-data is used first. Missing entries are produced by the project's single-measurement
-`process_item_data(workspace, measurement)` method.
-"""
-function process_item_data(
-    workspace::Workspace,
-    measurements::Vector{ItemRecord},
-)::Vector{DataFrame}
-    isempty(measurements) && return DataFrame[]
-    result = Vector{DataFrame}(undef, length(measurements))
-    unresolved_positions = Int[]
-    fingerprints = Dict{String,FileFingerprint}()
-    for (position, measurement) in pairs(measurements)
-        check_cancel()
-        path = normpath(abspath(expanduser(measurement.filepath)))
-        fingerprint = get!(fingerprints, path) do
-            file_fingerprint(path)
-        end
-        loaded = get(workspace.processed_data, measurement.unique_id, nothing)
-        if loaded === nothing || first(loaded) != fingerprint
-            push!(unresolved_positions, position)
-        else
-            result[position] = last(loaded)
-        end
-    end
-
-    unresolved = measurements[unresolved_positions]
-    cached = cached_measurement_data(workspace.cache.index, unresolved; processed=true)
-    missing_offsets = findall(isnothing, cached)
-    missing_measurements = unresolved[missing_offsets]
-    processed_data = DataFrame[]
-    sizehint!(processed_data, length(missing_offsets))
-    for (position, offset) in pairs(missing_offsets)
-        check_cancel()
-        measurement = missing_measurements[position]
-        data = process_item_data(workspace, measurement)
-        push!(processed_data, data)
-        result[unresolved_positions[offset]] = data
-        workspace.processed_data[measurement.unique_id] = (
-            fingerprints[normpath(abspath(expanduser(measurement.filepath)))],
-            data,
-        )
-    end
-    for offset in eachindex(unresolved)
-        cached[offset] === nothing && continue
-        measurement = unresolved[offset]
-        data = cached[offset]
-        result[unresolved_positions[offset]] = data
-        workspace.processed_data[measurement.unique_id] = (
-            fingerprints[normpath(abspath(expanduser(measurement.filepath)))],
-            data,
-        )
-    end
-    write_measurement_data_cache!(
-        workspace.cache.index,
-        missing_measurements,
-        processed_data;
-        processed=true,
-    )
-    return result
-end
-
-"""
-Return direct data when a project defines no additional processing.
-"""
-function process_item_data(
-    workspace::Workspace,
-    measurement::ItemRecord,
-)::DataFrame
-    return only(read_item_data(workspace, [measurement]))
+    records::Vector{ItemRecord},
+)::Vector{Any}
+    return Any[item_data(item) for item in materialize_items(workspace, records)]
 end

@@ -57,8 +57,8 @@ MB.item_data(p::Photo) = p.data
 
     # Scan: entries returns Photos; the engine derives records via the contract (no filepath needed
     # on the item — it comes from the SourceFile) and frees the data-bearing items.
-    scan = MB.scan_source(dir; project=project)
-    records = scan.hierarchy.all_measurements
+    scan = scan_test_source(project, dir)
+    records = scan.hierarchy.all_items
     @test length(records) == 2
     @test all(r -> r.kind == :photo, records)
     @test Set(r.parameters[:exposure] for r in records) == Set([2.0, 4.0])
@@ -66,7 +66,7 @@ MB.item_data(p::Photo) = p.data
 
     # Plot: the bridge re-runs read+entries for the type API and matches items to records by id,
     # so draw receives the Photos with item.data populated.
-    workspace = MB.Workspace.Workspace(project, dir)
+    workspace = MB.Workspace.Workspace(test_source(project, dir))
     plot_kind = MB.RegistryPlot{:photo,Symbol("Image")}
     figure = MB.setup_plot(workspace, plot_kind, records)
     @test figure isa Figure

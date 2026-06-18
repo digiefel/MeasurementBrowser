@@ -8,16 +8,17 @@ using ..ItemIndex:
     HierarchyNode,
     ItemRecord,
     children,
-    collection_path_key
+    collection_path_key,
+    item_record_key
 import ..Workspace
 
 """Destroy text-filter widgets before their saved text is replaced."""
 function _reset_project_filter_widgets!(state::BrowserState)::Nothing
     state.tree_filter_widget === nothing || ig.Destroy(state.tree_filter_widget)
-    state.measurement_filter_widget === nothing ||
-        ig.Destroy(state.measurement_filter_widget)
+    state.item_filter_widget === nothing ||
+        ig.Destroy(state.item_filter_widget)
     state.tree_filter_widget = nothing
-    state.measurement_filter_widget = nothing
+    state.item_filter_widget = nothing
     return nothing
 end
 
@@ -43,42 +44,60 @@ function _tree_node_matches_filter(
     return ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL)
 end
 
-"""Return whether a measurement's visible labels pass the measurement filter."""
-function _measurement_matches_filter(
-    project::Project,
-    measurement::ItemRecord,
+"""Return the label shown for one item in the item list."""
+function _item_display_label(workspace::Workspace.Workspace, item::ItemRecord)::String
+    source = workspace.source
+    if hasproperty(source, :project)
+        return display_label(source.project, item)
+    end
+    return item.item_label
+end
+
+"""Return the kind label shown for one item."""
+function _item_kind_label(workspace::Workspace.Workspace, item::ItemRecord)::String
+    source = workspace.source
+    if hasproperty(source, :project)
+        return kind_label(source.project, item.kind)
+    end
+    return String(item.kind)
+end
+
+"""Return whether an item's visible labels pass the item filter."""
+function _item_matches_filter(
+    workspace::Workspace.Workspace,
+    item::ItemRecord,
     filter_obj::Ptr{ig.lib.ImGuiTextFilter},
 )::Bool
     if !ig.ImGuiTextFilter_IsActive(filter_obj)
         return true
     end
     text = string(
-        display_label(project, measurement),
+        _item_display_label(workspace, item),
         "\n",
-        measurement.clean_title,
+        item.item_label,
         "\n",
-        kind_label(project, measurement.kind),
+        _item_kind_label(workspace, item),
     )
     return ig.ImGuiTextFilter_PassFilter(filter_obj, text, C_NULL)
 end
 
-"""Filter measurements by tags and the text entered in the measurement panel."""
-function _visible_measurements(
+"""Filter items by tags and the text entered in the item panel."""
+function _visible_items(
     state::BrowserState,
-    project::Project,
-    measurements::Vector{ItemRecord},
-    filter_meas::Ptr{ig.lib.ImGuiTextFilter},
+    workspace::Workspace.Workspace,
+    items::Vector{ItemRecord},
+    filter_item::Ptr{ig.lib.ImGuiTextFilter},
 )::Vector{ItemRecord}
-    if _show_bad_effective(state) && !ig.ImGuiTextFilter_IsActive(filter_meas)
-        return measurements
+    if _show_bad_effective(state) && !ig.ImGuiTextFilter_IsActive(filter_item)
+        return items
     end
 
     visible = ItemRecord[]
-    sizehint!(visible, length(measurements))
-    for measurement in measurements
-        _measurement_is_visible(state, measurement) || continue
-        _measurement_matches_filter(project, measurement, filter_meas) || continue
-        push!(visible, measurement)
+    sizehint!(visible, length(items))
+    for item in items
+        _item_is_visible(state, item) || continue
+        _item_matches_filter(workspace, item, filter_item) || continue
+        push!(visible, item)
     end
     return visible
 end
@@ -308,8 +327,8 @@ function _render_hierarchy_tree_panel(
             end
 
             dev_meta = nothing
-            if is_leaf && !isempty(node.measurements)
-                dev_meta = first(node.measurements).collection_metadata
+            if is_leaf && !isempty(node.items)
+                dev_meta = first(node.items).collection_metadata
             end
             for (i, k) in enumerate(meta_keys)
                 ig.TableSetColumnIndex(i)
@@ -405,7 +424,7 @@ function _update_multi_selection!(
     return nothing
 end
 
-"""Render selection counts shared by the device and measurement panels."""
+"""Render selection counts shared by the collection and item panels."""
 function _render_selection_status!(
     selected_count::Int,
     filtered_count::Int,
@@ -457,13 +476,13 @@ function _render_selection_toolbar!(
     return nothing
 end
 
-# Right panel (measurements list) rendering
-"""Render measurements for the selected devices and update workspace selection."""
-function _render_measurements_panel(
+# Right panel (items list) rendering
+"""Render items for the selected collections and update workspace selection."""
+function _render_items_panel(
     state::BrowserState,
-    filter_meas::Ptr{ig.lib.ImGuiTextFilter},
+    filter_item::Ptr{ig.lib.ImGuiTextFilter},
 )::Nothing
-    ig.BeginChild("Measurements", (0, 0), true)
+    ig.BeginChild("Items", (0, 0), true)
     ig.SeparatorText("Item Selection")
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
@@ -471,26 +490,24 @@ function _render_measurements_panel(
         ig.EndChild()
         return nothing
     end
-    proj = workspace.project
 
-    selected_collections, selected_measurements, selected_path =
+    selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
-    all_measurements = _measurements_of_selected_collections(state)
-    visible_measurements =
-        _visible_measurements(state, proj, all_measurements, filter_meas)
-    selected_measurement_id_set = Set(workspace.selection.measurement_ids)
+    all_items = _items_of_selected_collections(state)
+    visible_items = _visible_items(state, workspace, all_items, filter_item)
+    selected_item_key_set = Set(workspace.selection.item_keys)
     registry_ready = _tag_state_ready(state)
 
     _render_selection_toolbar!(
-        length(selected_measurements),
-        length(visible_measurements),
-        length(all_measurements),
-        filter_meas,
+        length(selected_items),
+        length(visible_items),
+        length(all_items),
+        filter_item,
         () -> begin
-            workspace.selection.measurement_ids =
-                [measurement.unique_id for measurement in visible_measurements]
+            workspace.selection.item_keys =
+                [item_record_key(item) for item in visible_items]
         end;
-        item_label="items", filter_id="##measurements_filter"
+        item_label="items", filter_id="##items_filter"
     )
 
     if !isempty(selected_collections)
@@ -512,64 +529,64 @@ function _render_measurements_panel(
         return nothing
     end
 
-    state.performance.measurement_rows_visible = length(visible_measurements)
-    state.performance.measurement_rows_rendered = 0
+    state.performance.item_rows_visible = length(visible_items)
+    state.performance.item_rows_rendered = 0
 
-    if !isempty(visible_measurements)
+    if !isempty(visible_items)
         table_flags = ig.ImGuiTableFlags_BordersOuterH | ig.ImGuiTableFlags_BordersOuterV |
                       ig.ImGuiTableFlags_RowBg | ig.ImGuiTableFlags_SizingStretchProp
-        if ig.BeginTable("measurements_table", 1, table_flags)
+        if ig.BeginTable("items_table", 1, table_flags)
             ig.TableSetupColumn("Item", ig.ImGuiTableColumnFlags_WidthStretch)
 
             rows_rendered = 0
             clipper = ig.lib.ImGuiListClipper()
             try
-                ig.Begin(clipper, length(visible_measurements), ig.GetTextLineHeightWithSpacing())
+                ig.Begin(clipper, length(visible_items), ig.GetTextLineHeightWithSpacing())
                 while ig.Step(clipper)
                     start_idx = Int(unsafe_load(clipper.DisplayStart)) + 1
                     end_idx = Int(unsafe_load(clipper.DisplayEnd))
                     for idx in start_idx:end_idx
-                        measurement = visible_measurements[idx]
-                        ig.PushID(measurement.unique_id)
+                        item = visible_items[idx]
+                        item_key = item_record_key(item)
+                        ig.PushID(item_key)
                         ig.TableNextRow()
                         ig.TableSetColumnIndex(0)
                         rows_rendered += 1
 
-                        is_selected = measurement.unique_id in selected_measurement_id_set
+                        is_selected = item_key in selected_item_key_set
                         bad_text_pushed = false
                         if registry_ready
                             tag_state = _tag_state_or_error(state)
-                            dev_key = collection_path_key(measurement.collection)
+                            dev_key = collection_path_key(item.collection)
                             ancestor_keys = _ancestor_keys_for_path(dev_key)
                             bad_text_pushed = _push_tag_text_style!(
-                                tag_state, measurement.unique_id, [dev_key; ancestor_keys])
+                                tag_state, item_key, [dev_key; ancestor_keys])
                         end
-                        if ig.Selectable(display_label(proj, measurement), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
+                        if ig.Selectable(_item_display_label(workspace, item), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
                             io = ig.GetIO()
                             shift_held = unsafe_load(io.KeyShift)
                             ctrl_held = unsafe_load(io.KeyCtrl)
-                            selected_measurement_ids = copy(workspace.selection.measurement_ids)
-                            visible_measurement_ids = [visible.unique_id for visible in visible_measurements]
+                            selected_item_keys = copy(workspace.selection.item_keys)
+                            visible_item_keys = [item_record_key(visible) for visible in visible_items]
                             _update_multi_selection!(
-                                selected_measurement_ids,
-                                measurement.unique_id,
-                                visible_measurement_ids,
+                                selected_item_keys,
+                                item_key,
+                                visible_item_keys,
                                 shift_held,
                                 ctrl_held,
                             )
-                            workspace.selection.measurement_ids = selected_measurement_ids
+                            workspace.selection.item_keys = selected_item_keys
                         end
-                        if state.scroll_to_measurement_id == measurement.unique_id
+                        if state.scroll_to_item_key == item_key
                             ig.SetScrollHereY(0.5)
-                            state.scroll_to_measurement_id = nothing
+                            state.scroll_to_item_key = nothing
                         end
                         bad_text_pushed && ig.PopStyleColor()
 
                         if ig.BeginPopupContextItem()
-                            target_measurements =
-                                _selection_targets(selected_measurements, measurement)
-                            target_ids = [target.unique_id for target in target_measurements]
-                            selected_count = length(target_ids)
+                            target_items = _selection_targets(selected_items, item)
+                            target_keys = [item_record_key(target) for target in target_items]
+                            selected_count = length(target_keys)
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count items")
 
                             if ig.MenuItem("Open Plot in New Window")
@@ -579,12 +596,12 @@ function _render_measurements_panel(
                                     plots.windows,
                                     PlotViewState(
                                         id="plot_$(plots.next_window_id)",
-                                        title=measurement.clean_title,
+                                        title=item.item_label,
                                         live=false,
-                                        measurement_ids=[measurement.unique_id],
+                                        item_keys=[item_key],
                                         plot_kind=get(
-                                            plots.kind_by_measurement,
-                                            measurement.kind,
+                                            plots.kind_by_item,
+                                            item.kind,
                                             nothing,
                                         ),
                                     ),
@@ -599,10 +616,10 @@ function _render_measurements_panel(
 
                             !editable && ig.BeginDisabled()
                             if ig.MenuItem("Mark Bad")
-                                _set_measurements_bad!(state, target_ids, true)
+                                _set_items_bad!(state, target_keys, true)
                             end
                             if ig.MenuItem("Unmark Bad")
-                                _set_measurements_bad!(state, target_ids, false)
+                                _set_items_bad!(state, target_keys, false)
                             end
                             !editable && ig.EndDisabled()
                             ig.EndPopup()
@@ -614,8 +631,8 @@ function _render_measurements_panel(
                 ig.Destroy(clipper)
             end
 
-            state.performance.measurement_rows_rendered = rows_rendered
-            state.performance.measurement_rows_visible = length(visible_measurements)
+            state.performance.item_rows_rendered = rows_rendered
+            state.performance.item_rows_visible = length(visible_items)
             ig.EndTable()
         end
     else
@@ -636,12 +653,12 @@ function render_selection_window(state::BrowserState)::Nothing
         state.tree_filter_widget =
             ig.ImGuiTextFilter_ImGuiTextFilter(state.tree_filter)
     end
-    if state.measurement_filter_widget === nothing
-        state.measurement_filter_widget =
-            ig.ImGuiTextFilter_ImGuiTextFilter(state.measurement_filter)
+    if state.item_filter_widget === nothing
+        state.item_filter_widget =
+            ig.ImGuiTextFilter_ImGuiTextFilter(state.item_filter)
     end
     filter_tree = state.tree_filter_widget
-    filter_meas = state.measurement_filter_widget
+    filter_item = state.item_filter_widget
 
     if ig.Begin("Hierarchy", C_NULL, ig.ImGuiWindowFlags_MenuBar)
         render_menu_bar(state)
@@ -650,12 +667,12 @@ function render_selection_window(state::BrowserState)::Nothing
             _render_hierarchy_tree_panel(state, filter_tree)
         end
         ig.NextColumn()
-        _time!(state, :measurement_panel) do
-            _render_measurements_panel(state, filter_meas)
+        _time!(state, :item_panel) do
+            _render_items_panel(state, filter_item)
         end
     end
     ig.End()
     state.tree_filter = _imgui_text_filter_text(filter_tree)
-    state.measurement_filter = _imgui_text_filter_text(filter_meas)
+    state.item_filter = _imgui_text_filter_text(filter_item)
     return nothing
 end

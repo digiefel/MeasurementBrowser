@@ -82,23 +82,23 @@ end
     fixture1 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv")
     fixture2 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv")
     project = _tase_project()
-    measurements = [
+    items = [
         only(items_for_file(project, fixture1)),
         only(items_for_file(project, fixture2)),
     ]
 
-    @test measurements[1].collection == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
+    @test items[1].collection == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
 
     @testset "plot data api" begin
         workspace = MB.Workspace.Workspace(project, dirname(fixture1))
-        data = read_item_data(workspace, measurements)
+        data = read_item_data(workspace, items)
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)
         @test all(names(df) == ["i", "v"] for df in data)
 
         plot_kind = MB.RegistryPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
         @test plot_kind === MB.RegistryPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
-        figure = setup_plot(workspace, plot_kind, measurements)
-        @test plot_data!(workspace, plot_kind, measurements, figure) === nothing
+        figure = setup_plot(workspace, plot_kind, items)
+        @test plot_data!(workspace, plot_kind, items, figure) === nothing
     end
 end

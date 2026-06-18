@@ -1,58 +1,34 @@
 const COLLECTION_METADATA_FILENAME = "device_info.txt"
 
+"""Return source-specific failures accumulated outside `data_items` itself."""
+source_analysis_failures(::AbstractDataSource)::Vector{ItemFailure} = ItemFailure[]
+
 """
 Send one structured progress update when a callback is present.
 """
 function emit_progress(
     on_progress::Union{Nothing,Function};
     phase::Symbol,
-    total_csv::Int,
-    processed_csv::Int,
-    loaded_measurements::Int,
-    skipped_csv::Int,
-    current_path::String="",
+    total_source_items::Int,
+    processed_source_items::Int,
+    loaded_items::Int,
+    skipped_source_items::Int,
+    current_source_item::String="",
 )::Nothing
     on_progress === nothing && return nothing
     on_progress((
         phase=phase,
-        total_csv=total_csv,
-        processed_csv=processed_csv,
-        loaded_measurements=loaded_measurements,
-        skipped_csv=skipped_csv,
-        current_path=current_path,
+        total_source_items=total_source_items,
+        processed_source_items=processed_source_items,
+        loaded_items=loaded_items,
+        skipped_source_items=skipped_source_items,
+        current_source_item=current_source_item,
     ))
     return nothing
 end
 
 """
-Count visible CSV files before a scan when exact progress totals are requested.
-"""
-function count_source_files(
-    root_path::String;
-    on_progress::Union{Nothing,Function}=nothing,
-)::Int
-    total = 0
-    for (root, _, files) in walkdir(root_path)
-        for file in files
-            check_cancel()
-            is_source_filename(file) || continue
-            total += 1
-            emit_progress(
-                on_progress;
-                phase=:counting,
-                total_csv=total,
-                processed_csv=total,
-                loaded_measurements=0,
-                skipped_csv=0,
-                current_path=joinpath(root, file),
-            )
-        end
-    end
-    return total
-end
-
-"""
-Parse one device-metadata cell into a primitive Julia value.
+Parse one collection-metadata cell into a primitive Julia value.
 """
 function parse_metadata_value(text::AbstractString)::Any
     value = strip(text)
@@ -79,7 +55,7 @@ function parse_metadata_value(text::AbstractString)::Any
 end
 
 """
-Read device metadata keyed by exact slash-separated path fragments.
+Read collection metadata keyed by exact slash-separated path fragments.
 """
 function load_collection_metadata(
     path::AbstractString,
@@ -109,9 +85,7 @@ function load_collection_metadata(
 end
 
 """
-Merge every metadata fragment matching a parsed device path.
-
-Longer path fragments are applied later and therefore override broader entries.
+Merge every metadata fragment matching a parsed collection path.
 """
 function matching_collection_parameters(
     metadata::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
@@ -138,7 +112,7 @@ has_collection_metadata(root_path::AbstractString)::Bool =
     isfile(collection_metadata_path(root_path))
 
 """
-Read optional source-root device metadata for one scan.
+Read optional source-root collection metadata.
 """
 function load_scan_metadata(
     root_path::String,
@@ -147,119 +121,127 @@ function load_scan_metadata(
     return isfile(path) ? load_collection_metadata(path) : nothing
 end
 
-"""
-Create the short title shown for an item in browser panels and plots.
-"""
-function build_clean_title(
-    project::Project,
-    filename::String,
-    kind::Symbol,
-    collection::AbstractVector{<:AbstractString},
-)::String
-    kind_text = kind_label(project, kind)
-    collection_label = collection_path_label(project, collection)
-    parts = filter(!isempty, (
-        kind_text == "Unknown" ? "" : kind_text,
-        collection_label,
-    ))
-    return isempty(parts) ?
-        strip(replace(filename, r"\.csv$" => "")) :
-        join(parts, " ")
-end
+"""Return the metadata table a source wants applied during indexing."""
+source_collection_metadata(::AbstractDataSource) = nothing
 
 """
-Interpret one indexed file and apply matching source-root collection metadata.
+Apply source-level collection metadata to indexed records.
+
+TODO: collection metadata currently remains file-adapter rooted. Move annotations and metadata to a
+source capability so generic sources can choose their own hand-editable storage later.
 """
-function interpret_items(
-    project::Project,
-    file::SourceFile,
+function apply_collection_metadata!(
+    records::Vector{ItemRecord},
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
-)::Vector{ItemRecord}
-    items = interpret_file(project, file)
-    metadata === nothing && return items
-    for item in items
-        parameters = matching_collection_parameters(metadata, item.collection)
-        parameters === nothing || merge!(item.collection_metadata, parameters)
+)::Nothing
+    metadata === nothing && return nothing
+    for record in records
+        parameters = matching_collection_parameters(metadata, record.collection)
+        parameters === nothing || merge!(record.collection_metadata, parameters)
     end
-    return items
+    return nothing
+end
+
+"""Return the current source-item fingerprints keyed by source-item id."""
+function source_item_fingerprints(
+    items::Vector{<:AbstractDataSourceItem},
+)::Dict{String,Any}
+    return Dict(source_item_id(item) => source_item_fingerprint(item) for item in items)
+end
+
+"""Whether a cached scan still matches the source-level and source-item fingerprints."""
+function source_unchanged(
+    source::AbstractDataSource,
+    fingerprints::Dict{String,Any},
+    cached::SourceScan,
+)::Bool
+    cached.source_id == source_id(source) || return false
+    cached.source_fingerprint == source_fingerprint(source) || return false
+    return cached.source_item_fingerprints == fingerprints
+end
+
+"""Interpret one source item into records and keep the original handles for collection folds."""
+function interpret_source_item(
+    source::AbstractDataSource,
+    source_item::AbstractDataSourceItem,
+    metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
+)::Tuple{Vector{ItemRecord},Dict{String,AbstractDataItem}}
+    handles = data_items(source, source_item)::Vector{<:AbstractDataItem}
+    records = ItemRecord[
+        ItemRecord(handle; source_item)
+        for handle in handles
+    ]
+    apply_collection_metadata!(records, metadata)
+    by_key = Dict{String,AbstractDataItem}()
+    for (record, handle) in zip(records, handles)
+        by_key[item_record_key(record)] = handle
+    end
+    return records, by_key
 end
 
 """
-Interpret and analyze one physical file using the same project path as a full scan.
+Interpret source items concurrently and stream each successful record batch.
 """
-function items_for_file(
-    project::Project,
-    filepath::AbstractString;
-    meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
-)::Vector{ItemRecord}
-    file = index_source_file(filepath)
-    measurements = interpret_items(project, file, meta)
-    compute_and_add_item_stats!(project, measurements, [file])
-    return measurements
-end
-
-"""
-Interpret indexed files concurrently and stream each successful measurement batch.
-
-Failures remain attached to their physical files and do not stop unrelated files.
-"""
-function interpret_source_files(
-    project::Project,
-    files::Vector{SourceFile},
+function interpret_source_items(
+    source::AbstractDataSource,
+    source_items::Vector{<:AbstractDataSourceItem},
     metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
-    on_result::Function,
-    on_measurements::Union{Nothing,Function}=nothing,
+    on_items::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )::NamedTuple
     processed_count = Base.Threads.Atomic{Int}(0)
-    measurement_count = Base.Threads.Atomic{Int}(0)
+    item_count = Base.Threads.Atomic{Int}(0)
     skipped_count = Base.Threads.Atomic{Int}(0)
     callback_lock = ReentrantLock()
     worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
     cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
     failures = ItemFailure[]
+    records_by_position = Vector{Vector{ItemRecord}}(undef, length(source_items))
+    handles_by_key = Dict{String,AbstractDataItem}()
 
-    @sync for (index, file) in pairs(files)
+    @sync for (index, source_item) in pairs(source_items)
         check_cancel()
         Base.acquire(worker_limit)
         Base.Threads.@spawn try
             with_cancel(cancel_requested) do
                 check_cancel()
-                measurements = try
-                    interpret_items(project, file, metadata)
+                records, handles = try
+                    interpret_source_item(source, source_item, metadata)
                 catch error
                     is_job_cancelled(error) && rethrow()
                     backtrace = catch_backtrace()
                     @error(
-                        "Source file interpretation failed",
-                        project=project_name(project),
-                        file=file.filepath,
+                        "Source item interpretation failed",
+                        source=source_label(source),
+                        source_item=source_item_id(source_item),
                         exception=(error, backtrace),
                     )
                     lock(callback_lock) do
                         push!(failures, ItemFailure(
-                            file.filepath,
+                            source_item_id(source_item),
                             "",
                             sprint(showerror, error),
                         ))
                     end
-                    ItemRecord[]
+                    ItemRecord[], Dict{String,AbstractDataItem}()
                 end
                 check_cancel()
-                on_result(index, SourceFile(file, measurements))
-                isempty(measurements) || on_measurements === nothing ||
-                    lock(() -> on_measurements(measurements), callback_lock)
-                isempty(measurements) ?
+                records_by_position[index] = records
+                lock(callback_lock) do
+                    merge!(handles_by_key, handles)
+                    isempty(records) || on_items === nothing || on_items(records)
+                end
+                isempty(records) ?
                     Base.Threads.atomic_add!(skipped_count, 1) :
-                    Base.Threads.atomic_add!(measurement_count, length(measurements))
+                    Base.Threads.atomic_add!(item_count, length(records))
                 processed = Base.Threads.atomic_add!(processed_count, 1) + 1
                 on_progress === nothing || lock(callback_lock) do
                     on_progress((
-                        total_csv=length(files),
-                        processed_csv=processed,
-                        loaded_measurements=measurement_count[],
-                        skipped_csv=skipped_count[],
-                        current_path=file.filepath,
+                        total_source_items=length(source_items),
+                        processed_source_items=processed,
+                        loaded_items=item_count[],
+                        skipped_source_items=skipped_count[],
+                        current_source_item=source_item_id(source_item),
                     ))
                 end
             end
@@ -268,162 +250,131 @@ function interpret_source_files(
         end
     end
 
+    records = reduce(append!, records_by_position; init=ItemRecord[])
     return (
-        processed_csv=processed_count[],
-        loaded_measurements=measurement_count[],
-        skipped_csv=skipped_count[],
-        total_csv=length(files),
+        processed_source_items=processed_count[],
+        loaded_items=item_count[],
+        skipped_source_items=skipped_count[],
+        total_source_items=length(source_items),
         failures,
+        records,
+        handles_by_key,
     )
 end
 
-"""Whether the freshly indexed files exactly match the cached set, by path and fingerprint."""
-function _files_unchanged(
-    files::Vector{SourceFile},
-    cached::Dict{String,SourceFile},
-)::Bool
-    length(files) == length(cached) || return false
-    for file in files
-        cached_file = get(cached, file.filepath, nothing)
-        (cached_file === nothing || cached_file.fingerprint != file.fingerprint) && return false
+"""Apply collection-node stats supplied by the source."""
+function add_collection_stats!(
+    source::AbstractDataSource,
+    hierarchy::Hierarchy,
+    handles_by_key::Dict{String,AbstractDataItem},
+)::Vector{ItemFailure}
+    failures = ItemFailure[]
+    for (path, node) in hierarchy.index
+        isempty(node.items) && continue
+        handles = AbstractDataItem[
+            handles_by_key[item_record_key(record)]
+            for record in node.items
+        ]
+        try
+            merge!(node.stats, collection_stats(source, collect(path), handles))
+        catch error
+            first_item = first(node.items)
+            push!(failures, ItemFailure(
+                first_item.source_item_id,
+                item_record_key(first_item),
+                "collection_stats: " * sprint(showerror, error),
+            ))
+        end
     end
-    return true
+    return failures
 end
 
 """
-Scan one source root into its complete measurement hierarchy.
-
-Measurements stream through `on_measurements` while interpretation is still running. Project
-statistics run only after all files are known, allowing cross-file calculations.
+Scan one source into its complete item hierarchy.
 """
 function scan_source(
-    root_path::String;
-    project::Project,
-    cached_files::Union{Nothing,Dict{String,SourceFile}}=nothing,
+    source::AbstractDataSource;
     cached_source::Union{Nothing,SourceScan}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
-    on_measurements::Union{Nothing,Function}=nothing,
+    on_items::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
-    root = normpath(abspath(expanduser(root_path)))
-    metadata = load_scan_metadata(root)
-    reset_scan_profile!(project)
-    count_first && count_source_files(root; on_progress)
+    count_first && emit_progress(
+        on_progress;
+        phase=:counting,
+        total_source_items=0,
+        processed_source_items=0,
+        loaded_items=0,
+        skipped_source_items=0,
+    )
     emit_progress(
         on_progress;
         phase=:discovering,
-        total_csv=0,
-        processed_csv=0,
-        loaded_measurements=0,
-        skipped_csv=0,
+        total_source_items=0,
+        processed_source_items=0,
+        loaded_items=0,
+        skipped_source_items=0,
     )
-    files = collect_source_files(
-        root;
-        on_file=(file, count) -> emit_progress(
-            on_progress;
-            phase=:discovering,
-            total_csv=0,
-            processed_csv=count,
-            loaded_measurements=0,
-            skipped_csv=0,
-            current_path=file.filepath,
-        ),
-    )
+    discovered = source_items(source)
+    fingerprints = source_item_fingerprints(discovered)
     check_cancel()
-    # Fingerprinting is a cheap stat() per file; reading and analyzing is what's slow. When nothing
-    # changed since the cache was written, the cache is authoritative — skip all reads and analysis.
-    if cached_source !== nothing && cached_files !== nothing && _files_unchanged(files, cached_files)
+    if cached_source !== nothing && source_unchanged(source, fingerprints, cached_source)
         emit_progress(
             on_progress;
             phase=:scanning,
-            total_csv=length(files),
-            processed_csv=length(files),
-            loaded_measurements=length(cached_source.hierarchy.all_measurements),
-            skipped_csv=cached_source.hierarchy.skipped_count,
-            current_path=root,
+            total_source_items=length(discovered),
+            processed_source_items=length(discovered),
+            loaded_items=length(cached_source.hierarchy.all_items),
+            skipped_source_items=cached_source.hierarchy.skipped_count,
         )
         return cached_source
     end
-    scanned_files = Vector{SourceFile}(undef, length(files))
+
     emit_progress(
         on_progress;
         phase=:scanning,
-        total_csv=length(files),
-        processed_csv=0,
-        loaded_measurements=0,
-        skipped_csv=0,
+        total_source_items=length(discovered),
+        processed_source_items=0,
+        loaded_items=0,
+        skipped_source_items=0,
     )
-    summary = interpret_source_files(
-        project,
-        files,
-        metadata;
-        on_result=(index, file) -> (scanned_files[index] = file),
-        on_measurements,
+    summary = interpret_source_items(
+        source,
+        discovered,
+        source_collection_metadata(source);
+        on_items,
         on_progress=progress -> emit_progress(
             on_progress;
             phase=:scanning,
-            total_csv=progress.total_csv,
-            processed_csv=progress.processed_csv,
-            loaded_measurements=progress.loaded_measurements,
-            skipped_csv=progress.skipped_csv,
-            current_path=progress.current_path,
+            total_source_items=progress.total_source_items,
+            processed_source_items=progress.processed_source_items,
+            loaded_items=progress.loaded_items,
+            skipped_source_items=progress.skipped_source_items,
+            current_source_item=progress.current_source_item,
         ),
     )
     check_cancel()
-    measurements = reduce(
-        append!,
-        (file.measurements for file in scanned_files);
-        init=ItemRecord[],
+    hierarchy = Hierarchy(
+        summary.records,
+        source_id(source),
+        source_collection_metadata(source) !== nothing,
+        summary.skipped_source_items,
     )
-    analysis_progress_seen = Ref(false)
     emit_progress(
         on_progress;
         phase=:analyzing,
-        total_csv=0,
-        processed_csv=0,
-        loaded_measurements=length(measurements),
-        skipped_csv=summary.skipped_csv,
-        current_path=root,
+        total_source_items=length(discovered),
+        processed_source_items=length(discovered),
+        loaded_items=length(summary.records),
+        skipped_source_items=summary.skipped_source_items,
     )
-    analysis_failures = compute_and_add_item_stats!(
-        project,
-        measurements,
-        scanned_files;
-        on_progress=progress -> begin
-            analysis_progress_seen[] = true
-            emit_progress(
-                on_progress;
-                phase=:analyzing,
-                total_csv=progress.total,
-                processed_csv=progress.processed,
-                loaded_measurements=length(measurements),
-                skipped_csv=summary.skipped_csv,
-                current_path=progress.current_path,
-            )
-        end,
-    )
-    analysis_progress_seen[] || emit_progress(
-        on_progress;
-        phase=:analyzing,
-        total_csv=1,
-        processed_csv=1,
-        loaded_measurements=length(measurements),
-        skipped_csv=summary.skipped_csv,
-        current_path=root,
-    )
-    check_cancel()
-    hierarchy = Hierarchy(
-        measurements,
-        root,
-        metadata !== nothing,
-        project,
-        summary.skipped_csv,
-    )
-    append!(summary.failures, analysis_failures)
+    append!(summary.failures, add_collection_stats!(source, hierarchy, summary.handles_by_key))
+    append!(summary.failures, source_analysis_failures(source))
     return SourceScan(
-        root,
-        project,
-        scanned_files,
+        source_id(source),
+        source_label(source),
+        source_fingerprint(source),
+        fingerprints,
         hierarchy,
         summary.failures,
     )

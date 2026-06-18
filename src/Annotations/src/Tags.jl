@@ -12,9 +12,8 @@ The file has two sections, each introduced by a bracketed header:
     /Users/davide/data/RuO2test/A9/VI/D1/3V FE PUND.csv        bad
     RuO2test/A10/VI                                            todo
 
-Assignment rows are `<key>\\t<tag_name>`. Keys are either device-path strings
-(slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or measurement-ID strings
-(absolute filesystem paths, optionally with `#cycle=N` / `#split=X` suffixes).
+Assignment rows are `<key>\\t<tag_name>`. Keys are either collection-path strings
+(slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item keys.
 The two namespaces never overlap, so no kind prefix is needed. Fields are
 tab-separated on write; whitespace-tolerant on read. Lines starting with `#`
 are comments. Malformed rows raise `TagsParseError`.
@@ -47,9 +46,8 @@ end
 
 Catalog of `TagDef`s plus a single `assignments` map.
 
-Keys are arbitrary strings — either device-path keys (slash-joined segments,
-e.g. `"RuO2test/A9/VI/D1"`) or measurement-ID strings (absolute paths with
-optional `#cycle=N` / `#split=X` suffixes). The two namespaces never overlap.
+Keys are arbitrary strings — either collection-path keys (slash-joined segments,
+e.g. `"RuO2test/A9/VI/D1"`) or item keys. The two namespaces never overlap.
 
 Only explicitly attached tags are stored; inheritance is applied at lookup time
 via `effective`.
@@ -186,11 +184,11 @@ Return tags that apply to `path`: its own assignments unioned with any
 assignments on ancestor paths. The caller supplies `ancestor_paths`
 (order doesn't affect the union).
 
-To get the full applicable set for a measurement, call:
+To get the full applicable set for an item, call:
 
-    effective(state, measurement_id, [device_path; device_ancestors...])
+    effective(state, item_key, [collection_path; collection_ancestors...])
 
-This works because all keys — device paths and measurement IDs — live in the
+This works because all keys — collection paths and item keys — live in the
 same `assignments` map and are looked up uniformly.
 """
 function effective(state::TagState, path::AbstractString, ancestor_paths)::Set{String}

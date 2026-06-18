@@ -14,32 +14,19 @@ function Base.:(==)(left::FileFingerprint, right::FileFingerprint)::Bool
         left.mtime_ns == right.mtime_ns
 end
 
-"""
-One physical source file and the logical measurements interpreted from it.
-"""
-struct SourceFile
-    unique_id::String
+"""One physical source file discovered inside a file-backed data source."""
+struct SourceFile <: AbstractDataSourceItem
     filepath::String
     filename::String
     timestamp::Union{DateTime,Nothing}
     fingerprint::FileFingerprint
-    measurements::Vector{ItemRecord}
 end
 
-"""Copy indexed file metadata and attach its interpreted measurements."""
-function SourceFile(
-    file::SourceFile,
-    measurements::Vector{ItemRecord},
-)::SourceFile
-    return SourceFile(
-        file.unique_id,
-        file.filepath,
-        file.filename,
-        file.timestamp,
-        file.fingerprint,
-        measurements,
-    )
-end
+Projects.source_item_id(file::SourceFile)::String = file.filepath
+Projects.source_item_label(file::SourceFile)::String = file.filename
+Projects.source_item_fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
+Projects.source_item_path(file::SourceFile)::String = file.filepath
+Projects.source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
 
 """Read the current fingerprint of one physical source file."""
 function file_fingerprint(path::AbstractString)::FileFingerprint
@@ -52,17 +39,15 @@ function file_fingerprint(path::AbstractString)::FileFingerprint
     )
 end
 
-"""Index one physical source file without reading its measurement data."""
+"""Index one physical source file without interpreting its data items."""
 function index_source_file(path::AbstractString)::SourceFile
     normalized = normpath(abspath(expanduser(String(path))))
     filename = basename(normalized)
     return SourceFile(
         normalized,
-        normalized,
         filename,
         parse_timestamp(filename),
         file_fingerprint(normalized),
-        ItemRecord[],
     )
 end
 

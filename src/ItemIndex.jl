@@ -4,21 +4,34 @@ using Dates
 
 import ..Projects
 import ..Projects:
+    AbstractDataSource,
+    AbstractDataSourceItem,
     AbstractDataItem,
     Project,
-    compute_and_add_item_stats!,
     collection_path_label,
-    interpret_file,
+    collection_stats,
+    data_items,
+    item_fingerprint,
     kind_label,
+    load_data_item,
     project_name,
-    reset_scan_profile!
+    reset_scan_profile!,
+    source_fingerprint,
+    source_id,
+    source_item_fingerprint,
+    source_item_id,
+    source_item_label,
+    source_item_path,
+    source_item_timestamp,
+    source_items,
+    source_label
 
 """
-Failure produced while interpreting or analyzing one physical source file.
+Failure produced while interpreting or analyzing one source item.
 """
 struct ItemFailure
-    filepath::String
-    measurement_id::String
+    source_item_id::String
+    item_key::String
     message::String
 end
 
@@ -75,52 +88,53 @@ function collection_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
 end
 
 """
-The internal metadata record for one logical item discovered inside a physical source file.
-
-`collection` is the item's canonical placement in the tree (nested collection names);
-`collection_metadata` is per-collection metadata merged from source-root metadata sources.
-`parameters` describe acquisition settings known while interpreting the file; `stats` contain values
-computed after the required context is available.
+The internal metadata record for one logical item discovered inside one source item.
 """
 struct ItemRecord
-    unique_id::String
-    filename::String
-    filepath::String
-    clean_title::String
+    source_item_id::String
+    source_item_fingerprint::Any
+    source_item_path::Union{Nothing,String}
+    source_item_timestamp::Union{DateTime,Nothing}
+    item_id::String
+    item_label::String
     kind::Symbol
-    timestamp::Union{DateTime,Nothing}
     collection::Vector{String}
     collection_metadata::Dict{Symbol,Any}
     parameters::Dict{Symbol,Any}
     stats::Dict{Symbol,Any}
+    item_fingerprint::Any
 end
 
 """
 Construct an item record while normalizing its string fields.
 """
 function ItemRecord(;
-    filepath::AbstractString,
+    source_item_id::AbstractString,
+    source_item_fingerprint=nothing,
+    source_item_path::Union{Nothing,AbstractString}=nothing,
+    source_item_timestamp::Union{DateTime,Nothing}=nothing,
+    item_id::AbstractString,
+    item_label::AbstractString,
     kind::Symbol,
     collection::AbstractVector{<:AbstractString},
-    clean_title::AbstractString,
-    filename::AbstractString=basename(filepath),
-    unique_id::AbstractString=filepath,
-    timestamp::Union{DateTime,Nothing}=nothing,
     collection_metadata::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
+    item_fingerprint=nothing,
 )::ItemRecord
     return ItemRecord(
-        String(unique_id),
-        String(filename),
-        String(filepath),
-        String(clean_title),
+        String(source_item_id),
+        source_item_fingerprint,
+        source_item_path === nothing ? nothing : String(source_item_path),
+        source_item_timestamp,
+        String(item_id),
+        String(item_label),
         kind,
-        timestamp,
         String[String(segment) for segment in collection],
         collection_metadata,
         parameters,
         stats,
+        item_fingerprint,
     )
 end
 
@@ -129,29 +143,38 @@ Copy an item record while replacing selected fields.
 """
 function ItemRecord(
     record::ItemRecord;
-    filepath::AbstractString=record.filepath,
-    filename::AbstractString=record.filename,
-    unique_id::AbstractString=record.unique_id,
-    clean_title::AbstractString=record.clean_title,
+    source_item_id::AbstractString=record.source_item_id,
+    source_item_fingerprint=record.source_item_fingerprint,
+    source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
+    source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
+    item_id::AbstractString=record.item_id,
+    item_label::AbstractString=record.item_label,
     kind::Symbol=record.kind,
-    timestamp::Union{DateTime,Nothing}=record.timestamp,
     collection::AbstractVector{<:AbstractString}=copy(record.collection),
     collection_metadata::Dict{Symbol,Any}=deepcopy(record.collection_metadata),
     parameters::Dict{Symbol,Any}=deepcopy(record.parameters),
     stats::Dict{Symbol,Any}=deepcopy(record.stats),
+    item_fingerprint=record.item_fingerprint,
 )::ItemRecord
     return ItemRecord(;
-        filepath,
-        filename,
-        unique_id,
-        clean_title,
+        source_item_id,
+        source_item_fingerprint,
+        source_item_path,
+        source_item_timestamp,
+        item_id,
+        item_label,
         kind,
-        timestamp,
         collection,
         collection_metadata,
         parameters,
         stats,
+        item_fingerprint,
     )
+end
+
+"""Stable opaque key for selection, workspace indexes, and persisted view state."""
+function item_record_key(record::ItemRecord)::String
+    return "$(ncodeunits(record.source_item_id)):$(record.source_item_id)$(record.item_id)"
 end
 
 """
@@ -176,8 +199,8 @@ end
 
 """Materialize a loaded item from an internal record and its (processed) payload."""
 DataItem(record::ItemRecord, data)::DataItem = DataItem(
-    record.unique_id,
-    record.clean_title,
+    record.item_id,
+    record.item_label,
     record.kind,
     record.collection,
     record.parameters,
@@ -188,9 +211,8 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
 """
 Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
 
-The engine fills `filepath`/`timestamp` and mints `unique_id` from the `SourceFile`, so a recipe
-supplies only the metadata it knows: `kind`, `collection`, and optionally `label`/`parameters`. `data`
-is omitted at scan (the engine resolves it later via `read`/`process`).
+A recipe supplies the metadata it knows: `kind`, `collection`, and optionally
+`label`/`parameters`/`unique_id`. `data` is omitted at scan and attached later by the source.
 """
 function DataItem(;
     kind::Symbol,
@@ -213,35 +235,30 @@ function DataItem(;
 end
 
 """
-Derive the internal `ItemRecord` from any item via the `AbstractDataItem` contract.
-
-The contract carries no file identity, so the engine supplies `filepath`/`filename`/`timestamp` and
-the minted `unique_id` from the scan-time `SourceFile`; the rest comes from the contract.
-`collection_metadata` starts empty and is filled later from source-root metadata.
+Derive the internal `ItemRecord` from any item via the source and item contracts.
 """
 function ItemRecord(
     item::AbstractDataItem;
-    filepath::AbstractString,
-    filename::AbstractString=basename(filepath),
-    timestamp::Union{DateTime,Nothing}=nothing,
+    source_item::AbstractDataSourceItem,
     kind::Symbol=Projects.kind(item),
-    unique_id::AbstractString=Projects.item_id(item),
 )::ItemRecord
     label = Projects.item_label(item)
     title = isempty(label) ?
-        strip(join(filter(!isnothing, Any[timestamp, string(kind)]), " ")) :
+        strip(join(filter(!isnothing, Any[source_item_timestamp(source_item), string(kind)]), " ")) :
         String(label)
-    return ItemRecord(
-        String(unique_id),
-        String(filename),
-        String(filepath),
-        title,
+    return ItemRecord(;
+        source_item_id=source_item_id(source_item),
+        source_item_fingerprint=source_item_fingerprint(source_item),
+        source_item_path=source_item_path(source_item),
+        source_item_timestamp=source_item_timestamp(source_item),
+        item_id=Projects.item_id(item),
+        item_label=title,
         kind,
-        timestamp,
-        String[String(segment) for segment in Projects.collection(item)],
-        Dict{Symbol,Any}(),
-        Projects.parameters(item),
-        Projects.stats(item),
+        collection=Projects.collection(item),
+        collection_metadata=Dict{Symbol,Any}(),
+        parameters=Projects.parameters(item),
+        stats=Projects.stats(item),
+        item_fingerprint=item_fingerprint(item),
     )
 end
 
@@ -252,10 +269,10 @@ Projects.collection(item::DataItem)::Vector{String} = item.collection
 Projects.parameters(item::DataItem)::Dict{Symbol,Any} = item.parameters
 Projects.stats(item::DataItem)::Dict{Symbol,Any} = item.stats
 Projects.item_data(item::DataItem) = item.data
-Projects.read_data(item::DataItem) = item.data
+Projects.item_fingerprint(item::DataItem) = nothing
 
 """
-Extract a measurement timestamp from the supported filename conventions.
+Extract a source-item timestamp from the supported filename conventions.
 """
 function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     if (result = match(
@@ -288,44 +305,51 @@ struct HierarchyNode
     name::String
     kind::Symbol
     children::Vector{HierarchyNode}
-    measurements::Vector{ItemRecord}
+    items::Vector{ItemRecord}
+    stats::Dict{Symbol,Any}
 end
 
 HierarchyNode(name::String, kind::Symbol) =
-    HierarchyNode(name, kind, HierarchyNode[], ItemRecord[])
+    HierarchyNode(name, kind, HierarchyNode[], ItemRecord[], Dict{Symbol,Any}())
 
 """
 The complete device tree and its indexes for one source root.
 """
 struct Hierarchy
     root::HierarchyNode
-    all_measurements::Vector{ItemRecord}
-    root_path::String
+    all_items::Vector{ItemRecord}
+    source_id::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
     has_collection_metadata::Bool
-    project::Project
     skipped_count::Int
 end
 
 """
-The authoritative result of one completed filesystem scan.
+The authoritative result of one completed source scan.
 """
 struct SourceScan
-    root_path::String
-    project::Project
-    files::Vector{SourceFile}
+    source_id::String
+    source_label::String
+    source_fingerprint::Any
+    source_item_fingerprints::Dict{String,Any}
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
 end
 
 """Construct a successful scan with no recorded analysis failures."""
 function SourceScan(
-    root_path::String,
-    project::Project,
-    files::Vector{SourceFile},
+    source::AbstractDataSource,
+    source_item_fingerprints::Dict{String,Any},
     hierarchy::Hierarchy,
 )::SourceScan
-    return SourceScan(root_path, project, files, hierarchy, ItemFailure[])
+    return SourceScan(
+        source_id(source),
+        source_label(source),
+        source_fingerprint(source),
+        source_item_fingerprints,
+        hierarchy,
+        ItemFailure[],
+    )
 end
 
 """
@@ -359,13 +383,13 @@ function natural_key(text::AbstractString)::Tuple
     return Tuple(parts)
 end
 
-item_timestamp_key(measurement::ItemRecord)::DateTime =
-    measurement.timestamp === nothing ?
+item_timestamp_key(item::ItemRecord)::DateTime =
+    item.source_item_timestamp === nothing ?
     DateTime(Dates.year(typemax(Date))) :
-    measurement.timestamp
+    item.source_item_timestamp
 
 """
-Sort one hierarchy node recursively using natural names and measurement time.
+Sort one hierarchy node recursively using natural names and source-item time.
 """
 function Base.sort!(node::HierarchyNode)::HierarchyNode
     foreach(sort!, node.children)
@@ -378,7 +402,7 @@ function Base.sort!(node::HierarchyNode)::HierarchyNode
             child -> natural_key(child.name),
     )
     foreach(
-        child -> sort!(child.measurements; by=item_timestamp_key),
+        child -> sort!(child.items; by=item_timestamp_key),
         node.children,
     )
     return node
@@ -393,63 +417,59 @@ Base.sort!(hierarchy::Hierarchy)::Hierarchy = (
 Create an empty hierarchy ready for progressive scan results.
 """
 function Hierarchy(
-    root_path::String,
+    source_id::String,
     has_collection_metadata::Bool,
-    project::Project,
     skipped_count::Int=0,
 )::Hierarchy
     return Hierarchy(
         HierarchyNode("/", :root),
         ItemRecord[],
-        root_path,
+        source_id,
         Dict{Tuple{Vararg{String}},HierarchyNode}(),
         has_collection_metadata,
-        project,
         skipped_count,
     )
 end
 
 """
-Insert one measurement into an existing hierarchy.
+Insert one item into an existing hierarchy.
 """
 function insert_item!(
     hierarchy::Hierarchy,
-    measurement::ItemRecord,
+    item::ItemRecord,
 )::ItemRecord
     parent = hierarchy.root
-    for (depth, segment) in enumerate(measurement.collection)
-        path = Tuple(measurement.collection[1:depth])
+    for (depth, segment) in enumerate(item.collection)
+        path = Tuple(item.collection[1:depth])
         child = get(hierarchy.index, path, nothing)
         if child === nothing
-            kind = depth == length(measurement.collection) ? :leaf : :level
+            kind = depth == length(item.collection) ? :leaf : :level
             child = HierarchyNode(segment, kind)
             push!(parent.children, child)
             hierarchy.index[path] = child
         end
         parent = child
     end
-    push!(parent.measurements, measurement)
-    push!(hierarchy.all_measurements, measurement)
-    return measurement
+    push!(parent.items, item)
+    push!(hierarchy.all_items, item)
+    return item
 end
 
 """
-Build a complete device tree from a flat measurement list.
+Build a complete collection tree from a flat item list.
 """
 function Hierarchy(
-    measurements::Vector{ItemRecord},
-    root_path::String,
+    items::Vector{ItemRecord},
+    source_id::String,
     has_collection_metadata::Bool,
-    project::Project,
     skipped_count::Int=0,
 )::Hierarchy
     hierarchy = Hierarchy(
-        root_path,
+        source_id,
         has_collection_metadata,
-        project,
         skipped_count,
     )
-    foreach(measurement -> insert_item!(hierarchy, measurement), measurements)
+    foreach(item -> insert_item!(hierarchy, item), items)
     return sort!(hierarchy)
 end
 

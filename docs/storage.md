@@ -54,7 +54,7 @@ RuO2test/A9/VI/D1                                          bad
 RuO2test/A10/VI                                            todo
 ```
 
-Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are either device-path strings (slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or measurement-ID strings (absolute filesystem paths, optionally with `#cycle=N` / `#split=X` suffixes). The two namespaces never overlap, so no kind prefix is written. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) (`Annotations.Tags.load` / `Annotations.Tags.save`). Saving empty state removes the file. Malformed rows raise `TagsParseError`.
+Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are either collection-path strings (slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item keys. The two namespaces never overlap, so no kind prefix is written. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) (`Annotations.Tags.load` / `Annotations.Tags.save`). Saving empty state removes the file. Malformed rows raise `TagsParseError`.
 
 ## notes.txt
 
@@ -94,5 +94,5 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 ## Cache layer (separate from source-root metadata)
 
-The HDF5 cache is generated data, not hand-edited source-root metadata. It lives outside the
-measurement folder and is documented in [cache.md](cache.md).
+The HDF5 cache is generated data, not hand-edited source-root metadata. It lives outside the source
+and is documented in [cache.md](cache.md).

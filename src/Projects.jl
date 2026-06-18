@@ -24,13 +24,7 @@ mutable struct ItemRecipe
     process::Union{Nothing,Function}
     stats::Union{Nothing,Function}
     label::Union{Nothing,Function}
-    # Set during the scan: whether `entries` returns data-bearing items (type API) rather than
-    # metadata-only `DataItem`s (recipe API). Decides how the engine materializes data at view time —
-    # re-run `entries` vs. resolve `read`/`process`. Persisted with the recipe.
-    entries_carry_data::Bool
 end
-ItemRecipe(kind, detect, read, entries, process, stats, label) =
-    ItemRecipe(kind, detect, read, entries, process, stats, label, false)
 
 """One registered cross-item, collection-scoped stat."""
 struct CollectionStatRecipe
@@ -53,17 +47,17 @@ struct PlotRecipe
     draw::Function
 end
 
-"""Accumulated read/stats timing for one measurement kind in the current scan."""
+"""Accumulated read/stats timing for one item kind in the current scan."""
 mutable struct KindProfile
-    files::Int
-    measurements::Int
+    source_items::Int
+    items::Int
     read_seconds::Float64
     stats_seconds::Float64
 end
 KindProfile() = KindProfile(0, 0, 0.0, 0.0)
 
 """
-A measurement project assembled from registered recipes.
+A callback project assembled from registered recipes.
 
 Source interpretation, data processing, and presentation are defined by the registered callbacks.
 Package-owned cache, job, and browser state does not belong here.
@@ -74,13 +68,13 @@ mutable struct Project
     recipes::Vector{ItemRecipe}
     collection_stats::Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}
     plots::Dict{Symbol,Dict{String,PlotRecipe}}
-    # Transient per-measurement analysis failures gathered while interpreting files, as
-    # (filepath, measurement id, message) tuples. Drained when device stats run. Plain string tuples
+    # Transient per-item analysis failures gathered while interpreting source items, as
+    # (source item id, item id, message) tuples. Plain string tuples
     # so this early module needs no ItemIndex types.
     stat_failures::Vector{Tuple{String,String,String}}
     stat_failures_lock::ReentrantLock
     # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
-    # start of each scan and replaced wholesale, so it stays bounded to one row per measurement kind.
+    # start of each scan and replaced wholesale, so it stays bounded to one row per item kind.
     scan_profile::Dict{Symbol,KindProfile}
     profile_lock::ReentrantLock
 end
@@ -89,13 +83,75 @@ const PROJECTS = Project[]
 const DEFAULT_PROJECT = Ref{Union{Project,Nothing}}(nothing)
 
 # ---------------------------------------------------------------------------
+# The low-level source contract
+#
+# These are intentionally internal for now. The engine is source-first, but the exported API remains
+# the smaller callback surface until the low-level module settles.
+# ---------------------------------------------------------------------------
+
+"""A data origin with lifecycle and discovery of source items."""
+abstract type AbstractDataSource end
+
+"""Private source adapter implementing the high-level callback API."""
+mutable struct RegisteredProjectSource <: AbstractDataSource
+    project::Project
+    root_path::String
+    collection_metadata::Any
+end
+
+RegisteredProjectSource(project::Project, root_path::AbstractString)::RegisteredProjectSource =
+    RegisteredProjectSource(project, normpath(abspath(expanduser(String(root_path)))), nothing)
+
+"""One addressable unit discovered inside a data source."""
+abstract type AbstractDataSourceItem end
+
+"""Stable source identity used for workspace/cache ownership."""
+function source_id end
+
+"""Human-readable source name."""
+function source_label end
+
+"""Prepare a source for use. Simple immutable sources return themselves."""
+open_source(source::AbstractDataSource)::AbstractDataSource = source
+
+"""Release resources owned by a source."""
+close_source!(::AbstractDataSource)::Nothing = nothing
+
+"""Return the current source items discovered by a source."""
+function source_items end
+
+"""Future live-update hook. `nothing` means the source is static."""
+watch_source(::AbstractDataSource, ::Function) = nothing
+
+"""Optional source-wide invalidation token."""
+source_fingerprint(::AbstractDataSource) = nothing
+
+"""Stable source-item identity within a source."""
+function source_item_id end
+
+"""Human-readable source-item label."""
+function source_item_label end
+
+"""Optional source-item invalidation token."""
+source_item_fingerprint(::AbstractDataSourceItem) = nothing
+
+"""Filesystem path for a source item, when one exists."""
+source_item_path(::AbstractDataSourceItem)::Union{Nothing,String} = nothing
+
+"""Timestamp for a source item, when one exists."""
+source_item_timestamp(::AbstractDataSourceItem) = nothing
+
+"""Interpret one source item into lightweight logical data items."""
+function data_items end
+
+"""Reload one logical data item with its payload attached."""
+function load_data_item end
+
+# ---------------------------------------------------------------------------
 # The AbstractDataItem contract
 #
-# `AbstractDataItem` is the interface the engine is written against. The package ships the concrete
-# `DataItem` (what `register_item!` produces and what the engine materializes for a view); a project
-# may subtype `AbstractDataItem` directly to go beyond it, answering the same contract from its own
-# typed fields. "item" is shorthand for an instance of `AbstractDataItem`. The metadata record the
-# index/cache store (`ItemRecord`) is internal and is never an `AbstractDataItem`.
+# `AbstractDataItem` is the logical browser object. The index/cache store `ItemRecord`s derived from
+# this contract; views receive loaded `AbstractDataItem` values.
 # ---------------------------------------------------------------------------
 
 abstract type AbstractDataItem end
@@ -124,14 +180,21 @@ function stats end
 """The materialized payload carried by an item (also reachable as `item.data`)."""
 function item_data end
 
-"""Engine-internal loader that materializes an item's payload (type API)."""
-function read_data end
-
 """Process raw item data into the payload a view consumes. Optional; default passthrough."""
 process(::AbstractDataItem, data) = data
 
 """Whether an item's payload should be persisted by the data cache. Optional; default `false`."""
 cacheable(::AbstractDataItem)::Bool = false
+
+"""Optional item-level invalidation token."""
+item_fingerprint(::AbstractDataItem) = nothing
+
+"""Optional fold over one collection node's data-less item handles."""
+collection_stats(
+    ::AbstractDataSource,
+    ::Vector{String},
+    ::Vector{<:AbstractDataItem},
+)::Dict{Symbol,Any} = Dict{Symbol,Any}()
 
 # ---------------------------------------------------------------------------
 # Interface functions
@@ -146,32 +209,14 @@ function project_name end
 """Return a short human-readable description of a project."""
 function project_description end
 
-"""Parse the device represented by a project source file."""
-function parse_collection_info end
-
-"""Classify the measurement represented by a project source filename."""
+"""Classify the item kind represented by a project source filename."""
 function detect_kind end
 
-"""Return the human-readable label for a project measurement kind."""
+"""Return the human-readable label for a project item kind."""
 function kind_label end
 
-"""Return the human-readable label for one logical measurement."""
+"""Return the human-readable label for one logical item."""
 function display_label end
-
-"""Interpret one indexed source file into its logical measurements."""
-function interpret_file end
-
-"""Load the direct table belonging to one source file or logical measurement."""
-function load_source_data end
-
-"""Convert direct measurement data into the reusable processed table defined by the project."""
-function process_item_data end
-
-"""Materialize the loaded, data-bearing items (`item.data`) for a selection of records."""
-function materialize_items end
-
-"""Compute project-specific measurement statistics after the complete scan is known."""
-function compute_and_add_item_stats! end
 
 """Return the project-specific display label for one device path."""
 function collection_path_label end
@@ -180,9 +225,9 @@ function collection_path_label end
 function reset_scan_profile! end
 
 """
-Per-measurement-kind timing for the most recent scan, newest scan replacing the last.
+Per-item-kind timing for the most recent scan, newest scan replacing the last.
 
-Returns one `(; kind, files, measurements, read_seconds, stats_seconds)` row per kind. Surfaced in
+Returns one `(; kind, source_items, items, read_seconds, stats_seconds)` row per kind. Surfaced in
 the performance window.
 """
 function scan_profile_summary end

@@ -2,7 +2,6 @@ import CImGui as ig
 import CImGui.CSyntax: @c
 
 using ..Projects:
-    Project,
     kind_label
 import ..Workspace
 
@@ -16,7 +15,7 @@ function render_info_window(state::BrowserState)::Nothing
         ig.End()
         return nothing
     end
-    proj = workspace.project
+    source = workspace.source
     selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
     if ig.Begin("Information Panel")
@@ -29,7 +28,7 @@ function render_info_window(state::BrowserState)::Nothing
         ig.TableNextColumn()
 
         if length(selected_collections) == 1
-            item_vec = selected_collections[1].measurements
+            item_vec = selected_collections[1].items
             sel_name = join(selected_path, "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
@@ -53,13 +52,20 @@ function render_info_window(state::BrowserState)::Nothing
         ig.TableNextColumn()
         if length(selected_items) == 1
             m = selected_items[1]
-            ig.Text("Title: $(m.clean_title)")
+            ig.Text("Title: $(m.item_label)")
             ig.Separator()
-            ig.BulletText("Type: $(kind_label(proj, m.kind))")
-            ig.BulletText("Timestamp: $(m.timestamp)")
-            ig.BulletText("Filename:")
-            ig.SameLine()
-            ig.TextLinkOpenURL(m.filename, m.filepath)
+            kind_text = hasproperty(source, :project) ?
+                kind_label(source.project, m.kind) :
+                String(m.kind)
+            ig.BulletText("Type: $(kind_text)")
+            ig.BulletText("Timestamp: $(m.source_item_timestamp)")
+            if m.source_item_path !== nothing
+                ig.BulletText("Source item:")
+                ig.SameLine()
+                ig.TextLinkOpenURL(m.source_item_id, m.source_item_path)
+            else
+                ig.BulletText("Source item: $(m.source_item_id)")
+            end
             ig.Separator()
             if !isempty(m.parameters)
                 ig.Text("Parameters")
@@ -98,7 +104,7 @@ function render_collection_metadata_modal(state::BrowserState)::Nothing
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     # Reset dismissal when root path changes
-    current_root = workspace.root_path
+    current_root = workspace.cache.identity.source_id
     if state.modal_root_path != current_root
         state.modal_root_path = current_root
         state.collection_metadata_modal = true

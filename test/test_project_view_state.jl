@@ -23,8 +23,8 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
             selected=["chip/device"],
             filter="tlm",
         ),
-        measurements=Browser.PersistedMeasurementsView(
-            selected=["measurement-1", "measurement-2"],
+        items=Browser.PersistedItemsView(
+            selected=["6:file-1item-1", "6:file-2item-2"],
             filter="298K",
         ),
         plot_kinds=Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
@@ -33,7 +33,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
             title="Plot Area",
             plot_kind="iv_sweep::ProjectViewTLMPlot",
             live=true,
-            measurements=["measurement-1"],
+            items=["6:file-1item-1"],
         ),
         plot_windows=[
             Browser.PersistedPlotView(
@@ -41,7 +41,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
                 title="Detached",
                 plot_kind="iv_sweep::ProjectViewIVPlot",
                 live=false,
-                measurements=["measurement-2"],
+                items=["6:file-2item-2"],
             ),
         ],
     )
@@ -53,18 +53,18 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
     @test loaded.tree.expanded == view.tree.expanded
     @test loaded.tree.selected == view.tree.selected
     @test loaded.tree.filter == view.tree.filter
-    @test loaded.measurements.selected == view.measurements.selected
-    @test loaded.measurements.filter == view.measurements.filter
+    @test loaded.items.selected == view.items.selected
+    @test loaded.items.filter == view.items.filter
     @test loaded.main_plot.plot_kind == view.main_plot.plot_kind
-    @test loaded.main_plot.measurements == view.main_plot.measurements
+    @test loaded.main_plot.items == view.main_plot.items
     @test only(loaded.plot_windows).plot_kind == only(view.plot_windows).plot_kind
-    @test only(loaded.plot_windows).measurements == only(view.plot_windows).measurements
+    @test only(loaded.plot_windows).items == only(view.plot_windows).items
 
     toml_data = Browser._project_view_to_toml(view)
     @test Set(keys(toml_data)) == Set([
         "project",
         "tree",
-        "measurements",
+        "items",
         "plot_kinds",
         "main_plot",
         "plot_windows",
@@ -77,8 +77,8 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
             "selected" => ["chip/device"],
             "filter" => "tlm",
         ),
-        "measurements" => Dict{String,Any}(
-            "selected" => ["measurement-1"],
+        "items" => Dict{String,Any}(
+            "selected" => ["6:file-1item-1"],
             "filter" => "298K",
         ),
         "plot_kinds" => Dict{String,Any}("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
@@ -87,7 +87,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
             "title" => "Plot Area",
             "plot_kind" => "iv_sweep::ProjectViewTLMPlot",
             "live" => true,
-            "measurements" => ["measurement-1"],
+            "items" => ["6:file-1item-1"],
         ),
         "plot_windows" => Any[
             Dict{String,Any}(
@@ -95,7 +95,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
                 "title" => "Detached",
                 "plot_kind" => "iv_sweep::ProjectViewIVPlot",
                 "live" => false,
-                "measurements" => ["measurement-2"],
+                "items" => ["6:file-2item-2"],
             ),
         ],
     ))
@@ -107,8 +107,8 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
             "selected" => ["chip/device"],
             "filter" => "tlm",
         ),
-        "measurements" => Dict{String,Any}(
-            "selected" => ["measurement-1"],
+        "items" => Dict{String,Any}(
+            "selected" => ["6:file-1item-1"],
             "filter" => "298K",
         ),
         "plot_kinds" => Dict{String,Any}("iv_sweep" => "iv_sweep::ProjectViewIVPlot"),
@@ -117,42 +117,44 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
             "title" => "Plot Area",
             "plot_kind" => "iv_sweep::ProjectViewTLMPlot",
             "live" => true,
-            "measurements" => ["measurement-1"],
+            "items" => ["6:file-1item-1"],
         ),
         "plot_windows" => Any[],
     ))
 
     @test parsed.project == "ProjectViewTest"
     @test parsed.tree.expanded == ["chip/device"]
-    @test parsed.measurements.selected == ["measurement-1"]
+    @test parsed.items.selected == ["6:file-1item-1"]
     @test parsed.main_plot.id == "main"
     @test parsed.main_plot.title == "Plot Area"
     @test parsed.main_plot.live == true
-    @test only(parsed.plot_windows).measurements == ["measurement-2"]
+    @test only(parsed.plot_windows).items == ["6:file-2item-2"]
 
     project = MeasurementBrowser.define_project("ProjectViewTest")
-    measurement_1 = MeasurementBrowser.ItemRecord(;
-        unique_id="measurement-1",
-        filepath=joinpath(root_path, "measurement-1.csv"),
-        clean_title="Measurement 1",
+    source = test_source(project, root_path)
+    workspace = MeasurementBrowser.Workspace.Workspace(source)
+    item_1 = MeasurementBrowser.ItemRecord(;
+        source_item_id="file-1",
+        source_item_path=joinpath(root_path, "item-1.csv"),
+        item_id="item-1",
+        item_label="Item 1",
         kind=:iv_sweep,
         collection=["chip", "device-1"],
     )
-    measurement_2 = MeasurementBrowser.ItemRecord(;
-        unique_id="measurement-2",
-        filepath=joinpath(root_path, "measurement-2.csv"),
-        clean_title="Measurement 2",
+    item_2 = MeasurementBrowser.ItemRecord(;
+        source_item_id="file-2",
+        source_item_path=joinpath(root_path, "item-2.csv"),
+        item_id="item-2",
+        item_label="Item 2",
         kind=:iv_sweep,
         collection=["chip", "device-2"],
     )
-    hierarchy = MeasurementBrowser.Hierarchy(
-        [measurement_1, measurement_2],
-        root_path,
-        true,
-        project,
-    )
-    workspace = MeasurementBrowser.Workspace.Workspace(project, root_path)
-    MeasurementBrowser.Workspace.replace_measurement_index!(workspace, hierarchy)
+    item_key_1 = MeasurementBrowser.item_record_key(item_1)
+    item_key_2 = MeasurementBrowser.item_record_key(item_2)
+    hierarchy = MeasurementBrowser.Hierarchy(root_path, true)
+    MeasurementBrowser.insert_item!(hierarchy, item_1)
+    MeasurementBrowser.insert_item!(hierarchy, item_2)
+    MeasurementBrowser.Workspace.replace_item_index!(workspace, hierarchy)
     state = Browser.BrowserState(workspace=workspace)
 
     bad_plot_view = Browser.PersistedProjectView(
@@ -174,29 +176,29 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegistryPlot{:iv_sweep,:ProjectVie
         ],
     )
     Browser._apply_project_view!(state, bad_plot_view)
-    @test isempty(state.plots.kind_by_measurement)
+    @test isempty(state.plots.kind_by_item)
     @test state.plots.main.plot_kind === nothing
     @test only(state.plots.windows).plot_kind === nothing
 
     Browser._apply_project_view!(state, view)
     @test workspace.selection.collection_paths == ["chip/device"]
-    @test workspace.selection.measurement_ids == ["measurement-1", "measurement-2"]
+    @test workspace.selection.item_keys == [item_key_1, item_key_2]
     @test state.tree_filter == "tlm"
-    @test state.measurement_filter == "298K"
+    @test state.item_filter == "298K"
     plots = state.plots
-    @test plots.kind_by_measurement ==
+    @test plots.kind_by_item ==
           Dict(:iv_sweep => ProjectViewIVPlot)
     @test plots.main.live == true
     @test plots.main.plot_kind == ProjectViewTLMPlot
-    @test plots.main.measurement_ids == ["measurement-1"]
+    @test plots.main.item_keys == [item_key_1]
     @test only(plots.windows).id == "plot_1"
-    @test only(plots.windows).measurement_ids == ["measurement-2"]
+    @test only(plots.windows).item_keys == [item_key_2]
 
     saved_view = Browser._project_view_from_browser(state)
     @test saved_view.project == "ProjectViewTest"
     @test saved_view.tree.selected == ["chip/device"]
     @test saved_view.tree.expanded == ["chip/device"]
-    @test saved_view.measurements.selected == ["measurement-1", "measurement-2"]
+    @test saved_view.items.selected == [item_key_1, item_key_2]
     @test saved_view.plot_kinds == Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot")
     @test saved_view.main_plot.plot_kind == "iv_sweep::ProjectViewTLMPlot"
     @test only(saved_view.plot_windows).plot_kind == "iv_sweep::ProjectViewIVPlot"

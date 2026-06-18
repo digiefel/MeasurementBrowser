@@ -2,8 +2,9 @@ using TOML
 
 using ..Projects:
     PROJECTS,
-    project_name
-using ..ItemIndex: ItemRecord
+    project_name,
+    source_label
+using ..ItemIndex: ItemRecord, item_record_key
 import ..Workspace
 using ..Visualization:
     PlotKind,
@@ -149,7 +150,8 @@ end
 function _persist_current_project_preferences!(state::BrowserState)::Nothing
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
-    _persist_preferences!(state; path=workspace.root_path)
+    hasproperty(workspace.source, :root_path) || return nothing
+    _persist_preferences!(state; path=workspace.source.root_path)
     return nothing
 end
 
@@ -225,15 +227,15 @@ function _save_project_view(root_path::AbstractString, view::PersistedProjectVie
     return nothing
 end
 
-"""Resolve stable measurement ids against the current workspace index."""
-function _measurements_for_ids(
+"""Resolve stable item keys against the current workspace index."""
+function _items_for_keys(
     state::BrowserState,
-    ids::Vector{String},
+    keys::Vector{String},
 )::Vector{ItemRecord}
     workspace = state.workspace
     workspace isa Workspace.Workspace || return ItemRecord[]
-    index = workspace.index.measurements
-    return [index[id] for id in ids if haskey(index, id)]
+    index = workspace.index.items
+    return [index[key] for key in keys if haskey(index, key)]
 end
 
 """Convert one runtime plot window into its persisted form."""
@@ -243,7 +245,7 @@ function _persisted_plot_view(view::PlotViewState)::PersistedPlotView
         title=view.title,
         plot_kind=view.plot_kind === nothing ? "" : plot_kind_name(view.plot_kind),
         live=view.live,
-        measurements=copy(view.measurement_ids),
+        items=copy(view.item_keys),
     )
 end
 
@@ -256,19 +258,19 @@ function _project_view_from_browser(
     plots = state.plots
 
     return PersistedProjectView(
-        project=project_name(workspace.project),
+        project=source_label(workspace.source),
         tree=PersistedTreeView(
             expanded=copy(state.expanded_collection_paths),
             selected=copy(workspace.selection.collection_paths),
             filter=state.tree_filter,
         ),
-        measurements=PersistedMeasurementsView(
-            selected=copy(workspace.selection.measurement_ids),
-            filter=state.measurement_filter,
+        items=PersistedItemsView(
+            selected=copy(workspace.selection.item_keys),
+            filter=state.item_filter,
         ),
         plot_kinds=Dict(
             String(kind) => plot_kind_name(plot_kind)
-            for (kind, plot_kind) in plots.kind_by_measurement
+            for (kind, plot_kind) in plots.kind_by_item
         ),
         main_plot=_persisted_plot_view(plots.main),
         plot_windows=[_persisted_plot_view(view) for view in plots.windows],
@@ -284,21 +286,21 @@ function _apply_project_view!(
     plots = state.plots
     state.expanded_collection_paths = copy(view.tree.expanded)
     workspace.selection.collection_paths = copy(view.tree.selected)
-    workspace.selection.measurement_ids = copy(view.measurements.selected)
+    workspace.selection.item_keys = copy(view.items.selected)
     state.tree_filter = view.tree.filter
-    state.measurement_filter = view.measurements.filter
-    empty!(plots.kind_by_measurement)
+    state.item_filter = view.items.filter
+    empty!(plots.kind_by_item)
     for (kind, plot_kind_name) in view.plot_kinds
         isempty(plot_kind_name) && continue
         plot_kind = plot_kind_from_name(plot_kind_name)
         plot_kind === nothing && continue
-        plots.kind_by_measurement[Symbol(kind)] = plot_kind
+        plots.kind_by_item[Symbol(kind)] = plot_kind
     end
     plots.main = PlotViewState(
         id="main",
         title="Plot Area",
         live=view.main_plot.live,
-        measurement_ids=copy(view.main_plot.measurements),
+        item_keys=copy(view.main_plot.items),
         plot_kind=isempty(view.main_plot.plot_kind) ?
             nothing :
             plot_kind_from_name(view.main_plot.plot_kind),
@@ -308,7 +310,7 @@ function _apply_project_view!(
             id=plot_view.id,
             title=isempty(plot_view.title) ? "Plot" : plot_view.title,
             live=plot_view.live,
-            measurement_ids=copy(plot_view.measurements),
+            item_keys=copy(plot_view.items),
             plot_kind=isempty(plot_view.plot_kind) ?
                 nothing :
                 plot_kind_from_name(plot_view.plot_kind),
@@ -333,7 +335,8 @@ function _save_project_view_if_changed!(state::BrowserState)::Nothing
     _project_view_to_toml(state.saved_project_view) ==
         _project_view_to_toml(view) && return nothing
     workspace = state.workspace::Workspace.Workspace
-    _save_project_view(workspace.root_path, view)
+    hasproperty(workspace.source, :root_path) || return nothing
+    _save_project_view(workspace.source.root_path, view)
     state.saved_project_view = view
     return nothing
 end

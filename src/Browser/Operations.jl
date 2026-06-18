@@ -2,8 +2,9 @@ using ..Projects:
     Project,
     DEFAULT_PROJECT,
     PROJECTS,
-    project_name
-using ..ItemIndex: collection_path_key
+    project_name,
+    source_label
+using ..ItemIndex: collection_path_key, item_record_key
 import ..Workspace
 using ..Workspace:
     close_workspace!,
@@ -27,7 +28,12 @@ function _open_project_path!(
 )::Nothing
     norm_path = _normalize_project_path(path)
     if project === nothing && state.project_locked
-        project = state.workspace.project
+        workspace = state.workspace
+        if workspace isa Workspace.Workspace && hasproperty(workspace.source, :project)
+            project = workspace.source.project
+        else
+            error("Cannot open a new folder from a workspace whose source is not a registered project")
+        end
     end
     if project === nothing
         state.project_preference = _project_preference_for_path(state, norm_path)
@@ -49,40 +55,40 @@ function _attach_workspace!(
     workspace::Workspace.Workspace;
     persist::Bool=true,
 )::Nothing
-    project = workspace.project
-    norm_path = workspace.root_path
+    source = workspace.source
+    source_root = hasproperty(source, :root_path) ? source.root_path : ""
     previous_workspace = state.workspace
     previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
         close_workspace!(previous_workspace)
     state.plots = PlotState(debug=state.plots.debug)
-    view = _load_project_view(norm_path)
-    !isempty(view.project) && view.project != project_name(project) &&
-        (view = PersistedProjectView(project=project_name(project)))
-    _load_tag_state_for_root!(state, norm_path)
     state.workspace = workspace
+    view = isempty(source_root) ? PersistedProjectView() : _load_project_view(source_root)
+    !isempty(view.project) && view.project != source_label(source) &&
+        (view = PersistedProjectView(project=source_label(source)))
+    _load_tag_state_for_root!(state, _annotation_root(workspace))
     _apply_project_view!(state, view)
     state.saved_project_view = view
-    persist && _persist_preferences!(state; path=norm_path)
+    persist && !isempty(source_root) && _persist_preferences!(state; path=source_root)
     return nothing
 end
 
-"""Select and reveal every measurement produced by one source file."""
-function select_source_file!(
+"""Select and reveal every item produced by one source item."""
+function select_source_item!(
     state::BrowserState,
-    filepath::AbstractString,
+    source_item_id::AbstractString,
 )::Bool
     workspace = state.workspace
     workspace isa Workspace.Workspace || return false
-    path = String(filepath)
-    measurements = [
-        measurement
-        for measurement in workspace.index.hierarchy.all_measurements
-        if measurement.filepath == path
+    id = String(source_item_id)
+    items = [
+        item
+        for item in workspace.index.hierarchy.all_items
+        if item.source_item_id == id
     ]
-    isempty(measurements) && return false
+    isempty(items) && return false
 
     collection_paths =
-        unique([collection_path_key(measurement.collection) for measurement in measurements])
+        unique([collection_path_key(item.collection) for item in items])
     expanded_paths = copy(state.expanded_collection_paths)
     for collection_path in collection_paths
         parts = split(collection_path, '/')
@@ -94,10 +100,10 @@ function select_source_file!(
 
     state.expanded_collection_paths = expanded_paths
     workspace.selection.collection_paths = collection_paths
-    workspace.selection.measurement_ids =
-        [measurement.unique_id for measurement in measurements]
+    workspace.selection.item_keys =
+        [item_record_key(item) for item in items]
     state.scroll_to_collection_path = first(collection_paths)
-    state.scroll_to_measurement_id = first(measurements).unique_id
+    state.scroll_to_item_key = item_record_key(first(items))
     return true
 end
 

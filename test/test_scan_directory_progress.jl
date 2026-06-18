@@ -7,15 +7,14 @@ using Test
         write_test_source(joinpath(dir, "first.csv"))
         write_test_source(joinpath(dir, "second.csv"), 10)
 
-        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
+        source = scan_test_source(TEST_PROJECT, dir)
         @test source isa MeasurementBrowser.SourceScan
         @test source.hierarchy isa MeasurementBrowser.Hierarchy
         @test source.hierarchy.skipped_count == 0
 
         events = NamedTuple[]
         MeasurementBrowser.scan_source(
-            dir;
-            project=TEST_PROJECT,
+            test_source(TEST_PROJECT, dir);
             on_progress=progress -> push!(events, progress),
             count_first=true,
         )
@@ -24,34 +23,33 @@ using Test
         @test any(event -> event.phase == :scanning, events)
         @test any(event -> event.phase == :analyzing, events)
         scanning = filter(event -> event.phase == :scanning, events)
-        @test maximum(event -> event.processed_csv, scanning) == 2
-        @test all(event -> event.total_csv == 2, scanning)
+        @test maximum(event -> event.processed_source_items, scanning) == 2
+        @test all(event -> event.total_source_items == 2, scanning)
 
         write(joinpath(dir, ".hidden.csv"), "")
-        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
-        @test length(source.files) == 2
+        source = scan_test_source(TEST_PROJECT, dir)
+        @test length(source.source_item_fingerprints) == 2
 
         streamed = Vector{ItemRecord}[]
         source = MeasurementBrowser.scan_source(
-            dir;
-            project=TEST_PROJECT,
-            on_measurements=measurements -> push!(streamed, copy(measurements)),
+            test_source(TEST_PROJECT, dir);
+            on_items=items -> push!(streamed, copy(items)),
         )
-        @test sum(length, streamed) == length(source.hierarchy.all_measurements)
+        @test sum(length, streamed) == length(source.hierarchy.all_items)
         @test Set(
-            measurement.unique_id
+            MeasurementBrowser.item_record_key(item)
             for batch in streamed
-            for measurement in batch
+            for item in batch
         ) == Set(
-            measurement.unique_id
-            for measurement in source.hierarchy.all_measurements
+            MeasurementBrowser.item_record_key(item)
+            for item in source.hierarchy.all_items
         )
 
         write_test_source(joinpath(dir, "broken.csv"))
-        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
-        @test length(source.files) == 3
+        source = scan_test_source(TEST_PROJECT, dir)
+        @test length(source.source_item_fingerprints) == 3
         @test length(source.analysis_failures) == 1
-        @test only(source.analysis_failures).filepath == joinpath(dir, "broken.csv")
+        @test only(source.analysis_failures).source_item_id == joinpath(dir, "broken.csv")
 
         fired = Ref(false)
         @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser.with_cancel(
@@ -62,8 +60,7 @@ using Test
             end,
         ) do
             MeasurementBrowser.scan_source(
-                dir;
-                project=TEST_PROJECT,
+                test_source(TEST_PROJECT, dir);
                 count_first=true,
             )
         end

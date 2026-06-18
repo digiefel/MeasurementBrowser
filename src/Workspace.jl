@@ -8,42 +8,40 @@ import ..Cache:
     ProjectCacheIndex,
     ProjectCacheStatus,
     cache_status,
-    cached_measurement_data,
     load_project_cache,
     project_cache_id,
     project_cache_identity,
-    write_measurement_data_cache!,
     write_project_cache!
 import ..ItemIndex:
-    FileFingerprint,
     Hierarchy,
     ItemRecord,
-    SourceFile,
     SourceScan,
     check_cancel,
-    file_fingerprint,
-    has_collection_metadata,
-    index_source_file,
     insert_item!,
+    item_record_key,
     is_job_cancelled,
     scan_source,
     with_cancel
 import ..Projects:
+    AbstractDataSource,
     Project,
-    load_source_data,
-    process_item_data,
-    project_name
+    RegisteredProjectSource,
+    close_source!,
+    item_data,
+    load_data_item,
+    source_id,
+    source_label
 
 """
 Progress reported by one workspace job.
 """
 Base.@kwdef mutable struct WorkspaceProgress
     phase::Symbol = :idle
-    total_files::Int = 0
-    processed_files::Int = 0
-    loaded_measurements::Int = 0
-    skipped_files::Int = 0
-    current_path::String = ""
+    total_source_items::Int = 0
+    processed_source_items::Int = 0
+    loaded_items::Int = 0
+    skipped_source_items::Int = 0
+    current_source_item::String = ""
 end
 
 """
@@ -52,11 +50,11 @@ Convert one scan or cache progress event into workspace-owned progress.
 function WorkspaceProgress(progress::NamedTuple)::WorkspaceProgress
     return WorkspaceProgress(
         phase=progress.phase,
-        total_files=progress.total_csv,
-        processed_files=progress.processed_csv,
-        loaded_measurements=progress.loaded_measurements,
-        skipped_files=progress.skipped_csv,
-        current_path=progress.current_path,
+        total_source_items=progress.total_source_items,
+        processed_source_items=progress.processed_source_items,
+        loaded_items=progress.loaded_items,
+        skipped_source_items=progress.skipped_source_items,
+        current_source_item=progress.current_source_item,
     )
 end
 
@@ -76,11 +74,11 @@ WorkspaceJob()::WorkspaceJob =
     WorkspaceJob(0, :idle, WorkspaceProgress(), "", nothing, nothing)
 
 """
-The progressively populated measurement index for one open source root.
+The progressively populated item index for one open source.
 """
 mutable struct WorkspaceIndex
     hierarchy::Hierarchy
-    measurements::Dict{String,ItemRecord}
+    items::Dict{String,ItemRecord}
     collection_metadata_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
@@ -91,7 +89,7 @@ Stable selection identities owned by a workspace.
 """
 Base.@kwdef mutable struct WorkspaceSelection
     collection_paths::Vector{String} = String[]
-    measurement_ids::Vector{String} = String[]
+    item_keys::Vector{String} = String[]
 end
 
 """
@@ -105,18 +103,16 @@ mutable struct WorkspaceCache
 end
 
 """
-One open measurement source root and all package-managed state belonging to it.
+One open source and all package-managed state belonging to it.
 """
-mutable struct Workspace{P<:Project}
-    project::P
-    root_path::String
+mutable struct Workspace{S<:AbstractDataSource}
+    source::S
     index::WorkspaceIndex
     selection::WorkspaceSelection
     cache::WorkspaceCache
     scan::WorkspaceJob
     cache_job::WorkspaceJob
-    direct_data::Dict{String,Tuple{FileFingerprint,DataFrame}}
-    processed_data::Dict{String,Tuple{FileFingerprint,DataFrame}}
+    loaded_items::Dict{String,Tuple{Any,Any}}
     background_tasks::Vector{Task}
     closed::Bool
 end
@@ -125,15 +121,12 @@ end
 Create the empty state for one project and normalized source root.
 """
 function Workspace(
-    project::P,
-    root_path::AbstractString,
-)::Workspace{P} where {P<:Project}
-    root = normpath(abspath(expanduser(String(root_path))))
-    hierarchy = Hierarchy(root, has_collection_metadata(root), project)
-    identity = project_cache_identity(project_cache_id(root), project, root)
+    source::S,
+)::Workspace{S} where {S<:AbstractDataSource}
+    hierarchy = Hierarchy(source_id(source), false)
+    identity = project_cache_identity(project_cache_id(source), source)
     return Workspace(
-        project,
-        root,
+        source,
         WorkspaceIndex(
             hierarchy,
             Dict{String,ItemRecord}(),
@@ -145,12 +138,14 @@ function Workspace(
         WorkspaceCache(identity, nothing, nothing, :load),
         WorkspaceJob(),
         WorkspaceJob(),
-        Dict{String,Tuple{FileFingerprint,DataFrame}}(),
-        Dict{String,Tuple{FileFingerprint,DataFrame}}(),
+        Dict{String,Tuple{Any,Any}}(),
         Task[],
         false,
     )
 end
+
+Workspace(project::Project, root_path::AbstractString) =
+    Workspace(RegisteredProjectSource(project, root_path))
 
 # ---------------------------------------------------------------------------
 # Pretty printing
@@ -161,9 +156,9 @@ function _scan_summary(workspace::Workspace)::String
     state = workspace.scan.state
     progress = workspace.scan.progress
     if state in (:counting, :discovering)
-        return "$state ($(progress.processed_files) files found)"
+        return "$state ($(progress.processed_source_items) source items found)"
     elseif state in (:scanning, :analyzing)
-        return "$state ($(progress.processed_files)/$(progress.total_files) files)"
+        return "$state ($(progress.processed_source_items)/$(progress.total_source_items) source items)"
     else
         return string(state)
     end
@@ -171,16 +166,16 @@ end
 
 Base.show(io::IO, workspace::Workspace) = print(
     io,
-    "Workspace(", project_name(workspace.project),
-    ", ", length(workspace.index.measurements), " measurements)",
+    "Workspace(", source_label(workspace.source),
+    ", ", length(workspace.index.items), " items)",
 )
 
 function Base.show(io::IO, ::MIME"text/plain", workspace::Workspace)
-    println(io, "Workspace · ", project_name(workspace.project))
-    println(io, "  root:         ", Base.contractuser(workspace.root_path))
+    println(io, "Workspace · ", source_label(workspace.source))
+    println(io, "  source:       ", source_id(workspace.source))
     println(io, "  scan:         ", _scan_summary(workspace))
     println(io, "  cache:        ", workspace.cache_job.state)
-    println(io, "  measurements: ", length(workspace.index.measurements))
+    println(io, "  items:        ", length(workspace.index.items))
     print(io,   "  failures:     ", length(workspace.index.analysis_errors))
     workspace.closed && print(io, "\n  (closed)")
 end

@@ -1,15 +1,15 @@
 """
 Start cache loading and source scanning for one new workspace.
 """
-function open_workspace(
-    project::Project,
-    root_path::AbstractString,
-)::Workspace
-    workspace = Workspace(project, root_path)
+function open_workspace(source::AbstractDataSource)::Workspace
+    workspace = Workspace(source)
     load_cache!(workspace)
     scan_source!(workspace)
     return workspace
 end
+
+open_workspace(project::Project, root_path::AbstractString)::Workspace =
+    open_workspace(RegisteredProjectSource(project, root_path))
 
 """
 Cancel all work owned by a workspace and wait for it to stop.
@@ -21,19 +21,17 @@ function close_workspace!(workspace::Workspace)::Nothing
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
+    close_source!(workspace.source)
     workspace.closed = true
     return nothing
 end
 
-"""
-Replace the selection with the supplied item identities.
-"""
+"""Replace the selection with the supplied item records."""
 function select_items!(
     workspace::Workspace,
     items::Vector{ItemRecord},
 )::Nothing
-    workspace.selection.measurement_ids =
-        [item.unique_id for item in items]
+    workspace.selection.item_keys = [item_record_key(item) for item in items]
     return nothing
 end
 
@@ -43,18 +41,14 @@ source_scan_running(workspace::Workspace)::Bool =
 cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_job.state in (:loading, :writing, :canceling)
 
-"""
-Keep a background task alive until workspace shutdown.
-"""
+"""Keep a background task alive until workspace shutdown."""
 function track_task!(workspace::Workspace, task::Task)::Task
     filter!(!istaskdone, workspace.background_tasks)
     push!(workspace.background_tasks, task)
     return task
 end
 
-"""
-Request cancellation of one running workspace operation.
-"""
+"""Request cancellation of one running workspace operation."""
 function cancel_job!(job::WorkspaceJob)::Nothing
     job.cancel_token === nothing && return nothing
     Base.Threads.atomic_xchg!(job.cancel_token, true)
@@ -62,24 +56,11 @@ function cancel_job!(job::WorkspaceJob)::Nothing
     return nothing
 end
 
-"""
-Request cancellation of the current source scan.
-"""
-function cancel_scan!(workspace::Workspace)::Nothing
-    cancel_job!(workspace.scan)
-    return nothing
-end
+cancel_scan!(workspace::Workspace)::Nothing = (cancel_job!(workspace.scan); nothing)
+cancel_cache!(workspace::Workspace)::Nothing = (cancel_job!(workspace.cache_job); nothing)
 
 """
-Request cancellation of the current cache operation.
-"""
-function cancel_cache!(workspace::Workspace)::Nothing
-    cancel_job!(workspace.cache_job)
-    return nothing
-end
-
-"""
-Start one filesystem scan that progressively populates the workspace index.
+Start one source scan that progressively populates the workspace index.
 """
 function scan_source!(workspace::Workspace)::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
@@ -98,7 +79,6 @@ function scan_source!(workspace::Workspace)::Nothing
 
     task = Base.Threads.@spawn begin
         try
-            # Load the cache (if any) so the scan can skip files whose fingerprint is unchanged.
             cached = try
                 load_project_cache(workspace.cache.identity)
             catch
@@ -106,28 +86,20 @@ function scan_source!(workspace::Workspace)::Nothing
             end
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
-                    workspace.root_path;
-                    project=workspace.project,
-                    cached_files=cached === nothing ? nothing : cached.files,
+                    workspace.source;
                     cached_source=cached === nothing ? nothing : cached.source,
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
                         job_id=scan_id,
                         progress,
                     )),
-                    # Stream immutable snapshots for incremental display. The scan keeps mutating the
-                    # original measurements' stats on worker threads, so the rendering thread must
-                    # never see those objects mid-mutation (that race corrupts the heap). The complete
-                    # originals replace these snapshots atomically when the :source event arrives.
-                    on_measurements=(measurements) -> put!(events, (
-                        kind=:measurements,
+                    on_items=(items) -> put!(events, (
+                        kind=:items,
                         job_id=scan_id,
-                        measurements=[ItemRecord(m) for m in measurements],
+                        items=[ItemRecord(item) for item in items],
                     )),
                 )
             end
-            # When every file fingerprint matched the cache, scan_source returns the cached
-            # SourceScan object verbatim; identity tells us it was a cache hit, not a real scan.
             cache_hit = cached !== nothing && source === cached.source
             put!(events, (kind=:source, job_id=scan_id, source, cache_hit))
         catch error
@@ -209,9 +181,7 @@ function load_cache!(workspace::Workspace)::Nothing
     return nothing
 end
 
-"""
-Update the cache from the completed source scan already owned by the workspace.
-"""
+"""Update the cache from the completed source scan already owned by the workspace."""
 function update_cache!(
     workspace::Workspace;
     rebuild::Bool=false,
@@ -270,25 +240,23 @@ function update_cache!(
     return nothing
 end
 
-"""
-Replace the workspace measurement index with one complete hierarchy.
-"""
-function replace_measurement_index!(
+"""Replace the workspace item index with one complete hierarchy."""
+function replace_item_index!(
     workspace::Workspace,
     hierarchy::Hierarchy,
 )::Nothing
-    measurements = Dict{String,ItemRecord}()
-    sizehint!(measurements, length(hierarchy.all_measurements))
+    items = Dict{String,ItemRecord}()
+    sizehint!(items, length(hierarchy.all_items))
     metadata_keys = Set{Symbol}()
-    for measurement in hierarchy.all_measurements
-        haskey(measurements, measurement.unique_id) &&
-            error("Duplicate measurement id generated during scan: $(measurement.unique_id)")
-        measurements[measurement.unique_id] = measurement
-        union!(metadata_keys, keys(measurement.collection_metadata))
+    for item in hierarchy.all_items
+        key = item_record_key(item)
+        haskey(items, key) && error("Duplicate item key generated during scan: $(key)")
+        items[key] = item
+        union!(metadata_keys, keys(item.collection_metadata))
     end
     workspace.index = WorkspaceIndex(
         hierarchy,
-        measurements,
+        items,
         sort!(collect(metadata_keys); by=String),
         workspace.index.source,
         workspace.index.analysis_errors,
@@ -296,25 +264,22 @@ function replace_measurement_index!(
     return nothing
 end
 
-"""
-Add newly discovered measurements to the provisional workspace index.
-
-The completed source scan later replaces this hierarchy with the final sorted hierarchy.
-"""
-function append_measurements!(
+"""Add newly discovered items to the provisional workspace index."""
+function append_items!(
     workspace::Workspace,
-    measurements::Vector{ItemRecord},
+    items::Vector{ItemRecord},
 )::Bool
-    isempty(measurements) && return false
+    isempty(items) && return false
     hierarchy = workspace.index.hierarchy
-    measurement_index = workspace.index.measurements
+    item_index = workspace.index.items
     metadata_keys = Set(workspace.index.collection_metadata_keys)
     changed = false
-    for measurement in measurements
-        haskey(measurement_index, measurement.unique_id) && continue
-        insert_item!(hierarchy, measurement)
-        measurement_index[measurement.unique_id] = measurement
-        union!(metadata_keys, keys(measurement.collection_metadata))
+    for item in items
+        key = item_record_key(item)
+        haskey(item_index, key) && continue
+        insert_item!(hierarchy, item)
+        item_index[key] = item
+        union!(metadata_keys, keys(item.collection_metadata))
         changed = true
     end
     changed || return false
@@ -322,37 +287,34 @@ function append_measurements!(
     return true
 end
 
-"""
-Apply one loaded cache index without replacing measurements already streamed by the source scan.
-"""
+"""Apply one loaded cache index without replacing items already streamed by the source scan."""
 function apply_cache_index!(
     workspace::Workspace,
     index::ProjectCacheIndex,
 )::Bool
-    index.identity.root_path == workspace.root_path ||
-        error("Loaded cache belongs to $(index.identity.root_path), not $(workspace.root_path)")
+    index.identity.source_id == source_id(workspace.source) ||
+        error("Loaded cache belongs to $(index.identity.source_id), not $(source_id(workspace.source))")
     workspace.cache.identity = index.identity
     workspace.cache.index = index
 
     index_changed = false
     source = workspace.index.source
     if source === nothing
-        if isempty(workspace.index.measurements)
-            replace_measurement_index!(workspace, index.source.hierarchy)
+        if isempty(workspace.index.items)
+            replace_item_index!(workspace, index.source.hierarchy)
             index_changed = true
         else
-            index_changed =
-                append_measurements!(workspace, index.source.hierarchy.all_measurements)
+            index_changed = append_items!(workspace, index.source.hierarchy.all_items)
         end
     end
 
     if source isa SourceScan
         workspace.cache.status = cache_status(index, source)
     else
-        cached_files = length(index.files)
+        cached_items = length(index.source.source_item_fingerprints)
         workspace.cache.status = ProjectCacheStatus(
-            cached_files,
-            cached_files,
+            cached_items,
+            cached_items,
             0,
             0,
             0,
@@ -366,17 +328,15 @@ function apply_cache_index!(
     return index_changed
 end
 
-"""
-Apply the authoritative completed source scan to the workspace.
-"""
+"""Apply the authoritative completed source scan to the workspace."""
 function apply_source_scan!(
     workspace::Workspace,
     source::SourceScan,
 )::Nothing
-    source.root_path == workspace.root_path ||
-        error("Source scan belongs to $(source.root_path), not $(workspace.root_path)")
+    source.source_id == source_id(workspace.source) ||
+        error("Source scan belongs to $(source.source_id), not $(source_id(workspace.source))")
     workspace.index.source = source
-    replace_measurement_index!(workspace, source.hierarchy)
+    replace_item_index!(workspace, source.hierarchy)
     identity = workspace.cache.identity
     workspace.index.analysis_errors = ProjectCacheIndex(identity, source).analysis_errors
 
@@ -384,12 +344,13 @@ function apply_source_scan!(
     if cache_state == :ready
         workspace.cache.status = cache_status(workspace.cache.index, source)
     elseif !isfile(identity.cache_path) || cache_state == :missing
+        source_item_count = length(source.source_item_fingerprints)
         workspace.cache.status = ProjectCacheStatus(
-            length(source.files),
+            source_item_count,
             0,
             0,
             0,
-            length(source.files),
+            source_item_count,
             0,
             0,
         )
@@ -397,9 +358,7 @@ function apply_source_scan!(
     return nothing
 end
 
-"""
-Start cache repair when the completed source scan differs from the loaded cache.
-"""
+"""Start cache repair when the completed source scan differs from the loaded cache."""
 function repair_cache_if_needed!(workspace::Workspace)::Nothing
     cache_work_running(workspace) && return nothing
     workspace.index.source isa SourceScan || return nothing
@@ -409,17 +368,15 @@ function repair_cache_if_needed!(workspace::Workspace)::Nothing
     end
     status = workspace.cache.status
     status isa ProjectCacheStatus || return nothing
-    if status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0
+    if status.stale_source_items > 0 ||
+       status.new_source_items > 0 ||
+       status.deleted_source_items > 0
         update_cache!(workspace)
     end
     return nothing
 end
 
-"""
-Apply all completed scan and cache events.
-
-Returns `true` when the measurement index changed and browser references must be refreshed.
-"""
+"""Apply all completed scan and cache events."""
 function poll_workspace!(workspace::Workspace)::Bool
     index_changed = false
     cache_events = workspace.cache_job.events
@@ -460,15 +417,15 @@ function poll_workspace!(workspace::Workspace)::Bool
 
     scan_events = workspace.scan.events
     if scan_events !== nothing
-        pending_measurements = ItemRecord[]
+        pending_items = ItemRecord[]
         while isready(scan_events)
             event = take!(scan_events)
             event.job_id == workspace.scan.id || continue
             if event.kind == :progress
                 workspace.scan.progress = WorkspaceProgress(event.progress)
                 workspace.scan.state = event.progress.phase
-            elseif event.kind == :measurements
-                append!(pending_measurements, event.measurements)
+            elseif event.kind == :items
+                append!(pending_items, event.items)
             elseif event.kind == :source
                 apply_source_scan!(workspace, event.source)
                 index_changed = true
@@ -485,16 +442,15 @@ function poll_workspace!(workspace::Workspace)::Bool
                     "Source scan failed. See the console for full details."
                 @error(
                     "Source scan job failed",
-                    project=project_name(workspace.project),
-                    root=workspace.root_path,
-                    current_file=workspace.scan.progress.current_path,
+                    source=source_id(workspace.source),
+                    current_source_item=workspace.scan.progress.current_source_item,
                     exception=(event.error, event.backtrace),
                 )
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             end
         end
-        index_changed |= append_measurements!(workspace, pending_measurements)
+        index_changed |= append_items!(workspace, pending_items)
     end
 
     repair_cache_if_needed!(workspace)

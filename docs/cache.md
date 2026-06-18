@@ -65,15 +65,12 @@ The HDF5 file contains:
 |---|---|
 | `schema_version` attribute | Rejects old cache layouts before deserialization |
 | `/index` | One uncompressed serialized `ProjectCacheIndex` for fast startup |
-| `/direct/<source-item>/<item>` | Lazily cached data returned by the source's data load |
-| `/processed/<source-item>/<item>` | Lazily cached data returned after `process` |
+| `/items/<source-item>/<item>` | Lazily cached payloads returned by the source's data load |
 
-`ProjectCacheIndex` contains the completed `SourceScan`, a lookup for its `ScannedSourceItem` entries,
-and analysis errors grouped by source item.
+`ProjectCacheIndex` contains the completed `SourceScan` and analysis errors grouped by source item.
 
-Direct and processed data are separate because they have different meanings and lifetimes. Both are
-grouped by source item, so changing or deleting one unit invalidates its payloads with two group
-deletions regardless of how many logical items it contains.
+Payloads are grouped by source item, so changing or deleting one unit invalidates its payload group
+regardless of how many logical items it contains.
 
 ## Annotations and collection metadata
 
@@ -111,9 +108,9 @@ caller requests them.
 
 ## Item data
 
-Item materialization loads payloads through the source's `load_data_item`. The cache layer checks
-workspace memory, then reads available cached payloads with one HDF5 open; missing data is loaded,
-kept in memory, and written back. Processed data follows the same path, cached separately.
+Item materialization loads payloads through the source's `load_data_item`. The workspace keeps
+loaded items in memory and the cache layer can persist payloads with sufficient source-item and item
+fingerprints.
 
 Before reading or writing a payload, the engine checks the current fingerprints against the in-memory
 cache index; stale payloads are never returned. A source item or item with a `nothing` fingerprint is

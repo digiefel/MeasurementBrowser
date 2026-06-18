@@ -35,6 +35,16 @@ end
 
 const TEST_PROJECT = _build_test_project()
 
+"""Build the private callback-adapter source used by high-level project tests."""
+function test_source(project::Project, root_path::AbstractString)
+    return MeasurementBrowser.RegisteredProjectSource(project, root_path)
+end
+
+"""Scan a registered test project through the source-first engine API."""
+function scan_test_source(project::Project, root_path::AbstractString; kwargs...)
+    return MeasurementBrowser.scan_source(test_source(project, root_path); kwargs...)
+end
+
 """Write one small source table for scan and cache tests."""
 function write_test_source(path::AbstractString, offset::Real=0)::String
     write(path, "x,y\n$(offset + 1),$(offset + 2)\n$(offset + 3),$(offset + 4)\n")

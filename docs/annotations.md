@@ -1,7 +1,7 @@
 # Annotations
 
-Annotations are user-editable information attached to devices and measurements: spatial
-coordinates, saved positions, tags, and notes. They are separate from measurement data, generated
+Annotations are user-editable information attached to collections and items: spatial
+coordinates, saved positions, tags, and notes. They are separate from item data, generated
 cache data, browser state, and annotations drawn on figures.
 
 ## Purpose
@@ -20,14 +20,14 @@ Code imports `Annotations` and uses four namespaces:
 |---|---|
 | `Annotations.Coords` | Reads `x_um`, `y_um`, `w_um`, and `h_um` from parsed `device_info.txt` metadata and computes bounding boxes. |
 | `Annotations.Layout` | Reads and writes user-arranged positions in `layout.txt`. |
-| `Annotations.Tags` | Reads and writes tag definitions and device/measurement assignments in `tags.txt`. |
+| `Annotations.Tags` | Reads and writes tag definitions and collection/item assignments in `tags.txt`. |
 | `Annotations.Notes` | Reads and writes inherited per-path notes in `notes.txt`. |
 
 ## Current GUI
 
-Only tags are connected to the browser today. Device and measurement context menus show
+Only tags are connected to the browser today. Collection and item context menus show
 `Mark Bad` and `Unmark Bad`. The menu bar provides `Show Bad`, and effective tag colors style tree
-and measurement text. A malformed `tags.txt` is shown as a tag error.
+and item text. A malformed `tags.txt` is shown as a tag error.
 
 Coordinates, saved spatial layout, and notes currently have no GUI. They exist for the planned
 spatial browser and should not be described as existing user-facing features.
@@ -50,10 +50,10 @@ spatial browser and should not be described as existing user-facing features.
 ### `Tags`
 
 - `TagDef(name, color::NTuple{3,UInt8}, priority::Int)` — single catalog entry.
-- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string: device-path keys (slash-joined segments, e.g. `"RuO2test/A9/VI/D1"`) and measurement-ID keys (absolute paths with optional `#cycle=N` / `#split=X` suffixes) share the same map and never collide. `TagState()` is the empty state.
+- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string: collection-path keys (slash-joined segments, e.g. `"RuO2test/A9/VI/D1"`) and item keys share the same map and never collide. `TagState()` is the empty state.
 - `load(root) -> TagState`. Reads `tags.txt` when present. Missing file returns an empty state.
 - `save(root, state)` — writes `tags.txt`. Empty state removes the file.
-- `effective(state, key, ancestor_keys) -> Set{String}` — union of `key`'s own assignments with assignments on every entry of `ancestor_keys`. To get the full applicable tag set for a measurement, call `effective(state, measurement_id, [device_path; device_ancestors...])`: the measurement ID and the device-path ancestors are looked up uniformly in the same map.
+- `effective(state, key, ancestor_keys) -> Set{String}` — union of `key`'s own assignments with assignments on every entry of `ancestor_keys`. To get the full applicable tag set for an item, call `effective(state, item_key, [collection_path; collection_ancestors...])`: the item key and the collection-path ancestors are looked up uniformly in the same map.
 - `dominant_color(state, effective_tags) -> Union{Nothing, NTuple{3,UInt8}}` — highest-priority hit's color among catalog entries whose name is in `effective_tags`. Returns `nothing` for an empty input or no catalog matches.
 
 ### `Notes`
@@ -71,7 +71,7 @@ See [storage.md](storage.md) for the on-disk shape of `layout.txt`, `tags.txt`, 
 Tags and notes attach to specific paths. Both expose ancestor inheritance at lookup time; the caller
 supplies the ancestor list.
 
-- **`Tags.effective`** — set union of own tags and every ancestor's tags. Keys are arbitrary strings; device-path keys and measurement-ID keys are looked up in the same `assignments` map. No precedence among keys; tags are membership, not values. Use `dominant_color` to pick a single color out of the resulting set via the catalog's `priority` field.
+- **`Tags.effective`** — set union of own tags and every ancestor's tags. Keys are arbitrary strings; collection-path keys and item keys are looked up in the same `assignments` map. No precedence among keys; tags are membership, not values. Use `dominant_color` to pick a single color out of the resulting set via the catalog's `priority` field.
 - **`Notes.merged_view`** — each ancestor section is included read-only in the order supplied; the focal node's section is appended last and marked editable. Ancestors that have no section are skipped silently.
 
 Neither module rewrites stored state when it inherits — assignments and note bodies stay anchored to the path they were authored against.
