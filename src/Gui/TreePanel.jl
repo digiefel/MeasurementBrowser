@@ -35,25 +35,6 @@ function _imgui_text_filter_text(
     return String(bytes)
 end
 
-# Left panel (hierarchy tree) rendering
-"""Return whether a hierarchy label passes the tree filter."""
-function _tree_node_matches_filter(
-    filter_tree::Ptr{ig.lib.ImGuiTextFilter},
-    node::HierarchyNode,
-)::Bool
-    return ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL)
-end
-
-"""Return the label shown for one item in the item list."""
-function _item_display_label(workspace::Workspace.Workspace, item::ItemRecord)::String
-    return display_label(workspace.project, item)
-end
-
-"""Return the kind label shown for one item."""
-function _item_kind_label(workspace::Workspace.Workspace, item::ItemRecord)::String
-    return kind_label(workspace.project, item.kind)
-end
-
 """Return whether an item's visible labels pass the item filter."""
 function _item_matches_filter(
     workspace::Workspace.Workspace,
@@ -64,11 +45,11 @@ function _item_matches_filter(
         return true
     end
     text = string(
-        _item_display_label(workspace, item),
+        display_label(workspace.project, item),
         "\n",
         item.item_label,
         "\n",
-        _item_kind_label(workspace, item),
+        kind_label(workspace.project, item.kind),
     )
     return ig.ImGuiTextFilter_PassFilter(filter_obj, text, C_NULL)
 end
@@ -144,7 +125,7 @@ function _render_hierarchy_tree_panel(
         """Return whether this node or one of its descendants matches the filter."""
         function subtree_matches(node::HierarchyNode)::Bool
             return get!(subtree_matches_cache, node) do
-                _tree_node_matches_filter(filter_tree, node) && return true
+                ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL) && return true
                 for child in children(node)
                     subtree_matches(child) && return true
                 end
@@ -160,7 +141,8 @@ function _render_hierarchy_tree_panel(
             has_visible_leaf(node) || return
             force_show || subtree_matches(node) || return
 
-            direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
+            direct_match = force_show ||
+                ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL)
             if isempty(children(node))
                 push!(visible_collections, node)
                 return nothing
@@ -225,7 +207,8 @@ function _render_hierarchy_tree_panel(
             state.performance.node_count += 1
             ig.TableNextRow()
 
-            direct_match = force_show || _tree_node_matches_filter(filter_tree, node)
+            direct_match = force_show ||
+                ig.ImGuiTextFilter_PassFilter(filter_tree, node.name, C_NULL)
             ig.PushID(to_imgui_id(node_id))
 
             is_leaf = isempty(children(node))
@@ -554,7 +537,11 @@ function _render_items_panel(
                             bad_text_pushed = _push_tag_text_style!(
                                 tag_state, item_key, [dev_key; ancestor_keys])
                         end
-                        if ig.Selectable(_item_display_label(workspace, item), is_selected, ig.ImGuiSelectableFlags_SpanAllColumns)
+                        if ig.Selectable(
+                            display_label(workspace.project, item),
+                            is_selected,
+                            ig.ImGuiSelectableFlags_SpanAllColumns,
+                        )
                             io = ig.GetIO()
                             shift_held = unsafe_load(io.KeyShift)
                             ctrl_held = unsafe_load(io.KeyCtrl)

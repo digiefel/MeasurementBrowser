@@ -63,19 +63,6 @@ function plot_data!(
     )
 end
 
-# --- Registered-plot bridge ------------------------------------------------
-# A RegisteredPlot{kind,label} dispatches the engine's plot calls to the project's registered setup/draw
-# callbacks. `project.plots` is the recipe table filled by register_plot!.
-
-"""
-Materialize the loaded, data-bearing items for a selection of records (engine-owned).
-
-Each item carries its payload as `item.data`, so callbacks read `item.data` instead of a parallel
-array. Recipe-API items resolve through the processed-data cache; type-API items rebuild from source.
-"""
-_data_items(workspace::Workspace.Workspace, records::Vector{ItemRecord}) =
-    Workspace.materialize_items(workspace, records)
-
 """
 Build the figure for a registered plot by running its `setup` callback.
 
@@ -88,7 +75,7 @@ function setup_plot(
     records::Vector{ItemRecord},
 )::Figure where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    return recipe.setup(workspace, _data_items(workspace, records))::Figure
+    return recipe.setup(workspace, Workspace.materialize_items(workspace, records))::Figure
 end
 
 """
@@ -104,7 +91,7 @@ function plot_data!(
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    recipe.draw(workspace, _data_items(workspace, records), figure)
+    recipe.draw(workspace, Workspace.materialize_items(workspace, records), figure)
     return nothing
 end
 

@@ -55,26 +55,19 @@ function select_items!(
     workspace::Workspace,
     items::AbstractVector{<:AbstractDataItem},
 )::Nothing
-    records_by_item_id = Dict{String,Vector{ItemRecord}}()
-    for record in values(workspace.index.items)
-        records = get!(records_by_item_id, record.item_id) do
-            ItemRecord[]
-        end
-        push!(records, record)
-    end
-
     keys = String[]
     for item in items
         id = item_id(item)
-        records = get(records_by_item_id, id, nothing)
-        records === nothing && error(
+        # ponytail: linear scan per requested item; add an item_id index if bulk selection gets slow.
+        matches = [record for record in values(workspace.index.items) if record.item_id == id]
+        isempty(matches) && error(
             "Cannot select item_id '$id': no indexed item with that id exists in this workspace",
         )
-        length(records) == 1 || error(
-            "Cannot select item_id '$id' because it matches $(length(records)) indexed items; " *
+        length(matches) == 1 || error(
+            "Cannot select item_id '$id' because it matches $(length(matches)) indexed items; " *
             "select by ItemRecord or exact workspace item key instead",
         )
-        push!(keys, item_record_key(only(records)))
+        push!(keys, item_record_key(only(matches)))
     end
 
     workspace.selection.item_keys = keys
