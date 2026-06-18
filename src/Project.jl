@@ -297,8 +297,7 @@ function _processed_item(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDa
     result isa AbstractDataItem && return result
     error(
         "process callback for kind $(recipe.kind) must return an AbstractDataItem; " *
-        "got $(typeof(result)). Return DataItem(..., data=processed) or a custom " *
-        "AbstractDataItem instead."
+        "got $(typeof(result)). Return DataItem(item, processed) or a custom AbstractDataItem instead."
     )
 end
 

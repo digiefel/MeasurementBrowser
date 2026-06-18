@@ -180,9 +180,7 @@ register_item!(project, :iv;
     detect  = file -> endswith(file.filename, ".csv"),   # Bool; first matching recipe wins
     read    = file -> DataFrame(...),                    # whole file, parsed once
     entries = (file, data) -> [DataItem(kind=:iv, collection=[dev], parameters=p, data=slice) for …],
-    process = item -> DataItem(                          # optional; default passthrough
-        kind=kind(item), collection=collection(item), label=item_label(item),
-        parameters=parameters(item), stats=stats(item), data=clean(item.data), id=id(item)),
+    process = item -> DataItem(item, clean(item.data)),  # optional; default passthrough
     stats   = item -> Dict{Symbol,Any}(…),               # optional; computed after indexing
     label   = item -> "…")                               # optional; display label
 

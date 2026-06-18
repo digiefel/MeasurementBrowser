@@ -204,6 +204,17 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
     data,
 )
 
+"""Copy one `DataItem`, replacing only its payload."""
+DataItem(item::DataItem, data)::DataItem = DataItem(
+    item.id,
+    item.label,
+    item.kind,
+    item.collection,
+    item.parameters,
+    item.stats,
+    data,
+)
+
 """
 Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
 

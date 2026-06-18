@@ -66,9 +66,7 @@ register_item!(project, :iv;
     detect  = file -> occursin("iv", lowercase(file.filename)),  # Bool; first match wins
     read    = file -> DataFrame(...),                            # whole file, parsed once
     entries = (file, data) -> [DataItem(kind=:iv, collection=[...], parameters=..., data=data)],
-    process = item -> DataItem(                                  # optional; default passthrough
-        kind=kind(item), collection=collection(item), label=item_label(item),
-        parameters=parameters(item), stats=stats(item), data=clean(item.data), id=id(item)),
+    process = item -> DataItem(item, clean(item.data)),          # optional; default passthrough
     stats   = item -> Dict{Symbol,Any}(...),                     # optional; background analysis
     label   = item -> "…")                                       # optional
 

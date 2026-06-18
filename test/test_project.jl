@@ -29,21 +29,33 @@ function _build_test_project()
             data = item.data
             processed = DataFrame(data)
             processed.processed = data.x .+ data.y
-            return DataItem(;
-                kind=kind(item),
-                collection=collection(item),
-                label=item_label(item),
-                parameters=parameters(item),
-                stats=stats(item),
-                data=processed,
-                id=id(item),
-            )
+            return DataItem(item, processed)
         end,
     )
     return project
 end
 
 const TEST_PROJECT = _build_test_project()
+
+@testset "DataItem payload replacement preserves metadata" begin
+    item = DataItem(
+        kind=:table,
+        collection=["test"],
+        label="Raw",
+        parameters=Dict{Symbol,Any}(:bias => 1),
+        stats=Dict{Symbol,Any}(:rows => 2),
+        data="raw",
+        id="item-1",
+    )
+    replaced = DataItem(item, "processed")
+    @test replaced.id == item.id
+    @test replaced.label == item.label
+    @test replaced.kind == item.kind
+    @test replaced.collection === item.collection
+    @test replaced.parameters === item.parameters
+    @test replaced.stats === item.stats
+    @test replaced.data == "processed"
+end
 
 """Build the directory source used by high-level project tests."""
 function test_source(_project::Project, root_path::AbstractString)
