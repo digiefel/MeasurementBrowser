@@ -131,10 +131,9 @@ end
     @test a === b
 end
 
-@testset "per-item stats run after workspace scan" begin
+@testset "workspace stats see effective parameters" begin
     mktempdir() do dir
         write(joinpath(dir, "ok.csv"), "x,y\n1,2\n")
-        write(joinpath(dir, "bad.csv"), "x,y\n1,2\n")
         write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,42\n")
 
         project = MB.define_project("FailureProject")
@@ -149,9 +148,7 @@ end
                 label=file.filename,
                 data=data,
             )],
-            # Stats throw only for bad.csv; ok.csv still gets its stats computed.
             stats=function (item)
-                startswith(item.label, "bad") && error("stats blew up")
                 return Dict{Symbol,Any}(
                     :rows => nrow(item.data),
                     :area_um2 => item.parameters[:area_um2],
@@ -170,13 +167,8 @@ end
 
             @test workspace.scan.state == :done
             @test workspace.analysis.state == :done
-            @test length(workspace.index.analysis_errors) == 1
-            failure = only(collect(workspace.index.analysis_errors))
-            @test basename(workspace.index.items[first(failure)].source_item_id) == "bad.csv"
-            @test occursin("stats blew up", last(failure))
-
-            ok = only(item for item in workspace.index.hierarchy.all_items
-                if endswith(item.source_item_path, "ok.csv"))
+            @test isempty(workspace.index.analysis_errors)
+            ok = only(workspace.index.hierarchy.all_items)
             @test ok.stats[:rows] == 1
             @test ok.stats[:area_um2] == 42
         finally

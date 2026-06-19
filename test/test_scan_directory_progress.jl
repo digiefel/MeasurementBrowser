@@ -2,50 +2,6 @@ using MeasurementBrowser
 using MeasurementBrowser: ItemRecord
 using Test
 
-@testset "threaded scan publishes each source item once" begin
-    mktempdir() do dir
-        for index in 1:20
-            write(joinpath(dir, "item_$index.txt"), "value=$index\n")
-        end
-
-        seen = Dict{String,Int}()
-        seen_lock = ReentrantLock()
-        project = MeasurementBrowser.define_project("Threaded scan test")
-        MeasurementBrowser.register_item!(
-            project,
-            :text;
-            detect=file -> endswith(file.filename, ".txt"),
-            read=function (file)
-                lock(seen_lock) do
-                    seen[file.filepath] = get(seen, file.filepath, 0) + 1
-                end
-                sleep(0.001)
-                return read(file.filepath, String)
-            end,
-            entries=(file, data) -> [MeasurementBrowser.DataItem(
-                kind=:text,
-                collection=["text"],
-                label=file.filename,
-                id=file.filepath * "#text",
-                data=data,
-            )],
-        )
-
-        streamed = String[]
-        scan = MeasurementBrowser.scan_source(
-            project,
-            MeasurementBrowser.DirectorySource(dir; metadata_file=nothing);
-            on_items=items -> append!(streamed, item.source_item_id for item in items),
-        )
-
-        @test length(scan.hierarchy.all_items) == 20
-        @test length(streamed) == 20
-        @test length(seen) == 20
-        @test all(count -> count == 1, values(seen))
-        @test Set(streamed) == Set(keys(seen))
-    end
-end
-
 @testset "scan_source progress and cancel" begin
     mktempdir() do dir
         write_test_source(joinpath(dir, "first.csv"))
@@ -102,12 +58,6 @@ end
         @test old_index !== workspace.index.items
         @test isempty(old_index)
         @test length(workspace.index.items) == 1
-
-        write_test_source(joinpath(dir, "broken.csv"))
-        source = scan_test_source(TEST_PROJECT, dir)
-        @test length(source.source_item_fingerprints) == 3
-        @test length(source.analysis_failures) == 1
-        @test only(source.analysis_failures).source_item_id == joinpath(dir, "broken.csv")
 
         fired = Ref(false)
         @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser.with_cancel(

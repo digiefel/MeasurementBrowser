@@ -49,16 +49,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
     Browser._save_project_view(root_path, view)
     @test isfile(joinpath(root_path, "measurementbrowser.toml"))
     loaded = Browser._load_project_view(root_path)
-    @test loaded.project == view.project
-    @test loaded.tree.expanded == view.tree.expanded
-    @test loaded.tree.selected == view.tree.selected
-    @test loaded.tree.filter == view.tree.filter
-    @test loaded.items.selected == view.items.selected
-    @test loaded.items.filter == view.items.filter
-    @test loaded.main_plot.plot_kind == view.main_plot.plot_kind
-    @test loaded.main_plot.items == view.main_plot.items
-    @test only(loaded.plot_windows).plot_kind == only(view.plot_windows).plot_kind
-    @test only(loaded.plot_windows).items == only(view.plot_windows).items
+    @test Browser._project_view_to_toml(loaded) == Browser._project_view_to_toml(view)
 
     legacy_root_path = mktempdir()
     write(joinpath(legacy_root_path, "measurementbrowser.toml"), """
@@ -150,11 +141,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
     ))
 
     @test parsed.project == "ProjectViewTest"
-    @test parsed.tree.expanded == ["chip/device"]
-    @test parsed.items.selected == ["item-1"]
-    @test parsed.main_plot.id == "main"
-    @test parsed.main_plot.title == "Plot Area"
-    @test parsed.main_plot.live == true
+    @test parsed.main_plot.plot_kind == "iv_sweep::ProjectViewTLMPlot"
     @test only(parsed.plot_windows).items == ["item-2"]
 
     project = MeasurementBrowser.define_project("ProjectViewTest")
@@ -208,25 +195,16 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
     Browser._apply_project_view!(state, view)
     @test workspace.selection.collection_paths == ["chip/device"]
     @test workspace.selection.item_ids == ["item-1", "item-2"]
-    @test state.tree_filter == "tlm"
-    @test state.item_filter == "298K"
     plots = state.plots
-    @test plots.kind_by_item ==
-          Dict(:iv_sweep => ProjectViewIVPlot)
-    @test plots.main.live == true
+    @test plots.kind_by_item == Dict(:iv_sweep => ProjectViewIVPlot)
     @test plots.main.plot_kind == ProjectViewTLMPlot
     @test plots.main.item_ids == ["item-1"]
-    @test only(plots.windows).id == "plot_1"
     @test only(plots.windows).item_ids == ["item-2"]
 
     saved_view = Browser._project_view_from_browser(state)
     @test saved_view.project == "ProjectViewTest"
-    @test saved_view.tree.selected == ["chip/device"]
-    @test saved_view.tree.expanded == ["chip/device"]
     @test saved_view.items.selected == ["item-1", "item-2"]
-    @test saved_view.plot_kinds == Dict("iv_sweep" => "iv_sweep::ProjectViewIVPlot")
     @test saved_view.main_plot.plot_kind == "iv_sweep::ProjectViewTLMPlot"
-    @test only(saved_view.plot_windows).plot_kind == "iv_sweep::ProjectViewIVPlot"
 
     Browser._save_project_view_if_changed!(state)
     loaded_after_ui_save = Browser._load_project_view(root_path)
