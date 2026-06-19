@@ -57,9 +57,11 @@ Arguments:
 - `columns`: ordered column header names
 - `cell`: `(row::Int, col::Int) -> String` callback for cell text
 - `row_tint`: `(row::Int) -> Union{Nothing,UInt32}` for provenance colouring (ImGui packed color)
-- `initial_widths`: optional per-column initial fixed widths in pixels; sets column widths once
 - `on_selection_change`: called with the new `Vector{Int}` whenever the selection changes
 - `height`: child height in pixels; 0.0f0 = fill available
+
+Column widths are persisted across restarts by ImGui via the ini file (keyed by `id`).
+On first appearance, `ImGuiTableFlags_SizingFixedFit` auto-sizes each column to its content.
 
 Multi-select: click = replace, Shift+click = extend range, Ctrl/Cmd+click = toggle,
 Ctrl/Cmd+A = select all, ↑/↓ = move (Shift+↑/↓ = extend), Escape = clear.
@@ -71,7 +73,6 @@ function render_data_grid!(
     columns::Vector{String},
     cell::Function,
     row_tint::Function = _ -> nothing,
-    initial_widths::Union{Nothing,Vector{Float32}} = nothing,
     on_selection_change::Function = identity,
     height::Float32 = 0.0f0,
 )::Nothing
@@ -92,11 +93,10 @@ function render_data_grid!(
     # Sticky header (freeze first row)
     ig.TableSetupScrollFreeze(0, 1)
 
-    # Column headers — apply initial widths if provided
-    for (i, col) in enumerate(columns)
-        w = (initial_widths !== nothing && i <= length(initial_widths)) ?
-            initial_widths[i] : 140.0f0
-        ig.TableSetupColumn(col, ig.ImGuiTableColumnFlags_WidthFixed, w)
+    # Column headers — width 0 with SizingFixedFit = auto-fit on first appearance;
+    # imgui.ini restores saved widths on subsequent opens.
+    for col in columns
+        ig.TableSetupColumn(col, ig.ImGuiTableColumnFlags_WidthFixed, 0.0f0)
     end
     ig.TableHeadersRow()
 

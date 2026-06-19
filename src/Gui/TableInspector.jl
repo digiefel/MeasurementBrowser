@@ -183,16 +183,9 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     inspector.figure = nothing
     inspector.plot_key = nothing
 
-    # Track current kind for width persistence (single-kind selection only)
+    # Track current kind to form a stable per-kind DataGrid table id (used by imgui.ini)
     kinds = unique([r.kind for r in selected_records])
     inspector.current_kind = length(kinds) == 1 ? first(kinds) : nothing
-    # Load saved column widths for this kind
-    if inspector.current_kind !== nothing
-        saved = get(state.table_column_widths_by_kind, inspector.current_kind, nothing)
-        inspector.current_initial_widths = saved
-    else
-        inspector.current_initial_widths = nothing
-    end
 
     return nothing
 end
@@ -352,10 +345,13 @@ function _render_inspector_plot!(inspector::TableInspectorState)::Nothing
 end
 
 # ---------------------------------------------------------------------------
-# Raw file-preview mode (kept as secondary fallback)
+# Raw file mode — second DataGrid mode
 # ---------------------------------------------------------------------------
 
-"""Read one table into the inspector state (raw file mode)."""
+# Row count above which we show a soft warning in the file mode
+const _FILE_MODE_LARGE_ROW_WARN = 100_000
+
+"""Read one table into the inspector state (raw file mode, all rows)."""
 function _inspect_table_path!(
     state::BrowserState,
     path::AbstractString,
@@ -363,56 +359,80 @@ function _inspect_table_path!(
     inspector = state.table_inspector
     _set_buffer_string!(inspector.path_buffer, String(path))
     try
-        preview = inspect_table(path)
+        # typemax(Int) — load the full file, no row cap
+        preview = inspect_table(path; max_rows=typemax(Int))
         _set_buffer_string!(inspector.path_buffer, preview.path)
         inspector.preview = preview
+        inspector.file_grid = DataGridState()
         inspector.error = ""
-        inspector.x_column = 1
-        inspector.y_column = min(2, length(preview.columns))
-        inspector.figure = nothing
-        inspector.plot_key = nothing
-        inspector.plot_error = ""
     catch err
         bt = catch_backtrace()
         inspector.preview = nothing
         inspector.error = first(split(sprint(showerror, err), '\n'; limit=2))
-        inspector.figure = nothing
-        inspector.plot_key = nothing
         @error("Table inspection failed\nPath: $(String(path))", exception=(err, bt))
     end
     inspector.visible = true
     return nothing
 end
 
-"""Render the raw file-mode table (no virtualization; used as a fallback)."""
-function _render_table_preview(preview::TablePreview)::Nothing
+"""
+Build a DataGrid model (columns + row_count + cell callback) from a `TablePreview`.
+
+Returns `(columns::Vector{String}, n_rows::Int, cell::Function)`.
+"""
+function _file_grid_model(
+    preview::TablePreview,
+)::Tuple{Vector{String},Int,Function}
     table = preview.table
     columns = preview.columns
-    if isempty(columns) || nrow(table) == 0
-        ig.TextDisabled("No rows to preview")
+    n_rows = nrow(table)
+    col_indices = Dict(c => j for (j, c) in enumerate(columns))
+
+    function cell(row::Int, col::Int)::String
+        col_name = columns[col]
+        ci = get(col_indices, col_name, nothing)
+        ci === nothing && return ""
+        text = sprint(show, table[row, ci])
+        return length(text) > 90 ? first(text, 87) * "..." : text
+    end
+
+    return columns, n_rows, cell
+end
+
+"""Render the raw-file mode via DataGrid (virtualized, all rows, no provenance)."""
+function _render_file_mode!(inspector::TableInspectorState)::Nothing
+    preview = inspector.preview
+    preview isa TablePreview || return nothing
+
+    delimiter = preview.delimiter == '\t' ? "\\t" : string(preview.delimiter)
+    header    = preview.header_row === nothing ? "none" : string(preview.header_row)
+    ig.TextDisabled(
+        "Delimiter: $delimiter   Header row: $header   Data starts: " *
+        "$(preview.data_start_row)   Rows: $(preview.row_count)",
+    )
+
+    if preview.row_count > _FILE_MODE_LARGE_ROW_WARN
+        ig.TextColored(
+            (1.0f0, 0.8f0, 0.2f0, 1.0f0),
+            "Large file: $(preview.row_count) rows",
+        )
+    end
+
+    ig.Separator()
+
+    columns, n_rows, cell = _file_grid_model(preview)
+    if isempty(columns) || n_rows == 0
+        ig.TextDisabled("No rows to display")
         return nothing
     end
 
-    flags = ig.ImGuiTableFlags_RowBg |
-            ig.ImGuiTableFlags_Borders |
-            ig.ImGuiTableFlags_Resizable |
-            ig.ImGuiTableFlags_ScrollX |
-            ig.ImGuiTableFlags_ScrollY
-    if ig.BeginTable("table_inspector_preview", length(columns), flags, (0, 360))
-        for column in columns
-            ig.TableSetupColumn(column, ig.ImGuiTableColumnFlags_WidthFixed, 140)
-        end
-        ig.TableHeadersRow()
-        for row in 1:nrow(table)
-            ig.TableNextRow()
-            for column in columns
-                ig.TableNextColumn()
-                text = sprint(show, table[row, column])
-                ig.TextUnformatted(length(text) > 90 ? first(text, 87) * "..." : text)
-            end
-        end
-        ig.EndTable()
-    end
+    render_data_grid!(
+        "file",
+        inspector.file_grid;
+        n_rows,
+        columns,
+        cell,
+    )
     return nothing
 end
 
@@ -504,20 +524,9 @@ function render_table_inspector_window(state::BrowserState)::Nothing
         if has_item_data
             _render_item_data_view!(state, table)
 
-        # --- raw file preview (secondary) ---
+        # --- raw file mode (secondary) ---
         elseif inspector.preview isa TablePreview
-            preview = inspector.preview
-            delimiter = preview.delimiter == '\t' ? "\\t" : string(preview.delimiter)
-            header = preview.header_row === nothing ? "none" : string(preview.header_row)
-            ig.TextDisabled(
-                "Delimiter: $delimiter   Header row: $header   Data starts: " *
-                "$(preview.data_start_row)   Rows: $(preview.row_count)",
-            )
-            for warning in preview.warnings
-                ig.TextDisabled(warning)
-            end
-            ig.Separator()
-            _render_table_preview(preview)
+            _render_file_mode!(inspector)
 
         else
             # Show warnings and hint
@@ -580,17 +589,17 @@ function _render_item_data_view!(state::BrowserState, table::InspectorTable)::No
         (_) -> nothing
     end
 
-    # Get initial widths for the current kind
-    initial_widths = inspector.current_initial_widths
+    # Stable per-kind table id so imgui.ini keys column widths per item kind.
+    # "mixed" when multiple kinds are selected; kinds are always Symbols so String() is safe.
+    grid_id = inspector.current_kind !== nothing ? string(inspector.current_kind) : "mixed"
 
     render_data_grid!(
-        "inspector",
+        grid_id,
         inspector.grid;
         n_rows=table.rows,
         columns=table.columns,
         cell=table.getcell,
         row_tint,
-        initial_widths,
         on_selection_change=(_) -> begin
             # invalidate plot cache when selection changes with plot_selected_only
             inspector.plot_key = nothing
