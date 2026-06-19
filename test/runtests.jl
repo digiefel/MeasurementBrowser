@@ -17,4 +17,6 @@ include("test_project.jl")
     else
         @info "Skipping threaded workspace smoke test. Run `julia --project --threads=4 -e 'using Pkg; Pkg.test()'` to exercise threaded scanning."
     end
+    get(ENV, "MB_GLFW_SCAN_STRESS", "") == "1" &&
+        include("test_glfw_scan_startup_stress.jl")
 end
