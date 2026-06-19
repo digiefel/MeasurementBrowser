@@ -46,6 +46,19 @@ using Test
             for item in source.hierarchy.all_items
         )
 
+        workspace = MeasurementBrowser.Workspace.Workspace(
+            TEST_PROJECT,
+            test_source(TEST_PROJECT, dir),
+        )
+        old_index = workspace.index.items
+        @test MeasurementBrowser.Workspace.append_items!(
+            workspace,
+            source.hierarchy.all_items[1:1],
+        )
+        @test old_index !== workspace.index.items
+        @test isempty(old_index)
+        @test length(workspace.index.items) == 1
+
         write_test_source(joinpath(dir, "broken.csv"))
         source = scan_test_source(TEST_PROJECT, dir)
         @test length(source.source_item_fingerprints) == 3

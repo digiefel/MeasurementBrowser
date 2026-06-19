@@ -330,7 +330,7 @@ function append_items!(
 )::Bool
     isempty(items) && return false
     hierarchy = workspace.index.hierarchy
-    item_index = workspace.index.items
+    item_index = copy(workspace.index.items)
     metadata_keys = Set(workspace.index.collection_metadata_keys)
     changed = false
     for item in items
@@ -341,6 +341,7 @@ function append_items!(
         changed = true
     end
     changed || return false
+    workspace.index.items = item_index
     workspace.index.collection_metadata_keys = sort!(collect(metadata_keys); by=String)
     return true
 end
