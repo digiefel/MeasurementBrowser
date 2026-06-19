@@ -74,70 +74,122 @@ function interpret_source_items(
     on_items::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )::NamedTuple
-    processed_count = Base.Threads.Atomic{Int}(0)
-    item_count = Base.Threads.Atomic{Int}(0)
-    skipped_count = Base.Threads.Atomic{Int}(0)
-    callback_lock = ReentrantLock()
-    worker_limit = Base.Semaphore(max(1, Base.Threads.nthreads()))
+    processed_count::Int = 0
+    item_count::Int = 0
+    skipped_count::Int = 0
     cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
-    failures = ItemFailure[]
-    records_by_position = Vector{Vector{ItemRecord}}(undef, length(source_items))
+    failures::Vector{ItemFailure} = ItemFailure[]
+    records_by_position::Vector{Vector{ItemRecord}} =
+        Vector{Vector{ItemRecord}}(undef, length(source_items))
+    isempty(source_items) && return (
+        processed_source_items=0,
+        loaded_items=0,
+        skipped_source_items=0,
+        total_source_items=0,
+        failures,
+        records=ItemRecord[],
+    )
 
-    @sync for (index, source_item) in pairs(source_items)
-        check_cancel()
-        Base.acquire(worker_limit)
-        Base.Threads.@spawn try
-            with_cancel(cancel_requested) do
-                check_cancel()
-                records = try
-                    interpret_source_item(project, source, source_item, metadata)
-                catch error
-                    is_job_cancelled(error) && rethrow()
-                    backtrace = catch_backtrace()
-                    @error(
-                        "Source item interpretation failed",
-                        source=source_label(source),
-                        source_item=source_item_id(source_item),
-                        exception=(error, backtrace),
-                    )
-                    lock(callback_lock) do
-                        push!(failures, ItemFailure(
-                            source_item_id(source_item),
-                            "",
-                            sprint(showerror, error),
+    work = Channel{Tuple{Int,eltype(source_items)}}(length(source_items))
+    results = Channel{NamedTuple}(length(source_items))
+    for (index, source_item) in pairs(source_items)
+        put!(work, (index, source_item))
+    end
+    close(work)
+
+    worker_count = min(max(1, Base.Threads.nthreads()), length(source_items))
+    received = falses(length(source_items))
+    @sync begin
+        for _ in 1:worker_count
+            Base.Threads.@spawn with_cancel(cancel_requested) do
+                for (index, source_item) in work
+                    source_item_id_value = source_item_id(source_item)
+                    records = try
+                        check_cancel()
+                        interpreted = interpret_source_item(project, source, source_item, metadata)
+                        check_cancel()
+                        interpreted
+                    catch error
+                        if is_job_cancelled(error)
+                            put!(results, (
+                                kind=:cancelled,
+                                index,
+                                source_item_id=source_item_id_value,
+                                records=ItemRecord[],
+                                failure=nothing,
+                            ))
+                            return nothing
+                        end
+                        backtrace = catch_backtrace()
+                        @error(
+                            "Source item interpretation failed",
+                            source=source_label(source),
+                            source_item=source_item_id_value,
+                            exception=(error, backtrace),
+                        )
+                        put!(results, (
+                            kind=:failure,
+                            index,
+                            source_item_id=source_item_id_value,
+                            records=ItemRecord[],
+                            failure=ItemFailure(
+                                source_item_id_value,
+                                "",
+                                sprint(showerror, error),
+                            ),
                         ))
+                        continue
                     end
-                    ItemRecord[]
-                end
-                check_cancel()
-                records_by_position[index] = records
-                lock(callback_lock) do
-                    isempty(records) || on_items === nothing || on_items(records)
-                end
-                isempty(records) ?
-                    Base.Threads.atomic_add!(skipped_count, 1) :
-                    Base.Threads.atomic_add!(item_count, length(records))
-                processed = Base.Threads.atomic_add!(processed_count, 1) + 1
-                on_progress === nothing || lock(callback_lock) do
-                    on_progress((
-                        total_source_items=length(source_items),
-                        processed_source_items=processed,
-                        loaded_items=item_count[],
-                        skipped_source_items=skipped_count[],
-                        current_source_item=source_item_id(source_item),
+                    put!(results, (
+                        kind=:ok,
+                        index,
+                        source_item_id=source_item_id_value,
+                        records,
+                        failure=nothing,
                     ))
                 end
             end
-        finally
-            Base.release(worker_limit)
+        end
+
+        for _ in eachindex(source_items)
+            result = take!(results)
+            result.kind === :cancelled && throw(JobCancelled())
+            index = result.index
+            1 <= index <= length(source_items) || error(
+                "Scan worker returned invalid source item index $index",
+            )
+            received[index] && error(
+                "Scan worker returned duplicate result for source item " *
+                "'$(result.source_item_id)' at index $index",
+            )
+            expected_source_item_id = source_item_id(source_items[index])
+            result.source_item_id == expected_source_item_id || error(
+                "Scan worker result for index $index belongs to source item " *
+                "'$(result.source_item_id)', expected '$expected_source_item_id'",
+            )
+            received[index] = true
+            result.failure === nothing || push!(failures, result.failure)
+            records_by_position[index] = result.records
+            isempty(result.records) || on_items === nothing || on_items(result.records)
+            isempty(result.records) ? (skipped_count += 1) :
+                (item_count += length(result.records))
+            processed_count += 1
+            on_progress === nothing || on_progress((
+                total_source_items=length(source_items),
+                processed_source_items=processed_count,
+                loaded_items=item_count,
+                skipped_source_items=skipped_count,
+                current_source_item=result.source_item_id,
+            ))
         end
     end
+    all(received) || error("Scan completed without receiving every worker result")
 
     records = reduce(append!, records_by_position; init=ItemRecord[])
     return (
-        processed_source_items=processed_count[],
-        loaded_items=item_count[],
-        skipped_source_items=skipped_count[],
+        processed_source_items=processed_count,
+        loaded_items=item_count,
+        skipped_source_items=skipped_count,
         total_source_items=length(source_items),
         failures,
         records,
