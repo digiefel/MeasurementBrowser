@@ -4,6 +4,14 @@ import GLFW
 import CImGui as ig
 using NativeFileDialog: pick_folder
 
+# ---------------------------------------------------------------------------
+# ImGui ini file — pointer lifetime
+# ---------------------------------------------------------------------------
+
+# dear imgui stores the IniFilename pointer by address and does NOT copy it; the buffer must
+# outlive the entire process.  We hold it here as a module-level Ref so it is never GC'd.
+const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
+
 using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
@@ -758,7 +766,16 @@ function _init_browser_context!()
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_DockingEnable
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_ViewportsEnable
     io.ConfigFlags = unsafe_load(io.ConfigFlags) | ig.ImGuiConfigFlags_NavEnableKeyboard
-    io.IniFilename = Ptr{Cchar}(C_NULL)   # disable layout persistence
+
+    # Point imgui at a per-machine ini file so [Table] column widths persist across restarts.
+    # The pointer must live for the whole process — _IMGUI_INI_BYTES holds the bytes.
+    depot = isempty(DEPOT_PATH) ? homedir() : first(DEPOT_PATH)
+    ini_dir = joinpath(depot, "measurementbrowser")
+    mkpath(ini_dir)
+    ini_path = joinpath(ini_dir, "imgui.ini")
+    _IMGUI_INI_BYTES[] = vcat(Vector{UInt8}(codeunits(ini_path)), 0x00)
+    io.IniFilename = Ptr{Cchar}(pointer(_IMGUI_INI_BYTES[]))
+
     ig.StyleColorsDark()
     return ctx
 end
