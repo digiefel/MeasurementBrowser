@@ -77,7 +77,6 @@ reference each frame. It tracks `selected_rows::Vector{Int}`, a `scroll_to_row` 
 render_data_grid!(id, state;
     n_rows, columns, cell,         # cell(row, col) -> String
     row_tint = _ -> nothing,       # row -> Union{Nothing,UInt32} packed RGBA
-    initial_widths = nothing,      # Vector{Float32} to restore persisted column widths
     on_selection_change = identity,
     height = 0.0f0)                # 0 = fill available
 ```
@@ -86,18 +85,39 @@ The grid uses `ImGuiListClipper` for O(visible) rendering, sticky header via
 `TableSetupScrollFreeze(0, 1)`, `ImGuiTableFlags_Resizable` for drag-to-resize columns, and the
 shared `_update_multi_selection!` helper for click/Shift/Ctrl/arrow/Escape/Ctrl+A selection.
 
-**Column width persistence**: `TableGetColumnWidth` is not available in this CImGui build.
-Provide `initial_widths` to restore saved widths on open; ImGui's resizable table state persists
-within a session. To persist across sessions, record the widths externally before closing.
+**Column width persistence**: Column widths are persisted across restarts via ImGui's ini file
+(see below). `ImGuiTableFlags_SizingFixedFit` auto-sizes columns on first appearance; on
+subsequent opens the ini file restores the saved widths. The `id` argument forms part of the
+ini table key, so different callers with different ids get independent saved widths.
 
 **Multi-select shared helper**: `_update_multi_selection!(selected, item, all_items, shift, ctrl)`
 is defined once in `DataGrid.jl` and used by both `DataGrid` (row indices as `Int`) and the item
 panel in `TreePanel.jl` (item ids as `String`).
 
+## ImGui ini file
+
+ImGui's ini file persists window sizes, positions, and — most importantly — `[Table]` column
+widths. The browser re-enables ini persistence and points it at a stable per-machine path:
+
+```
+<DEPOT_PATH[1]>/measurementbrowser/imgui.ini
+```
+
+(`homedir()` is used when `DEPOT_PATH` is empty.) The directory is created at startup if it does
+not exist. The ini pointer is held in a module-level `const _IMGUI_INI_BYTES` in `Layout.jl` so
+the byte buffer lives for the whole process (dear imgui stores the pointer, not a copy).
+
+**DockBuilder is still the authority for docking layout.** `_setup_docking_layout!` uses a
+one-shot Ref so it runs exactly once per process; the ini file's `[Docking]` section is
+overwritten by that one-shot setup and does not take effect.
+
+**Side-effect note**: enabling the ini also causes ImGui to save and restore window positions and
+sizes (anything not controlled by DockBuilder). In practice this is desirable, but it means
+window positions persist per machine rather than being reset each launch.
+
 ## Table Inspector
 
-The Table Inspector shows the **selected logical items' own data** (`item_data`) as a merged,
-virtualized table. It replaces the former raw file re-parse approach.
+The Table Inspector shows data in two modes, both rendered through the same `DataGrid` component.
 
 **Primary mode (item data)**:
 - On each frame, resolves the browser selection to `ItemRecord`s via `_project_visible_selection`
@@ -112,19 +132,22 @@ virtualized table. It replaces the former raw file re-parse approach.
 - Plot on the right (55/45 split): X/Y column chooser; "Plot selected only" checkbox restricts the
   plot to the grid selection.
 
-**Per-kind column width persistence**: When a single-kind selection is open, the initial column widths
-are restored from `BrowserState.table_column_widths_by_kind[kind]`. These are serialized to / from
-`PersistedProjectView.table_column_widths` (comma-joined `Float32` widths keyed by `String(kind)`).
-Mixed-kind selections skip width persistence and use auto-fit.
+**Column width persistence (item mode)**: The DataGrid is called with a per-kind `id` —
+`string(kind)` for a single-kind selection, `"mixed"` when multiple kinds are selected. ImGui
+keys `[Table]` entries in the ini file by that id, so column widths are stored and restored
+per kind globally across restarts. There is no toml layer for column widths.
 
-**Secondary raw-file mode**: `Inspect → Table Inspector` still exposes the path bar, `Live`
-checkbox, `Open...`, and `Reload` controls for inspecting arbitrary delimited files. This mode
-uses the legacy `inspect_table(path)` preview with the old non-virtualized table renderer (no
-provenance). The `merge_item_tables` / `InspectorTable` model is item-data only.
+**Secondary raw-file mode**: `Inspect → Table Inspector` exposes the path bar, `Live` checkbox,
+`Open...`, and `Reload` controls for inspecting arbitrary delimited files. The full file is
+loaded (no row cap; a soft warning appears above 100 000 rows) and rendered through `DataGrid`
+with id `"file"`. This mode has no provenance tinting and no quick-plot panel. The grid model
+is built by `_file_grid_model(preview)` which returns `(columns, n_rows, cell)` from the parsed
+`TablePreview`; its column widths are persisted separately under the `"file"` ini key.
 
 `inspect_table(path)` remains exported for external use. It returns a `TablePreview` with the
-file's detected delimiter, header row, first data row, approximate row count, and bounded preview
-DataFrame. It does not call project readers or write cache entries.
+file's detected delimiter, header row, first data row, approximate row count, and a DataFrame of
+all rows (or a bounded subset when called with an explicit `max_rows`). It does not call project
+readers or write cache entries.
 
 ## Annotations in the GUI
 

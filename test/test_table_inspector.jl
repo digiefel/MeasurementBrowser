@@ -35,6 +35,12 @@ const TI = MeasurementBrowser.TableInspector
         @test preview.row_count == 2
         @test preview.preview_rows == 2
 
+        # All-rows mode: no cap, warnings empty
+        preview_all = inspect_table(comma_path; max_rows=typemax(Int))
+        @test preview_all.row_count == 2
+        @test preview_all.preview_rows == 2
+        @test isempty(preview_all.warnings)
+
         tab_path = joinpath(dir, "no_header.tsv")
         write(tab_path, "1\t2\t3\n4\t5\t6\n")
         preview = inspect_table(tab_path; max_rows=1)
@@ -140,59 +146,37 @@ const TI = MeasurementBrowser.TableInspector
         @test Set(sel) == Set(all_rows)
     end
 
-    # --- per-kind column width persistence round-trip ---
-    @testset "per-kind column width persistence" begin
-        # Simulate: save widths for :iv kind, round-trip through TOML
-        widths_by_kind = Dict{Symbol,Vector{Float32}}(
-            :iv => Float32[120.0, 80.0, 200.0],
-            :pund => Float32[90.0, 150.0],
-        )
-        # Serialize as in _project_view_from_browser: String(:iv) == "iv"
-        serialized = Dict(
-            String(kind) => join(widths, ",")
-            for (kind, widths) in widths_by_kind
-        )
-        @test haskey(serialized, "iv")
-        @test serialized["iv"] == "120.0,80.0,200.0"
-        @test haskey(serialized, "pund")
+    # --- file-mode grid model builder ---
+    @testset "file grid model from TablePreview" begin
+        mktempdir() do dir
+            path = joinpath(dir, "sample.csv")
+            write(path, "a,b,c\n1,2,3\n4,5,6\n7,8,9\n")
+            # Load all rows
+            preview = inspect_table(path; max_rows=typemax(Int))
+            @test preview.row_count == 3
+            @test preview.preview_rows == 3
+            @test isempty(preview.warnings)
 
-        # Deserialize as in _apply_project_view!
-        restored = Dict{Symbol,Vector{Float32}}()
-        for (kind_str, widths_str) in serialized
-            isempty(widths_str) && continue
-            widths = Float32[]
-            for part in split(widths_str, ",")
-                v = tryparse(Float32, strip(part))
-                v !== nothing && push!(widths, v)
-            end
-            isempty(widths) || (restored[Symbol(kind_str)] = widths)
+            columns, n_rows, cell = Browser._file_grid_model(preview)
+            @test columns == ["a", "b", "c"]
+            @test n_rows == 3
+            # First row, first column
+            @test cell(1, 1) == "1"
+            @test cell(1, 2) == "2"
+            @test cell(3, 3) == "9"
         end
-        @test restored[:iv] ≈ Float32[120.0, 80.0, 200.0]
-        @test restored[:pund] ≈ Float32[90.0, 150.0]
-
-        # Empty widths string is skipped
-        empty_ser = Dict("mykey" => "")
-        restored2 = Dict{Symbol,Vector{Float32}}()
-        for (k, v) in empty_ser
-            isempty(v) && continue
-            restored2[Symbol(k)] = Float32[]
-        end
-        @test isempty(restored2)
     end
 
-    # --- PersistedProjectView round-trip including table_column_widths ---
-    @testset "PersistedProjectView table_column_widths round-trip" begin
-        # Keys are String(kind) == "iv" (no colon); values are comma-joined Float32 widths
-        view = Browser.PersistedProjectView(
-            project="test",
-            table_column_widths=Dict("iv" => "100.0,200.0", "cv" => "50.0"),
-        )
+    # --- PersistedProjectView round-trip (no table_column_widths) ---
+    @testset "PersistedProjectView round-trip" begin
+        view = Browser.PersistedProjectView(project="test")
         toml_data = Browser._project_view_to_toml(view)
-        @test haskey(toml_data, "table_column_widths")
-        @test toml_data["table_column_widths"]["iv"] == "100.0,200.0"
+        @test haskey(toml_data, "project")
+        @test toml_data["project"] == "test"
+        # table_column_widths field is gone — ensure no key pollution
+        @test !haskey(toml_data, "table_column_widths")
 
         restored = Browser._project_view_from_toml(Browser.PersistedProjectView, toml_data)
-        @test restored.table_column_widths["iv"] == "100.0,200.0"
-        @test restored.table_column_widths["cv"] == "50.0"
+        @test restored.project == "test"
     end
 end

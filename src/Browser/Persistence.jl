@@ -282,10 +282,6 @@ function _project_view_from_browser(
         ),
         main_plot=_persisted_plot_view(plots.main),
         plot_windows=[_persisted_plot_view(view) for view in plots.windows],
-        table_column_widths=Dict(
-            String(kind) => join(widths, ",")
-            for (kind, widths) in state.table_column_widths_by_kind
-        ),
     )
 end
 
@@ -336,18 +332,6 @@ function _apply_project_view!(
         if match_result !== nothing
     ]
     plots.next_window_id = isempty(counters) ? 0 : maximum(counters)
-
-    # Restore per-kind column widths for the table inspector
-    empty!(state.table_column_widths_by_kind)
-    for (kind_str, widths_str) in view.table_column_widths
-        isempty(widths_str) && continue
-        widths = Float32[]
-        for part in split(widths_str, ",")
-            v = tryparse(Float32, strip(part))
-            v !== nothing && push!(widths, v)
-        end
-        isempty(widths) || (state.table_column_widths_by_kind[Symbol(kind_str)] = widths)
-    end
 
     _reset_project_filter_widgets!(state)
     return nothing

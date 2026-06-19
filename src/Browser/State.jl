@@ -78,9 +78,6 @@ Base.@kwdef struct PersistedProjectView
     main_plot::PersistedPlotView =
         PersistedPlotView(id="main", title="Plot Area", live=true)
     plot_windows::Vector{PersistedPlotView} = PersistedPlotView[]
-    # Per-kind column widths for the table inspector, keyed by String(kind).
-    # Value is a comma-separated list of Float32 pixel widths.
-    table_column_widths::Dict{String,String} = Dict{String,String}()
 end
 
 """One recently opened source root and its user preferences."""
@@ -95,8 +92,8 @@ const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
 Transient row-selection and scroll state for a DataGrid widget.
 
 Owned by the consumer of the grid (e.g. TableInspectorState); passed by reference each frame.
-Column widths are set once via `initial_widths` in `render_data_grid!`; ImGui manages resizing
-within a session. Use `scroll_to_row` to request a programmatic scroll on the next frame.
+Column widths are persisted across restarts via the imgui.ini file, keyed by the grid `id`.
+Use `scroll_to_row` to request a programmatic scroll on the next frame.
 """
 Base.@kwdef mutable struct DataGridState
     selected_rows::Vector{Int}           = Int[]
@@ -114,16 +111,17 @@ Base.@kwdef mutable struct TableInspectorState
     grid::DataGridState = DataGridState()
     plot_selected_only::Bool = false
     show_provenance_column::Bool = false
+    # current_kind drives the per-kind DataGrid table id so imgui.ini keys column widths per kind
     current_kind::Union{Nothing,Symbol} = nothing
-    current_initial_widths::Union{Nothing,Vector{Float32}} = nothing
     # Quick-plot state (driven from inspector_table)
     x_column::Int = 1
     y_column::Int = 2
     figure::Union{Nothing,Figure} = nothing
     plot_key::Union{Nothing,Tuple} = nothing
     plot_error::String = ""
-    # Raw file-preview mode (secondary, legacy; kept for manual inspection of arbitrary files)
+    # Raw file-preview mode (secondary): file → DataGrid
     preview::Union{Nothing,TablePreview} = nothing
+    file_grid::DataGridState = DataGridState()
     live::Bool = true
     path_buffer::Vector{UInt8} = fill(UInt8(0), TABLE_INSPECTOR_PATH_BUFFER_SIZE)
     error::String = ""
@@ -154,8 +152,6 @@ Base.@kwdef mutable struct BrowserState
     project_locked::Bool = false
     plots::PlotState = PlotState()
     table_inspector::TableInspectorState = TableInspectorState()
-    # Per-kind column widths for the table inspector (runtime mirror of PersistedProjectView.table_column_widths)
-    table_column_widths_by_kind::Dict{Symbol,Vector{Float32}} = Dict{Symbol,Vector{Float32}}()
     performance::PerformanceState = PerformanceState()
     project_preference::String = "auto"
     recent_projects::Vector{RecentProject} = RecentProject[]
