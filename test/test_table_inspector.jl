@@ -2,8 +2,17 @@ using MeasurementBrowser
 using MeasurementBrowser: inspect_table
 using Test
 
+const Browser = MeasurementBrowser.Browser
+
 @testset "table inspector" begin
     mktempdir() do dir
+        buffer = fill(UInt8(0), 8)
+        Browser._set_buffer_string!(buffer, "abc")
+        @test Browser._buffer_string(buffer) == "abc"
+        Browser._set_buffer_string!(buffer, "abcdefghij")
+        @test Browser._buffer_string(buffer) == "abcdefg"
+        @test buffer[end] == UInt8(0)
+
         comma_path = joinpath(dir, "with_preamble.csv")
         write(
             comma_path,

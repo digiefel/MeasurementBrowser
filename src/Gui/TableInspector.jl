@@ -8,6 +8,23 @@ using ..TableInspector:
     inspect_table
 using .MakieImguiIntegration: MakieFigure
 
+"""Return the null-terminated text currently stored in an ImGui byte buffer."""
+function _buffer_string(buffer::Vector{UInt8})::String
+    terminator = findfirst(==(UInt8(0)), buffer)
+    last_index = terminator === nothing ? length(buffer) : terminator - 1
+    return String(buffer[1:last_index])
+end
+
+"""Write null-terminated text into an ImGui byte buffer."""
+function _set_buffer_string!(buffer::Vector{UInt8}, text::AbstractString)::Nothing
+    isempty(buffer) && return nothing
+    fill!(buffer, UInt8(0))
+    bytes = codeunits(String(text))
+    byte_count = min(length(bytes), length(buffer) - 1)
+    byte_count > 0 && copyto!(buffer, 1, bytes, 1, byte_count)
+    return nothing
+end
+
 """Read one table into the inspector state and reset view-local plot choices."""
 function _inspect_table_path!(
     state::BrowserState,
