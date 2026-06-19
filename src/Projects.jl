@@ -141,7 +141,7 @@ function load_data_item end
 
 abstract type AbstractDataItem end
 
-"""Nestable container an item is placed in. Future home for collection metadata/behaviour."""
+"""Nestable container an item is placed in. Future home for collection behaviour."""
 abstract type Collection end
 
 """Stable string identity of an item."""
@@ -176,8 +176,15 @@ fingerprint(::AbstractDataItem) = nothing
 """Optional fold over one collection node's data-less item handles."""
 function collection_stats end
 
-"""Extra per-item stats computed after indexing. Internal workspace hook."""
-function analysis_stats end
+"""Collection parameters contributed by a source for one collection path."""
+collection_parameters(::AbstractDataSource, ::AbstractVector{<:AbstractString})::Dict{Symbol,Any} =
+    Dict{Symbol,Any}()
+
+"""Whether a source supplied collection parameters for this scan."""
+has_collection_parameters(::AbstractDataSource)::Bool = false
+
+"""Per-item stats computed after indexing. Internal workspace hook."""
+function compute_item_stats end
 
 # ---------------------------------------------------------------------------
 # Interface functions

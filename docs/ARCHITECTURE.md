@@ -70,7 +70,7 @@ The most important boundary is between source meaning and package machinery.
 A source owns:
 
 - discovering source items
-- source-specific metadata, such as `DirectorySource` loading `metadata.txt`
+- source-specific parameter input, such as `DirectorySource` loading `metadata.txt`
 
 A project/source implementation owns:
 
@@ -99,7 +99,7 @@ not know the meaning of a source item beyond the contract methods it calls.
 The package expresses that boundary through focused internal modules. `Projects` defines the
 `AbstractDataItem` contract and the `Project` recipe type. `DataSources/DirectorySource.jl` owns the
 built-in directory source, `SourceFile`, file fingerprints, directory traversal, sidecar exclusion,
-and `metadata.txt` collection metadata. `ItemIndex` owns the internal `ItemRecord`, the concrete
+and `metadata.txt` collection parameter input. `ItemIndex` owns the internal `ItemRecord`, the concrete
 `DataItem`, hierarchy construction, and scanning. `Cache` owns generated HDF5 state. `Workspace` owns
 one project/source pair, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and
@@ -112,14 +112,14 @@ state.
 
 ## On-disk metadata
 
-Directory-backed collection metadata and annotations are lean text files (see [storage](storage.md)
+Directory-backed collection parameters and annotations are lean text files (see [storage](storage.md)
 for formats):
 
 - `metadata.txt` — `DirectorySource` source-root parameters with path-fragment matching.
 - `tags.txt` — tag catalog and per-path assignments.
 
 `metadata.txt` belongs to `DirectorySource`; sources without that file simply have no collection
-metadata. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
+parameters. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
 source still has somewhere to persist user-authored notes/tags/layout. The HDF5 cache itself is
 generated and lives outside the source.
 

@@ -52,6 +52,32 @@ end
     end
 end
 
+@testset "scan cache compares effective parameters" begin
+    mktempdir() do dir
+        write_test_source(joinpath(dir, "first.csv"))
+        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\n")
+
+        source = scan_test_source(TEST_PROJECT, dir)
+
+        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\nunused,B\n")
+        same = MB.scan_source(
+            TEST_PROJECT,
+            test_source(TEST_PROJECT, dir);
+            cached_source=source,
+        )
+        @test same === source
+
+        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,B\n")
+        changed = MB.scan_source(
+            TEST_PROJECT,
+            test_source(TEST_PROJECT, dir);
+            cached_source=source,
+        )
+        @test changed !== source
+        @test only(changed.hierarchy.all_items).parameters[:wafer] == "B"
+    end
+end
+
 @testset "per-kind scan profile" begin
     mktempdir() do dir
         for i in 1:4
@@ -109,6 +135,7 @@ end
     mktempdir() do dir
         write(joinpath(dir, "ok.csv"), "x,y\n1,2\n")
         write(joinpath(dir, "bad.csv"), "x,y\n1,2\n")
+        write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,42\n")
 
         project = MB.define_project("FailureProject")
         MB.register_item!(
@@ -125,7 +152,10 @@ end
             # Stats throw only for bad.csv; ok.csv still gets its stats computed.
             stats=function (item)
                 startswith(item.label, "bad") && error("stats blew up")
-                return Dict{Symbol,Any}(:rows => nrow(item.data))
+                return Dict{Symbol,Any}(
+                    :rows => nrow(item.data),
+                    :area_um2 => item.parameters[:area_um2],
+                )
             end,
         )
 
@@ -148,6 +178,7 @@ end
             ok = only(item for item in workspace.index.hierarchy.all_items
                 if endswith(item.source_item_path, "ok.csv"))
             @test ok.stats[:rows] == 1
+            @test ok.stats[:area_um2] == 42
         finally
             MB.close_workspace!(workspace)
         end

@@ -94,7 +94,7 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 | `item_label(item)::String` | yes | display title |
 | `kind(item)::Symbol` | yes | coarse UI/plot key — *not* the source of semantic truth |
 | `collection(item)::Vector{String}` | yes | canonical hierarchy path |
-| `parameters(item)::Dict{Symbol,Any}` | yes | metadata known at interpretation time |
+| `parameters(item)::Dict{Symbol,Any}` | yes | item parameters; entry callbacks provide local params, indexed/loaded `DataItem`s carry effective params |
 | `stats(item)::Dict{Symbol,Any}` | yes | computed values, filled lazily after indexing when needed |
 | `item_data(item)` | yes | loaded payload consumed by views/plots (`nothing` on a data-less handle) |
 | `process(item)` | no (→ `item`) | optional transform returning the item views receive |

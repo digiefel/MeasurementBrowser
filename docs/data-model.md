@@ -55,8 +55,7 @@ struct ItemRecord                    # internal metadata record (never seen by s
     item_label::String
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
-    collection_metadata::Dict{Symbol,Any}   # merged from metadata.txt (area_um2, t_HZO_nm, …)
-    parameters::Dict{Symbol,Any}     # acquisition settings known while interpreting the unit
+    parameters::Dict{Symbol,Any}     # effective item parameters: collection + local item params
     stats::Dict{Symbol,Any}          # values filled by background analysis
     item_fingerprint::Any            # nothing → payload not persistently cacheable
 end
@@ -90,6 +89,7 @@ collection-level stats, filled by workspace background analysis:
 struct HierarchyNode
     name::String                       # one path segment
     kind::Symbol                       # :root | :level (intermediate) | :leaf (last segment)
+    parameters::Dict{Symbol,Any}       # effective collection parameters at this node
     children::Vector{HierarchyNode}
     items::Vector{ItemRecord}          # records, populated only on :leaf nodes
     stats::Dict{Symbol,Any}            # collection-level stats for this node
@@ -100,7 +100,7 @@ struct Hierarchy
     all_items::Vector{ItemRecord}
     source_id::String
     index::Dict{Tuple{Vararg{String}}, HierarchyNode}   # path tuple → node
-    has_collection_metadata::Bool
+    has_collection_parameters::Bool
     skipped_count::Int
 end
 ```
@@ -123,18 +123,20 @@ An item's `collection::Vector{String}` is its canonical placement. Two equivalen
 - **String** (used in on-disk files): `"RuO2test/A9/VI/D1"` — built by `collection_path_key(collection)`.
 - **Round-trip**: `collection_path_tuple("RuO2test/A9/VI/D1")` parses and validates the string form.
 
-The slash-joined string is the canonical identifier in any stored metadata. New metadata systems
+The slash-joined string is the canonical identifier in any stored parameters. New metadata systems
 should reuse it.
 
-## Collection metadata (path-prefix matching)
+## Collection parameters
 
-`metadata.txt` rows are keyed by path; metadata applies to **all descendants whose collection is
-prefixed by that key**, with longer (more specific) keys overriding shorter ones, and is merged into
-each record's `collection_metadata`. The on-disk format is documented in [storage.md](storage.md).
-Collection metadata is a capability of the file-backed source; non-file sources need not provide it.
+Sources may provide collection parameters for a collection path through
+`collection_parameters(source, collection_path)`. The hierarchy owns inheritance: parent collection
+parameters flow to child nodes, and each item record stores the effective item parameters formed from
+that node's parameters plus the item-local `parameters(item)`. Local item parameters win on key
+conflicts.
 
-Implication: hierarchical metadata is stored once at the highest applicable level. Inheritance is
-"lookup-time" — children don't physically carry parent metadata in their structs.
+For `DirectorySource`, `metadata.txt` rows are keyed by slash-joined collection path fragments. The
+source parses that sidecar file and answers collection parameter lookups; the browser model stores
+only parameters. The on-disk format is documented in [storage.md](storage.md).
 
 ## Collection stats
 

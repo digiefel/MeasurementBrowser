@@ -855,8 +855,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
             render_perf_window(state)
         end
         _save_project_view_if_changed!(state)
-        # Show metadata guidance modal if needed
-        render_collection_metadata_modal(state)
+        render_collection_parameters_modal(state)
     end
 end
 

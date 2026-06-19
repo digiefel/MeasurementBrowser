@@ -85,8 +85,8 @@ function _render_hierarchy_tree_panel(
 
     workspace = state.workspace
     root = workspace isa Workspace.Workspace ? workspace.index.hierarchy.root : nothing
-    meta_keys = workspace isa Workspace.Workspace ?
-        workspace.index.collection_metadata_keys :
+    parameter_keys = workspace isa Workspace.Workspace ?
+        workspace.index.collection_parameter_keys :
         Symbol[]
     selected_collections, _, _ = _project_visible_selection(state)
 
@@ -300,14 +300,10 @@ function _render_hierarchy_tree_panel(
                 ig.EndPopup()
             end
 
-            dev_meta = nothing
-            if is_leaf && !isempty(node.items)
-                dev_meta = first(node.items).collection_metadata
-            end
-            for (i, k) in enumerate(meta_keys)
+            for (i, k) in enumerate(parameter_keys)
                 ig.TableSetColumnIndex(i)
-                if dev_meta !== nothing && haskey(dev_meta, k)
-                    ig.Text(string(dev_meta[k]))
+                if haskey(node.parameters, k)
+                    ig.Text(string(node.parameters[k]))
                 elseif is_leaf
                     ig.TextDisabled("--")
                 end
@@ -326,12 +322,12 @@ function _render_hierarchy_tree_panel(
         local table_flags = ig.ImGuiTableFlags_BordersV | ig.ImGuiTableFlags_BordersOuterH |
                             ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_RowBg |
                             ig.ImGuiTableFlags_Reorderable | ig.ImGuiTableFlags_Hideable
-        ncols = 1 + length(meta_keys) + 1
+        ncols = 1 + length(parameter_keys) + 1
         if ig.BeginTable("tree_table", ncols, table_flags)
             local index_flags = ig.ImGuiTableColumnFlags_NoHide | ig.ImGuiTableColumnFlags_NoReorder |
                                 ig.ImGuiTableColumnFlags_NoSort | ig.ImGuiTableColumnFlags_WidthStretch
             ig.TableSetupColumn("Collection", index_flags, 5.0)
-            for k in meta_keys
+            for k in parameter_keys
                 ig.TableSetupColumn(String(k), ig.ImGuiTableColumnFlags_AngledHeader | ig.ImGuiTableFlags_SizingFixedFit)
             end
             ig.TableSetupColumn("")

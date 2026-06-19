@@ -27,20 +27,17 @@ function render_info_window(state::BrowserState)::Nothing
         ig.TableNextColumn()
 
         if length(selected_collections) == 1
-            item_vec = selected_collections[1].items
+            collection_node = selected_collections[1]
             sel_name = join(selected_path, "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
-            if !isempty(item_vec)
-                collection_meta = first(item_vec).collection_metadata
-                if !isempty(collection_meta)
-                    ig.Text("Collection metadata")
-                    for (k, v) in collection_meta
-                        ig.BulletText("$(k): $(v)")
-                    end
-                else
-                    ig.TextDisabled("No metadata parameters found")
+            if !isempty(collection_node.parameters)
+                ig.Text("Collection parameters")
+                for k in sort!(collect(keys(collection_node.parameters)); by=String)
+                    ig.BulletText("$(k): $(collection_node.parameters[k])")
                 end
+            else
+                ig.TextDisabled("No collection parameters found")
             end
         elseif isempty(selected_collections)
             ig.TextDisabled("Select a collection to see details")
@@ -96,31 +93,30 @@ function render_info_window(state::BrowserState)::Nothing
     return nothing
 end
 
-"""Tell the user when the current source did not provide collection metadata."""
-function render_collection_metadata_modal(state::BrowserState)::Nothing
+"""Tell the user when the current source did not provide collection parameters."""
+function render_collection_parameters_modal(state::BrowserState)::Nothing
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     # Reset dismissal when root path changes
     current_root = workspace.cache.identity.source_id
     if state.modal_root_path != current_root
         state.modal_root_path = current_root
-        state.collection_metadata_modal = true
+        state.collection_parameters_modal = true
     end
     # always center
     center = ig.ImVec2(0.5, 0.5)
     @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
 
-    # Show modal if: missing metadata and user hasn't dismissed it this scan
-    if state.collection_metadata_modal &&
-       !workspace.index.hierarchy.has_collection_metadata
-        ig.OpenPopup("Collection Metadata Missing")
+    if state.collection_parameters_modal &&
+       !workspace.index.hierarchy.has_collection_parameters
+        ig.OpenPopup("Collection Parameters Missing")
     end
 
-    opened = state.collection_metadata_modal
+    opened = state.collection_parameters_modal
 
-    if @c ig.BeginPopupModal("Collection Metadata Missing", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
-        ig.Text("No collection metadata was provided by this source.")
+    if @c ig.BeginPopupModal("Collection Parameters Missing", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
+        ig.Text("No collection parameters were provided by this source.")
         ig.Separator()
         ig.TextWrapped(
             "The browser will still work, but collection-level fields such as area, thickness, " *
@@ -133,6 +129,6 @@ function render_collection_metadata_modal(state::BrowserState)::Nothing
         end
         ig.EndPopup()
     end
-    state.collection_metadata_modal = opened
+    state.collection_parameters_modal = opened
     return nothing
 end

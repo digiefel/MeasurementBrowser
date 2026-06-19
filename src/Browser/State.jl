@@ -173,7 +173,7 @@ Base.@kwdef mutable struct BrowserState
     tag_state_error::String = ""
     show_project_window::Bool = false
     show_performance_window::Bool = false
-    collection_metadata_modal::Bool = true
+    collection_parameters_modal::Bool = true
     modal_root_path::String = ""
     shutdown_complete::Bool = false
 end

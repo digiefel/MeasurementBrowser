@@ -131,21 +131,55 @@ end
         write_test_source(joinpath(dir, "root.csv"))
         mkdir(joinpath(dir, "nested"))
         write_test_source(joinpath(dir, "nested", "nested.csv"), 10)
-        write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ntest/root,12.5\ntest/nested,99\n")
+        write(
+            joinpath(dir, "metadata.txt"),
+            "collection_path,wafer,area_um2\ntest,A,12.5\ntest/nested,B,99\n",
+        )
         write(joinpath(dir, "tags.txt"), "ignored")
         write(joinpath(dir, "measurementbrowser.toml"), "ignored")
 
+        project = MeasurementBrowser.define_project("Parameter test")
+        MeasurementBrowser.register_item!(
+            project,
+            :table;
+            detect=file -> endswith(lowercase(file.filename), ".csv"),
+            read=file -> read(file.filepath, String),
+            entries=function (file, data)
+                name = splitext(file.filename)[1]
+                parameters = name == "root" ?
+                    Dict{Symbol,Any}(:area_um2 => 7.0, :local_only => true) :
+                    Dict{Symbol,Any}()
+                return [MeasurementBrowser.DataItem(
+                    kind=:table,
+                    collection=["test", name],
+                    label="Table $name",
+                    parameters=parameters,
+                    data=data,
+                )]
+            end,
+        )
+
         source = MeasurementBrowser.DirectorySource(dir)
-        scan = MeasurementBrowser.scan_source(TEST_PROJECT, source)
+        scan = MeasurementBrowser.scan_source(project, source)
         @test source isa MeasurementBrowser.DirectorySource
         @test length(scan.source_item_fingerprints) == 2
-        @test scan.hierarchy.has_collection_metadata
-        metadata_by_label = Dict(
-            record.item_label => record.collection_metadata
+        @test scan.hierarchy.has_collection_parameters
+        root_node = scan.hierarchy.index[("test", "root")]
+        nested_node = scan.hierarchy.index[("test", "nested")]
+        @test root_node.parameters[:wafer] == "A"
+        @test root_node.parameters[:area_um2] == 12.5
+        @test nested_node.parameters[:wafer] == "B"
+        @test nested_node.parameters[:area_um2] == 99
+
+        parameters_by_label = Dict(
+            record.item_label => record.parameters
             for record in scan.hierarchy.all_items
         )
-        @test metadata_by_label["Table root"][:area_um2] == 12.5
-        @test metadata_by_label["Table nested"][:area_um2] == 99
+        @test parameters_by_label["Table root"][:wafer] == "A"
+        @test parameters_by_label["Table root"][:area_um2] == 7.0
+        @test parameters_by_label["Table root"][:local_only]
+        @test parameters_by_label["Table nested"][:wafer] == "B"
+        @test parameters_by_label["Table nested"][:area_um2] == 99
 
         shallow = MeasurementBrowser.scan_source(
             TEST_PROJECT,
@@ -158,7 +192,8 @@ end
             TEST_PROJECT,
             MeasurementBrowser.DirectorySource(dir; metadata_file=nothing),
         )
-        @test !without_metadata.hierarchy.has_collection_metadata
-        @test all(isempty(record.collection_metadata) for record in without_metadata.hierarchy.all_items)
+        @test !without_metadata.hierarchy.has_collection_parameters
+        @test all(isempty(node.parameters) for node in values(without_metadata.hierarchy.index))
+        @test all(isempty(record.parameters) for record in without_metadata.hierarchy.all_items)
     end
 end
