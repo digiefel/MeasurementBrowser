@@ -51,11 +51,9 @@ dirty files.
 Install the root package with `julia --project -e 'using Pkg; instantiate()'`. If you change
 `src/Annotations`, also instantiate that package's environment.
 
-Launch the browser with an explicit source-data root:
-`julia --project start.jl /path/to/measurements`. Do not rely on the default path in `start.jl`;
-it is a local convenience path.
-
-Run the full test suite with `julia --project -e 'using Pkg; Pkg.test()'`.
+When a change needs test validation, run the full suite once for that change with
+`julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip the full suite for
+doc-only, inspection-only, or harmless local edits where it would just slow iteration.
 
 Tests live in `test/`. Keep fixtures small and deterministic. For GUI or plotting changes, test the
 data, labels, and figure creation behavior that can be checked reliably without pixel-perfect image

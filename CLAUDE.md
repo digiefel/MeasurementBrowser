@@ -92,7 +92,8 @@ the recipe in place, so editing and re-running a line updates a live project.
    `data_items(project, source, source_item)` interprets it into data items (the adapter applies the first
    matching `detect`'s `read → entries`). The engine derives each item's internal `ItemRecord` via the
    contract; per-source-item failures are recorded and scanning continues. The file-backed adapter
-   merges `metadata.txt` metadata into each record's `collection_metadata`.
+   provides collection parameters from `metadata.txt`; the index inherits them through the hierarchy
+   and merges them into each record's effective `parameters`.
 2. **Analysis:** after the tree exists, a workspace background job materializes items with
    `read → entries → process`, computes per-item `stats(item)`, then runs
    `collection_stats(project, source, collection, items)` (the callback form is
@@ -117,7 +118,7 @@ the recipe in place, so editing and re-running a line updates a live project.
   timestamp, fingerprint. A bare `SourceFile` has no universal `data_items`.
 - `ItemRecord` — **internal**, data-less record the hierarchy/scan/cache store: source-item identity
   (`source_item_id`/label/fingerprint/path/timestamp), item identity (`id`, `item_label`,
-  `kind`), `collection`, `collection_metadata`, `parameters`, `stats`, `item_fingerprint`. Never named
+  `kind`), `collection`, `parameters`, `stats`, `item_fingerprint`. Never named
   by source/project code, never a field of any item; the engine converts item ↔ record via the contract.
 - `SourceScan` — internal scan result (source-neutral; source-level identity lives once on the scan).
   `Hierarchy` / `HierarchyNode` — the browsable collection tree.

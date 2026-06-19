@@ -11,7 +11,7 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
 @testset "Annotations" begin
 
     @testset "Coords" begin
-        info = Annotations.Coords.CollectionMetadataTable(
+        info = Annotations.Coords.CollectionParametersTable(
             ("ChipA",) => Dict{Symbol,Any}(:notes => "root only"),
             ("ChipA", "Site1") => Dict{Symbol,Any}(:x_um => 0.0, :y_um => 0.0,
                                                     :w_um => 100.0, :h_um => 50.0),

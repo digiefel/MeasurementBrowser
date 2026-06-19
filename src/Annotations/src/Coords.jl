@@ -1,7 +1,7 @@
 """
-Coords — spatial coordinates pulled from collection metadata.
+Coords — spatial coordinates pulled from collection parameters.
 
-Collection metadata rows may carry optional columns `x_um`, `y_um`, `w_um`, `h_um`. This module
+Collection parameter rows may carry optional columns `x_um`, `y_um`, `w_um`, `h_um`. This module
 reads them out into path-keyed dictionaries and computes axis-aligned bounding boxes from descendant
 positions.
 """
@@ -9,7 +9,7 @@ module Coords
 
 export read_positions, read_overrides, bounding_box, Rect
 
-const CollectionMetadataTable = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
+const CollectionParametersTable = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
 
 """
     Rect
@@ -53,7 +53,7 @@ end
 Pull `(x_um, y_um)` for every row that supplies both columns. Keys are the
 slash-joined path strings used elsewhere in the codebase.
 """
-function read_positions(metadata::CollectionMetadataTable)
+function read_positions(metadata::CollectionParametersTable)
     out = Dict{String,Tuple{Float64,Float64}}()
     for (segs, params) in metadata
         isempty(segs) && continue
@@ -72,7 +72,7 @@ read_positions(::Nothing) = Dict{String,Tuple{Float64,Float64}}()
 Pull `(w_um, h_um)` for every row that supplies both columns. These act as
 explicit bounding-box dimensions overriding any computed value.
 """
-function read_overrides(metadata::CollectionMetadataTable)
+function read_overrides(metadata::CollectionParametersTable)
     out = Dict{String,Tuple{Float64,Float64}}()
     for (segs, params) in metadata
         isempty(segs) && continue
