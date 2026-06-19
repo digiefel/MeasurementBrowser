@@ -94,6 +94,7 @@ const ProjectViewTLMPlot = MeasurementBrowser.RegisteredPlot{:iv_sweep,:ProjectV
         "plot_kinds",
         "main_plot",
         "plot_windows",
+        "table_column_widths",
     ])
 
     parsed = Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
