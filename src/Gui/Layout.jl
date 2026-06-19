@@ -793,11 +793,35 @@ function _promote_to_foreground_app()
     return nothing
 end
 
+function _set_browser_window_hints(window_start::Symbol)::Nothing
+    if window_start == :normal
+        GLFW.WindowHint(GLFW.FOCUSED, true)
+        GLFW.WindowHint(GLFW.FOCUS_ON_SHOW, true)
+    elseif window_start == :background
+        GLFW.WindowHint(GLFW.FOCUSED, false)
+        GLFW.WindowHint(GLFW.FOCUS_ON_SHOW, false)
+    else
+        error("Unsupported browser window_start '$window_start'; use :normal or :background")
+    end
+    return nothing
+end
+
 """
 Run the browser render loop for a prepared state. With `wait=false` the loop runs as a background
 task pinned to thread 1 (required for GLFW) and the call returns that task, leaving the REPL live.
 """
-function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
+function _run_browser(
+    state::BrowserState,
+    ctx;
+    engine,
+    spawn,
+    wait::Bool,
+    exit_after_frames::Union{Nothing,Int}=nothing,
+    window_start::Symbol=:normal,
+)
+    exit_after_frames === nothing || exit_after_frames > 0 ||
+        error("exit_after_frames must be positive when provided; got $exit_after_frames")
+    _set_browser_window_hints(window_start)
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
     return ig.render(
@@ -822,9 +846,13 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         state.performance.frame += 1
         workspace = state.workspace
         workspace isa Workspace.Workspace && poll_workspace!(workspace)
+        if exit_after_frames !== nothing && state.performance.frame >= exit_after_frames
+            _shutdown_background_jobs!(state)
+            return :imgui_exit_loop
+        end
         if first_frame[]
             state.performance.gl_info = _gl_info()
-            _promote_to_foreground_app()
+            window_start == :normal && _promote_to_foreground_app()
             first_frame[] = false
         end
         dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
@@ -855,8 +883,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
             render_perf_window(state)
         end
         _save_project_view_if_changed!(state)
-        # Show metadata guidance modal if needed
-        render_collection_metadata_modal(state)
+        render_collection_parameters_modal(state)
     end
 end
 
@@ -869,6 +896,7 @@ function open_browser(
     engine::Any=nothing,
     spawn::Int=1,
     wait::Bool=true,
+    window_start::Symbol=:normal,
 )
     prefs = _load_prefs()
     state = BrowserState(
@@ -878,5 +906,5 @@ function open_browser(
     )
     ctx = _init_browser_context!()
     _attach_workspace!(state, workspace)
-    return _run_browser(state, ctx; engine, spawn, wait)
+    return _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
 end

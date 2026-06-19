@@ -346,12 +346,11 @@ function items_for_file(
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
 )::Vector{ItemRecord}
     source = DirectorySource(dirname(filepath); metadata_file=nothing)
-    source.collection_metadata = meta
+    source.collection_parameter_entries = meta
     records = ItemIndex.interpret_source_item(
         project,
         source,
         index_source_file(filepath),
-        source.collection_metadata,
     )
     return records
 end
@@ -372,7 +371,7 @@ function Projects.collection_stats(
     return merged
 end
 
-function Projects.analysis_stats(
+function Projects.compute_item_stats(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,

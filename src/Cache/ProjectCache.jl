@@ -2,7 +2,7 @@ using HDF5
 using SHA
 using Serialization
 const PROJECT_CACHE_COMPRESSION = 3
-const PROJECT_CACHE_SCHEMA_VERSION = 11
+const PROJECT_CACHE_SCHEMA_VERSION = 12
 const PROJECT_CACHE_INDEX_DATASET = "index"
 const PROJECT_CACHE_LOCK = ReentrantLock()
 
@@ -216,10 +216,13 @@ function cache_status(
     current = ProjectCacheIndex(cached.identity, source)
     stale = 0
     fresh = 0
+    cached_parameters = source_parameter_state(cached.source)
+    current_parameters = source_parameter_state(source)
     for (id, fingerprint) in source.source_item_fingerprints
         previous = get(cached.source.source_item_fingerprints, id, nothing)
         previous === nothing && continue
         changed = previous != fingerprint ||
+            get(cached_parameters, id, nothing) != get(current_parameters, id, nothing) ||
             get(cached.analysis_errors, id, "") != get(current.analysis_errors, id, "")
         stale += changed
         fresh += !changed && !haskey(current.analysis_errors, id)

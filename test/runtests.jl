@@ -12,4 +12,11 @@ include("test_project.jl")
     include("test_project_cache.jl")
     include("test_table_inspector.jl")
     include("test_annotations.jl")
+    if Threads.nthreads() >= 4
+        include("test_threaded_crash_regressions.jl")
+    else
+        @info "Skipping threaded workspace smoke test. Run `julia --project --threads=4 -e 'using Pkg; Pkg.test()'` to exercise threaded scanning."
+    end
+    get(ENV, "MB_GLFW_SCAN_STRESS", "") == "1" &&
+        include("test_glfw_scan_startup_stress.jl")
 end

@@ -9,7 +9,7 @@ mutable struct DirectorySource <: AbstractDataSource
     root_path::String
     recursive::Bool
     metadata_file::Union{Nothing,String}
-    collection_metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}
+    collection_parameter_entries::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}
 end
 
 function DirectorySource(
@@ -168,7 +168,7 @@ function parse_metadata_value(text::AbstractString)::Any
     return value
 end
 
-function load_collection_metadata(
+function load_collection_parameter_entries(
     path::AbstractString,
 )::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
     lines = readlines(path)
@@ -177,7 +177,7 @@ function load_collection_metadata(
     length(header) >= 2 ||
         return Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
     parameter_names = header[2:end]
-    metadata = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
+    entries = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
     for line in Iterators.drop(lines, 1)
         isempty(strip(line)) && continue
         cells = split(line, ',')
@@ -190,64 +190,61 @@ function load_collection_metadata(
             value = parse_metadata_value(cells[index])
             value === nothing || (parameters[Symbol(strip(name))] = value)
         end
-        metadata[Tuple(filter(!isempty, split(path_text, '/')))] = parameters
+        entries[Tuple(filter(!isempty, split(path_text, '/')))] = parameters
     end
-    return metadata
+    return entries
 end
 
-function collection_metadata_path(source::DirectorySource)::Union{Nothing,String}
+function collection_parameter_file_path(source::DirectorySource)::Union{Nothing,String}
     source.metadata_file === nothing && return nothing
     return joinpath(source.root_path, source.metadata_file)
 end
 
-function has_collection_metadata(source::DirectorySource)::Bool
-    path = collection_metadata_path(source)
+function has_collection_parameter_file(source::DirectorySource)::Bool
+    path = collection_parameter_file_path(source)
     return path !== nothing && isfile(path)
 end
 
-function load_scan_metadata(
+function load_scan_collection_parameters(
     source::DirectorySource,
 )::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}
-    path = collection_metadata_path(source)
-    return path !== nothing && isfile(path) ? load_collection_metadata(path) : nothing
+    path = collection_parameter_file_path(source)
+    return path !== nothing && isfile(path) ? load_collection_parameter_entries(path) : nothing
 end
 
 function matching_collection_parameters(
-    metadata::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
-    location::Vector{String},
-)::Union{Nothing,Dict{Symbol,Any}}
+    entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
+    location::AbstractVector{<:AbstractString},
+)::Dict{Symbol,Any}
     merged = Dict{Symbol,Any}()
     for width in eachindex(location)
         for start in 1:(length(location) - width + 1)
             parameters = get(
-                metadata,
+                entries,
                 Tuple(location[start:(start + width - 1)]),
                 nothing,
             )
             parameters === nothing || merge!(merged, parameters)
         end
     end
-    return isempty(merged) ? nothing : merged
-end
-
-function ItemIndex.apply_collection_metadata!(
-    records::Vector{ItemRecord},
-    metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
-)::Nothing
-    metadata === nothing && return nothing
-    for record in records
-        parameters = matching_collection_parameters(metadata, record.collection)
-        parameters === nothing || merge!(record.collection_metadata, parameters)
-    end
-    return nothing
+    return merged
 end
 
 function Projects.source_items(source::DirectorySource)::Vector{SourceFile}
-    source.collection_metadata = load_scan_metadata(source)
+    source.collection_parameter_entries = load_scan_collection_parameters(source)
     return collect_source_files(source)
 end
 
-ItemIndex.source_collection_metadata(source::DirectorySource) = source.collection_metadata
+function Projects.collection_parameters(
+    source::DirectorySource,
+    collection_path::AbstractVector{<:AbstractString},
+)::Dict{Symbol,Any}
+    source.collection_parameter_entries === nothing && return Dict{Symbol,Any}()
+    return matching_collection_parameters(source.collection_parameter_entries, collection_path)
+end
+
+Projects.has_collection_parameters(source::DirectorySource)::Bool =
+    source.collection_parameter_entries !== nothing
 
 function Workspace.open_workspace(
     project::Project,

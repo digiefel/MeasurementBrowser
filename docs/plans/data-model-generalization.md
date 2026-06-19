@@ -108,7 +108,7 @@ we already fixed. So metadata and data live in two forms, bridged by the engine:
 
 - **`ItemRecord` — completely internal, never exported, never named by project code.** The data-less
   metadata form the hierarchy, scan, and cache store: id, label, `kind`, `collection`,
-  `collection_metadata`, `parameters`, `stats`. Today's metadata-only `MeasurementInfo` is an
+  effective `parameters`, `stats`. Today's metadata-only `MeasurementInfo` is an
   `ItemRecord` in all but name. `register_*` callbacks never see it, and it is **not** a field of any
   item — it is a separate, parallel type the engine converts to and from.
 - **`AbstractDataItem` instances — what callbacks see.** The loaded, data-bearing values: the

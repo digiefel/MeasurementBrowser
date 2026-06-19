@@ -13,10 +13,12 @@ import ..Cache:
     project_cache_identity,
     write_project_cache!
 import ..ItemIndex:
+    DataItem,
     Hierarchy,
     ItemFailure,
     ItemRecord,
     SourceScan,
+    apply_collection_parameters!,
     check_cancel,
     insert_item!,
     is_job_cancelled,
@@ -26,9 +28,9 @@ import ..Projects:
     AbstractDataSource,
     AbstractDataItem,
     Project,
-    analysis_stats,
     close_source!,
     collection_stats,
+    compute_item_stats,
     id,
     item_data,
     load_data_item,
@@ -83,7 +85,7 @@ The progressively populated item index for one open source.
 mutable struct WorkspaceIndex
     hierarchy::Hierarchy
     items::Dict{String,ItemRecord}
-    collection_metadata_keys::Vector{Symbol}
+    collection_parameter_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
 end

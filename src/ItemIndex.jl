@@ -8,13 +8,17 @@ import ..Projects:
     AbstractDataSourceItem,
     AbstractDataItem,
     Project,
+    collection,
+    collection_parameters,
     collection_path_label,
     collection_stats,
     data_items,
     fingerprint,
+    has_collection_parameters,
     id,
     kind_label,
     load_data_item,
+    parameters,
     project_name,
     reset_scan_profile!,
     source_id,
@@ -98,7 +102,6 @@ struct ItemRecord
     item_label::String
     kind::Symbol
     collection::Vector{String}
-    collection_metadata::Dict{Symbol,Any}
     parameters::Dict{Symbol,Any}
     stats::Dict{Symbol,Any}
     item_fingerprint::Any
@@ -116,7 +119,6 @@ function ItemRecord(;
     item_label::AbstractString,
     kind::Symbol,
     collection::AbstractVector{<:AbstractString},
-    collection_metadata::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     item_fingerprint=nothing,
@@ -132,7 +134,6 @@ function ItemRecord(;
         String(item_label),
         kind,
         String[String(segment) for segment in collection],
-        collection_metadata,
         parameters,
         stats,
         item_fingerprint,
@@ -152,7 +153,6 @@ function ItemRecord(
     item_label::AbstractString=record.item_label,
     kind::Symbol=record.kind,
     collection::AbstractVector{<:AbstractString}=copy(record.collection),
-    collection_metadata::Dict{Symbol,Any}=deepcopy(record.collection_metadata),
     parameters::Dict{Symbol,Any}=deepcopy(record.parameters),
     stats::Dict{Symbol,Any}=deepcopy(record.stats),
     item_fingerprint=record.item_fingerprint,
@@ -166,7 +166,6 @@ function ItemRecord(
         item_label,
         kind,
         collection,
-        collection_metadata,
         parameters,
         stats,
         item_fingerprint,
@@ -263,7 +262,6 @@ function ItemRecord(
         item_label=title,
         kind,
         collection=Projects.collection(item),
-        collection_metadata=Dict{Symbol,Any}(),
         parameters=Projects.parameters(item),
         stats=Projects.stats(item),
         item_fingerprint=fingerprint(item),
@@ -285,13 +283,21 @@ One node in the collection hierarchy.
 struct HierarchyNode
     name::String
     kind::Symbol
+    parameters::Dict{Symbol,Any}
     children::Vector{HierarchyNode}
     items::Vector{ItemRecord}
     stats::Dict{Symbol,Any}
 end
 
 HierarchyNode(name::String, kind::Symbol) =
-    HierarchyNode(name, kind, HierarchyNode[], ItemRecord[], Dict{Symbol,Any}())
+    HierarchyNode(
+        name,
+        kind,
+        Dict{Symbol,Any}(),
+        HierarchyNode[],
+        ItemRecord[],
+        Dict{Symbol,Any}(),
+    )
 
 """
 The complete collection tree and its indexes for one source.
@@ -301,7 +307,7 @@ struct Hierarchy
     all_items::Vector{ItemRecord}
     source_id::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
-    has_collection_metadata::Bool
+    has_collection_parameters::Bool
     skipped_count::Int
 end
 
@@ -397,7 +403,7 @@ Create an empty hierarchy ready for progressive scan results.
 """
 function Hierarchy(
     source_id::String,
-    has_collection_metadata::Bool,
+    has_collection_parameters::Bool,
     skipped_count::Int=0,
 )::Hierarchy
     return Hierarchy(
@@ -405,7 +411,7 @@ function Hierarchy(
         ItemRecord[],
         source_id,
         Dict{Tuple{Vararg{String}},HierarchyNode}(),
-        has_collection_metadata,
+        has_collection_parameters,
         skipped_count,
     )
 end
@@ -434,21 +440,83 @@ function insert_item!(
     return item
 end
 
+function _effective_parameters(
+    source::AbstractDataSource,
+    collection_path::AbstractVector{<:AbstractString},
+    local_parameters::Dict{Symbol,Any},
+)::Dict{Symbol,Any}
+    parameters = collection_parameters(source, collection_path)
+    merge!(parameters, local_parameters)
+    return parameters
+end
+
+"""Apply source collection parameters to hierarchy nodes and item records."""
+function apply_collection_parameters!(
+    hierarchy::Hierarchy,
+    source::AbstractDataSource,
+)::Nothing
+    empty!(hierarchy.root.parameters)
+
+    function visit!(
+        node::HierarchyNode,
+        path::Vector{String},
+        inherited::Dict{Symbol,Any},
+    )::Nothing
+        effective = copy(inherited)
+        isempty(path) || merge!(effective, collection_parameters(source, path))
+        empty!(node.parameters)
+        merge!(node.parameters, effective)
+        for item in node.items
+            local_parameters = copy(item.parameters)
+            empty!(item.parameters)
+            merge!(item.parameters, effective)
+            merge!(item.parameters, local_parameters)
+        end
+        for child in node.children
+            visit!(child, [path; child.name], effective)
+        end
+        return nothing
+    end
+
+    for child in hierarchy.root.children
+        visit!(child, String[child.name], hierarchy.root.parameters)
+    end
+    return nothing
+end
+
+"""Return the effective collection/item parameter state used for cache freshness."""
+function source_parameter_state(source::SourceScan)::Dict{String,Dict{String,Tuple}}
+    state = Dict{String,Dict{String,Tuple}}()
+    for record in source.hierarchy.all_items
+        node = get(source.hierarchy.index, Tuple(record.collection), nothing)
+        node_parameters = node === nothing ? Dict{Symbol,Any}() : node.parameters
+        by_item = get!(state, record.source_item_id) do
+            Dict{String,Tuple}()
+        end
+        by_item[record.id] = (
+            copy(record.collection),
+            copy(record.parameters),
+            copy(node_parameters),
+        )
+    end
+    return state
+end
+
 """
 Build a complete collection tree from a flat item list.
 """
 function Hierarchy(
     items::Vector{ItemRecord},
-    source_id::String,
-    has_collection_metadata::Bool,
+    source::AbstractDataSource,
     skipped_count::Int=0,
 )::Hierarchy
     hierarchy = Hierarchy(
-        source_id,
-        has_collection_metadata,
+        source_id(source),
+        has_collection_parameters(source),
         skipped_count,
     )
     foreach(item -> insert_item!(hierarchy, item), items)
+    apply_collection_parameters!(hierarchy, source)
     return sort!(hierarchy)
 end
 

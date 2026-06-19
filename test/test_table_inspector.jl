@@ -1,10 +1,14 @@
 using MeasurementBrowser
 using MeasurementBrowser: inspect_table
+using DataFrames: DataFrame
 using Test
 
 const Browser = MeasurementBrowser.Browser
+const TI = MeasurementBrowser.TableInspector
 
 @testset "table inspector" begin
+
+    # --- legacy buffer helpers ---
     mktempdir() do dir
         buffer = fill(UInt8(0), 8)
         Browser._set_buffer_string!(buffer, "abc")
@@ -40,5 +44,155 @@ const Browser = MeasurementBrowser.Browser
         @test preview.row_count == 2
         @test preview.preview_rows == 1
         @test !isempty(preview.warnings)
+    end
+
+    # --- merge_item_tables: single item ---
+    @testset "merge_item_tables single item" begin
+        df = DataFrame(x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0])
+        pairs = [("item_a", df)]
+        table, warnings = TI.merge_item_tables(
+            Tuple{Any,Any}[(lbl, d) for (lbl, d) in pairs],
+        )
+        @test isempty(warnings)
+        @test table.columns == ["x", "y"]
+        @test table.rows == 3
+        @test length(table.row_item) == 3
+        @test all(table.row_item .== 1)
+        @test table.item_labels == ["item_a"]
+        # Check cell values
+        @test table.getcell(1, 1) == "1.0"
+        @test table.getcell(1, 2) == "4.0"
+        @test table.getcell(3, 2) == "6.0"
+    end
+
+    # --- merge_item_tables: multiple items, column union ---
+    @testset "merge_item_tables multi-item column union" begin
+        df1 = DataFrame(x=[1, 2], y=[3, 4])
+        df2 = DataFrame(y=[5, 6], z=[7, 8])  # y shared, z new, x missing
+        pairs = Tuple{Any,Any}[("A", df1), ("B", df2)]
+        table, warnings = TI.merge_item_tables(pairs)
+        @test isempty(warnings)
+        # Column union: x, y, z (x first from df1, then y, then z from df2)
+        @test Set(table.columns) == Set(["x", "y", "z"])
+        @test table.rows == 4  # 2 from df1 + 2 from df2
+        @test table.item_labels == ["A", "B"]
+        # Provenance: rows 1-2 are from item 1, rows 3-4 from item 2
+        @test table.row_item[1:2] == [1, 1]
+        @test table.row_item[3:4] == [2, 2]
+        # df2 row 1 (table row 3): z column = 7, x column = "" (missing)
+        x_col = findfirst(==("x"), table.columns)
+        z_col = findfirst(==("z"), table.columns)
+        @test table.getcell(3, x_col) == ""   # df2 has no x
+        @test table.getcell(3, z_col) == "7"
+    end
+
+    # --- merge_item_tables: non-DataFrame skipped ---
+    @testset "merge_item_tables non-DataFrame warning" begin
+        df = DataFrame(a=[1, 2])
+        pairs = Tuple{Any,Any}[("good", df), ("bad", "not a dataframe")]
+        table, warnings = TI.merge_item_tables(pairs)
+        @test length(warnings) == 1
+        @test occursin("non-tabular", warnings[1])
+        @test table.rows == 2
+        @test table.item_labels == ["good"]
+    end
+
+    # --- merge_item_tables: empty input ---
+    @testset "merge_item_tables empty" begin
+        table, warnings = TI.merge_item_tables(Tuple{Any,Any}[])
+        @test table.rows == 0
+        @test isempty(table.columns)
+        @test isempty(table.item_labels)
+    end
+
+    # --- _update_multi_selection!: basic operations ---
+    @testset "multi_selection Int rows" begin
+        all_rows = [1, 2, 3, 4, 5]
+
+        # Single click replaces
+        sel = Int[]
+        Browser._update_multi_selection!(sel, 3, all_rows, false, false)
+        @test sel == [3]
+
+        # Second single click replaces
+        Browser._update_multi_selection!(sel, 5, all_rows, false, false)
+        @test sel == [5]
+
+        # Ctrl+click toggles on
+        Browser._update_multi_selection!(sel, 3, all_rows, false, true)
+        @test 3 in sel && 5 in sel
+
+        # Ctrl+click toggles off
+        Browser._update_multi_selection!(sel, 3, all_rows, false, true)
+        @test !(3 in sel)
+        @test 5 in sel
+
+        # Shift+click from anchor 5 to 2: range 2..5
+        sel = [5]
+        Browser._update_multi_selection!(sel, 2, all_rows, true, false)
+        @test Set(sel) == Set([2, 3, 4, 5])
+
+        # Ctrl+A pattern (select all)
+        sel = Int[]
+        for r in all_rows
+            Browser._update_multi_selection!(sel, r, all_rows, false, true)
+        end
+        @test Set(sel) == Set(all_rows)
+    end
+
+    # --- per-kind column width persistence round-trip ---
+    @testset "per-kind column width persistence" begin
+        # Simulate: save widths for :iv kind, round-trip through TOML
+        widths_by_kind = Dict{Symbol,Vector{Float32}}(
+            :iv => Float32[120.0, 80.0, 200.0],
+            :pund => Float32[90.0, 150.0],
+        )
+        # Serialize as in _project_view_from_browser: String(:iv) == "iv"
+        serialized = Dict(
+            String(kind) => join(widths, ",")
+            for (kind, widths) in widths_by_kind
+        )
+        @test haskey(serialized, "iv")
+        @test serialized["iv"] == "120.0,80.0,200.0"
+        @test haskey(serialized, "pund")
+
+        # Deserialize as in _apply_project_view!
+        restored = Dict{Symbol,Vector{Float32}}()
+        for (kind_str, widths_str) in serialized
+            isempty(widths_str) && continue
+            widths = Float32[]
+            for part in split(widths_str, ",")
+                v = tryparse(Float32, strip(part))
+                v !== nothing && push!(widths, v)
+            end
+            isempty(widths) || (restored[Symbol(kind_str)] = widths)
+        end
+        @test restored[:iv] ≈ Float32[120.0, 80.0, 200.0]
+        @test restored[:pund] ≈ Float32[90.0, 150.0]
+
+        # Empty widths string is skipped
+        empty_ser = Dict("mykey" => "")
+        restored2 = Dict{Symbol,Vector{Float32}}()
+        for (k, v) in empty_ser
+            isempty(v) && continue
+            restored2[Symbol(k)] = Float32[]
+        end
+        @test isempty(restored2)
+    end
+
+    # --- PersistedProjectView round-trip including table_column_widths ---
+    @testset "PersistedProjectView table_column_widths round-trip" begin
+        # Keys are String(kind) == "iv" (no colon); values are comma-joined Float32 widths
+        view = Browser.PersistedProjectView(
+            project="test",
+            table_column_widths=Dict("iv" => "100.0,200.0", "cv" => "50.0"),
+        )
+        toml_data = Browser._project_view_to_toml(view)
+        @test haskey(toml_data, "table_column_widths")
+        @test toml_data["table_column_widths"]["iv"] == "100.0,200.0"
+
+        restored = Browser._project_view_from_toml(Browser.PersistedProjectView, toml_data)
+        @test restored.table_column_widths["iv"] == "100.0,200.0"
+        @test restored.table_column_widths["cv"] == "50.0"
     end
 end

@@ -25,11 +25,6 @@ function emit_progress(
     return nothing
 end
 
-"""Return the metadata table a source wants applied during indexing."""
-source_collection_metadata(::AbstractDataSource) = nothing
-
-apply_collection_metadata!(::Vector{ItemRecord}, ::Nothing)::Nothing = nothing
-
 """Return current source-item fingerprints keyed by source-item id."""
 function fingerprints_by_source_item(
     items::Vector{<:AbstractDataSourceItem},
@@ -52,14 +47,19 @@ function interpret_source_item(
     project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
-    metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}},
 )::Vector{ItemRecord}
     handles = data_items(project, source, source_item)::Vector{<:AbstractDataItem}
     records = ItemRecord[
-        ItemRecord(handle; source_item)
+        ItemRecord(
+            ItemRecord(handle; source_item);
+            parameters=_effective_parameters(
+                source,
+                collection(handle),
+                parameters(handle),
+            ),
+        )
         for handle in handles
     ]
-    apply_collection_metadata!(records, metadata)
     return records
 end
 
@@ -69,8 +69,7 @@ Interpret source items concurrently and stream each successful record batch.
 function interpret_source_items(
     project::Project,
     source::AbstractDataSource,
-    source_items::Vector{<:AbstractDataSourceItem},
-    metadata::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}};
+    source_items::Vector{<:AbstractDataSourceItem};
     on_items::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )::NamedTuple
@@ -106,7 +105,7 @@ function interpret_source_items(
                     source_item_id_value = source_item_id(source_item)
                     records = try
                         check_cancel()
-                        interpreted = interpret_source_item(project, source, source_item, metadata)
+                        interpreted = interpret_source_item(project, source, source_item)
                         check_cancel()
                         interpreted
                     catch error
@@ -227,7 +226,9 @@ function scan_source(
     discovered = source_items(source)
     fingerprints = fingerprints_by_source_item(discovered)
     check_cancel()
-    if cached_source !== nothing && source_unchanged(source, fingerprints, cached_source)
+    cached_fingerprints_match = cached_source !== nothing &&
+        source_unchanged(source, fingerprints, cached_source)
+    if cached_fingerprints_match && !has_collection_parameters(source)
         emit_progress(
             on_progress;
             phase=:scanning,
@@ -250,8 +251,7 @@ function scan_source(
     summary = interpret_source_items(
         project,
         source,
-        discovered,
-        source_collection_metadata(source);
+        discovered;
         on_items,
         on_progress=progress -> emit_progress(
             on_progress;
@@ -274,16 +274,20 @@ function scan_source(
     end
     hierarchy = Hierarchy(
         summary.records,
-        source_id(source),
-        source_collection_metadata(source) !== nothing,
+        source,
         summary.skipped_source_items,
     )
     append!(summary.failures, source_analysis_failures(project, source))
-    return SourceScan(
+    source_scan = SourceScan(
         source_id(source),
         source_label(source),
         fingerprints,
         hierarchy,
         summary.failures,
     )
+    if cached_fingerprints_match &&
+       source_parameter_state(cached_source) == source_parameter_state(source_scan)
+        return cached_source
+    end
+    return source_scan
 end

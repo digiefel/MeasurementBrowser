@@ -23,6 +23,7 @@ const ProjectCache = MeasurementBrowser.Cache
     mktempdir() do dir
         write_test_source(joinpath(dir, "first.csv"))
         write_test_source(joinpath(dir, "second.csv"), 10)
+        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\n")
         source = scan_test_source(TEST_PROJECT, dir)
         adapter = test_source(TEST_PROJECT, dir)
         identity = ProjectCache.project_cache_identity(
@@ -44,12 +45,17 @@ const ProjectCache = MeasurementBrowser.Cache
             @test any(event -> event.phase == :cache_finalize, progress)
 
             loaded = ProjectCache.load_project_cache(identity)
+            @test loaded.source.hierarchy.index[("test", "first")].parameters[:wafer] == "A"
             @test Set(
                 item.id
                 for item in loaded.source.hierarchy.all_items
             ) == Set(
                 item.id
                 for item in source.hierarchy.all_items
+            )
+            @test all(
+                item -> item.parameters[:wafer] == "A",
+                loaded.source.hierarchy.all_items,
             )
             @test ProjectCache.cached_item_data(
                 loaded,

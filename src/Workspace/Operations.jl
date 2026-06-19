@@ -307,16 +307,18 @@ function replace_item_index!(
 )::Nothing
     items = Dict{String,ItemRecord}()
     sizehint!(items, length(hierarchy.all_items))
-    metadata_keys = Set{Symbol}()
+    parameter_keys = Set{Symbol}()
     for item in hierarchy.all_items
         haskey(items, item.id) && error("Duplicate item id generated during scan: $(item.id)")
         items[item.id] = item
-        union!(metadata_keys, keys(item.collection_metadata))
+    end
+    for node in values(hierarchy.index)
+        union!(parameter_keys, keys(node.parameters))
     end
     workspace.index = WorkspaceIndex(
         hierarchy,
         items,
-        sort!(collect(metadata_keys); by=String),
+        sort!(collect(parameter_keys); by=String),
         workspace.index.source,
         workspace.index.analysis_errors,
     )
@@ -331,19 +333,35 @@ function append_items!(
     isempty(items) && return false
     hierarchy = workspace.index.hierarchy
     item_index = copy(workspace.index.items)
-    metadata_keys = Set(workspace.index.collection_metadata_keys)
     changed = false
     for item in items
         haskey(item_index, item.id) && continue
         insert_item!(hierarchy, item)
         item_index[item.id] = item
-        union!(metadata_keys, keys(item.collection_metadata))
         changed = true
     end
     changed || return false
+    apply_collection_parameters!(hierarchy, workspace.source)
+    parameter_keys = Set{Symbol}()
+    for node in values(hierarchy.index)
+        union!(parameter_keys, keys(node.parameters))
+    end
     workspace.index.items = item_index
-    workspace.index.collection_metadata_keys = sort!(collect(metadata_keys); by=String)
+    workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
     return true
+end
+
+function _effective_loaded_item(record::ItemRecord, item::AbstractDataItem)::AbstractDataItem
+    item isa DataItem || return item
+    return DataItem(
+        item.id,
+        item.label,
+        item.kind,
+        item.collection,
+        record.parameters,
+        item.stats,
+        item.data,
+    )
 end
 
 function _load_for_analysis(
@@ -354,6 +372,7 @@ function _load_for_analysis(
     cached = get(loaded, record.id, nothing)
     cached !== nothing && return cached
     item = load_data_item(workspace.project, workspace.source, record.source_item_id, record.id)
+    item = _effective_loaded_item(record, item)
     loaded[record.id] = item
     return item
 end
@@ -389,7 +408,7 @@ function start_analysis!(workspace::Workspace)::Nothing
                     check_cancel()
                     try
                         item = _load_for_analysis(workspace, record, loaded)
-                        computed = analysis_stats(workspace.project, workspace.source, item)
+                        computed = compute_item_stats(workspace.project, workspace.source, item)
                         isempty(computed) || (item_stats[record.id] = computed)
                     catch error
                         is_job_cancelled(error) && rethrow()

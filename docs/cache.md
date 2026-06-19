@@ -80,18 +80,19 @@ regardless of how many logical items it contains.
 > intended fix is to make annotation storage a source capability, so file-backed sources can expose
 > hand-editable source-root files while other sources can persist elsewhere.
 
-`DirectorySource` owns `metadata.txt` collection metadata separately from the HDF5 cache; see
+`DirectorySource` owns `metadata.txt` collection parameter input separately from the HDF5 cache; see
 [storage.md](storage.md).
 
 ## Freshness
 
-A cached source item matches the source only when its `source_item_fingerprint` matches (for a file,
-normalized path + size + mtime). The final scan comparison reports:
+A cached source item matches the source only when its `source_item_fingerprint` and effective
+collection/item parameter state match (for a file fingerprint, normalized path + size + mtime). The
+final scan comparison reports:
 
 | Count | Meaning |
 |---|---|
 | fresh | cached source item matches the current scan and has no analysis error |
-| stale | fingerprint or analysis result changed |
+| stale | fingerprint, effective parameters, or analysis result changed |
 | new | present only in the current scan |
 | deleted | present only in the cache |
 | errors | current source items whose analysis failed |
@@ -102,10 +103,11 @@ failed source item cannot invalidate the rest.
 ## Updates
 
 A normal update uses the completed `SourceScan` already owned by the workspace. It never starts
-another scan. It replaces the compact index, preserves payloads for unchanged source items, and
-deletes payload groups for changed, deleted, or newly failing ones. A rebuild replaces the whole HDF5
-file. Index writing does not load item data; payloads are cached only when a caller requests them
-and both source-item and item fingerprints are available.
+another scan. It replaces the compact index, preserves payloads for unchanged source-item
+fingerprints, and deletes payload groups for changed, deleted, or newly failing ones. Parameter-only
+changes update the index without discarding payloads. A rebuild replaces the whole HDF5 file. Index
+writing does not load item data; payloads are cached only when a caller requests them and both
+source-item and item fingerprints are available.
 
 ## Item data
 
