@@ -1,14 +1,11 @@
 module Cache
 
-import ..MeasurementIndex:
-    FileFingerprint,
-    MeasurementInfo,
-    SourceFile,
+import ..ItemIndex:
+    ItemRecord,
     SourceScan,
     check_cancel,
-    emit_progress,
-    file_fingerprint
-import ..Projects: Project, project_name
+    emit_progress
+import ..Projects: source_id, source_label
 
 include("Cache/ProjectCache.jl")
 

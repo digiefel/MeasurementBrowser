@@ -1,4 +1,3 @@
-using DataFrames: DataFrame
 using GLMakie: Axis, Figure, lines!
 import GLMakie.Makie as Makie
 import CImGui as ig
@@ -6,11 +5,8 @@ import CImGui.CSyntax: @c
 using NativeFileDialog: save_file
 
 using ..Projects:
-    load_source_data,
-    project_name
-using ..MeasurementIndex:
-    MeasurementInfo,
-    index_source_file
+    source_label
+using ..ItemIndex: ItemRecord
 import ..Workspace
 using ..Visualization:
     PlotKind,
@@ -38,17 +34,17 @@ end
 """
 Draw one plot and keep a short UI error when drawing fails.
 
-The console receives the complete exception together with the project, plot type, and source files.
+The console receives the complete exception together with the source, plot type, and source items.
 """
 function draw_plot_view!(
     state::BrowserState,
     view::PlotViewState,
     plot_key::Tuple,
-    measurements::Vector{MeasurementInfo},
+    records::Vector{ItemRecord},
     plot_kind::Type{<:PlotKind},
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
-    project = workspace.project
+    source = workspace.source
     plots = state.plots
     started_ns = time_ns()
     draw_alloc = 0
@@ -56,16 +52,10 @@ function draw_plot_view!(
         figure = nothing
         draw_alloc = @allocated begin
             figure = if plots.debug
-                source_data = DataFrame[]
-                sizehint!(source_data, length(measurements))
-                for measurement in measurements
-                    source_file = index_source_file(measurement.filepath)
-                    push!(source_data, load_source_data(project, source_file; measurement))
-                end
-                debug_plot(workspace, measurements, source_data; plot_kind)
+                debug_plot(workspace, Workspace.materialize_items(workspace, records); plot_kind)
             else
-                result = setup_plot(workspace, plot_kind, measurements)
-                plot_data!(workspace, plot_kind, measurements, result)
+                result = setup_plot(workspace, plot_kind, records)
+                plot_data!(workspace, plot_kind, records, result)
                 result
             end
         end
@@ -93,19 +83,19 @@ function draw_plot_view!(
         view.debug = plots.debug
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
         view.error = "Plot failed: $summary. See the console for full details."
-        measurement_context = join(
+        item_context = join(
             [
-                "$(measurement.clean_title) ($(measurement.measurement_kind))\n" *
-                "  $(measurement.filepath)"
-                for measurement in measurements
+                "$(record.item_label) ($(record.kind))\n" *
+                "  $(record.source_item_id)"
+                for record in records
             ],
             "\n",
         )
         @error(
             "Plot drawing failed\n" *
-            "Project: $(project_name(project))\n" *
+            "Source: $(source_label(source))\n" *
             "Plot: $(plot_kind_name(plot_kind))\n" *
-            "Measurements: $(length(measurements))\n$measurement_context",
+            "Items: $(length(records))\n$item_context",
             exception=(err, bt),
         )
     end
@@ -116,8 +106,8 @@ end
 function render_plot_toolbar!(
     state::BrowserState,
     view::PlotViewState,
-    measurements::Vector{MeasurementInfo},
-    selected_measurements::Vector{MeasurementInfo},
+    records::Vector{ItemRecord},
+    selected_records::Vector{ItemRecord},
     available::Vector{Type{<:PlotKind}},
 )::Nothing
     plots = state.plots
@@ -132,8 +122,8 @@ function render_plot_toolbar!(
                 view.plot_kind = candidate
                 view.last_key = nothing
                 view.error = ""
-                for measurement in measurements
-                    plots.kind_by_measurement[measurement.measurement_kind] = candidate
+                for record in records
+                    plots.kind_by_item[record.kind] = candidate
                 end
             end
         end
@@ -146,13 +136,12 @@ function render_plot_toolbar!(
         view.live = live
         view.last_key = nothing
         if !live
-            view.measurement_ids =
-                [measurement.unique_id for measurement in selected_measurements]
+            view.item_ids = [record.id for record in selected_records]
         end
     end
 
     if view === plots.main
-        can_detach = current !== nothing && !isempty(measurements)
+        can_detach = current !== nothing && !isempty(records)
         ig.SameLine()
         !can_detach && ig.BeginDisabled()
         if ig.Button("Detach") && can_detach
@@ -161,13 +150,11 @@ function render_plot_toolbar!(
                 plots.windows,
                 PlotViewState(
                     id="plot_$(plots.next_window_id)",
-                    title=length(measurements) == 1 ?
-                          only(measurements).clean_title :
-                          "$(length(measurements)) measurements",
+                    title=length(records) == 1 ?
+                          only(records).item_label :
+                          "$(length(records)) items",
                     live=false,
-                    measurement_ids=[
-                        measurement.unique_id for measurement in measurements
-                    ],
+                    item_ids=[record.id for record in records],
                     plot_kind=current,
                 ),
             )
@@ -180,9 +167,9 @@ function render_plot_toolbar!(
     !can_export && ig.BeginDisabled()
     if ig.Button("Export##export_$(view.id)") && can_export
         name = current === nothing ? "plot" : plot_kind_name(current)
-        default_name = length(measurements) == 1 ?
-            "$(splitext(basename(only(measurements).filepath))[1])-$name.png" :
-            "$(length(measurements))-measurements-$name.png"
+        default_name = length(records) == 1 ?
+            "$(only(records).id)-$name.png" :
+            "$(length(records))-items-$name.png"
         path = save_file(default_name; filterlist="png,jpg,jpeg,svg,pdf")
         if !isempty(path)
             isempty(splitext(path)[2]) && (path *= ".png")
@@ -233,8 +220,8 @@ function render_plot_body!(
 
     if view.figure !== nothing
         makie_id = view === plots.main ?
-            "measurement_plot" :
-            "measurement_plot_$(replace(view.id, '/' => '_'))"
+            "item_plot" :
+            "item_plot_$(replace(view.id, '/' => '_'))"
         _time!(state, :makie_fig) do
             MakieFigure(
                 makie_id,
@@ -246,7 +233,7 @@ function render_plot_body!(
     elseif status == :needs_kind
         ig.TextDisabled("No plot kind selected")
     elseif status == :empty
-        ig.TextDisabled("No measurement selected")
+        ig.TextDisabled("No item selected")
     else
         ig.TextColored((1.0, 0.4, 0.4, 1.0), "Plot generation failed")
         isempty(view.error) || ig.TextWrapped(view.error)
@@ -257,42 +244,42 @@ end
 """
 Update and render one plot window.
 
-Live views use the current browser selection. Static views resolve their saved measurement ids
-against the current workspace index.
+Live views use the current browser selection. Static views resolve their saved item ids against the
+current workspace index.
 """
 function render_plot_view!(
     state::BrowserState,
     view::PlotViewState,
-    selected_measurements::Vector{MeasurementInfo},
+    selected_records::Vector{ItemRecord},
 )::Nothing
     plots = state.plots
 
     if view.live
-        view.measurement_ids = [
-            measurement.unique_id for measurement in selected_measurements
-        ]
+        view.item_ids = [record.id for record in selected_records]
     end
-    measurements = view.live ?
-        selected_measurements :
-        _measurements_for_ids(state, view.measurement_ids)
+    records = view.live ?
+        selected_records :
+        _items_for_ids(state, view.item_ids)
 
-    project = (state.workspace::Workspace.Workspace).project
-    measurement_kind = if isempty(measurements)
+    workspace = state.workspace::Workspace.Workspace
+    source = workspace.source
+    project = workspace.project
+    kind = if isempty(records)
         nothing
     else
-        kind = first(measurements).measurement_kind
-        all(measurement -> measurement.measurement_kind == kind, measurements) ? kind : nothing
+        kind = first(records).kind
+        all(record -> record.kind == kind, records) ? kind : nothing
     end
-    available = measurement_kind === nothing ?
+    available = kind === nothing ?
         Type{<:PlotKind}[] :
-        registered_plot_kinds(project, measurement_kind)
+        registered_plot_kinds(project, kind)
     if view === plots.main && view.live
-        if view.measurement_kind !== measurement_kind
-            view.measurement_kind = measurement_kind
-            if measurement_kind === nothing
+        if view.kind !== kind
+            view.kind = kind
+            if kind === nothing
                 view.plot_kind = nothing
             else
-                remembered = get(plots.kind_by_measurement, measurement_kind, nothing)
+                remembered = get(plots.kind_by_item, kind, nothing)
                 view.plot_kind =
                     remembered !== nothing && remembered in available ? remembered :
                     isempty(available) ? nothing : first(available)
@@ -310,16 +297,15 @@ function render_plot_view!(
         view.last_key = nothing
     end
 
-    status = isempty(measurements) ?
+    status = isempty(records) ?
         :empty :
         view.plot_kind === nothing ? :needs_kind : :ready
     if status == :ready
-        workspace = state.workspace::Workspace.Workspace
         plot_key = (
-            project_name(workspace.project),
+            source_label(workspace.source),
             view.id,
             plot_kind_name(view.plot_kind),
-            [measurement.unique_id for measurement in measurements],
+            [record.id for record in records],
             plots.debug,
         )
         view.last_key == plot_key ||
@@ -327,7 +313,7 @@ function render_plot_view!(
                 state,
                 view,
                 plot_key,
-                measurements,
+                records,
                 view.plot_kind,
             )
     elseif view.live
@@ -335,7 +321,7 @@ function render_plot_view!(
         view.last_key = nothing
     end
 
-    render_plot_toolbar!(state, view, measurements, selected_measurements, available)
+    render_plot_toolbar!(state, view, records, selected_records, available)
     ig.Separator()
     render_plot_body!(state, view, status)
     return nothing

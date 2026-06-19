@@ -10,7 +10,7 @@ const DEFAULT_PREVIEW_ROWS = 500
 """
 Preview of one arbitrary delimited text table.
 
-This is intentionally not measurement data. It keeps the file's own columns and only records how
+This is intentionally not item data. It keeps the file's own columns and only records how
 the table was detected so the browser can show the user what it found.
 """
 struct TablePreview

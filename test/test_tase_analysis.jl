@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using MeasurementBrowser: items_for_file, read_item_data, setup_plot, plot_data!
 using Test
 using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis, lines!, contents
@@ -44,20 +45,19 @@ end
 
 function _tase_project()
     project = MB.define_project("TASE")
-    MB.register_measurement!(
+    MB.register_item!(
         project,
         :four_terminal_iv;
         detect=file -> match(REGEX_TASE, file.filename) !== nothing,
         read=file -> _read_tase(file.filepath),
-        measurements=function (file, _data)
+        entries=function (file, data)
             m = match(REGEX_TASE, file.filename)
             location = String.(collect(m.captures))
-            return [MB.MeasurementInfo(
-                filepath=file.filepath,
-                measurement_kind=:four_terminal_iv,
-                device_info=MB.DeviceInfo(location),
-                timestamp=file.timestamp,
-                clean_title=join(location, "_"),
+            return [DataItem(
+                kind=:four_terminal_iv,
+                collection=location,
+                label=join(location, "_"),
+                data=data,
             )]
         end,
     )
@@ -65,10 +65,11 @@ function _tase_project()
         project,
         :four_terminal_iv;
         label="Four-Terminal I-V",
-        setup=(_ws, _ms, _processed) -> (figure = Figure(); Axis(figure[1, 1]); figure),
-        draw=function (_workspace, _measurements, processed, figure)
+        setup=(_ws, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
+        draw=function (_workspace, items, figure)
             axis = only(contents(figure[1, 1]))
-            for df in processed
+            for item in items
+                df = item.data
                 nrow(df) == 0 && continue
                 lines!(axis, df.i, df.v)
             end
@@ -82,23 +83,23 @@ end
     fixture1 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv")
     fixture2 = joinpath(@__DIR__, "fixtures", "TASE", "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv")
     project = _tase_project()
-    measurements = [
-        only(measurements_for_file(project, fixture1)),
-        only(measurements_for_file(project, fixture2)),
+    items = [
+        only(items_for_file(project, fixture1)),
+        only(items_for_file(project, fixture2)),
     ]
 
-    @test measurements[1].device_info.location == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
+    @test items[1].collection == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
 
     @testset "plot data api" begin
-        workspace = MB.Workspace.Workspace(project, dirname(fixture1))
-        data = read_measurement_data(workspace, measurements)
+        workspace = MB.Workspace.Workspace(project, MB.DirectorySource(dirname(fixture1)))
+        data = read_item_data(workspace, items)
         @test length(data) == 2
         @test all(nrow(df) == 3 for df in data)
         @test all(names(df) == ["i", "v"] for df in data)
 
-        plot_kind = MB.RegistryPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
-        @test plot_kind === MB.RegistryPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
-        figure = setup_plot(workspace, plot_kind, measurements)
-        @test plot_data!(workspace, plot_kind, measurements, figure) === nothing
+        plot_kind = MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+        @test plot_kind === MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+        figure = setup_plot(workspace, plot_kind, items)
+        @test plot_data!(workspace, plot_kind, items, figure) === nothing
     end
 end

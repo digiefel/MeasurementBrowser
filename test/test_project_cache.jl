@@ -1,38 +1,33 @@
-using DataFrames: AbstractDataFrame, nrow
 using MeasurementBrowser
+using MeasurementBrowser: ItemFailure
 using Test
 
 const ProjectCache = MeasurementBrowser.Cache
 
-"""Return whether two dataframes have the same columns and values."""
-function same_dataframe(left::AbstractDataFrame, right::AbstractDataFrame)::Bool
-    names(left) == names(right) || return false
-    nrow(left) == nrow(right) || return false
-    return all(name -> left[!, name] == right[!, name], names(left))
-end
-
 @testset "project HDF5 cache" begin
-    @test basename(ProjectCache.project_cache_identity(
-        "20260430_120001",
-        TEST_PROJECT,
-        pwd(),
-    ).cache_path) == "20260430_120001.h5"
+    mktempdir() do dir
+        source = test_source(TEST_PROJECT, dir)
+        @test basename(ProjectCache.project_cache_identity(
+            "20260430_120001",
+            source,
+        ).cache_path) == "20260430_120001.h5"
+    end
 
     mktempdir() do first_root
         mktempdir() do second_root
-            @test ProjectCache.project_cache_id(first_root) !=
-                  ProjectCache.project_cache_id(second_root)
+            @test ProjectCache.project_cache_id(test_source(TEST_PROJECT, first_root)) !=
+                  ProjectCache.project_cache_id(test_source(TEST_PROJECT, second_root))
         end
     end
 
     mktempdir() do dir
         write_test_source(joinpath(dir, "first.csv"))
         write_test_source(joinpath(dir, "second.csv"), 10)
-        source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
+        source = scan_test_source(TEST_PROJECT, dir)
+        adapter = test_source(TEST_PROJECT, dir)
         identity = ProjectCache.project_cache_identity(
             "20260430_120005",
-            TEST_PROJECT,
-            source.root_path,
+            adapter,
         )
         rm(identity.cache_path; force=true)
 
@@ -44,82 +39,48 @@ end
                 replace=true,
                 on_progress=event -> push!(progress, event),
             )
-            @test length(snapshot.source.hierarchy.all_measurements) == 2
-            @test ProjectCache.cache_status(snapshot, source).fresh_files == 2
+            @test length(snapshot.source.hierarchy.all_items) == 2
+            @test ProjectCache.cache_status(snapshot, source).fresh_source_items == 2
+            @test any(event -> event.phase == :cache_finalize, progress)
 
             loaded = ProjectCache.load_project_cache(identity)
             @test Set(
-                measurement.unique_id
-                for measurement in loaded.source.hierarchy.all_measurements
+                item.id
+                for item in loaded.source.hierarchy.all_items
             ) == Set(
-                measurement.unique_id
-                for measurement in source.hierarchy.all_measurements
+                item.id
+                for item in source.hierarchy.all_items
             )
-
-            measurement = first(loaded.source.hierarchy.all_measurements)
-            source_workspace = MeasurementBrowser.Workspace.Workspace(TEST_PROJECT, dir)
-            source_data = only(read_measurement_data(source_workspace, [measurement]))
-
-            cached_workspace = MeasurementBrowser.Workspace.Workspace(TEST_PROJECT, dir)
-            cached_workspace.cache.index = loaded
-            @test only(ProjectCache.cached_measurement_data(
+            @test ProjectCache.cached_item_data(
                 loaded,
-                [measurement],
-            )) === nothing
-
-            cached_data = only(read_measurement_data(cached_workspace, [measurement]))
-            @test same_dataframe(cached_data, source_data)
-            @test same_dataframe(
-                only(ProjectCache.cached_measurement_data(loaded, [measurement])),
-                source_data,
-            )
-
-            @test only(ProjectCache.cached_measurement_data(
-                loaded,
-                [measurement];
-                processed=true,
-            )) === nothing
-            processed = only(process_measurement_data(cached_workspace, [measurement]))
-            @test names(processed) == ["x", "y", "processed"]
-            @test same_dataframe(
-                only(ProjectCache.cached_measurement_data(
-                    loaded,
-                    [measurement];
-                    processed=true,
-                )),
-                processed,
-            )
+                loaded.source.hierarchy.all_items,
+            ) == Any[nothing, nothing]
 
             sleep(0.05)
-            touch(measurement.filepath)
-            @test only(ProjectCache.cached_measurement_data(
-                loaded,
-                [measurement],
-            )) === nothing
-
+            touch(first(source.hierarchy.all_items).source_item_path)
             rm(joinpath(dir, "second.csv"))
             write_test_source(joinpath(dir, "third.csv"), 20)
-            updated_source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
+            updated_source = scan_test_source(TEST_PROJECT, dir)
             status = ProjectCache.cache_status(loaded, updated_source)
-            @test status.stale_files == 1
-            @test status.new_files == 1
-            @test status.deleted_files == 1
+            @test status.stale_source_items == 1
+            @test status.new_source_items == 1
+            @test status.deleted_source_items == 1
 
             updated = ProjectCache.write_project_cache!(loaded.identity, updated_source)
             updated_status = ProjectCache.cache_status(updated, updated_source)
-            @test updated_status.fresh_files == 2
-            @test updated_status.stale_files == 0
-            @test updated_status.new_files == 0
-            @test updated_status.deleted_files == 0
+            @test updated_status.fresh_source_items == 2
+            @test updated_status.stale_source_items == 0
+            @test updated_status.new_source_items == 0
+            @test updated_status.deleted_source_items == 0
 
             failed_source = MeasurementBrowser.SourceScan(
-                updated_source.root_path,
-                updated_source.project,
-                updated_source.files,
+                updated_source.source_id,
+                updated_source.source_label,
+                updated_source.source_item_fingerprints,
                 updated_source.hierarchy,
-                [MeasurementAnalysisFailure(
-                    first(updated_source.files).filepath,
-                    first(updated_source.hierarchy.all_measurements).unique_id,
+                [ItemFailure(
+                    first(updated_source.hierarchy.all_items).source_item_id,
+                    first(updated_source.hierarchy.all_items).id,
                     "synthetic analysis failure",
                 )],
             )
@@ -133,11 +94,11 @@ end
     @testset "opening a project updates a stale cache" begin
         mktempdir() do dir
             write_test_source(joinpath(dir, "first.csv"))
-            source = MeasurementBrowser.scan_source(dir; project=TEST_PROJECT)
+            source = scan_test_source(TEST_PROJECT, dir)
+            adapter = test_source(TEST_PROJECT, dir)
             identity = ProjectCache.project_cache_identity(
-                ProjectCache.project_cache_id(dir),
-                TEST_PROJECT,
-                dir,
+                ProjectCache.project_cache_id(adapter),
+                adapter,
             )
             rm(identity.cache_path; force=true)
             try
@@ -161,8 +122,8 @@ end
                     if saw_writing &&
                        workspace.cache_job.state == :ready &&
                        status isa ProjectCache.ProjectCacheStatus &&
-                       status.cached_files == 2 &&
-                       status.new_files == 0
+                       status.cached_source_items == 2 &&
+                       status.new_source_items == 0
                         break
                     end
                     sleep(0.02)
@@ -174,8 +135,8 @@ end
                 @test workspace.scan.state == :done
                 @test workspace.cache_job.state == :ready
                 @test status isa ProjectCache.ProjectCacheStatus
-                @test status.cached_files == 2
-                @test status.new_files == 0
+                @test status.cached_source_items == 2
+                @test status.new_source_items == 0
                 close_workspace!(workspace)
             finally
                 rm(identity.cache_path; force=true)

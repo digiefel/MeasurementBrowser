@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using MeasurementBrowser: inspect_table
 using Test
 
 @testset "table inspector" begin

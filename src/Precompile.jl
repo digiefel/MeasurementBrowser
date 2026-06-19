@@ -17,7 +17,7 @@ using DataFrames: DataFrame, nrow
     @compile_workload begin
         # Warm the registry pipeline (define -> register -> scan -> plot) the way real projects use it.
         project = define_project("Precompile")
-        register_measurement!(
+        register_item!(
             project,
             :iv;
             detect=file -> endswith(file.filename, ".csv"),
@@ -34,23 +34,23 @@ using DataFrames: DataFrame, nrow
                 end
                 DataFrame(i=first.(rows), v=last.(rows))
             end,
-            measurements=(file, _data) -> [MeasurementInfo(
-                filepath=file.filepath,
-                measurement_kind=:iv,
-                device_info=DeviceInfo([splitext(file.filename)[1]]),
-                timestamp=file.timestamp,
-                clean_title=file.filename,
+            entries=(file, data) -> [DataItem(
+                kind=:iv,
+                collection=[splitext(file.filename)[1]],
+                label=file.filename,
+                data=data,
             )],
-            stats=(_mi, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+            stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
         )
         register_plot!(
             project,
             :iv;
             label="I-V",
-            setup=(_workspace, _measurements, _processed) -> (figure = Figure(); Axis(figure[1, 1]); figure),
-            draw=function (_workspace, _measurements, processed, figure)
+            setup=(_workspace, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
+            draw=function (_workspace, items, figure)
                 axis = only(contents(figure[1, 1]))
-                for df in processed
+                for item in items
+                    df = item.data
                     nrow(df) == 0 && continue
                     lines!(axis, df.i, df.v)
                 end
@@ -58,17 +58,17 @@ using DataFrames: DataFrame, nrow
             end,
         )
 
-        measurements = [
-            only(measurements_for_file(project, joinpath(fixture_dir, filename)))
+        records = [
+            only(items_for_file(project, joinpath(fixture_dir, filename)))
             for filename in filenames
         ]
-        workspace = Workspace.Workspace(project, fixture_dir)
-        read_measurement_data(workspace, measurements)
-        plot_kind = RegistryPlot{:iv,Symbol("I-V")}
-        figure = setup_plot(workspace, plot_kind, measurements)
-        plot_data!(workspace, plot_kind, measurements, figure)
-        infer_measurement_group("precompile_group", measurements[1:1], measurements)
-        scan_source(scan_dir; project=project)
-        scan_source(scan_dir; project=project, count_first=true)
+        workspace = Workspace.Workspace(project, DirectorySource(fixture_dir))
+        read_item_data(workspace, records)
+        plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
+        figure = setup_plot(workspace, plot_kind, records)
+        plot_data!(workspace, plot_kind, records, figure)
+        source = DirectorySource(scan_dir)
+        scan_source(project, source)
+        scan_source(project, source; count_first=true)
     end
 end

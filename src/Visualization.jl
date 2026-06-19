@@ -3,8 +3,8 @@ module Visualization
 using GLMakie: Figure
 using InteractiveUtils: subtypes
 
-import ..MeasurementIndex: MeasurementInfo
-import ..Projects: project_name
+import ..ItemIndex: ItemRecord
+import ..Projects: AbstractDataItem, source_label
 import ..Workspace
 
 """
@@ -12,22 +12,22 @@ Base type for visualizers selectable by the browser and Julia API.
 
 `PlotKind` is an internal identity used by the engine to dispatch plotting. Projects do not define
 their own subtypes; they call `register_plot!`, and the engine represents each registered plot as a
-`RegistryPlot{kind,label}` (below).
+`RegisteredPlot{kind,label}` (below).
 """
 abstract type PlotKind end
 
 """
-Internal plot identity for a plot registered with `register_plot!`, parameterized by the measurement
-kind it applies to and the label that distinguishes plots for that kind.
+Internal plot identity for a plot registered with `register_plot!`, parameterized by the item kind
+it applies to and the label that distinguishes plots for that kind.
 """
-struct RegistryPlot{Kind,Label} <: PlotKind end
+struct RegisteredPlot{Kind,Label} <: PlotKind end
 
-"""The measurement-kind symbol a `RegistryPlot` draws."""
-plot_kind_symbol(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} = Kind
+"""The item-kind symbol a `RegisteredPlot` draws."""
+plot_kind_symbol(::Type{RegisteredPlot{Kind,Label}}) where {Kind,Label} = Kind
 
 """Stable name used to persist a plot choice in `measurementbrowser.toml`."""
 plot_kind_name(plot_kind::Type{<:PlotKind})::String = String(nameof(plot_kind))
-plot_kind_name(::Type{RegistryPlot{Kind,Label}}) where {Kind,Label} =
+plot_kind_name(::Type{RegisteredPlot{Kind,Label}}) where {Kind,Label} =
     string(Kind, "::", Label)
 
 """Resolve a persisted plot name back to its internal identity (a registered plot kind)."""
@@ -35,85 +35,78 @@ function plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKin
     parts = split(name, "::"; limit=2)
     length(parts) == 2 || return nothing
     kind, label = parts
-    return RegistryPlot{Symbol(kind),Symbol(label)}
+    return RegisteredPlot{Symbol(kind),Symbol(label)}
 end
 
 """Create the figure layout required by a visualizer."""
 function setup_plot(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
+    records::Vector{ItemRecord},
 )::Figure
     error(
-        "No setup_plot implementation for $(project_name(workspace.project)) " *
+        "No setup_plot implementation for $(source_label(workspace.source)) " *
         "plot kind '$plot_kind'",
     )
 end
 
-"""Draw selected measurements into an existing figure."""
+"""Draw selected items into an existing figure."""
 function plot_data!(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
-    measurements::Vector{MeasurementInfo},
+    records::Vector{ItemRecord},
     figure::Figure,
 )::Nothing
     error(
-        "No plot_data! implementation for $(project_name(workspace.project)) " *
+        "No plot_data! implementation for $(source_label(workspace.source)) " *
         "plot kind '$plot_kind'",
     )
 end
-
-# --- Registered-plot bridge ------------------------------------------------
-# A RegistryPlot{kind,label} dispatches the engine's plot calls to the project's registered setup/draw
-# callbacks. `project.plots` is the recipe table filled by register_plot!.
 
 """
 Build the figure for a registered plot by running its `setup` callback.
 
-The package resolves processed data (through its cache) before invoking the recipe, so `setup` can
-size the figure layout to the data without calling `process_measurement_data` itself.
+The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
+`setup` sizes the figure layout to the data without resolving it itself.
 """
 function setup_plot(
     workspace::Workspace.Workspace,
-    ::Type{RegistryPlot{Kind,Label}},
-    measurements::Vector{MeasurementInfo},
+    ::Type{RegisteredPlot{Kind,Label}},
+    records::Vector{ItemRecord},
 )::Figure where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    processed = Workspace.process_measurement_data(workspace, measurements)
-    return recipe.setup(workspace, measurements, processed)::Figure
+    return recipe.setup(workspace, Workspace.materialize_items(workspace, records))::Figure
 end
 
 """
 Draw a registered plot into its figure by running its `draw` callback.
 
-The package resolves processed data (through its cache) before invoking the recipe, so `draw`
-callbacks receive the processed `DataFrame`s directly and never call `process_measurement_data`
-themselves.
+The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
+`draw` reads `item.data` directly and never resolves data itself.
 """
 function plot_data!(
     workspace::Workspace.Workspace,
-    ::Type{RegistryPlot{Kind,Label}},
-    measurements::Vector{MeasurementInfo},
+    ::Type{RegisteredPlot{Kind,Label}},
+    records::Vector{ItemRecord},
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    processed = Workspace.process_measurement_data(workspace, measurements)
-    recipe.draw(workspace, measurements, processed, figure)
+    recipe.draw(workspace, Workspace.materialize_items(workspace, records), figure)
     return nothing
 end
 
-"""Every plot registered for a measurement kind, sorted by label."""
-function registered_plot_kinds(project, measurement_kind::Symbol)::Vector{Type{<:PlotKind}}
-    recipes = get(project.plots, measurement_kind, nothing)
+"""Every plot registered for an item kind, sorted by label."""
+function registered_plot_kinds(project, kind::Symbol)::Vector{Type{<:PlotKind}}
+    recipes = get(project.plots, kind, nothing)
     recipes === nothing && return Type{<:PlotKind}[]
     return Type{<:PlotKind}[
-        RegistryPlot{measurement_kind,Symbol(label)}
+        RegisteredPlot{kind,Symbol(label)}
         for label in sort!(collect(keys(recipes)))
     ]
 end
 
 """Human label for a registered plot kind, taken from its recipe."""
-function plot_kind_label(project, ::Type{RegistryPlot{Kind,Label}})::String where {Kind,Label}
+function plot_kind_label(project, ::Type{RegisteredPlot{Kind,Label}})::String where {Kind,Label}
     return project.plots[Kind][String(Label)].label
 end
 
@@ -135,11 +128,14 @@ function plot_kinds()::Vector{Type{<:PlotKind}}
     return kinds
 end
 
-"""Draw source data directly while bypassing package caches and processed data."""
+"""
+Draw raw-data items directly while bypassing processed data.
+
+`items` carry the unprocessed payload as `item.data`, so a debug callback can tune the analysis live.
+"""
 function debug_plot(
     ::Workspace.Workspace,
-    measurements::Vector{MeasurementInfo},
-    loaded;
+    items::Vector{<:AbstractDataItem};
     kwargs...,
 )
     error("Debug plots are not implemented for this project")

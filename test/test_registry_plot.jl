@@ -1,6 +1,7 @@
 using MeasurementBrowser
+using MeasurementBrowser: items_for_file, setup_plot, plot_data!
 using CSV
-using DataFrames: DataFrame
+using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis
 using Test
 
@@ -11,45 +12,56 @@ const MB = MeasurementBrowser
     write(joinpath(dir, "m.csv"), "x,y\n1,2\n3,4\n")
 
     project = MB.define_project("PlotBridge")
-    MB.register_measurement!(
+    MB.register_item!(
         project,
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        measurements=(file, data) -> [MB.MeasurementInfo(
-            filepath=file.filepath,
-            measurement_kind=:table,
-            device_info=MB.DeviceInfo(["dev"]),
-            timestamp=file.timestamp,
-            clean_title=file.filename,
+        entries=(file, data) -> [DataItem(
+            kind=:table,
+            collection=["dev"],
+            label=file.filename,
+            data=data,
         )],
     )
     drew = Ref(0)
+    drew_rows = Ref(0)
     MB.register_plot!(
         project,
         :table;
         label="Table Plot",
-        setup=(workspace, measurements, processed) -> Figure(),
-        draw=(workspace, measurements, processed, figure) -> (drew[] = length(processed); Axis(figure[1, 1]); nothing),
+        setup=(workspace, items) -> Figure(),
+        draw=function (workspace, items, figure)
+            drew[] = length(items)
+            # Each item is an AbstractDataItem carrying its own materialized payload as `item.data`,
+            # and answering the contract accessors.
+            @test all(it -> it isa MB.AbstractDataItem, items)
+            @test all(it -> MB.item_data(it) === it.data, items)
+            @test all(it -> MB.kind(it) === :table, items)
+            @test all(it -> !isempty(MB.collection(it)), items)
+            drew_rows[] = sum(nrow(item.data) for item in items)
+            Axis(figure[1, 1])
+            nothing
+        end,
     )
     MB.register_plot!(
         project,
         :table;
         label="Table Summary",
-        setup=(workspace, measurements, processed) -> Figure(),
-        draw=(workspace, measurements, processed, figure) -> nothing,
+        setup=(workspace, items) -> Figure(),
+        draw=(workspace, items, figure) -> nothing,
     )
     MB.register_plot!(
         project,
         :table;
         label="Table Summary",
-        setup=(workspace, measurements, processed) -> Figure(),
-        draw=(workspace, measurements, processed, figure) -> (drew[] = -1; nothing),
+        setup=(workspace, items) -> Figure(),
+        draw=(workspace, items, figure) -> (drew[] = -1; nothing),
     )
 
     # Identity helpers used by the GUI and persistence.
-    table_plot = MB.RegistryPlot{:table,Symbol("Table Plot")}
-    table_summary = MB.RegistryPlot{:table,Symbol("Table Summary")}
+    table_plot = MB.RegisteredPlot{:table,Symbol("Table Plot")}
+    table_summary = MB.RegisteredPlot{:table,Symbol("Table Summary")}
     @test MB.registered_plot_kinds(project, :table) == [table_plot, table_summary]
     @test MB.registered_plot_kinds(project, :missing) == Type{<:MB.PlotKind}[]
     @test MB.plot_kind_label(project, table_plot) == "Table Plot"
@@ -58,20 +70,35 @@ const MB = MeasurementBrowser
     @test MB.plot_kind_from_name("table") === nothing
 
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
-    measurements = measurements_for_file(project, joinpath(dir, "m.csv"))
-    workspace = MB.Workspace.Workspace(project, dir)
-    figure = setup_plot(workspace, table_plot, measurements)
+    items = items_for_file(project, joinpath(dir, "m.csv"))
+    workspace = MB.Workspace.Workspace(project, test_source(project, dir))
+    for item in items
+        workspace.index.items[item.id] = item
+    end
+    ids = [item.id for item in items]
+    @test MB.select_items!(workspace, items) === nothing
+    @test workspace.selection.item_ids == ids
+    @test MB.select_items!(workspace, ids[1:1]) === nothing
+    @test workspace.selection.item_ids == ids[1:1]
+    loaded_items = MB.Workspace.materialize_items(workspace, items)
+    @test MB.select_items!(workspace, loaded_items) === nothing
+    @test workspace.selection.item_ids == ids
+    @test MB.select_items!(workspace, []) === nothing
+    @test isempty(workspace.selection.item_ids)
+
+    figure = setup_plot(workspace, table_plot, items)
     @test figure isa Figure
-    @test plot_data!(workspace, table_plot, measurements, figure) === nothing
-    @test drew[] == length(measurements)
-    figure = setup_plot(workspace, table_summary, measurements)
-    @test plot_data!(workspace, table_summary, measurements, figure) === nothing
+    @test plot_data!(workspace, table_plot, items, figure) === nothing
+    @test drew[] == length(items)
+    @test drew_rows[] == 2   # the 2-row fixture flowed through as item.data
+    figure = setup_plot(workspace, table_summary, items)
+    @test plot_data!(workspace, table_summary, items, figure) === nothing
     @test drew[] == -1
 
     # An unregistered kind errors clearly rather than dispatching nowhere.
     @test_throws KeyError setup_plot(
         workspace,
-        MB.RegistryPlot{:missing,Symbol("Missing")},
-        measurements,
+        MB.RegisteredPlot{:missing,Symbol("Missing")},
+        items,
     )
 end

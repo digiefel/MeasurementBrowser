@@ -6,22 +6,21 @@ using Test
 
 const MB = MeasurementBrowser
 
-"""Build a small registry project whose CSV reader expands one measurement per file."""
+"""Build a small registry project whose CSV reader expands one item per file."""
 function _profile_project()
     project = MB.define_project("ProfileProject")
-    MB.register_measurement!(
+    MB.register_item!(
         project,
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        measurements=(file, data) -> [MB.MeasurementInfo(
-            filepath=file.filepath,
-            measurement_kind=:table,
-            device_info=MB.DeviceInfo(["dev", splitext(file.filename)[1]]),
-            timestamp=file.timestamp,
-            clean_title=file.filename,
+        entries=(file, data) -> [DataItem(
+            kind=:table,
+            collection=["dev", splitext(file.filename)[1]],
+            label=file.filename,
+            data=data,
         )],
-        stats=(mi, data) -> Dict{Symbol,Any}(:rows => nrow(data)),
+        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
     )
     return project
 end
@@ -31,14 +30,12 @@ end
         write_test_source(joinpath(dir, "first.csv"))
         write_test_source(joinpath(dir, "second.csv"), 10)
 
-        source = MB.scan_source(dir; project=TEST_PROJECT)
-        cached_files = Dict(file.filepath => file for file in source.files)
+        source = scan_test_source(TEST_PROJECT, dir)
 
         # Nothing changed: the scan must short-circuit to the very same cached object.
         skipped = MB.scan_source(
-            dir;
-            project=TEST_PROJECT,
-            cached_files=cached_files,
+            TEST_PROJECT,
+            test_source(TEST_PROJECT, dir);
             cached_source=source,
         )
         @test skipped === source
@@ -46,13 +43,12 @@ end
         # A changed fingerprint forces a real scan that returns a fresh object.
         write_test_source(joinpath(dir, "second.csv"), 99)
         rescanned = MB.scan_source(
-            dir;
-            project=TEST_PROJECT,
-            cached_files=cached_files,
+            TEST_PROJECT,
+            test_source(TEST_PROJECT, dir);
             cached_source=source,
         )
         @test rescanned !== source
-        @test length(rescanned.files) == 2
+        @test length(rescanned.source_item_fingerprints) == 2
     end
 end
 
@@ -64,22 +60,20 @@ end
 
         project = _profile_project()
 
-        source = MB.scan_source(dir; project=project)
+        source = scan_test_source(project, dir)
         rows = MB.scan_profile_summary(project)
         @test length(rows) == 1
         row = only(rows)
         @test row.kind == :table
-        @test row.files == 4
-        @test row.measurements == 4
+        @test row.source_items == 4
+        @test row.items == 4
         @test row.read_seconds >= 0
         @test row.stats_seconds >= 0
 
         # A cache hit does no per-kind work, so the profile resets to empty.
-        cached_files = Dict(file.filepath => file for file in source.files)
         MB.scan_source(
-            dir;
-            project=project,
-            cached_files=cached_files,
+            project,
+            test_source(project, dir);
             cached_source=source,
         )
         @test isempty(MB.scan_profile_summary(project))
@@ -89,7 +83,6 @@ end
 @testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.
-    push!(project.stat_failures, ("/tmp/x.csv", "id", "boom"))
     project.scan_profile[:table] = MB.KindProfile(2, 5, 1.0, 0.5)
 
     io = IOBuffer()
@@ -102,11 +95,9 @@ end
     @test length(restored.recipes) == 1
     @test restored.recipes[1].kind == :table
     # Transient state is rebuilt empty rather than carried across the cache boundary.
-    @test isempty(restored.stat_failures)
     @test isempty(restored.scan_profile)
 
-    # The same project is reachable twice from a cached scan (source.project and hierarchy.project);
-    # serialization must dedup so both references resolve to one object after load.
+    # Project serialization should preserve shared references.
     shared = IOBuffer()
     serialize(shared, (project, project))
     seekstart(shared)
@@ -114,38 +105,51 @@ end
     @test a === b
 end
 
-@testset "per-measurement stat failure surfaces through the fused pass" begin
+@testset "per-item stats run after workspace scan" begin
     mktempdir() do dir
         write(joinpath(dir, "ok.csv"), "x,y\n1,2\n")
         write(joinpath(dir, "bad.csv"), "x,y\n1,2\n")
 
         project = MB.define_project("FailureProject")
-        MB.register_measurement!(
+        MB.register_item!(
             project,
             :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> DataFrame(CSV.File(file.filepath)),
-            measurements=(file, data) -> [MB.MeasurementInfo(
-                filepath=file.filepath,
-                measurement_kind=:table,
-                device_info=MB.DeviceInfo(["dev", splitext(file.filename)[1]]),
-                timestamp=file.timestamp,
-                clean_title=file.filename,
+            entries=(file, data) -> [DataItem(
+                kind=:table,
+                collection=["dev", splitext(file.filename)[1]],
+                label=file.filename,
+                data=data,
             )],
             # Stats throw only for bad.csv; ok.csv still gets its stats computed.
-            stats=function (mi, data)
-                startswith(basename(mi.filepath), "bad") && error("stats blew up")
-                return Dict{Symbol,Any}(:rows => nrow(data))
+            stats=function (item)
+                startswith(item.label, "bad") && error("stats blew up")
+                return Dict{Symbol,Any}(:rows => nrow(item.data))
             end,
         )
 
-        source = MB.scan_source(dir; project=project)
-        @test length(source.analysis_failures) == 1
-        failure = only(source.analysis_failures)
-        @test basename(failure.filepath) == "bad.csv"
-        @test occursin("step=stats", failure.message)
+        workspace = MB.open_workspace(project, test_source(project, dir))
+        try
+            deadline = time() + 10
+            while time() < deadline
+                MB.Workspace.poll_workspace!(workspace)
+                workspace.analysis.state in (:done, :error) && break
+                sleep(0.02)
+            end
 
-        ok = only(m for m in source.hierarchy.all_measurements if endswith(m.filepath, "ok.csv"))
-        @test ok.stats[:rows] == 1
+            @test workspace.scan.state == :done
+            @test workspace.analysis.state == :done
+            @test length(workspace.index.analysis_errors) == 1
+            failure = only(collect(workspace.index.analysis_errors))
+            @test basename(workspace.index.items[first(failure)].source_item_id) == "bad.csv"
+            @test occursin("stats blew up", last(failure))
+
+            ok = only(item for item in workspace.index.hierarchy.all_items
+                if endswith(item.source_item_path, "ok.csv"))
+            @test ok.stats[:rows] == 1
+        finally
+            MB.close_workspace!(workspace)
+        end
     end
 end

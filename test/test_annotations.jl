@@ -11,7 +11,7 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
 @testset "Annotations" begin
 
     @testset "Coords" begin
-        info = Annotations.Coords.DevicesInfoTable(
+        info = Annotations.Coords.CollectionMetadataTable(
             ("ChipA",) => Dict{Symbol,Any}(:notes => "root only"),
             ("ChipA", "Site1") => Dict{Symbol,Any}(:x_um => 0.0, :y_um => 0.0,
                                                     :w_um => 100.0, :h_um => 50.0),
@@ -105,7 +105,7 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
             end
         end
 
-        @testset "generated measurement keys keep suffix fragments" begin
+        @testset "generated item keys keep suffix fragments" begin
             mktempdir() do dir
                 key = ANNOT_MEASUREMENT_KEY * "#cycle=10000000"
                 write(joinpath(dir, "tags.txt"),
@@ -164,24 +164,24 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
             end
         end
 
-        @testset "effective with measurement-ID key and device ancestors" begin
-            # Canonical pattern: is this measurement bad?
-            # Pass measurement ID as the key, device path + ancestors as ancestor_paths.
+        @testset "effective with item key and collection ancestors" begin
+            # Canonical pattern: is this item bad?
+            # Pass item id as the key, collection path + ancestors as ancestor_paths.
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"),
                     "[catalog]\nbad\tff3030\t100\n\n[assignments]\n$(ANNOT_MEASUREMENT_KEY)\tbad\nRuO2test/A9/VI/D1\tbad\n")
                 state = Annotations.Tags.load(dir)
 
-                # measurement key is found directly
+                # item key is found directly
                 eff_meas = Annotations.Tags.effective(state, ANNOT_MEASUREMENT_KEY, String[])
                 @test "bad" in eff_meas
 
-                # device ancestor inheritance also works via effective
+                # collection ancestor inheritance also works via effective
                 eff_dev = Annotations.Tags.effective(state, "RuO2test/A9/VI/D1/leaf",
                     ["RuO2test/A9/VI/D1"])
                 @test "bad" in eff_dev
 
-                # compose: measurement key + device-path ancestors in one call
+                # compose: item key + collection-path ancestors in one call
                 eff_combined = Annotations.Tags.effective(state, ANNOT_MEASUREMENT_KEY,
                     ["RuO2test/A9", "RuO2test/A9/VI/D1"])
                 @test "bad" in eff_combined

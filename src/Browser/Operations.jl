@@ -3,7 +3,7 @@ using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using ..MeasurementIndex: device_path_key
+using ..ItemIndex: collection_path_key
 import ..Workspace
 using ..Workspace:
     close_workspace!,
@@ -27,7 +27,12 @@ function _open_project_path!(
 )::Nothing
     norm_path = _normalize_project_path(path)
     if project === nothing && state.project_locked
-        project = state.workspace.project
+        workspace = state.workspace
+        if workspace isa Workspace.Workspace
+            project = workspace.project
+        else
+            error("Cannot open a new folder before a project workspace exists")
+        end
     end
     if project === nothing
         state.project_preference = _project_preference_for_path(state, norm_path)
@@ -49,69 +54,61 @@ function _attach_workspace!(
     workspace::Workspace.Workspace;
     persist::Bool=true,
 )::Nothing
-    project = workspace.project
-    norm_path = workspace.root_path
+    source = workspace.source
+    source_root = hasproperty(source, :root_path) ? source.root_path : ""
     previous_workspace = state.workspace
-    previous_root = previous_workspace isa Workspace.Workspace ?
-        previous_workspace.root_path :
-        ""
-    _cancel_figure_script_job!(state)
     previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
         close_workspace!(previous_workspace)
     state.plots = PlotState(debug=state.plots.debug)
-    previous_root == norm_path ||
-        _reset_figure_script_state!(state, norm_path)
-    view = _load_project_view(norm_path)
-    !isempty(view.project) && view.project != project_name(project) &&
-        (view = PersistedProjectView(project=project_name(project)))
-    _load_tag_state_for_root!(state, norm_path)
     state.workspace = workspace
+    view = isempty(source_root) ? PersistedProjectView() : _load_project_view(source_root)
+    project = project_name(workspace.project)
+    !isempty(view.project) && view.project != project &&
+        (view = PersistedProjectView(project=project))
+    _load_tag_state_for_root!(state, _annotation_root(workspace))
     _apply_project_view!(state, view)
     state.saved_project_view = view
-    _invalidate_figure_script_scan_cache!(state)
-    persist && _persist_preferences!(state; path=norm_path)
+    persist && !isempty(source_root) && _persist_preferences!(state; path=source_root)
     return nothing
 end
 
-"""Select and reveal every measurement produced by one source file."""
-function select_source_file!(
+"""Select and reveal every item produced by one source item."""
+function select_source_item!(
     state::BrowserState,
-    filepath::AbstractString,
+    source_item_id::AbstractString,
 )::Bool
     workspace = state.workspace
     workspace isa Workspace.Workspace || return false
-    path = String(filepath)
-    measurements = [
-        measurement
-        for measurement in workspace.index.hierarchy.all_measurements
-        if measurement.filepath == path
+    id = String(source_item_id)
+    items = [
+        item
+        for item in workspace.index.hierarchy.all_items
+        if item.source_item_id == id
     ]
-    isempty(measurements) && return false
+    isempty(items) && return false
 
-    device_paths =
-        unique([device_path_key(measurement.device_info) for measurement in measurements])
-    expanded_paths = copy(state.expanded_device_paths)
-    for device_path in device_paths
-        parts = split(device_path, '/')
+    collection_paths =
+        unique([collection_path_key(item.collection) for item in items])
+    expanded_paths = copy(state.expanded_collection_paths)
+    for collection_path in collection_paths
+        parts = split(collection_path, '/')
         for depth in 1:(length(parts) - 1)
             parent_path = join(parts[1:depth], '/')
             parent_path in expanded_paths || push!(expanded_paths, parent_path)
         end
     end
 
-    state.expanded_device_paths = expanded_paths
-    workspace.selection.device_paths = device_paths
-    workspace.selection.measurement_ids =
-        [measurement.unique_id for measurement in measurements]
-    state.scroll_to_device_path = first(device_paths)
-    state.scroll_to_measurement_id = first(measurements).unique_id
+    state.expanded_collection_paths = expanded_paths
+    workspace.selection.collection_paths = collection_paths
+    workspace.selection.item_ids = [item.id for item in items]
+    state.scroll_to_collection_path = first(collection_paths)
+    state.scroll_to_item_id = first(items).id
     return true
 end
 
 """Stop browser and workspace work before the render loop exits."""
 function _shutdown_background_jobs!(state::BrowserState)::Nothing
     state.shutdown_complete && return nothing
-    _cancel_figure_script_job!(state)
     workspace = state.workspace
     workspace isa Workspace.Workspace && close_workspace!(workspace)
     state.shutdown_complete = true

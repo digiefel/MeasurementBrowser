@@ -50,11 +50,11 @@ function _sync_live_table_source!(state::BrowserState)::Nothing
     return nothing
 end
 
-"""Return the first selected measurement source file, if a source selection exists."""
+"""Return the first selected item source path, if one exists."""
 function _selected_table_source(state::BrowserState)::Union{Nothing,String}
-    _, selected_measurements, _ = _project_visible_selection(state)
-    isempty(selected_measurements) && return nothing
-    return first(selected_measurements).filepath
+    _, selected_items, _ = _project_visible_selection(state)
+    isempty(selected_items) && return nothing
+    return first(selected_items).source_item_path
 end
 
 """Render the menu commands that open the table inspector."""
@@ -272,7 +272,7 @@ function render_table_inspector_window(state::BrowserState)::Nothing
             ig.Separator()
             _render_table_quick_plot!(inspector)
         else
-            ig.TextDisabled("Open a delimited text file or select a measurement source.")
+            ig.TextDisabled("Open a delimited text file or select an item source.")
         end
     end
     open_ref[] || (inspector.visible = false)

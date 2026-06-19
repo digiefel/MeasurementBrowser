@@ -66,17 +66,16 @@ The exact API is not decided, but it should feel like normal Julia composition r
 control protocol. This sketch is illustrative:
 
 ```julia
-workspace = open_workspace(RuO2Project(), root)
+project = define_project("RuO2")
+workspace = open_workspace(project, root)
 browser = open_browser(workspace; wait=false)
 
-selection = select(workspace;
-    measurement_kind=:pund,
-    device=r"RuO2test/A9",
-)
+records = workspace.index.hierarchy.all_items
+select_items!(workspace, records)
 
 fig = Figure(workspace)
-plot!(fig, selection, X(:voltage_V), Y(:polarization_uCcm2); visualizer=LinePlot)
-fit = linear_fit!(fig, selection, X(:voltage_V), Y(:current_A))
+plot!(fig, records, X(:voltage_V), Y(:polarization_uCcm2); visualizer=LinePlot)
+fit = linear_fit!(fig, records, X(:voltage_V), Y(:current_A))
 annotate!(fig, Arrow(fit, label="linear region"))
 
 save_workflow("pund_review.mbflow", fig)
@@ -92,7 +91,7 @@ Generic visualizers should be modular and composable. The first useful set is:
 
 - raw table view for any loaded tabular measurement data
 - X-vs-Y scatter and line plots
-- grouped overlays by measurement, device, tag, or parameter
+- overlays collected by measurement, device, tag, or parameter
 - heatmaps for gridded or pivoted tabular data
 - simple summaries and histograms
 - fit views for common models, starting with linear fits
@@ -148,7 +147,7 @@ select measurements by rule
 load or process data
 create visualizer
 map columns to axes
-set grouping and style
+set collection axis and style
 add fit
 add annotations
 export or save figure
@@ -221,5 +220,5 @@ This affects architecture:
   plot annotations are a separate future layer.
 - [measurement-parameters-and-stats.md](measurement-parameters-and-stats.md) defines the metadata
   bucket semantics that selections, visualizers, workflows, and saved figures should rely on.
-- [figure_scripts.md](../figure_scripts.md) documents the deprecated script export path that
-  workflows should replace.
+- [figure_scripts.md](../figure_scripts.md) records the removed script-export path that workflows
+  replace.

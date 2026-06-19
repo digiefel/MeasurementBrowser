@@ -9,8 +9,9 @@ using ..Projects:
     PROJECTS,
     project_description,
     project_name,
-    scan_profile_summary
-using ..MeasurementIndex: SourceScan
+    scan_profile_summary,
+    source_label
+using ..ItemIndex: SourceScan
 using ..Cache:
     ProjectCacheIdentity,
     ProjectCacheStatus
@@ -32,18 +33,18 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
     progress = workspace isa Workspace.Workspace ?
         workspace.cache_job.progress :
         WorkspaceProgress()
-    total = progress.total_files
-    processed = progress.processed_files
-    loaded = progress.loaded_measurements
+    total = progress.total_source_items
+    processed = progress.processed_source_items
+    loaded = progress.loaded_items
     fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
     if job_state == :loading
         progress_text = total > 0 ?
-            @sprintf("Read %d/%d cached files, loaded %d measurements", processed, total, loaded) :
-            @sprintf("Loaded %d measurements", loaded)
+            @sprintf("Read %d/%d cached source items, loaded %d items", processed, total, loaded) :
+            @sprintf("Loaded %d items", loaded)
         return (
             title="Cache: Loading",
-            detail="Reading cached measurements from the HDF5 file.",
+            detail="Reading cached items from the HDF5 file.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Reload",
@@ -53,8 +54,8 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
         progress_text = phase == :cache_finalize ?
             "Finalizing cache metadata and indexes" :
             total > 0 ?
-            @sprintf("Processed %d/%d cache entries, cached %d measurements", processed, total, loaded) :
-            @sprintf("Cached %d measurements", loaded)
+            @sprintf("Processed %d/%d cache entries, cached %d items", processed, total, loaded) :
+            @sprintf("Cached %d items", loaded)
         operation = workspace.cache.operation
         title = phase == :cache_finalize ? "Cache: Finalizing" :
             operation == :build ? "Cache: Building" :
@@ -63,7 +64,7 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
             title,
             detail=phase == :cache_finalize ?
                 "Finalizing the HDF5 cache." :
-                "Writing source measurements into the HDF5 cache.",
+                "Writing source items into the HDF5 cache.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Cache Build",
@@ -117,17 +118,17 @@ function _source_rescan_progress_model(
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     source_state = workspace.scan.state
-    source_state in (:counting, :discovering, :scanning, :analyzing,
+    source_state in (:counting, :discovering, :scanning,
                      :canceling, :canceled, :done, :unchanged, :error) || return nothing
 
     progress = workspace.scan.progress
-    total = progress.total_files
-    processed = progress.processed_files
-    loaded = progress.loaded_measurements
-    skipped = progress.skipped_files
+    total = progress.total_source_items
+    processed = progress.processed_source_items
+    loaded = progress.loaded_items
+    skipped = progress.skipped_source_items
     fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
 
-    # A single status line; the bar appears only while files are actively being read or analyzed.
+    # A single status line; the bar appears only while files are actively being read.
     if source_state == :error
         return (text=workspace.scan.error, fraction=0.0f0, show_bar=false)
     elseif source_state == :canceling
@@ -135,28 +136,35 @@ function _source_rescan_progress_model(
     elseif source_state == :canceled
         return (text="Scan canceled", fraction=0.0f0, show_bar=false)
     elseif source_state in (:counting, :discovering)
-        text = processed > 0 ? "Finding files... $processed found" : "Finding files..."
+        text = processed > 0 ? "Finding source items... $processed found" : "Finding source items..."
         return (text=text, fraction=0.0f0, show_bar=false)
     elseif source_state == :scanning
         text = total > 0 ?
-            @sprintf("Reading %d/%d files, %d measurements", processed, total, loaded) :
-            "Reading files..."
+            @sprintf("Reading %d/%d source items, %d items", processed, total, loaded) :
+            "Reading source items..."
         return (text=text, fraction=fraction, show_bar=total > 0)
-    elseif source_state == :analyzing
+    elseif workspace.analysis.state == :analyzing
+        analysis = workspace.analysis.progress
+        total = analysis.total_source_items
+        processed = analysis.processed_source_items
+        loaded = analysis.loaded_items
+        fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
         text = total > 0 ?
-            @sprintf("Analyzing %d/%d, %d measurements", processed, total, loaded) :
-            @sprintf("Analyzing %d measurements...", loaded)
+            @sprintf("Analyzing %d/%d, %d items", processed, total, loaded) :
+            @sprintf("Analyzing %d items...", loaded)
         return (text=text, fraction=fraction, show_bar=total > 0)
+    elseif workspace.analysis.state == :error
+        return (text=workspace.analysis.error, fraction=0.0f0, show_bar=false)
     elseif source_state == :unchanged
         return (
-            text=@sprintf("Up to date: %d measurements (%d files unchanged)", loaded, total),
+            text=@sprintf("Up to date: %d items (%d source items unchanged)", loaded, total),
             fraction=0.0f0,
             show_bar=false,
         )
     else # :done
         text = skipped > 0 ?
-            @sprintf("Scanned %d files, %d measurements (%d skipped)", total, loaded, skipped) :
-            @sprintf("Scanned %d files, %d measurements", total, loaded)
+            @sprintf("Scanned %d source items, %d items (%d skipped)", total, loaded, skipped) :
+            @sprintf("Scanned %d source items, %d items", total, loaded)
         return (text=text, fraction=0.0f0, show_bar=false)
     end
 end
@@ -187,7 +195,7 @@ function _cache_toolbar_model(state::BrowserState)::NamedTuple
         return (
             label="Cache: Loading",
             color=(0.18, 0.42, 0.78, 1.0),
-            detail="Reading cached measurements from the HDF5 file.",
+            detail="Reading cached items from the HDF5 file.",
         )
     elseif cache_state == :missing
         message = workspace.cache_job.error
@@ -213,28 +221,30 @@ function _cache_toolbar_model(state::BrowserState)::NamedTuple
             return (
                 label="Cache: Loaded",
                 color=(0.20, 0.58, 0.30, 1.0),
-                detail="$(status.cached_files) files cached; source not checked",
+                detail="$(status.cached_source_items) source items cached; source not checked",
             )
         end
-        if status.error_files > 0
+        if status.error_source_items > 0
             return (
                 label="Cache: Errors",
                 color=(0.72, 0.18, 0.18, 1.0),
-                detail="$(status.error_files) cached file(s) failed to transform",
+                detail="$(status.error_source_items) cached source item(s) failed to transform",
             )
         end
-        has_changes = status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0
+        has_changes = status.stale_source_items > 0 ||
+            status.new_source_items > 0 ||
+            status.deleted_source_items > 0
         if has_changes
             return (
                 label="Cache: Stale",
                 color=(0.78, 0.58, 0.12, 1.0),
-                detail="$(status.stale_files) stale, $(status.new_files) new, $(status.deleted_files) deleted",
+                detail="$(status.stale_source_items) stale, $(status.new_source_items) new, $(status.deleted_source_items) deleted",
             )
         end
         return (
             label="Cache: Fresh",
             color=(0.20, 0.58, 0.30, 1.0),
-            detail="$(status.fresh_files) files cached",
+            detail="$(status.fresh_source_items) source items cached",
         )
     end
 
@@ -309,9 +319,9 @@ function render_perf_window(state::BrowserState)::Nothing
         end
 
         ig.Text("Tree nodes rendered: $(performance.node_count)")
-        rows_visible = performance.measurement_rows_visible
-        rows_rendered = performance.measurement_rows_rendered
-        ig.Text("Measurements visible/rendered: $rows_visible / $rows_rendered")
+        rows_visible = performance.item_rows_visible
+        rows_rendered = performance.item_rows_rendered
+        ig.Text("Items visible/rendered: $rows_visible / $rows_rendered")
 
         mem = _memory_snapshot()
         if mem.vmrss_kb !== nothing
@@ -364,17 +374,18 @@ function render_perf_window(state::BrowserState)::Nothing
 
         workspace = state.workspace
         scan_rows = workspace isa Workspace.Workspace ?
-            scan_profile_summary(workspace.project) : NamedTuple[]
+            scan_profile_summary(workspace.project) :
+            NamedTuple[]
         if ig.CollapsingHeader("Scan timings (per kind)", ig.ImGuiTreeNodeFlags_DefaultOpen)
             if isempty(scan_rows)
                 ig.TextDisabled("No scan timing yet (cache hit or no scan run)")
             else
                 total_read = sum(row.read_seconds for row in scan_rows)
                 total_stats = sum(row.stats_seconds for row in scan_rows)
-                files = sum(row.files for row in scan_rows)
-                meas = sum(row.measurements for row in scan_rows)
+                source_items = sum(row.source_items for row in scan_rows)
+                meas = sum(row.items for row in scan_rows)
                 ig.Text(@sprintf(
-                    "Last scan: %d files, %d measurements", files, meas,
+                    "Last scan: %d source items, %d items", source_items, meas,
                 ))
                 # Reads and stats run across worker threads, so these are summed CPU-time, not
                 # wall-clock; the total can exceed elapsed time by up to the thread count.
@@ -383,53 +394,10 @@ function render_perf_window(state::BrowserState)::Nothing
                 ))
                 for row in scan_rows
                     ig.BulletText(@sprintf(
-                        "%s: %d files read %.2fs  ·  %d meas, stats %.2fs",
-                        String(row.kind), row.files, row.read_seconds,
-                        row.measurements, row.stats_seconds,
+                        "%s: %d source items read %.2fs  ·  %d items, stats %.2fs",
+                        String(row.kind), row.source_items, row.read_seconds,
+                        row.items, row.stats_seconds,
                     ))
-                end
-            end
-        end
-
-        profiles = state.figure_scripts.job_profiles
-        if ig.CollapsingHeader("Figure-Script Jobs", ig.ImGuiTreeNodeFlags_DefaultOpen)
-            if isempty(profiles)
-                ig.TextDisabled("No figure-script jobs profiled yet")
-            else
-                latest = profiles[end]
-                latest_profile = latest.profile
-                ig.Text(
-                    "Last: $(latest.operation) $(repr(latest_profile.group_name))  " *
-                    "$(round(latest_profile.total_ms; digits=1)) ms  " *
-                    "selected=$(latest_profile.selected_count) / total=$(latest_profile.measurement_count)",
-                )
-                if !isempty(latest_profile.sections)
-                    ig.Text("Sections")
-                    for section in latest_profile.sections
-                        ig.BulletText(
-                            "$(section.key): calls=$(section.calls)  " *
-                            "time=$(round(section.duration_ms; digits=2)) ms  " *
-                            "alloc=$(round(section.alloc_bytes / 1024; digits=1)) KB",
-                        )
-                    end
-                end
-                if !isempty(latest_profile.counters)
-                    ig.Text("Counters")
-                    for (key, value) in sort!(collect(latest_profile.counters); by=entry -> String(first(entry)))
-                        ig.BulletText("$(key): $(value)")
-                    end
-                end
-
-                if length(profiles) > 1
-                    ig.Text("History")
-                    for entry in Iterators.reverse(profiles[max(1, end - 5):end-1])
-                        profile = entry.profile
-                        ig.BulletText(
-                            "$(entry.operation) $(repr(profile.group_name)): " *
-                            "$(round(profile.total_ms; digits=1)) ms  " *
-                            "selected=$(profile.selected_count)",
-                        )
-                    end
                 end
             end
         end
@@ -437,7 +405,6 @@ function render_perf_window(state::BrowserState)::Nothing
         if ig.Button("Clear timings")
             empty!(performance.timings)
             empty!(performance.allocations)
-            empty!(state.figure_scripts.job_profiles)
         end
     end
     ig.End()
@@ -451,7 +418,7 @@ function render_menu_bar(state::BrowserState)::Nothing
         if ig.BeginMenu("Project")
             ig.TextDisabled(
                 workspace isa Workspace.Workspace ?
-                "Active: $(project_name(workspace.project))" :
+                "Active: $(source_label(workspace.source))" :
                 "No project loaded",
             )
             ig.Separator()
@@ -496,7 +463,7 @@ function render_menu_bar(state::BrowserState)::Nothing
                 if source_rescan_running
                     cancel_scan!(workspace)
                 else
-                    @info "Rescanning path: $(workspace.root_path)"
+                    @info "Rescanning source: $(source_label(workspace.source))"
                     scan_source!(workspace)
                 end
             end
@@ -520,24 +487,6 @@ function render_menu_bar(state::BrowserState)::Nothing
             ig.EndDisabled()
             if ig.BeginItemTooltip()
                 ig.TextUnformatted("Fix tags.txt and rescan before hiding bad items")
-                ig.EndTooltip()
-            end
-        end
-        _, selected_measurements, _ = _project_visible_selection(state)
-        has_measurement_selection = !isempty(selected_measurements)
-        can_open_figure_scripts = has_measurement_selection ||
-                                  !isempty(state.figure_scripts.groups) ||
-                                  state.figure_scripts.visible
-        !can_open_figure_scripts && ig.BeginDisabled()
-        if ig.MenuItem("Figure Script", C_NULL, state.figure_scripts.visible)
-            state.figure_scripts.visible = !state.figure_scripts.visible
-            state.figure_scripts.root_path =
-                workspace isa Workspace.Workspace ? workspace.root_path : ""
-        end
-        if !can_open_figure_scripts
-            ig.EndDisabled()
-            if ig.BeginItemTooltip()
-                ig.TextUnformatted("Select one or more measurements to build a figure script")
                 ig.EndTooltip()
             end
         end
@@ -604,23 +553,23 @@ function _render_cache_controls!(
 
     if identity isa ProjectCacheIdentity
         ig.Separator()
-        ig.Text("Project: $(identity.project_name)")
-        ig.TextWrapped("Root: $(identity.root_path)")
+        ig.Text("Source: $(identity.source_label)")
+        ig.TextWrapped("Source ID: $(identity.source_id)")
         ig.TextWrapped("File: $(identity.cache_path)")
     end
 
     if status isa ProjectCacheStatus
         ig.Separator()
-        ig.Text("Files")
-        ig.Text("Source files: $(status.total_files)")
-        ig.Text("Cached: $(status.cached_files)")
-        ig.Text("Fresh: $(status.fresh_files)")
-        ig.Text("Stale: $(status.stale_files)")
-        ig.Text("New: $(status.new_files)")
-        ig.Text("Deleted: $(status.deleted_files)")
-        status.error_files > 0 && ig.TextColored(
+        ig.Text("Source Items")
+        ig.Text("Total: $(status.total_source_items)")
+        ig.Text("Cached: $(status.cached_source_items)")
+        ig.Text("Fresh: $(status.fresh_source_items)")
+        ig.Text("Stale: $(status.stale_source_items)")
+        ig.Text("New: $(status.new_source_items)")
+        ig.Text("Deleted: $(status.deleted_source_items)")
+        status.error_source_items > 0 && ig.TextColored(
             (1.0, 0.35, 0.35, 1.0),
-            "Errors: $(status.error_files)",
+            "Errors: $(status.error_source_items)",
         )
     elseif cache_state == :error
         message = workspace.cache_job.error
@@ -632,19 +581,19 @@ function _render_cache_controls!(
         Pair{String,String}[]
     if !isempty(cache_errors)
         ig.Separator()
-        ig.TextColored((1.0, 0.35, 0.35, 1.0), "File Errors")
-        ig.TextDisabled("Select a file to show its measurements")
-        for (index, file_error) in enumerate(cache_errors)
+        ig.TextColored((1.0, 0.35, 0.35, 1.0), "Source Item Errors")
+        ig.TextDisabled("Select a source item to show its items")
+        for (index, source_item_error) in enumerate(cache_errors)
             index > 20 && break
-            filepath, message = file_error
-            ig.PushID(filepath)
-            if ig.TextLink(basename(filepath)) && select_source_file!(state, filepath)
+            source_item_id, message = source_item_error
+            ig.PushID(source_item_id)
+            if ig.TextLink(basename(source_item_id)) && select_source_item!(state, source_item_id)
                 state.tree_filter = ""
-                state.measurement_filter = ""
+                state.item_filter = ""
                 state.reset_project_filters = true
             end
             if ig.BeginItemTooltip()
-                ig.TextUnformatted(filepath)
+                ig.TextUnformatted(source_item_id)
                 ig.EndTooltip()
             end
             ig.TextWrapped(first(split(message, '\n'; limit=2)))
@@ -661,7 +610,9 @@ function _render_cache_controls!(
         workspace.index.source isa SourceScan &&
         cache_state != :missing &&
         cache_state != :error &&
-        (status.stale_files > 0 || status.new_files > 0 || status.deleted_files > 0)
+        (status.stale_source_items > 0 ||
+         status.new_source_items > 0 ||
+         status.deleted_source_items > 0)
     can_build = has_identity &&
         workspace.index.source isa SourceScan &&
         cache_state != :error
@@ -708,8 +659,7 @@ function render_project_window(state::BrowserState)::Nothing
     if ig.Begin("Project Settings###project_window", open_ref, ig.ImGuiWindowFlags_AlwaysAutoResize)
         workspace = state.workspace
         if workspace isa Workspace.Workspace
-            proj = workspace.project
-            ig.Text("Active: $(project_name(proj))")
+            ig.Text("Active: $(source_label(workspace.source))")
         else
             ig.TextDisabled("No folder loaded yet")
         end
@@ -743,7 +693,10 @@ function render_project_window(state::BrowserState)::Nothing
             end
 
             if changed
-                current_root = workspace isa Workspace.Workspace ? workspace.root_path : ""
+                current_root = (
+                    workspace isa Workspace.Workspace &&
+                    hasproperty(workspace.source, :root_path)
+                ) ? workspace.source.root_path : ""
                 _persist_preferences!(
                     state;
                     path=isempty(current_root) ? nothing : current_root,
@@ -868,10 +821,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         end
         state.performance.frame += 1
         workspace = state.workspace
-        if workspace isa Workspace.Workspace && poll_workspace!(workspace)
-            _invalidate_figure_script_scan_cache!(state)
-        end
-        _poll_figure_script_job_events!(state)
+        workspace isa Workspace.Workspace && poll_workspace!(workspace)
         if first_frame[]
             state.performance.gl_info = _gl_info()
             _promote_to_foreground_app()
@@ -892,9 +842,6 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         _time!(state, :info) do
             render_info_window(state)
         end
-        _time!(state, :figure_scripts) do
-            render_figure_script_window(state)
-        end
         _time!(state, :table_inspector) do
             render_table_inspector_window(state)
         end
@@ -909,7 +856,7 @@ function _run_browser(state::BrowserState, ctx; engine, spawn, wait::Bool)
         end
         _save_project_view_if_changed!(state)
         # Show metadata guidance modal if needed
-        render_device_info_modal(state)
+        render_collection_metadata_modal(state)
     end
 end
 

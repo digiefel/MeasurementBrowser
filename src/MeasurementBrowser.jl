@@ -5,57 +5,67 @@ using Annotations
 
 include("Projects.jl")
 using .Projects:
+    AbstractDataSource,
+    AbstractDataSourceItem,
+    AbstractDataItem,
+    Collection,
+    CollectionStatRecipe,
     DEFAULT_PROJECT,
-    DeviceStatRecipe,
+    ItemRecipe,
     KindProfile,
-    MeasurementRecipe,
     PROJECTS,
     PlotRecipe,
-    Project
+    Project,
+    cacheable,
+    close_source!,
+    collection,
+    collection_stats,
+    data_items,
+    fingerprint,
+    id,
+    item_data,
+    item_label,
+    load_data_item,
+    open_source,
+    parameters,
+    source_id,
+    source_item_id,
+    source_item_label,
+    source_item_path,
+    source_item_timestamp,
+    source_items,
+    source_label,
+    stats
 import .Projects:
-    compute_and_add_measurement_stats!,
     detect_kind,
-    device_path_label,
+    collection_path_label,
     display_label,
-    interpret_file,
+    kind,
     kind_label,
-    load_source_data,
-    parse_device_info,
-    process_measurement_data,
+    process,
     project_description,
     project_name,
     reset_scan_profile!,
     scan_profile_summary
 
-include("MeasurementIndex.jl")
-using .MeasurementIndex:
+include("ItemIndex.jl")
+using .ItemIndex:
     CANCEL_CALLBACK_KEY,
-    DeviceInfo,
+    DataItem,
     HierarchyNode,
     JobCancelled,
-    MeasurementAnalysisFailure,
-    MeasurementHierarchy,
-    MeasurementInfo,
-    SourceFile,
+    ItemFailure,
+    Hierarchy,
+    ItemRecord,
     SourceScan,
-    build_clean_title,
     check_cancel,
     children,
-    collect_source_files,
-    device_info_path,
-    device_path_key,
-    device_path_tuple,
+    collection_path_key,
+    collection_path_tuple,
     emit_progress,
-    file_fingerprint,
-    has_device_metadata,
-    index_source_file,
-    insert_measurement!,
-    interpret_measurements,
+    insert_item!,
     is_job_cancelled,
-    load_scan_metadata,
-    measurement_timestamp_key,
-    measurements_for_file,
-    parse_timestamp,
+    item_timestamp_key,
     scan_source,
     with_cancel
 
@@ -65,13 +75,15 @@ include("Workspace.jl")
 using .Workspace:
     close_workspace!,
     open_workspace,
-    read_measurement_data,
-    select_measurements!
+    read_item_data,
+    select_items!
+
+include("DataSources/DirectorySource.jl")
 
 include("Visualization.jl")
 using .Visualization:
     PlotKind,
-    RegistryPlot,
+    RegisteredPlot,
     plot_kind_from_name,
     plot_kind_label,
     plot_kind_name,
@@ -87,23 +99,22 @@ include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
 include("Project.jl")
-include("FigureScripts.jl")
 include("Precompile.jl")
 include("Browser.jl")
 using .Browser: open_browser
 
-export open_browser
-export SourceFile, MeasurementInfo, DeviceInfo, MeasurementAnalysisFailure
-export PlotKind, plot_kinds
-export parse_device_info, detect_kind, kind_label, display_label, interpret_file
-export measurements_for_file
-export load_source_data, read_measurement_data, process_measurement_data, setup_plot, plot_data!
-export compute_and_add_measurement_stats!
-export debug_plot
-export TablePreview, inspect_table
-export project_name, project_description
-export open_workspace, close_workspace!, select_measurements!
-export define_project, register_measurement!, register_device_stat!, register_plot!
-export Project
+# Public API — exactly the contract. Everything else (engine internals: ItemRecord, the plot
+# dispatch, scan/data-access plumbing, table inspector, project introspection) stays un-exported and
+# is reachable only as `MeasurementBrowser.name` when genuinely needed.
+#
+# Run the app
+export open_browser, open_workspace, close_workspace!, select_items!
+# Build a project
+export define_project, register_item!, register_collection_stat!, register_plot!
+# The AbstractDataItem contract — implement these for a custom item type
+export AbstractDataItem, Collection
+export id, item_label, kind, collection, parameters, stats, item_data, process, cacheable, fingerprint
+# Types you name
+export Project, DirectorySource, SourceFile, DataItem
 
 end # module MeasurementBrowser

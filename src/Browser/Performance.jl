@@ -2,7 +2,7 @@ using Printf
 using Statistics: mean
 import ModernGL as gl
 
-"""Retain a bounded history of one performance measurement."""
+"""Retain a bounded history of one performance sample."""
 function _append_perf_sample!(
     state::BrowserState,
     key::Symbol,
