@@ -358,46 +358,6 @@ function _render_hierarchy_tree_panel(
     ig.EndChild()
 end
 
-# Shared multi-select utility functions
-
-"""Apply range, toggle, or replacement selection to a list of stable item ids."""
-function _update_multi_selection!(
-    selected_items::Vector{T},
-    item::T,
-    all_items::Vector{T},
-    shift_held::Bool,
-    ctrl_held::Bool,
-)::Nothing where {T}
-    if shift_held && !isempty(selected_items)
-        # Range selection: select from last selected to current
-        last_item = selected_items[end]
-        start_idx = findfirst(x -> x == last_item, all_items)
-        end_idx = findfirst(x -> x == item, all_items)
-
-        if start_idx !== nothing && end_idx !== nothing
-            if start_idx > end_idx
-                start_idx, end_idx = end_idx, start_idx
-            end
-            selected_range = all_items[start_idx:end_idx]
-            # Merge with existing selection
-            append!(selected_items, selected_range)
-            unique!(selected_items)
-        end
-    elseif ctrl_held
-        # Toggle selection
-        if item in selected_items
-            filter!(x -> x != item, selected_items)
-        else
-            push!(selected_items, item)
-        end
-    else
-        # Single selection (replace existing)
-        empty!(selected_items)
-        push!(selected_items, item)
-    end
-    return nothing
-end
-
 """Render selection counts shared by the collection and item panels."""
 function _render_selection_status!(
     selected_count::Int,
