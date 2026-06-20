@@ -40,18 +40,18 @@ AbstractDataSource│ scan          →  hierarchy  →  data       →  view   
 (root, DB, stream)│ ----------       ----------    ----           ----        │
                  │ source_items     build tree    load_data_item  Makie      │
                  │ + data_items     per-leaf       (memory →       figure /   │
-                 │ per source item  items          cache → source) table      │
+                 │ + process/stats  items          cache → source) table      │
                  └──────────────────────────────────────────────────────────┘
 ```
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-interprets each unit with `data_items(project, source, source_item)`, records per-source-item
-failures, and builds the hierarchy described in [data-model.md](data-model.md). Per-item stats and
-collection-node stats run as workspace background analysis after the tree exists. The cache
-([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues in the
-background.
+then assigns each source item to one worker. That worker calls
+`data_items(project, source, source_item)` once, processes and computes stats for every resulting data
+item while its loaded data is still alive, and returns one bounded batch to the index/cache
+collector. Collection-node stats run afterward from completed data-less item records. The cache
+([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
 When a view needs item data, the engine reloads the selected items via
 `load_data_item(project, source, source_item_id, id)` (memory → cache → source). Each item carries
@@ -59,9 +59,10 @@ When a view needs item data, the engine reloads the selected items via
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
 uses the built-in `DirectorySource <: AbstractDataSource`: the source walks a data root into
-`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries` during indexing and
-`read`/`process`/`stats` during background analysis or loading. Nothing downstream of the contract can
-tell a callback project from a hand-written project/source pair.
+`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`process`/`stats`
+before that source-file data is released. Later materialization reads from memory, the cache, or
+`load_data_item`. Nothing downstream of the contract can tell a callback project from a hand-written
+project/source pair.
 
 ## Ownership Boundaries
 
@@ -100,7 +101,7 @@ The package expresses that boundary through focused internal modules. `Projects`
 `AbstractDataItem` contract and the `Project` recipe type. `DataSources/DirectorySource.jl` owns the
 built-in directory source, `SourceFile`, file fingerprints, directory traversal, sidecar exclusion,
 and `metadata.txt` collection parameter input. `ItemIndex` owns the internal `ItemRecord`, the concrete
-`DataItem`, hierarchy construction, and scanning. `Cache` owns generated HDF5 state. `Workspace` owns
+`DataItem`, hierarchy construction, and scanning. `Cache` owns generated DuckDB state. `Workspace` owns
 one project/source pair, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and
 CImGui rendering. `MeasurementBrowser` exports the small high-level API while keeping most low-level
@@ -120,7 +121,7 @@ for formats):
 
 `metadata.txt` belongs to `DirectorySource`; sources without that file simply have no collection
 parameters. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
-source still has somewhere to persist user-authored notes/tags/layout. The HDF5 cache itself is
+source still has somewhere to persist user-authored notes/tags/layout. The DuckDB cache itself is
 generated and lives outside the source.
 
 ## Engineering Rules
@@ -147,7 +148,7 @@ Current-state reference docs:
 | [data-model.md](data-model.md) | You're touching source-file records, items, hierarchy traversal, or paths/IDs. |
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
-| [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or item data. |
+| [cache.md](cache.md) | You're touching DuckDB cache identity, loading, writing, status, or item data. |
 | [annotations.md](annotations.md) | You're touching annotations: coordinates, layout, tags, or notes. |
 
 Future-facing docs and roadmaps live under [plans/](plans/), separate from the current-state docs

@@ -301,6 +301,19 @@ function _processed_item(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDa
     )
 end
 
+"""
+Process one loaded item through its registered callback or the low-level `process(item)` hook.
+"""
+function Projects.process(
+    project::Project,
+    ::AbstractDataSource,
+    item::AbstractDataItem,
+)::AbstractDataItem
+    recipe = _recipe(project, kind(item))
+    (recipe === nothing || recipe.process === nothing) && return Projects.process(item)
+    return _processed_item(recipe, item)
+end
+
 function Projects.data_items(
     project::Project,
     source::AbstractDataSource,
@@ -336,7 +349,7 @@ function Projects.load_data_item(
     index = findfirst(item -> id(item) == requested_id, items)
     index === nothing &&
         error("Source item $(source_item_id) did not produce item id $(requested_id)")
-    return _processed_item(recipe, items[index])
+    return Projects.process(project, source, items[index])
 end
 
 """Interpret one physical file through the high-level callback adapter."""
@@ -347,12 +360,12 @@ function items_for_file(
 )::Vector{ItemRecord}
     source = DirectorySource(dirname(filepath); metadata_file=nothing)
     source.collection_parameter_entries = meta
-    records = ItemIndex.interpret_source_item(
+    interpretation = ItemIndex.interpret_source_item(
         project,
         source,
         index_source_file(filepath),
     )
-    return records
+    return interpretation.records
 end
 
 function Projects.collection_stats(

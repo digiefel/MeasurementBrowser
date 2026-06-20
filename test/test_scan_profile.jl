@@ -176,3 +176,77 @@ end
         end
     end
 end
+
+@testset "expanded source is read once for scan, stats, and cache" begin
+    mktempdir() do dir
+        path = joinpath(dir, "expanded.csv")
+        CSV.write(path, DataFrame(
+            part=repeat(1:100; inner=10),
+            x=collect(1.0:1000.0),
+            y=collect(1001.0:2000.0),
+        ))
+
+        read_count = Threads.Atomic{Int}(0)
+        project = MB.define_project("ExpandedSource")
+        MB.register_item!(
+            project,
+            :table;
+            detect=file -> endswith(file.filename, ".csv"),
+            read=function (file)
+                Threads.atomic_add!(read_count, 1)
+                return CSV.read(file.filepath, DataFrame)
+            end,
+            entries=function (_file, data)
+                items = MB.AbstractDataItem[]
+                sizehint!(items, 100)
+                for part in 1:100
+                    mask = data.part .== part
+                    push!(items, DataItem(
+                        kind=:table,
+                        collection=["expanded"],
+                        parameters=Dict{Symbol,Any}(:part => part),
+                        data=DataFrame(x=data.x[mask], y=data.y[mask]),
+                    ))
+                end
+                return items
+            end,
+            process=item -> DataItem(
+                item,
+                DataFrame(
+                    x=item.data.x,
+                    y=item.data.y,
+                    sum=item.data.x .+ item.data.y,
+                ),
+            ),
+            stats=item -> Dict{Symbol,Any}(
+                :rows => nrow(item.data),
+                :sum_max => maximum(item.data.sum),
+            ),
+        )
+
+        workspace = MB.open_workspace(project, test_source(project, dir))
+        try
+            deadline = time() + 10
+            while time() < deadline
+                MB.Workspace.poll_workspace!(workspace)
+                workspace.scan.state in (:done, :error) &&
+                    workspace.analysis.state in (:done, :error) && break
+                sleep(0.02)
+            end
+
+            @test workspace.scan.state == :done
+            @test workspace.analysis.state == :done
+            @test read_count[] == 1
+            records = workspace.index.hierarchy.all_items
+            @test length(records) == 100
+            @test all(record -> record.stats[:rows] == 10, records)
+
+            loaded = MB.Workspace.materialize_items(workspace, records)
+            @test length(loaded) == 100
+            @test all(item -> nrow(item.data) == 10, loaded)
+            @test read_count[] == 1
+        finally
+            MB.close_workspace!(workspace)
+        end
+    end
+end

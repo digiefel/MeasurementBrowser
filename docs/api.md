@@ -72,14 +72,16 @@ data items.
 |---|---|---|
 | `source_item_id(item)::String` | yes | stable within `source_id(source)` |
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
-| `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | interpret one unit into lightweight (data-less) logical items for indexing |
+| `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | read/interpret one unit into loaded logical items for processing, stats, and indexing |
 | `load_data_item(project, source, source_item_id, id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
-| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | invalidates records/payloads from this source item |
+| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | invalidates records and cached item data from this source item |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
 
-`data_items` enumerates and returns lightweight handles; `load_data_item` rebuilds one item with its
-payload attached. Both are getters (no bang). The package's built-in file-backed source item is
+`data_items` reads/interprets one source item and returns its logical data items. Their loaded data is
+processed, analyzed, and optionally cached before that source-item pass ends. `load_data_item`
+rebuilds one item later when neither memory nor cache can serve it. Both are getters (no bang). The
+package's built-in file-backed source item is
 `SourceFile` (below); a bare `SourceFile` has **no** universal `data_items` — the source decides what
 a file means.
 
@@ -95,11 +97,11 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 | `kind(item)::Symbol` | yes | coarse UI/plot key — *not* the source of semantic truth |
 | `collection(item)::Vector{String}` | yes | canonical hierarchy path |
 | `parameters(item)::Dict{Symbol,Any}` | yes | item parameters; entry callbacks provide local params, indexed/loaded `DataItem`s carry effective params |
-| `stats(item)::Dict{Symbol,Any}` | yes | computed values, filled lazily after indexing when needed |
-| `item_data(item)` | yes | loaded payload consumed by views/plots (`nothing` on a data-less handle) |
+| `stats(item)::Dict{Symbol,Any}` | yes | computed values filled during the source-item pass |
+| `item_data(item)` | yes | loaded data consumed by processing/views; internal index handles carry no data |
 | `process(item)` | no (→ `item`) | optional transform returning the item views receive |
-| `cacheable(item)::Bool` | no (→ `false`) | opt into persistent payload caching |
-| `fingerprint(item::AbstractDataItem)` | no (→ `nothing`) | invalidates this item's cached payload |
+| `cacheable(item)::Bool` | no (→ `false`) | opt into persistent item-data caching |
+| `fingerprint(item::AbstractDataItem)` | no (→ `nothing`) | invalidates this item's cached data |
 
 ### A complete low-level source
 
@@ -192,9 +194,9 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
 
 - **`entries(file, data)`** enumerates the items in one file, returning `Vector{<:AbstractDataItem}`
   — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). It attaches
-  the raw per-item payload as `item.data`; optional `process(item)` returns the item that stats and
-  views receive. `stats(item)` runs in workspace background analysis, after the tree is already
-  populated. The adapter derives each internal record from the returned item and the
+  the raw per-item data as `item.data`; optional `process(item)` returns the item that stats and views
+  receive. The source worker runs `process` and `stats` before releasing the file data, while records
+  are streamed to the workspace as each source item finishes. The adapter derives each internal record from the returned item and the
   `SourceFile`. When a recipe entry does not provide an id, the adapter mints one from the
   source-item path, kind, and `parameters`.
   **Project code never constructs or names the internal record.**

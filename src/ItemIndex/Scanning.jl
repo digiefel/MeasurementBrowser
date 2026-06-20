@@ -2,6 +2,18 @@
 source_analysis_failures(::Project, ::AbstractDataSource)::Vector{ItemFailure} = ItemFailure[]
 
 """
+One completed source-item pass.
+
+`records` are retained by the index. `loaded_items` are the processed items kept only until the scan
+collector has cached them; `nothing` marks an item whose processing failed.
+"""
+struct SourceItemInterpretation
+    records::Vector{ItemRecord}
+    loaded_items::Vector{Union{Nothing,AbstractDataItem}}
+    failures::Vector{ItemFailure}
+end
+
+"""
 Send one structured progress update when a callback is present.
 """
 function emit_progress(
@@ -42,15 +54,43 @@ function source_unchanged(
     return cached.source_item_fingerprints == fingerprints
 end
 
-"""Interpret one source item into index records."""
+"""Apply indexed parameters/stats to a package `DataItem`, preserving custom item subtypes."""
+function _effective_loaded_item(
+    record::ItemRecord,
+    item::AbstractDataItem,
+)::AbstractDataItem
+    item isa DataItem || return item
+    return DataItem(
+        item.id,
+        item.label,
+        item.kind,
+        item.collection,
+        record.parameters,
+        record.stats,
+        item.data,
+    )
+end
+
+"""
+Interpret, process, and analyze every data item produced by one source item.
+
+The source item is read only by `data_items`. All per-item work completes while those loaded values
+are still alive; the returned items exist only long enough for the scan collector to cache them.
+"""
 function interpret_source_item(
     project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
-)::Vector{ItemRecord}
+)::SourceItemInterpretation
     handles = data_items(project, source, source_item)::Vector{<:AbstractDataItem}
-    records = ItemRecord[
-        ItemRecord(
+    records = ItemRecord[]
+    loaded_items = Union{Nothing,AbstractDataItem}[]
+    failures = ItemFailure[]
+    sizehint!(records, length(handles))
+    sizehint!(loaded_items, length(handles))
+
+    for handle in handles
+        record = ItemRecord(
             ItemRecord(handle; source_item);
             parameters=_effective_parameters(
                 source,
@@ -58,9 +98,36 @@ function interpret_source_item(
                 parameters(handle),
             ),
         )
-        for handle in handles
-    ]
-    return records
+        push!(records, record)
+
+        loaded = try
+            process(project, source, handle)
+        catch error
+            is_job_cancelled(error) && rethrow()
+            push!(failures, ItemFailure(
+                record.source_item_id,
+                record.id,
+                "process: " * sprint(showerror, error),
+            ))
+            push!(loaded_items, nothing)
+            continue
+        end
+        loaded = _effective_loaded_item(record, loaded)
+        push!(loaded_items, loaded)
+
+        try
+            computed = compute_item_stats(project, source, loaded)
+            merge!(record.stats, metadata_dict(computed))
+        catch error
+            is_job_cancelled(error) && rethrow()
+            push!(failures, ItemFailure(
+                record.source_item_id,
+                record.id,
+                "stats: " * sprint(showerror, error),
+            ))
+        end
+    end
+    return SourceItemInterpretation(records, loaded_items, failures)
 end
 
 """
@@ -71,6 +138,7 @@ function interpret_source_items(
     source::AbstractDataSource,
     source_items::Vector{<:AbstractDataSourceItem};
     on_items::Union{Nothing,Function}=nothing,
+    on_source_item::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
 )::NamedTuple
     processed_count::Int = 0
@@ -89,21 +157,21 @@ function interpret_source_items(
         records=ItemRecord[],
     )
 
+    worker_count = min(max(1, Base.Threads.nthreads()), length(source_items))
     work = Channel{Tuple{Int,eltype(source_items)}}(length(source_items))
-    results = Channel{NamedTuple}(length(source_items))
+    results = Channel{NamedTuple}(worker_count)
     for (index, source_item) in pairs(source_items)
         put!(work, (index, source_item))
     end
     close(work)
 
-    worker_count = min(max(1, Base.Threads.nthreads()), length(source_items))
     received = falses(length(source_items))
     @sync begin
         for _ in 1:worker_count
             Base.Threads.@spawn with_cancel(cancel_requested) do
                 for (index, source_item) in work
                     source_item_id_value = source_item_id(source_item)
-                    records = try
+                    interpretation = try
                         check_cancel()
                         interpreted = interpret_source_item(project, source, source_item)
                         check_cancel()
@@ -114,7 +182,11 @@ function interpret_source_items(
                                 kind=:cancelled,
                                 index,
                                 source_item_id=source_item_id_value,
-                                records=ItemRecord[],
+                                interpretation=SourceItemInterpretation(
+                                    ItemRecord[],
+                                    Union{Nothing,AbstractDataItem}[],
+                                    ItemFailure[],
+                                ),
                                 failure=nothing,
                             ))
                             return nothing
@@ -130,7 +202,11 @@ function interpret_source_items(
                             kind=:failure,
                             index,
                             source_item_id=source_item_id_value,
-                            records=ItemRecord[],
+                            interpretation=SourceItemInterpretation(
+                                ItemRecord[],
+                                Union{Nothing,AbstractDataItem}[],
+                                ItemFailure[],
+                            ),
                             failure=ItemFailure(
                                 source_item_id_value,
                                 "",
@@ -143,7 +219,7 @@ function interpret_source_items(
                         kind=:ok,
                         index,
                         source_item_id=source_item_id_value,
-                        records,
+                        interpretation,
                         failure=nothing,
                     ))
                 end
@@ -168,10 +244,14 @@ function interpret_source_items(
             )
             received[index] = true
             result.failure === nothing || push!(failures, result.failure)
-            records_by_position[index] = result.records
-            isempty(result.records) || on_items === nothing || on_items(result.records)
-            isempty(result.records) ? (skipped_count += 1) :
-                (item_count += length(result.records))
+            interpretation = result.interpretation
+            append!(failures, interpretation.failures)
+            records = interpretation.records
+            records_by_position[index] = records
+            isempty(records) || on_items === nothing || on_items(records)
+            isempty(records) || on_source_item === nothing || on_source_item(interpretation)
+            isempty(records) ? (skipped_count += 1) :
+                (item_count += length(records))
             processed_count += 1
             on_progress === nothing || on_progress((
                 total_source_items=length(source_items),
@@ -204,6 +284,7 @@ function scan_source(
     cached_source::Union{Nothing,SourceScan}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
     on_items::Union{Nothing,Function}=nothing,
+    on_source_item::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
     reset_scan_profile!(project)
@@ -253,6 +334,7 @@ function scan_source(
         source,
         discovered;
         on_items,
+        on_source_item,
         on_progress=progress -> emit_progress(
             on_progress;
             phase=:scanning,

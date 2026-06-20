@@ -128,9 +128,10 @@ cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
 Start one source scan that progressively populates the workspace index and cache.
 
 The scan first surfaces any already-cached index for an instant first view, then streams freshly
-interpreted source items into both the workspace and the DuckDB cache: each source item is written
-durably the moment it is interpreted, so progress survives an early exit. `rebuild=true` first wipes
-the cache and ignores the prior scan, forcing a full re-interpretation.
+interpreted source items into the workspace and a bounded cache-write batch. One cache writer commits
+up to one source item per worker at a time, so progress survives an early exit without paying one
+transaction per source item. `rebuild=true` first wipes the cache and ignores the prior scan, forcing
+a full re-interpretation.
 """
 function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
@@ -172,10 +173,27 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
                 index=cached,
             ))
 
-            # Make per-item writes loadable even if the scan is interrupted before finalizing.
+            # Make completed cache batches loadable even if the scan is interrupted before finalizing.
             write_scan_identity!(cachedb)
             wrote = Ref(false)
             written_ids = Set{String}()
+            record_batches = Vector{Vector{ItemRecord}}()
+            data_batches = Vector{Vector{Any}}()
+            cache_batch_size = max(1, Base.Threads.nthreads())
+
+            # The scan collector is the single cache writer. Batching one source item per worker
+            # keeps transactions cheap while the bounded worker-result queue limits resident data.
+            function flush_cache_batch!()::Nothing
+                isempty(record_batches) && return nothing
+                union!(
+                    written_ids,
+                    reconcile_source_items!(cachedb, record_batches, data_batches),
+                )
+                empty!(record_batches)
+                empty!(data_batches)
+                return nothing
+            end
+
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
                     workspace.project,
@@ -189,12 +207,22 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
                     on_items=(items) -> begin
                         records = ItemRecord[ItemRecord(item) for item in items]
                         put!(events, (kind=:items, job_id=scan_id, items=records))
+                    end,
+                    on_source_item=(interpretation::SourceItemInterpretation) -> begin
+                        records = interpretation.records
+                        data = Any[
+                            item !== nothing && cacheable(item) ? item : nothing
+                            for item in interpretation.loaded_items
+                        ]
                         wrote[] || put!(events, (kind=:cache_writing, job_id=scan_id))
                         wrote[] = true
-                        push!(written_ids, reconcile_source_item!(cachedb, records))
+                        push!(record_batches, records)
+                        push!(data_batches, data)
+                        length(record_batches) >= cache_batch_size && flush_cache_batch!()
                     end,
                 )
             end
+            flush_cache_batch!()
             cache_hit = cached !== nothing && source === cached.source
             cache_hit || finalize_scan!(cachedb, source, written_ids)
             put!(events, (
@@ -298,29 +326,12 @@ function _effective_loaded_item(record::ItemRecord, item::AbstractDataItem)::Abs
         item.kind,
         item.collection,
         record.parameters,
-        item.stats,
+        record.stats,
         item.data,
     )
 end
 
-function _load_for_analysis(
-    workspace::Workspace,
-    record::ItemRecord,
-    loaded::Dict{String,AbstractDataItem},
-)::AbstractDataItem
-    cached = get(loaded, record.id, nothing)
-    cached !== nothing && return cached
-    item = @timeit_debug TIMER "analysis/load_item" load_data_item(
-        workspace.project, workspace.source, record.source_item_id, record.id)
-    item = _effective_loaded_item(record, item)
-    loaded[record.id] = item
-    return item
-end
-
-"""How many item stats one analysis run accumulates before flushing them to the cache."""
-const STATS_PERSIST_BATCH = 64
-
-"""Start background per-item and collection stats for the completed source scan."""
+"""Start background collection stats for the completed source scan."""
 function start_analysis!(workspace::Workspace)::Nothing
     analysis_work_running(workspace) && cancel_analysis!(workspace)
     source = workspace.index.source
@@ -329,7 +340,7 @@ function start_analysis!(workspace::Workspace)::Nothing
     job = workspace.analysis
     job.id += 1
     analysis_id = job.id
-    total = length(source.hierarchy.all_items)
+    total = count(node -> !isempty(node.items), values(source.hierarchy.index))
     job.state = :analyzing
     job.progress = WorkspaceProgress(phase=:analyzing, total_source_items=total)
     job.error = ""
@@ -341,61 +352,18 @@ function start_analysis!(workspace::Workspace)::Nothing
     cachedb = workspace.cache.db
     task = Base.Threads.@spawn begin
         try
-            item_stats = Dict{String,Dict{Symbol,Any}}()
             collection_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
-            no_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
             no_item_stats = Dict{String,Dict{Symbol,Any}}()
-            pending_stats = Dict{String,Dict{Symbol,Any}}()
             failures = Dict{String,String}()
-            loaded = Dict{String,AbstractDataItem}()
             processed = 0
 
-            # Flush computed stats to the cache in batches: one DuckDB transaction per item would
-            # dominate analysis time, while a single end write would lose everything on an early
-            # exit. Batching keeps writes cheap and progress durable within a batch.
-            flush_pending_stats!() = begin
-                isempty(pending_stats) || persist_stats!(cachedb, pending_stats, no_node_stats)
-                empty!(pending_stats)
-            end
-
             with_cancel(() -> cancel_token[]) do
-                for record in source.hierarchy.all_items
-                    check_cancel()
-                    try
-                        item = _load_for_analysis(workspace, record, loaded)
-                        computed = @timeit_debug TIMER "analysis/item_stats" compute_item_stats(
-                            workspace.project, workspace.source, item)
-                        if !isempty(computed)
-                            item_stats[record.id] = computed
-                            pending_stats[record.id] = computed
-                            length(pending_stats) >= STATS_PERSIST_BATCH && flush_pending_stats!()
-                        end
-                    catch error
-                        is_job_cancelled(error) && rethrow()
-                        failures[record.id] = "stats: " * sprint(showerror, error)
-                    end
-                    processed += 1
-                    put!(events, (
-                        kind=:progress,
-                        job_id=analysis_id,
-                        progress=(
-                            phase=:analyzing,
-                            total_source_items=total,
-                            processed_source_items=processed,
-                            loaded_items=processed,
-                            skipped_source_items=0,
-                            current_source_item=record.source_item_id,
-                        ),
-                    ))
-                end
-                flush_pending_stats!()
-
                 for (path, node) in source.hierarchy.index
                     check_cancel()
                     isempty(node.items) && continue
                     try
                         items = AbstractDataItem[
-                            _load_for_analysis(workspace, record, loaded)
+                            DataItem(record, nothing)
                             for record in node.items
                         ]
                         computed = collection_stats(
@@ -410,34 +378,29 @@ function start_analysis!(workspace::Workspace)::Nothing
                         failures[first(node.items).id] =
                             "collection_stats: " * sprint(showerror, error)
                     end
+                    processed += 1
+                    put!(events, (
+                        kind=:progress,
+                        job_id=analysis_id,
+                        progress=(
+                            phase=:analyzing,
+                            total_source_items=total,
+                            processed_source_items=processed,
+                            loaded_items=length(node.items),
+                            skipped_source_items=0,
+                            current_source_item=first(node.items).source_item_id,
+                        ),
+                    ))
                 end
                 isempty(collection_node_stats) ||
                     persist_stats!(cachedb, no_item_stats, collection_node_stats)
-            end
-
-            # Analysis has already read every payload from origin; persist the cacheable ones so
-            # later opens (a cache hit skips re-analysis) and plot reads come from the cache, not the
-            # origin. A cache write must never fail analysis, so failures here are only logged.
-            try
-                payload_records = ItemRecord[]
-                payload_items = Any[]
-                for record in source.hierarchy.all_items
-                    item = get(loaded, record.id, nothing)
-                    (item === nothing || !cacheable(item)) && continue
-                    push!(payload_records, record)
-                    push!(payload_items, item)
-                end
-                write_item_payloads!(cachedb, payload_records, payload_items)
-            catch error
-                is_job_cancelled(error) && rethrow()
-                @warn("Failed to persist analysis payloads to the cache", exception=error)
             end
 
             put!(events, (
                 kind=:analysis,
                 job_id=analysis_id,
                 source_id=source.source_id,
-                item_stats,
+                item_stats=Dict{String,Dict{Symbol,Any}}(),
                 collection_stats=collection_node_stats,
                 failures,
             ))

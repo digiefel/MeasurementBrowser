@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 # Headless benchmark of the core pipeline: read -> process -> item-analyze -> cache write/read.
 #
-# Run:  julia --project=bench --threads=auto bench/cache_pipeline.jl [n_files] [rows_per_file]
+# Run:  julia --project=bench --threads=auto bench/cache_pipeline.jl [n_files] [rows_per_file] [workspace]
 #
 # It reuses a synthetic dataset under bench/data, then reports:
 #   1. micro-benchmarks that settle "is serialization the bottleneck?" (parse vs serialize vs
@@ -20,6 +20,7 @@ import DuckDB, DBInterface
 
 const N_FILES = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 500
 const ROWS = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1000
+const WORKSPACE_ONLY = length(ARGS) >= 3 && ARGS[3] == "workspace"
 const EXPANDED_SOURCE_ITEMS = max(1, N_FILES ÷ 10)
 const ITEMS_PER_EXPANDED_SOURCE = 100
 const BENCH_DIR = @__DIR__
@@ -349,17 +350,89 @@ function expansion_timings(dir::AbstractString)
     sayf("  read-once source pass:      %s  alloc=%s  gc=%s  source reads=%d\n",
         ms(source_pass_timing.time), mib(source_pass_timing.bytes), ms(source_pass_timing.gctime),
         source_pass_reads)
-    sayf("  avoidable analysis cost:    %.2fx time, %.2fx allocation\n",
+    sayf("  legacy two-pass total:      %s  alloc=%s  source reads=%d\n",
+        ms(scan_timing.time + per_item_timing.time),
+        mib(scan_timing.bytes + per_item_timing.bytes),
+        scan_reads + per_item_reads)
+    sayf("  read-once pipeline gain:    %.2fx time, %.2fx allocation\n",
+        (scan_timing.time + per_item_timing.time) / scan_timing.time,
+        (scan_timing.bytes + per_item_timing.bytes) / scan_timing.bytes)
+    sayf("  isolated analysis gain:     %.2fx time, %.2fx allocation\n",
         per_item_timing.time / source_pass_timing.time,
         per_item_timing.bytes / source_pass_timing.bytes)
     return nothing
 end
 
 # --------------------------------------------------------------------------------------------------
-# 4. Engine per-region timings (TimerOutputs) over a representative cache exercise.
+# 4. Full workspace cold build: scan, stats, cache writes, then cache-only materialization.
+# --------------------------------------------------------------------------------------------------
+function workspace_cold_build(dir::AbstractString)
+    section("4. WORKSPACE COLD BUILD (expanded dataset, including DuckDB writes)")
+    project, read_count = expansion_project()
+    source = MB.DirectorySource(dir)
+    identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
+    MB.Cache._remove_cache_files(identity.cache_path)
+    workspace = MB.Workspace.Workspace(project, source)
+
+    try
+        Threads.atomic_xchg!(read_count, 0)
+        MB.Profiling.reset!()
+        started = time_ns()
+        MB.Workspace.scan_source!(workspace; rebuild=true)
+        deadline = time() + 120
+        while time() < deadline
+            MB.Workspace.poll_workspace!(workspace)
+            workspace.scan.state == :error &&
+                error("Workspace benchmark scan failed: $(workspace.scan.error)")
+            workspace.analysis.state == :error &&
+                error("Workspace benchmark analysis failed: $(workspace.analysis.error)")
+            workspace.scan.state == :done && workspace.analysis.state == :done && break
+            sleep(0.005)
+        end
+        workspace.scan.state == :done || error(
+            "Workspace benchmark scan did not finish within 120 seconds",
+        )
+        workspace.analysis.state == :done || error(
+            "Workspace benchmark analysis did not finish within 120 seconds",
+        )
+        build_seconds = (time_ns() - started) / 1e9
+        build_reads = read_count[]
+        records = workspace.index.hierarchy.all_items
+
+        materialize_started = time_ns()
+        loaded = MB.Workspace.materialize_items(workspace, records)
+        materialize_seconds = (time_ns() - materialize_started) / 1e9
+        materialize_reads = read_count[] - build_reads
+        cache_size = isfile(identity.cache_path) ? filesize(identity.cache_path) : 0
+
+        build_reads == N_FILES || error(
+            "Workspace build read $build_reads source items; expected exactly $N_FILES",
+        )
+        materialize_reads == 0 || error(
+            "Cache materialization performed $materialize_reads unexpected source reads",
+        )
+        length(loaded) == length(records) || error(
+            "Materialized $(length(loaded)) items; expected $(length(records))",
+        )
+
+        sayf("  cold build:                 %s  source reads=%d  data items=%d\n",
+            ms(build_seconds), build_reads, length(records))
+        sayf("  cache-only materialization: %s  source reads=%d\n",
+            ms(materialize_seconds), materialize_reads)
+        sayf("  DuckDB file size:           %s\n", mib(cache_size))
+        MB.Profiling.report(out())
+    finally
+        MB.close_workspace!(workspace)
+        MB.Cache._remove_cache_files(identity.cache_path)
+    end
+    return nothing
+end
+
+# --------------------------------------------------------------------------------------------------
+# 5. Engine per-region timings (TimerOutputs) over a representative cache exercise.
 # --------------------------------------------------------------------------------------------------
 function region_timings(project, source, records)
-    section("4. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
+    section("5. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
     identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
     MB.Cache._remove_cache_files(identity.cache_path)
     cachedb = MB.Cache.open_cache_db(identity)
@@ -385,11 +458,16 @@ function main(report_path::AbstractString)
     sayf("commit=%s\n", commit_label())
     sayf("results=%s\n", report_path)
     ensure_dataset(DATA_DIR; n_files=N_FILES, rows=ROWS)
+    if WORKSPACE_ONLY
+        workspace_cold_build(DATA_DIR)
+        return nothing
+    end
     project = bench_project()
     sample = joinpath(DATA_DIR, "meas_00001.csv")
     micro_benchmarks(sample)
     scan, source, records = macro_timings(project, DATA_DIR)
     expansion_timings(DATA_DIR)
+    workspace_cold_build(DATA_DIR)
     region_timings(project, source, records)
     return nothing
 end

@@ -1,30 +1,30 @@
 # Source Cache
 
-Scanning a source is inherently slow: the engine must enumerate every source item, interpret each one
-into data items, and then compute analysis values. The tree is known before analysis finishes. The
-cache stores the result of that work so the previous tree can appear immediately while a new scan
-checks the source.
+The cache makes a workspace useful before a current source scan finishes and prevents repeated
+source reads after data has already been interpreted. It is generated package data stored outside
+the source and is never exposed to project code.
 
-The source remains authoritative. The cache is generated package data, stored outside the source, and
-never exposed to source or project code.
+## Startup And Updates
 
-## Startup
+Opening a workspace loads the existing DuckDB index while discovering the current source items. A
+valid cached index can populate the previous hierarchy, parameters, stats, fingerprints, and failures
+immediately.
 
-Opening a workspace starts cache loading and source scanning together.
+Current source items are processed concurrently. One worker owns one source item until it has:
 
-Cache loading reads one compact index containing the previous `SourceScan`. It can populate the
-workspace index immediately with the previous hierarchy, parameters, stats, skipped-item count,
-fingerprints, and analysis failures.
+1. produced its logical data items,
+2. run `process` and item stats,
+3. returned the completed records and cacheable loaded items.
 
-The scan independently streams current items into the same workspace index and eventually produces
-the authoritative `SourceScan`. Workspace analysis then fills per-item and collection stats in the
-background. The engine updates the cache after analysis, when source items were added, changed,
-deleted, or produced a different analysis result.
+The scan collector publishes records immediately and commits up to one source item per worker in one
+DuckDB transaction. Its bounded result queue prevents completed loaded batches from accumulating for
+the whole source.
+After all source items finish, collection stats run from data-less items containing the completed
+parameters and item stats.
 
 ## Identity
 
-Cache identity is **source-based**, not root/project-based. Each source has one deterministic cache
-id derived from `source_id(source)`:
+Cache identity is source-based. The deterministic id is derived from `source_id(source)`:
 
 ```text
 <source-label>-<source-id-digest>
@@ -33,91 +33,47 @@ id derived from `source_id(source)`:
 Cache files live under:
 
 ```text
-DEPOT_PATH[1]/measurementbrowser/cache/<source-label>/<cache-id>.h5
+DEPOT_PATH[1]/measurementbrowser/cache/<source-label>/<cache-id>.duckdb
 ```
 
-Scan/index ownership is keyed by `source_id`. A cache is accepted only when the identity fields and
-the schema version match. For `DirectorySource`, `source_id` is the normalized root path.
+A cache is accepted only when its source identity and schema version match.
 
-## Fingerprints and what they invalidate
+## Invalidation
 
-| Fingerprint | Scope | Missing (`=== nothing`) means |
+| Fingerprint | Scope | Missing (`nothing`) means |
 |---|---|---|
-| `fingerprint(item::AbstractDataSourceItem)` | records + payloads from one source item | skip persistent payload caching for that item's data |
-| `fingerprint(item::AbstractDataItem)` | one item's payload | skip persistent payload caching for that item |
+| `fingerprint(source_item)` | records and cached item data produced by that source item | do not persist its item data |
+| `fingerprint(data_item)` | cached data for that logical item | use only source-item invalidation |
 
-A changed `source_item_fingerprint` invalidates only the records and payloads derived from that source
-item. Item payloads are keyed by the full tuple:
+Changing one source-item fingerprint deletes only the records and cached item data derived from that
+unit. Parameter-only changes update metadata without discarding still-valid item data.
 
-```text
-source_id + source_item_id + source_item_fingerprint + id + item_fingerprint
-```
+## DuckDB Contents
 
-This generalizes the previous file-fingerprint behavior: for a file-backed source the source-item
-fingerprint is the file's `stat` fingerprint, so changing or deleting one file invalidates exactly its
-payloads while a non-file or live source (no fingerprints) simply runs without a persistent cache.
-
-## Contents
-
-The HDF5 file contains:
-
-| Entry | Purpose |
+| Table | Purpose |
 |---|---|
-| `schema_version` attribute | Rejects old cache layouts before deserialization |
-| `/index` | One uncompressed serialized `ProjectCacheIndex` for fast startup |
-| `/items/<source-item>/<item>` | Lazily cached payloads returned by the source's data load |
+| `meta` | schema and source identity |
+| `source_items` | source-item fingerprints, locations, and errors |
+| `items` | data-less logical item records |
+| `metadata` | typed item/collection parameters and stats |
+| `payloads` | currently serialized cacheable loaded items, validated by fingerprints |
 
-`ProjectCacheIndex` contains the completed `SourceScan` and analysis errors grouped by source item.
+The `payloads` name is internal storage terminology. The public model is `item_data(item)` plus the
+existing `cacheable(item)` and `fingerprint(item)` hooks.
 
-Payloads are grouped by source item, so changing or deleting one unit invalidates its payload group
-regardless of how many logical items it contains.
+## Reads And Concurrency
 
-## Annotations
+Item materialization checks, in order:
 
-> **TODO (source-agnostic storage, deferred):** annotations (`tags.txt`, `notes.txt`, `layout.txt`)
-> are currently stored **next to the cache**, keyed by `source_id`, rather than through a source-owned
-> storage capability. This gives non-filesystem sources somewhere to persist user-authored state. The
-> intended fix is to make annotation storage a source capability, so file-backed sources can expose
-> hand-editable source-root files while other sources can persist elsewhere.
+1. the workspace's bounded in-memory item cache,
+2. valid cached item data in DuckDB,
+3. `load_data_item` from the source.
 
-`DirectorySource` owns `metadata.txt` collection parameter input separately from the HDF5 cache; see
-[storage.md](storage.md).
+One persistent writer connection serializes mutations. A separate persistent reader serves
+interactive item-data reads from committed snapshots. Item-data reads are requested in one joined
+query; batch writes use one transaction.
 
-## Freshness
+## Status
 
-A cached source item matches the source only when its `source_item_fingerprint` and effective
-collection/item parameter state match (for a file fingerprint, normalized path + size + mtime). The
-final scan comparison reports:
-
-| Count | Meaning |
-|---|---|
-| fresh | cached source item matches the current scan and has no analysis error |
-| stale | fingerprint, effective parameters, or analysis result changed |
-| new | present only in the current scan |
-| deleted | present only in the cache |
-| errors | current source items whose analysis failed |
-
-Analysis failure does not remove items from the tree. It is stored as a valid cache difference so one
-failed source item cannot invalidate the rest.
-
-## Updates
-
-A normal update uses the completed `SourceScan` already owned by the workspace. It never starts
-another scan. It replaces the compact index, preserves payloads for unchanged source-item
-fingerprints, and deletes payload groups for changed, deleted, or newly failing ones. Parameter-only
-changes update the index without discarding payloads. A rebuild replaces the whole HDF5 file. Index
-writing does not load item data; payloads are cached only when a caller requests them and both
-source-item and item fingerprints are available.
-
-## Item data
-
-Item materialization loads payloads through the source's `load_data_item`. The workspace keeps
-loaded items in memory and the cache layer can persist payloads with sufficient source-item and item
-fingerprints.
-
-Before reading or writing a payload, the engine checks the current fingerprints against the in-memory
-cache index; stale payloads are never returned. A source item or item with a `nothing` fingerprint is
-loaded fresh every time and never persisted. The loaded cache index belongs to its workspace — there
-is no process-wide active cache. All HDF5 access uses one process-wide lock, so background cache
-updates cannot overlap plot reads or lazy payload writes.
-</content>
+The current status model compares cached and current source items as fresh, stale, new, deleted, or
+failed. Failures remain attached to their source/item and do not invalidate unrelated data.

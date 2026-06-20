@@ -683,15 +683,15 @@ function _delete_source_item_rows!(
     return nothing
 end
 
-"""
-Durably write one source item's records as the scan produces them.
-
-All records belong to the same source item. Existing rows for that source item are replaced in a
-single transaction; its payloads are dropped only when the source-item fingerprint changed, so
-parameter-only edits keep cached payloads. Returns the source-item id that was written.
-"""
-function reconcile_source_item!(cachedb::CacheDB, records::Vector{ItemRecord})::String
+"""Write one source-item batch on an already-open transaction."""
+function _reconcile_source_item!(
+    connection,
+    records::Vector{ItemRecord};
+    data::Union{Nothing,AbstractVector}=nothing,
+)::String
     isempty(records) && throw(ArgumentError("reconcile_source_item! needs at least one record"))
+    data === nothing || length(records) == length(data) ||
+        throw(DimensionMismatch("records and data must have equal lengths"))
     source_item_id = first(records).source_item_id
     all(record -> record.source_item_id == source_item_id, records) ||
         throw(ArgumentError("reconcile_source_item! records must share one source item"))
@@ -700,48 +700,89 @@ function reconcile_source_item!(cachedb::CacheDB, records::Vector{ItemRecord})::
     path = first(records).source_item_path
     timestamp = first(records).source_item_timestamp
 
-    @timeit_debug TIMER "cache/reconcile" with_writer(cachedb) do connection
+    previous_hash = _stored_fingerprint_hash(connection, source_item_id)
+    fingerprint_changed = previous_hash === missing || previous_hash != new_hash
+    _delete_source_item_rows!(
+        connection, source_item_id; drop_payloads=fingerprint_changed)
+
+    DBInterface.execute(
+        DBInterface.prepare(connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)"),
+        (
+            source_item_id,
+            fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
+            new_hash,
+            path,
+            timestamp,
+            nothing,
+        ))
+
+    item_stmt = DBInterface.prepare(connection, "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)")
+    metadata_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
+    for record in records
+        DBInterface.execute(item_stmt, (
+            record.id,
+            record.source_item_id,
+            record.item_label,
+            String(record.kind),
+            record.collection,
+            record.item_fingerprint === nothing ? nothing :
+                _serialize_bytes(record.item_fingerprint),
+        ))
+        _insert_metadata!(metadata_stmt, SCOPE_ITEM_PARAMETERS, record.id, record.parameters)
+        _insert_metadata!(metadata_stmt, SCOPE_ITEM_STATS, record.id, record.stats)
+    end
+    data === nothing || _write_payloads!(connection, records, data)
+    return source_item_id
+end
+
+"""
+Durably write one source item's records and optional loaded item data.
+
+Existing rows for that source item are replaced in one transaction. When `data` is supplied it must
+align with `records`; `nothing` entries are skipped.
+"""
+function reconcile_source_item!(
+    cachedb::CacheDB,
+    records::Vector{ItemRecord};
+    data::Union{Nothing,AbstractVector}=nothing,
+)::String
+    return only(reconcile_source_items!(
+        cachedb,
+        [records],
+        [data === nothing ? Any[nothing for _ in records] : collect(Any, data)],
+    ))
+end
+
+"""
+Durably write several completed source-item batches in one transaction.
+
+The outer vectors and every records/data pair must align. Returns the source-item ids written in the
+same order.
+"""
+function reconcile_source_items!(
+    cachedb::CacheDB,
+    record_batches::Vector{Vector{ItemRecord}},
+    data_batches::Vector{Vector{Any}},
+)::Vector{String}
+    length(record_batches) == length(data_batches) ||
+        throw(DimensionMismatch("record_batches and data_batches must have equal lengths"))
+    isempty(record_batches) && return String[]
+
+    return @timeit_debug TIMER "cache/reconcile" with_writer(cachedb) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
-            previous_hash = _stored_fingerprint_hash(connection, source_item_id)
-            fingerprint_changed = previous_hash === missing || previous_hash != new_hash
-            _delete_source_item_rows!(
-                connection, source_item_id; drop_payloads=fingerprint_changed)
-
-            DBInterface.execute(
-                DBInterface.prepare(connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)"),
-                (
-                    source_item_id,
-                    fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
-                    new_hash,
-                    path,
-                    timestamp,
-                    nothing,
-                ))
-
-            item_stmt = DBInterface.prepare(connection, "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)")
-            metadata_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
-            for record in records
-                DBInterface.execute(item_stmt, (
-                    record.id,
-                    record.source_item_id,
-                    record.item_label,
-                    String(record.kind),
-                    record.collection,
-                    record.item_fingerprint === nothing ? nothing :
-                        _serialize_bytes(record.item_fingerprint),
-                ))
-                _insert_metadata!(metadata_stmt, SCOPE_ITEM_PARAMETERS, record.id, record.parameters)
-                _insert_metadata!(metadata_stmt, SCOPE_ITEM_STATS, record.id, record.stats)
+            written = String[]
+            sizehint!(written, length(record_batches))
+            for (records, data) in zip(record_batches, data_batches)
+                push!(written, _reconcile_source_item!(connection, records; data))
             end
-
             DBInterface.execute(connection, "COMMIT")
+            written
         catch
             DBInterface.execute(connection, "ROLLBACK")
             rethrow()
         end
     end
-    return source_item_id
 end
 
 """

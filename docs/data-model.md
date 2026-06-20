@@ -28,7 +28,9 @@ Metadata and data live in two forms, bridged by the engine via the `AbstractData
 - **`ItemRecord`** — the **internal**, data-less metadata record the hierarchy, scan, and cache store.
   Source and project code never construct or name it.
 - **`AbstractDataItem`** instances — what callbacks and views see: the package's `DataItem` or a
-  source's own subtype. They carry `item.data`, materialized only for the viewed selection.
+  source's own subtype. During a source-item pass they temporarily carry `item.data` through
+  processing, item stats, and cache writing; later selections materialize them from memory, cache,
+  or the source.
 
 ```julia
 abstract type AbstractDataItem end   # contract: id, item_label, kind, collection, parameters,
@@ -56,8 +58,8 @@ struct ItemRecord                    # internal metadata record (never seen by s
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
     parameters::Dict{Symbol,Any}     # effective item parameters: collection + local item params
-    stats::Dict{Symbol,Any}          # values filled by background analysis
-    item_fingerprint::Any            # nothing → payload not persistently cacheable
+    stats::Dict{Symbol,Any}          # values computed during the source-item pass
+    item_fingerprint::Any            # nothing → item data not persistently cacheable
 end
 ```
 
@@ -141,8 +143,9 @@ only parameters. The on-disk format is documented in [storage.md](storage.md).
 ## Collection stats
 
 Cross-item stats over one collection node are computed by the
-`collection_stats(project, source, collection, items)` hook after the hierarchy is built, in the
-workspace's background analysis job, and stored on the node's `stats` dict. The high-level
+`collection_stats(project, source, collection, items)` hook after the hierarchy is built from
+data-less `DataItem` handles containing the completed parameters and item stats, and stored on the
+node's `stats` dict. The high-level
 `register_collection_stat!` is the callback form of the same hook. This is distinct from per-item
 `stats`: item stats describe one item; node stats describe a group.
 
@@ -151,6 +154,9 @@ workspace's background analysis job, and stored on the node's `stats` dict. The 
 A single source item may yield several data items when `data_items` returns more than one. They share
 a source-item identity but must have distinct `id` values within the source. The recipe API mints
 missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
+
+The source item is read once for the expansion. Processing and item stats for every child complete
+before the worker releases the loaded source data.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
 into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number
