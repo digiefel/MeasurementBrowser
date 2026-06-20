@@ -3,15 +3,23 @@ module Workspace
 using DataFrames: DataFrame
 
 import ..Cache:
+    CacheDB,
     ProjectCacheError,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
-    cache_status,
-    load_project_cache,
+    clear_cache_index!,
+    close_cache_db!,
+    finalize_scan!,
+    load_cache_index,
+    open_cache_db,
+    persist_stats!,
     project_cache_id,
     project_cache_identity,
-    write_project_cache!
+    read_item_payloads,
+    reconcile_source_item!,
+    write_item_payloads!,
+    write_scan_identity!
 import ..ItemIndex:
     DataItem,
     Hierarchy,
@@ -22,6 +30,7 @@ import ..ItemIndex:
     check_cancel,
     insert_item!,
     is_job_cancelled,
+    metadata_dict,
     scan_source,
     with_cancel
 import ..Projects:
@@ -31,6 +40,7 @@ import ..Projects:
     close_source!,
     collection_stats,
     compute_item_stats,
+    cacheable,
     id,
     item_data,
     load_data_item,
@@ -103,9 +113,57 @@ Loaded cache state for one workspace.
 """
 mutable struct WorkspaceCache
     identity::ProjectCacheIdentity
+    db::CacheDB
     index::Union{Nothing,ProjectCacheIndex}
     status::Union{Nothing,ProjectCacheStatus}
     operation::Symbol
+end
+
+"""How many materialized items one workspace keeps resident before evicting the oldest."""
+const DEFAULT_ITEM_CACHE_CAPACITY = 256
+
+"""
+Bounded least-recently-used cache of materialized items, keyed by item id.
+
+Each entry stores the `(source_item_fingerprint, item_fingerprint)` it was loaded at, so a stale entry
+is rejected on read. Eviction is cheap: an evicted item is re-materialized from the DuckDB payload
+cache without re-reading the origin.
+"""
+mutable struct ItemCache
+    capacity::Int
+    entries::Dict{String,Tuple{Any,Any}}
+    order::Vector{String}
+end
+
+ItemCache(capacity::Integer=DEFAULT_ITEM_CACHE_CAPACITY)::ItemCache =
+    ItemCache(Int(capacity), Dict{String,Tuple{Any,Any}}(), String[])
+
+"""Mark `id` most-recently-used."""
+function _touch_item!(cache::ItemCache, id::String)::Nothing
+    index = findfirst(==(id), cache.order)
+    index === nothing || deleteat!(cache.order, index)
+    push!(cache.order, id)
+    return nothing
+end
+
+"""Return the cached `(fingerprint, item)` for `id`, marking it used, or `default` when absent."""
+function lookup_item(cache::ItemCache, id::String, default)
+    entry = get(cache.entries, id, nothing)
+    entry === nothing && return default
+    _touch_item!(cache, id)
+    return entry
+end
+
+"""Insert or refresh one cached item, evicting the least-recently-used entries past capacity."""
+function cache_item!(cache::ItemCache, id::String, fingerprint, item)
+    if !haskey(cache.entries, id)
+        while length(cache.order) >= cache.capacity && !isempty(cache.order)
+            delete!(cache.entries, popfirst!(cache.order))
+        end
+    end
+    cache.entries[id] = (fingerprint, item)
+    _touch_item!(cache, id)
+    return item
 end
 
 """
@@ -120,7 +178,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     scan::WorkspaceJob
     analysis::WorkspaceJob
     cache_job::WorkspaceJob
-    loaded_items::Dict{String,Tuple{Any,Any}}
+    loaded_items::ItemCache
     background_tasks::Vector{Task}
     closed::Bool
 end
@@ -134,6 +192,7 @@ function Workspace(
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_cache_id(source), source)
+    cache_db = open_cache_db(identity)
     return Workspace(
         project,
         source,
@@ -145,11 +204,11 @@ function Workspace(
             Dict{String,String}(),
         ),
         WorkspaceSelection(),
-        WorkspaceCache(identity, nothing, nothing, :load),
+        WorkspaceCache(identity, cache_db, nothing, nothing, :load),
         WorkspaceJob(),
         WorkspaceJob(),
         WorkspaceJob(),
-        Dict{String,Tuple{Any,Any}}(),
+        ItemCache(),
         Task[],
         false,
     )

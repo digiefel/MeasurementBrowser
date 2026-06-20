@@ -30,9 +30,9 @@ using ..Workspace:
     cancel_cache!,
     cancel_scan!,
     poll_workspace!,
+    rebuild_cache!,
     scan_source!,
-    source_scan_running,
-    update_cache!
+    source_scan_running
 
 """Describe the current cache operation for toolbar and progress rendering."""
 function _cache_activity_model(state::BrowserState)::NamedTuple
@@ -52,7 +52,7 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
             @sprintf("Loaded %d items", loaded)
         return (
             title="Cache: Loading",
-            detail="Reading cached items from the HDF5 file.",
+            detail="Reading cached items from the cache.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Reload",
@@ -71,8 +71,8 @@ function _cache_activity_model(state::BrowserState)::NamedTuple
         return (
             title,
             detail=phase == :cache_finalize ?
-                "Finalizing the HDF5 cache." :
-                "Writing source items into the HDF5 cache.",
+                "Finalizing the cache." :
+                "Writing source items into the cache.",
             progress=progress_text,
             fraction,
             cancel_label="Cancel Cache Build",
@@ -203,14 +203,14 @@ function _cache_toolbar_model(state::BrowserState)::NamedTuple
         return (
             label="Cache: Loading",
             color=(0.18, 0.42, 0.78, 1.0),
-            detail="Reading cached items from the HDF5 file.",
+            detail="Reading cached items from the cache.",
         )
     elseif cache_state == :missing
         message = workspace.cache_job.error
         return (
             label="Cache: Missing",
             color=(0.82, 0.48, 0.12, 1.0),
-            detail=isempty(message) ? "No HDF5 cache has been built for this project." : message,
+            detail=isempty(message) ? "No cache has been built for this project yet." : message,
         )
     elseif cache_state == :error
         return (
@@ -613,14 +613,6 @@ function _render_cache_controls!(
 
     ig.Separator()
     has_identity = identity isa ProjectCacheIdentity
-    can_update = has_identity &&
-        status isa ProjectCacheStatus &&
-        workspace.index.source isa SourceScan &&
-        cache_state != :missing &&
-        cache_state != :error &&
-        (status.stale_source_items > 0 ||
-         status.new_source_items > 0 ||
-         status.deleted_source_items > 0)
     can_build = has_identity &&
         workspace.index.source isa SourceScan &&
         cache_state != :error
@@ -638,18 +630,12 @@ function _render_cache_controls!(
     end
     !can_scan && ig.EndDisabled()
 
-    (!can_update || running) && ig.BeginDisabled()
-    if ig.Button("Update Cache", (-1, 0))
-        update_cache!(workspace)
-    end
-    (!can_update || running) && ig.EndDisabled()
-
-    (!can_build || running) && ig.BeginDisabled()
+    (!can_build || running || scan_running) && ig.BeginDisabled()
     build_label = cache_state == :missing ? "Build Cache" : "Rebuild Cache"
     if ig.Button(build_label, (-1, 0))
-        update_cache!(workspace; rebuild=true)
+        rebuild_cache!(workspace)
     end
-    (!can_build || running) && ig.EndDisabled()
+    (!can_build || running || scan_running) && ig.EndDisabled()
 
     if running
         if ig.Button(activity.cancel_label, (-1, 0))

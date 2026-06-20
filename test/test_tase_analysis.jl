@@ -92,14 +92,18 @@ end
 
     @testset "plot data api" begin
         workspace = MB.Workspace.Workspace(project, MB.DirectorySource(dirname(fixture1)))
-        data = read_item_data(workspace, items)
-        @test length(data) == 2
-        @test all(nrow(df) == 3 for df in data)
-        @test all(names(df) == ["i", "v"] for df in data)
+        try
+            data = read_item_data(workspace, items)
+            @test length(data) == 2
+            @test all(nrow(df) == 3 for df in data)
+            @test all(names(df) == ["i", "v"] for df in data)
 
-        plot_kind = MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
-        @test plot_kind === MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
-        figure = setup_plot(workspace, plot_kind, items)
-        @test plot_data!(workspace, plot_kind, items, figure) === nothing
+            plot_kind = MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+            @test plot_kind === MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+            figure = setup_plot(workspace, plot_kind, items)
+            @test plot_data!(workspace, plot_kind, items, figure) === nothing
+        finally
+            MB.Workspace.close_workspace!(workspace)
+        end
     end
 end

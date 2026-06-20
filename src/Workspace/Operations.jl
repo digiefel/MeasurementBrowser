@@ -3,7 +3,6 @@ Start cache loading and source scanning for one new workspace.
 """
 function open_workspace(project::Project, source::AbstractDataSource)::Workspace
     workspace = Workspace(project, source)
-    load_cache!(workspace)
     scan_source!(workspace)
     return workspace
 end
@@ -19,6 +18,7 @@ function close_workspace!(workspace::Workspace)::Nothing
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
+    close_cache_db!(workspace.cache.db)
     close_source!(workspace.source)
     workspace.closed = true
     return nothing
@@ -116,21 +116,37 @@ end
 
 cancel_scan!(workspace::Workspace)::Nothing = (cancel_job!(workspace.scan); nothing)
 cancel_analysis!(workspace::Workspace)::Nothing = (cancel_job!(workspace.analysis); nothing)
-cancel_cache!(workspace::Workspace)::Nothing = (cancel_job!(workspace.cache_job); nothing)
 
 """
-Start one source scan that progressively populates the workspace index.
+Cancel in-flight cache work.
+
+Cache writes are now produced by the source scan itself, so cancelling cache work cancels the scan.
 """
-function scan_source!(workspace::Workspace)::Nothing
+cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
+
+"""
+Start one source scan that progressively populates the workspace index and cache.
+
+The scan first surfaces any already-cached index for an instant first view, then streams freshly
+interpreted source items into both the workspace and the DuckDB cache: each source item is written
+durably the moment it is interpreted, so progress survives an early exit. `rebuild=true` first wipes
+the cache and ignores the prior scan, forcing a full re-interpretation.
+"""
+function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
     workspace.closed && error("The workspace is closed")
+    analysis_work_running(workspace) && cancel_analysis!(workspace)
 
+    cachedb = workspace.cache.db
     job = workspace.scan
     job.id += 1
     scan_id = job.id
     job.state = :discovering
     job.progress = WorkspaceProgress()
     job.error = ""
+    workspace.cache_job.state = :loading
+    workspace.cache_job.error = ""
+    workspace.cache.operation = rebuild ? :rebuild : :update
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
     job.events = events
@@ -138,11 +154,28 @@ function scan_source!(workspace::Workspace)::Nothing
 
     task = Base.Threads.@spawn begin
         try
-            cached = try
-                load_project_cache(workspace.cache.identity)
-            catch
+            rebuild && clear_cache_index!(cachedb)
+            cached = if rebuild
                 nothing
+            else
+                try
+                    load_cache_index(cachedb)
+                catch error
+                    error isa ProjectCacheError || rethrow()
+                    nothing
+                end
             end
+            put!(events, (
+                kind=:cache_state,
+                job_id=scan_id,
+                state=cached === nothing ? :missing : :ready,
+                index=cached,
+            ))
+
+            # Make per-item writes loadable even if the scan is interrupted before finalizing.
+            write_scan_identity!(cachedb)
+            wrote = Ref(false)
+            written_ids = Set{String}()
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
                     workspace.project,
@@ -153,15 +186,24 @@ function scan_source!(workspace::Workspace)::Nothing
                         job_id=scan_id,
                         progress,
                     )),
-                    on_items=(items) -> put!(events, (
-                        kind=:items,
-                        job_id=scan_id,
-                        items=[ItemRecord(item) for item in items],
-                    )),
+                    on_items=(items) -> begin
+                        records = ItemRecord[ItemRecord(item) for item in items]
+                        put!(events, (kind=:items, job_id=scan_id, items=records))
+                        wrote[] || put!(events, (kind=:cache_writing, job_id=scan_id))
+                        wrote[] = true
+                        push!(written_ids, reconcile_source_item!(cachedb, records))
+                    end,
                 )
             end
             cache_hit = cached !== nothing && source === cached.source
-            put!(events, (kind=:source, job_id=scan_id, source, cache_hit))
+            cache_hit || finalize_scan!(cachedb, source, written_ids)
+            put!(events, (
+                kind=:source,
+                job_id=scan_id,
+                source,
+                cache_hit,
+                status=_post_write_status(workspace.cache.identity, source),
+            ))
         catch error
             if is_job_cancelled(error)
                 put!(events, (kind=:canceled, job_id=scan_id))
@@ -181,123 +223,20 @@ function scan_source!(workspace::Workspace)::Nothing
     return nothing
 end
 
+"""Wipe the cache and re-scan the source from scratch."""
+rebuild_cache!(workspace::Workspace)::Nothing = scan_source!(workspace; rebuild=true)
+
 """
-Start reading the compact cache index for a workspace.
+Status of a cache that now mirrors `source` exactly: every source item is cached and fresh except
+those that failed, and nothing is stale, new, or deleted relative to the source.
 """
-function load_cache!(workspace::Workspace)::Nothing
-    cache_work_running(workspace) && error("Cache work is already running")
-    workspace.closed && error("The workspace is closed")
-
-    identity = workspace.cache.identity
-    job = workspace.cache_job
-    job.id += 1
-    cache_id = job.id
-    job.state = :loading
-    job.progress = WorkspaceProgress()
-    job.error = ""
-    workspace.cache.index = nothing
-    workspace.cache.status = nothing
-    workspace.cache.operation = :load
-    events = Channel{NamedTuple}(Inf)
-    cancel_token = Base.Threads.Atomic{Bool}(false)
-    job.events = events
-    job.cancel_token = cancel_token
-
-    task = Base.Threads.@spawn begin
-        try
-            index = with_cancel(() -> cancel_token[]) do
-                load_project_cache(
-                    identity;
-                    on_progress=(progress) -> put!(events, (
-                        kind=:progress,
-                        job_id=cache_id,
-                        progress,
-                    )),
-                )
-            end
-            put!(events, (kind=:cache, job_id=cache_id, index))
-        catch error
-            if is_job_cancelled(error)
-                put!(events, (kind=:canceled, job_id=cache_id))
-            elseif error isa ProjectCacheError
-                put!(events, (
-                    kind=:missing,
-                    job_id=cache_id,
-                    message=sprint(showerror, error),
-                ))
-            else
-                put!(events, (
-                    kind=:error,
-                    job_id=cache_id,
-                    error,
-                    backtrace=catch_backtrace(),
-                ))
-            end
-        finally
-            close(events)
-        end
-    end
-    track_task!(workspace, task)
-    return nothing
-end
-
-"""Update the cache from the completed source scan already owned by the workspace."""
-function update_cache!(
-    workspace::Workspace;
-    rebuild::Bool=false,
-)::Nothing
-    cache_work_running(workspace) && error("Cache work is already running")
-    workspace.closed && error("The workspace is closed")
-    source = workspace.index.source
-    source isa SourceScan || error("Complete the source scan before updating the cache")
-
-    identity = workspace.cache.identity
-    previous_state = workspace.cache_job.state
-    job = workspace.cache_job
-    job.id += 1
-    cache_id = job.id
-    job.state = :writing
-    job.progress = WorkspaceProgress()
-    job.error = ""
-    workspace.cache.operation =
-        rebuild ? (previous_state == :missing ? :build : :rebuild) : :update
-    events = Channel{NamedTuple}(Inf)
-    cancel_token = Base.Threads.Atomic{Bool}(false)
-    job.events = events
-    job.cancel_token = cancel_token
-
-    task = Base.Threads.@spawn begin
-        try
-            index = with_cancel(() -> cancel_token[]) do
-                write_project_cache!(
-                    identity,
-                    source;
-                    replace=rebuild,
-                    on_progress=(progress) -> put!(events, (
-                        kind=:progress,
-                        job_id=cache_id,
-                        progress,
-                    )),
-                )
-            end
-            put!(events, (kind=:cache, job_id=cache_id, index))
-        catch error
-            if is_job_cancelled(error)
-                put!(events, (kind=:canceled, job_id=cache_id))
-            else
-                put!(events, (
-                    kind=:error,
-                    job_id=cache_id,
-                    error,
-                    backtrace=catch_backtrace(),
-                ))
-            end
-        finally
-            close(events)
-        end
-    end
-    track_task!(workspace, task)
-    return nothing
+function _post_write_status(
+    identity::ProjectCacheIdentity,
+    source::SourceScan,
+)::ProjectCacheStatus
+    total = length(source.source_item_fingerprints)
+    errors = length(ProjectCacheIndex(identity, source).analysis_errors)
+    return ProjectCacheStatus(total, total, total - errors, 0, 0, 0, errors)
 end
 
 """Replace the workspace item index with one complete hierarchy."""
@@ -395,10 +334,13 @@ function start_analysis!(workspace::Workspace)::Nothing
     job.events = events
     job.cancel_token = cancel_token
 
+    cachedb = workspace.cache.db
     task = Base.Threads.@spawn begin
         try
             item_stats = Dict{String,Dict{Symbol,Any}}()
             collection_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
+            no_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
+            no_item_stats = Dict{String,Dict{Symbol,Any}}()
             failures = Dict{String,String}()
             loaded = Dict{String,AbstractDataItem}()
             processed = 0
@@ -409,7 +351,11 @@ function start_analysis!(workspace::Workspace)::Nothing
                     try
                         item = _load_for_analysis(workspace, record, loaded)
                         computed = compute_item_stats(workspace.project, workspace.source, item)
-                        isempty(computed) || (item_stats[record.id] = computed)
+                        if !isempty(computed)
+                            item_stats[record.id] = computed
+                            # Persist each item's stats as it is computed so they survive an early exit.
+                            persist_stats!(cachedb, Dict(record.id => computed), no_node_stats)
+                        end
                     catch error
                         is_job_cancelled(error) && rethrow()
                         failures[record.id] = "stats: " * sprint(showerror, error)
@@ -443,7 +389,10 @@ function start_analysis!(workspace::Workspace)::Nothing
                             collect(path),
                             items,
                         )
-                        isempty(computed) || (collection_node_stats[path] = computed)
+                        if !isempty(computed)
+                            collection_node_stats[path] = computed
+                            persist_stats!(cachedb, no_item_stats, Dict(path => computed))
+                        end
                     catch error
                         is_job_cancelled(error) && rethrow()
                         failures[first(node.items).id] =
@@ -451,6 +400,25 @@ function start_analysis!(workspace::Workspace)::Nothing
                     end
                 end
             end
+
+            # Analysis has already read every payload from origin; persist the cacheable ones so
+            # later opens (a cache hit skips re-analysis) and plot reads come from the cache, not the
+            # origin. A cache write must never fail analysis, so failures here are only logged.
+            try
+                payload_records = ItemRecord[]
+                payload_items = Any[]
+                for record in source.hierarchy.all_items
+                    item = get(loaded, record.id, nothing)
+                    (item === nothing || !cacheable(item)) && continue
+                    push!(payload_records, record)
+                    push!(payload_items, item)
+                end
+                write_item_payloads!(cachedb, payload_records, payload_items)
+            catch error
+                is_job_cancelled(error) && rethrow()
+                @warn("Failed to persist analysis payloads to the cache", exception=error)
+            end
+
             put!(events, (
                 kind=:analysis,
                 job_id=analysis_id,
@@ -492,13 +460,13 @@ function apply_analysis!(
     for (id, computed) in item_stats
         record = get(workspace.index.items, id, nothing)
         record === nothing && continue
-        merge!(record.stats, computed)
+        merge!(record.stats, metadata_dict(computed))
         changed = true
     end
     for (path, computed) in collection_node_stats
         node = get(workspace.index.hierarchy.index, path, nothing)
         node === nothing && continue
-        merge!(node.stats, computed)
+        merge!(node.stats, metadata_dict(computed))
         changed = true
     end
     for (id, message) in failures
@@ -518,7 +486,7 @@ function apply_analysis!(
     return changed || !isempty(failures)
 end
 
-"""Apply one loaded cache index without replacing items already streamed by the source scan."""
+"""Surface the cached index for an instant first view, before the fresh scan replaces it."""
 function apply_cache_index!(
     workspace::Workspace,
     index::ProjectCacheIndex,
@@ -529,8 +497,7 @@ function apply_cache_index!(
     workspace.cache.index = index
 
     index_changed = false
-    source = workspace.index.source
-    if source === nothing
+    if workspace.index.source === nothing
         if isempty(workspace.index.items)
             replace_item_index!(workspace, index.source.hierarchy)
             index_changed = true
@@ -539,30 +506,18 @@ function apply_cache_index!(
         end
     end
 
-    if source isa SourceScan
-        workspace.cache.status = cache_status(index, source)
-    else
-        cached_items = length(index.source.source_item_fingerprints)
-        workspace.cache.status = ProjectCacheStatus(
-            cached_items,
-            cached_items,
-            0,
-            0,
-            0,
-            0,
-            length(index.analysis_errors),
-        )
-        workspace.index.analysis_errors = copy(index.analysis_errors)
-    end
-    workspace.cache_job.state = :ready
-    workspace.cache_job.error = ""
+    cached_items = length(index.source.source_item_fingerprints)
+    workspace.cache.status = ProjectCacheStatus(
+        cached_items, cached_items, 0, 0, 0, 0, length(index.analysis_errors))
+    workspace.index.analysis_errors = copy(index.analysis_errors)
     return index_changed
 end
 
-"""Apply the authoritative completed source scan to the workspace."""
+"""Apply the authoritative completed source scan (already mirrored into the cache) to the workspace."""
 function apply_source_scan!(
     workspace::Workspace,
-    source::SourceScan;
+    source::SourceScan,
+    status::ProjectCacheStatus;
     analyze::Bool=true,
 )::Nothing
     source.source_id == source_id(workspace.source) ||
@@ -571,83 +526,14 @@ function apply_source_scan!(
     replace_item_index!(workspace, source.hierarchy)
     identity = workspace.cache.identity
     workspace.index.analysis_errors = ProjectCacheIndex(identity, source).analysis_errors
-
-    cache_state = workspace.cache_job.state
-    if cache_state == :ready
-        workspace.cache.status = cache_status(workspace.cache.index, source)
-    elseif !isfile(identity.cache_path) || cache_state == :missing
-        source_item_count = length(source.source_item_fingerprints)
-        workspace.cache.status = ProjectCacheStatus(
-            source_item_count,
-            0,
-            0,
-            0,
-            source_item_count,
-            0,
-            0,
-        )
-    end
+    workspace.cache.status = status
     analyze && start_analysis!(workspace)
-    return nothing
-end
-
-"""Start cache repair when the completed source scan differs from the loaded cache."""
-function repair_cache_if_needed!(workspace::Workspace)::Nothing
-    cache_work_running(workspace) && return nothing
-    analysis_work_running(workspace) && return nothing
-    workspace.index.source isa SourceScan || return nothing
-    if workspace.cache_job.state == :missing
-        update_cache!(workspace; rebuild=true)
-        return nothing
-    end
-    status = workspace.cache.status
-    status isa ProjectCacheStatus || return nothing
-    if status.stale_source_items > 0 ||
-       status.new_source_items > 0 ||
-       status.deleted_source_items > 0
-        update_cache!(workspace)
-    end
     return nothing
 end
 
 """Apply all completed scan and cache events."""
 function poll_workspace!(workspace::Workspace)::Bool
     index_changed = false
-    cache_events = workspace.cache_job.events
-    if cache_events !== nothing
-        while isready(cache_events)
-            event = take!(cache_events)
-            event.job_id == workspace.cache_job.id || continue
-            if event.kind == :progress
-                workspace.cache_job.progress = WorkspaceProgress(event.progress)
-            elseif event.kind == :cache
-                index_changed |= apply_cache_index!(workspace, event.index)
-                workspace.cache_job.events = nothing
-                workspace.cache_job.cancel_token = nothing
-            elseif event.kind == :missing
-                workspace.cache_job.state = :missing
-                workspace.cache_job.error = event.message
-                workspace.cache_job.events = nothing
-                workspace.cache_job.cancel_token = nothing
-            elseif event.kind == :canceled
-                workspace.cache_job.state = :canceled
-                workspace.cache_job.events = nothing
-                workspace.cache_job.cancel_token = nothing
-            elseif event.kind == :error
-                workspace.cache_job.state = :error
-                workspace.cache_job.error =
-                    "Cache job failed. See the console for full details."
-                @error(
-                    "Cache job failed",
-                    cache_path=workspace.cache.identity.cache_path,
-                    operation=workspace.cache.operation,
-                    exception=(event.error, event.backtrace),
-                )
-                workspace.cache_job.events = nothing
-                workspace.cache_job.cancel_token = nothing
-            end
-        end
-    end
 
     scan_events = workspace.scan.events
     if scan_events !== nothing
@@ -660,20 +546,37 @@ function poll_workspace!(workspace::Workspace)::Bool
                 workspace.scan.state = event.progress.phase
             elseif event.kind == :items
                 append!(pending_items, event.items)
+            elseif event.kind == :cache_state
+                # The cache the scan found on disk, surfaced before fresh results replace it.
+                event.index === nothing ||
+                    (index_changed |= apply_cache_index!(workspace, event.index))
+                workspace.cache_job.state = event.state
+                event.state == :missing && workspace.cache.operation != :rebuild &&
+                    (workspace.cache.operation = :build)
+            elseif event.kind == :cache_writing
+                workspace.cache_job.state = :writing
             elseif event.kind == :source
-                apply_source_scan!(workspace, event.source; analyze=!event.cache_hit)
+                index_changed |= append_items!(workspace, pending_items)
+                empty!(pending_items)
+                apply_source_scan!(
+                    workspace, event.source, event.status; analyze=!event.cache_hit)
                 index_changed = true
                 workspace.scan.state = event.cache_hit ? :unchanged : :done
+                workspace.cache_job.state = :ready
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :canceled
                 workspace.scan.state = :canceled
+                workspace.cache_job.state =
+                    workspace.cache_job.state == :writing ? :canceled : workspace.cache_job.state
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :error
                 workspace.scan.state = :error
                 workspace.scan.error =
                     "Source scan failed. See the console for full details."
+                workspace.cache_job.state == :writing &&
+                    (workspace.cache_job.state = :error)
                 @error(
                     "Source scan job failed",
                     source=source_id(workspace.source),
@@ -724,6 +627,5 @@ function poll_workspace!(workspace::Workspace)::Bool
         end
     end
 
-    repair_cache_if_needed!(workspace)
     return index_changed
 end

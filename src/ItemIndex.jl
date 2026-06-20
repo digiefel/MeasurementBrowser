@@ -91,6 +91,63 @@ function collection_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
 end
 
 """
+The value types a `parameters`/`stats` entry may hold.
+
+Kept deliberately narrow: these dicts describe items and collections with flat, queryable scalars
+(exactly what `parse_metadata_value` emits) plus `Symbol` tags, `Missing` for absent values, and
+homogeneous numeric/string vectors. The cache stores them as proper typed columns, so anything
+outside this union is rejected at index time rather than silently blobbed.
+"""
+const MetadataValue = Union{
+    Bool, Int64, Float64, String, Symbol, Date, DateTime, Missing,
+    Vector{Bool}, Vector{Int64}, Vector{Float64}, Vector{String},
+}
+
+"""The typed dict the engine stores for item/collection `parameters` and `stats`."""
+const MetadataDict = Dict{Symbol,MetadataValue}
+
+"""
+Coerce one value into a [`MetadataValue`](@ref), normalizing common near-misses (any `Integer` to
+`Int64`, any `AbstractFloat` to `Float64`, `AbstractString` to `String`, and the corresponding
+vectors). Throws `ArgumentError` for anything else.
+"""
+function metadata_value(value)::MetadataValue
+    value isa MetadataValue && return value
+    value isa Integer && return Int64(value)            # Bool already matched above
+    value isa AbstractFloat && return Float64(value)
+    value isa AbstractString && return String(value)
+    value isa AbstractVector{Bool} && return Vector{Bool}(value)   # before the Integer branch
+    value isa AbstractVector{<:Integer} && return Int64.(value)
+    value isa AbstractVector{<:AbstractFloat} && return Float64.(value)
+    value isa AbstractVector{<:AbstractString} && return String.(value)
+    throw(ArgumentError(
+        "unsupported metadata value of type $(typeof(value)): $(repr(value)); " *
+        "parameters/stats must be scalars (Bool/Int64/Float64/String/Symbol/Date/DateTime/Missing) " *
+        "or homogeneous Bool/Int64/Float64/String vectors",
+    ))
+end
+
+"""
+Convert any `Symbol`-keyed dict into a validated [`MetadataDict`](@ref). A `MetadataDict` passes
+through unchanged; for anything else each value is checked via [`metadata_value`](@ref), with the
+offending key named on failure.
+"""
+metadata_dict(dict::MetadataDict)::MetadataDict = dict
+function metadata_dict(dict::AbstractDict)::MetadataDict
+    out = MetadataDict()
+    for (key, value) in dict
+        sym = Symbol(key)
+        out[sym] = try
+            metadata_value(value)
+        catch err
+            err isa ArgumentError || rethrow()
+            throw(ArgumentError("metadata key :$sym: $(err.msg)"))
+        end
+    end
+    return out
+end
+
+"""
 The internal metadata record for one logical item discovered inside one source item.
 """
 struct ItemRecord
@@ -102,8 +159,8 @@ struct ItemRecord
     item_label::String
     kind::Symbol
     collection::Vector{String}
-    parameters::Dict{Symbol,Any}
-    stats::Dict{Symbol,Any}
+    parameters::MetadataDict
+    stats::MetadataDict
     item_fingerprint::Any
 end
 
@@ -119,8 +176,8 @@ function ItemRecord(;
     item_label::AbstractString,
     kind::Symbol,
     collection::AbstractVector{<:AbstractString},
-    parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
-    stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
+    parameters::AbstractDict=MetadataDict(),
+    stats::AbstractDict=MetadataDict(),
     item_fingerprint=nothing,
 )::ItemRecord
     record_id = String(id)
@@ -134,8 +191,8 @@ function ItemRecord(;
         String(item_label),
         kind,
         String[String(segment) for segment in collection],
-        parameters,
-        stats,
+        metadata_dict(parameters),
+        metadata_dict(stats),
         item_fingerprint,
     )
 end
@@ -153,8 +210,8 @@ function ItemRecord(
     item_label::AbstractString=record.item_label,
     kind::Symbol=record.kind,
     collection::AbstractVector{<:AbstractString}=copy(record.collection),
-    parameters::Dict{Symbol,Any}=deepcopy(record.parameters),
-    stats::Dict{Symbol,Any}=deepcopy(record.stats),
+    parameters::AbstractDict=deepcopy(record.parameters),
+    stats::AbstractDict=deepcopy(record.stats),
     item_fingerprint=record.item_fingerprint,
 )::ItemRecord
     return ItemRecord(;
@@ -277,26 +334,30 @@ Projects.stats(item::DataItem)::Dict{Symbol,Any} = item.stats
 Projects.item_data(item::DataItem) = item.data
 Projects.fingerprint(item::DataItem) = nothing
 
+# The recipe API's standard item carries its parsed payload, which is exactly what the payload cache
+# exists to avoid re-reading from the origin; cache it by default. Type-API items opt in themselves.
+Projects.cacheable(::DataItem)::Bool = true
+
 """
 One node in the collection hierarchy.
 """
 struct HierarchyNode
     name::String
     kind::Symbol
-    parameters::Dict{Symbol,Any}
+    parameters::MetadataDict
     children::Vector{HierarchyNode}
     items::Vector{ItemRecord}
-    stats::Dict{Symbol,Any}
+    stats::MetadataDict
 end
 
 HierarchyNode(name::String, kind::Symbol) =
     HierarchyNode(
         name,
         kind,
-        Dict{Symbol,Any}(),
+        MetadataDict(),
         HierarchyNode[],
         ItemRecord[],
-        Dict{Symbol,Any}(),
+        MetadataDict(),
     )
 
 """
@@ -443,10 +504,10 @@ end
 function _effective_parameters(
     source::AbstractDataSource,
     collection_path::AbstractVector{<:AbstractString},
-    local_parameters::Dict{Symbol,Any},
-)::Dict{Symbol,Any}
-    parameters = collection_parameters(source, collection_path)
-    merge!(parameters, local_parameters)
+    local_parameters::AbstractDict,
+)::MetadataDict
+    parameters = metadata_dict(collection_parameters(source, collection_path))
+    merge!(parameters, metadata_dict(local_parameters))
     return parameters
 end
 
@@ -460,10 +521,10 @@ function apply_collection_parameters!(
     function visit!(
         node::HierarchyNode,
         path::Vector{String},
-        inherited::Dict{Symbol,Any},
+        inherited::MetadataDict,
     )::Nothing
         effective = copy(inherited)
-        isempty(path) || merge!(effective, collection_parameters(source, path))
+        isempty(path) || merge!(effective, metadata_dict(collection_parameters(source, path)))
         empty!(node.parameters)
         merge!(node.parameters, effective)
         for item in node.items
@@ -489,7 +550,7 @@ function source_parameter_state(source::SourceScan)::Dict{String,Dict{String,Tup
     state = Dict{String,Dict{String,Tuple}}()
     for record in source.hierarchy.all_items
         node = get(source.hierarchy.index, Tuple(record.collection), nothing)
-        node_parameters = node === nothing ? Dict{Symbol,Any}() : node.parameters
+        node_parameters = node === nothing ? MetadataDict() : node.parameters
         by_item = get!(state, record.source_item_id) do
             Dict{String,Tuple}()
         end

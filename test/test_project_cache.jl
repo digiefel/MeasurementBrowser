@@ -1,16 +1,18 @@
 using MeasurementBrowser
 using MeasurementBrowser: ItemFailure
+using Dates
 using Test
+import DuckDB, DBInterface
 
 const ProjectCache = MeasurementBrowser.Cache
 
-@testset "project HDF5 cache" begin
+@testset "project DuckDB cache" begin
     mktempdir() do dir
         source = test_source(TEST_PROJECT, dir)
         @test basename(ProjectCache.project_cache_identity(
             "20260430_120001",
             source,
-        ).cache_path) == "20260430_120001.h5"
+        ).cache_path) == "20260430_120001.duckdb"
     end
 
     mktempdir() do first_root
@@ -97,6 +99,60 @@ const ProjectCache = MeasurementBrowser.Cache
         end
     end
 
+    @testset "metadata value round-trip and query" begin
+        rec(id, params, stats) = MeasurementBrowser.ItemIndex.ItemRecord(;
+            id=id, source_item_id="si_" * id, source_item_fingerprint=(id, 1),
+            source_item_path="/tmp/" * id, item_label="L" * id, kind=:iv,
+            collection=["grp"], parameters=params, stats=stats, item_fingerprint=(id, 2))
+        r1 = rec("a",
+            Dict(:flag => true, :n => Int64(7), :x => 3.5, :name => "hello",
+                 :tag => :sym, :day => Date(2026, 6, 20)),
+            Dict(:when => DateTime(2026, 6, 20, 12), :absent => missing,
+                 :mask => Bool[true, false, true], :ints => Int64[1, 2],
+                 :floats => [1.0, 2.5], :words => ["p", "q"]))
+        r2 = rec("b", Dict(:n => Int64(99)), Dict(:x => 10.0))
+        hierarchy = MeasurementBrowser.ItemIndex.Hierarchy("round_trip_src", false, 0)
+        MeasurementBrowser.ItemIndex.insert_item!(hierarchy, r1)
+        MeasurementBrowser.ItemIndex.insert_item!(hierarchy, r2)
+        scan = MeasurementBrowser.SourceScan(
+            "round_trip_src", "RoundTripSrc",
+            Dict{String,Any}("si_a" => ("a", 1), "si_b" => ("b", 1)),
+            hierarchy, ItemFailure[])
+
+        mktempdir() do dir
+            identity = ProjectCache.ProjectCacheIdentity(
+                "rt", "round_trip_src", "RoundTripSrc", joinpath(dir, "rt.duckdb"))
+            ProjectCache.write_project_cache!(identity, scan; replace=true)
+            loaded = ProjectCache.load_project_cache(identity)
+            by_id = Dict(r.id => r for r in loaded.source.hierarchy.all_items)
+            a = by_id["a"]
+
+            @test a.parameters[:flag] === true
+            @test a.parameters[:n] === Int64(7)
+            @test a.parameters[:x] === 3.5
+            @test a.parameters[:name] == "hello"
+            @test a.parameters[:tag] === :sym
+            @test a.parameters[:day] === Date(2026, 6, 20)
+            @test a.stats[:when] === DateTime(2026, 6, 20, 12)
+            @test a.stats[:absent] === missing
+            @test a.stats[:mask] isa Vector{Bool} && a.stats[:mask] == Bool[true, false, true]
+            @test a.stats[:ints] isa Vector{Int64} && a.stats[:ints] == Int64[1, 2]
+            @test a.stats[:floats] isa Vector{Float64} && a.stats[:floats] == [1.0, 2.5]
+            @test a.stats[:words] isa Vector{String} && a.stats[:words] == ["p", "q"]
+
+            # The typed EAV columns are genuinely queryable.
+            db = DBInterface.connect(DuckDB.DB, identity.cache_path)
+            try
+                statement = DBInterface.prepare(
+                    db, "SELECT entity FROM metadata WHERE scope = 1 AND key = ? AND d > ?")
+                hits = [row.entity for row in DBInterface.execute(statement, ("x", 5.0))]
+                @test hits == ["b"]
+            finally
+                DBInterface.close!(db)
+            end
+        end
+    end
+
     @testset "opening a project updates a stale cache" begin
         mktempdir() do dir
             write_test_source(joinpath(dir, "first.csv"))
@@ -146,6 +202,141 @@ const ProjectCache = MeasurementBrowser.Cache
                 close_workspace!(workspace)
             finally
                 rm(identity.cache_path; force=true)
+            end
+        end
+    end
+
+    @testset "incremental writes are durable, reconcilable, and stats persist" begin
+        mkrec(id, sid) = MeasurementBrowser.ItemIndex.ItemRecord(;
+            id=id, source_item_id=sid, source_item_fingerprint=(sid, 1),
+            source_item_path="/tmp/" * sid, item_label="L" * id, kind=:iv,
+            collection=["grp"], item_fingerprint=(id, 2))
+        function make_scan(records)
+            hierarchy = MeasurementBrowser.ItemIndex.Hierarchy("inc_src", false, 0)
+            for record in records
+                MeasurementBrowser.ItemIndex.insert_item!(hierarchy, record)
+            end
+            fingerprints = Dict{String,Any}(
+                record.source_item_id => record.source_item_fingerprint for record in records)
+            return MeasurementBrowser.SourceScan(
+                "inc_src", "IncSrc", fingerprints, hierarchy, ItemFailure[])
+        end
+        ids(index) = Set(record.id for record in index.source.hierarchy.all_items)
+
+        mktempdir() do dir
+            identity = ProjectCache.ProjectCacheIdentity(
+                "inc", "inc_src", "IncSrc", joinpath(dir, "inc.duckdb"))
+            cachedb = ProjectCache.open_cache_db(identity)
+            try
+                recs_a = [mkrec("a1", "si_a"), mkrec("a2", "si_a")]
+                recs_b = [mkrec("b1", "si_b")]
+
+                # An interrupted scan (identity stamped, one source item written, no finalize)
+                # is still loadable and shows the progress made so far.
+                ProjectCache.write_scan_identity!(cachedb)
+                ProjectCache.reconcile_source_item!(cachedb, recs_a)
+                partial = ProjectCache.load_cache_index(cachedb)
+                @test ids(partial) == Set(["a1", "a2"])
+
+                ProjectCache.reconcile_source_item!(cachedb, recs_b)
+                ProjectCache.finalize_scan!(
+                    cachedb, make_scan([recs_a; recs_b]), Set(["si_a", "si_b"]))
+                @test ids(ProjectCache.load_cache_index(cachedb)) == Set(["a1", "a2", "b1"])
+
+                # Stats computed after the scan persist without any further index write.
+                ProjectCache.persist_stats!(
+                    cachedb,
+                    Dict("a1" => Dict{Symbol,Any}(:vmax => 3.5)),
+                    Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
+                )
+                reloaded = ProjectCache.load_cache_index(cachedb)
+                a1 = only(r for r in reloaded.source.hierarchy.all_items if r.id == "a1")
+                @test a1.stats[:vmax] === 3.5
+
+                # Dropping si_a from the next scan cascades its items out of the cache.
+                ProjectCache.reconcile_source_item!(cachedb, recs_b)
+                ProjectCache.finalize_scan!(cachedb, make_scan(recs_b), Set(["si_b"]))
+                @test ids(ProjectCache.load_cache_index(cachedb)) == Set(["b1"])
+            finally
+                ProjectCache.close_cache_db!(cachedb)
+            end
+        end
+    end
+
+    @testset "a corrupt cache file is discarded and rebuilt on open" begin
+        mktempdir() do dir
+            path = joinpath(dir, "corrupt.duckdb")
+            write(path, "this is not a duckdb file")
+            identity = ProjectCache.ProjectCacheIdentity("c", "c_src", "CSrc", path)
+            cachedb = (@test_logs (:warn,) ProjectCache.open_cache_db(identity))
+            try
+                @test cachedb isa ProjectCache.CacheDB
+                ProjectCache.write_scan_identity!(cachedb)
+                @test ProjectCache.load_cache_index(cachedb) isa ProjectCache.ProjectCacheIndex
+            finally
+                ProjectCache.close_cache_db!(cachedb)
+            end
+        end
+    end
+
+    @testset "payload round-trip, validation, and skipping" begin
+        prec(id, sif, iff) = MeasurementBrowser.ItemIndex.ItemRecord(;
+            id=id, source_item_id="si_" * id, source_item_fingerprint=sif,
+            source_item_path="/tmp/" * id, item_label="L" * id, kind=:iv,
+            collection=["grp"], item_fingerprint=iff)
+        mktempdir() do dir
+            identity = ProjectCache.ProjectCacheIdentity(
+                "pl", "pl_src", "PlSrc", joinpath(dir, "pl.duckdb"))
+            cachedb = ProjectCache.open_cache_db(identity)
+            try
+                cacheable = prec("a", ("si_a", 1), ("a", 1))
+                uncacheable = prec("b", nothing, nothing)
+                ProjectCache.write_item_payloads!(
+                    cachedb, [cacheable, uncacheable], Any[[1.0, 2.0, 3.0], "ignored"])
+
+                # The cacheable item round-trips; the fingerprint-less one is never stored.
+                got = ProjectCache.read_item_payloads(cachedb, [cacheable, uncacheable])
+                @test got[1] == [1.0, 2.0, 3.0]
+                @test got[2] === nothing
+
+                # A changed item fingerprint invalidates the stored payload.
+                restamped = prec("a", ("si_a", 1), ("a", 2))
+                @test only(ProjectCache.read_item_payloads(cachedb, [restamped])) === nothing
+            finally
+                ProjectCache.close_cache_db!(cachedb)
+            end
+        end
+    end
+
+    @testset "item LRU evicts least-recently-used entries" begin
+        Cache = MeasurementBrowser.Workspace
+        lru = Cache.ItemCache(2)
+        Cache.cache_item!(lru, "a", :fp, "A")
+        Cache.cache_item!(lru, "b", :fp, "B")
+        @test Cache.lookup_item(lru, "a", nothing) == (:fp, "A")   # refreshes "a" as most-recent
+        Cache.cache_item!(lru, "c", :fp, "C")                      # capacity 2 → evict "b" (oldest)
+        @test Cache.lookup_item(lru, "b", nothing) === nothing
+        @test Cache.lookup_item(lru, "a", nothing) == (:fp, "A")
+        @test Cache.lookup_item(lru, "c", nothing) == (:fp, "C")
+    end
+
+    @testset "materialization is served from the payload cache without the origin" begin
+        mktempdir() do dir
+            write_test_source(joinpath(dir, "first.csv"))
+            records = scan_test_source(TEST_PROJECT, dir).hierarchy.all_items
+            workspace = MeasurementBrowser.Workspace.Workspace(
+                TEST_PROJECT, test_source(TEST_PROJECT, dir))
+            try
+                first_pass = read_item_data(workspace, records)
+                @test all(!isnothing, first_pass)
+
+                # Drop the origin file and the in-memory cache; the payload cache must still serve it.
+                rm(joinpath(dir, "first.csv"))
+                workspace.loaded_items = MeasurementBrowser.Workspace.ItemCache()
+                second_pass = read_item_data(workspace, records)
+                @test second_pass == first_pass
+            finally
+                close_workspace!(workspace)
             end
         end
     end
