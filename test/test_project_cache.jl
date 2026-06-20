@@ -59,7 +59,7 @@ const ProjectCache = MeasurementBrowser.Cache
                 item -> item.parameters[:wafer] == "A",
                 loaded.source.hierarchy.all_items,
             )
-            @test ProjectCache.cached_item_data(
+            @test ProjectCache.read_cached_item_data(
                 loaded,
                 loaded.source.hierarchy.all_items,
             ) == Any[nothing, nothing]
@@ -268,7 +268,7 @@ const ProjectCache = MeasurementBrowser.Cache
             path = joinpath(dir, "corrupt.duckdb")
             write(path, "this is not a duckdb file")
             identity = ProjectCache.ProjectCacheIdentity("c", "c_src", "CSrc", path)
-            cachedb = (@test_logs (:warn,) ProjectCache.open_cache_db(identity))
+            cachedb = ProjectCache.open_cache_db(identity)
             try
                 @test cachedb isa ProjectCache.CacheDB
                 ProjectCache.write_scan_identity!(cachedb)
@@ -276,10 +276,28 @@ const ProjectCache = MeasurementBrowser.Cache
             finally
                 ProjectCache.close_cache_db!(cachedb)
             end
+
+            connection = DBInterface.connect(DuckDB.DB, path)
+            try
+                DBInterface.execute(connection, """
+                    UPDATE meta SET value = '1' WHERE key = 'schema_version'
+                """)
+            finally
+                DBInterface.close!(connection)
+            end
+            rebuilt = ProjectCache.open_cache_db(identity)
+            try
+                meta_rows = ProjectCache.with_persistent_reader(rebuilt) do reader
+                    only(DBInterface.execute(reader, "SELECT count(*) AS count FROM meta")).count
+                end
+                @test meta_rows == 0
+            finally
+                ProjectCache.close_cache_db!(rebuilt)
+            end
         end
     end
 
-    @testset "payload round-trip, validation, and skipping" begin
+    @testset "native DataFrame round-trip, validation, and skipping" begin
         prec(id, sif, iff) = MeasurementBrowser.ItemIndex.ItemRecord(;
             id=id, source_item_id="si_" * id, source_item_fingerprint=sif,
             source_item_path="/tmp/" * id, item_label="L" * id, kind=:iv,
@@ -291,17 +309,35 @@ const ProjectCache = MeasurementBrowser.Cache
             try
                 cacheable = prec("a", ("si_a", 1), ("a", 1))
                 uncacheable = prec("b", nothing, nothing)
-                ProjectCache.write_item_payloads!(
-                    cachedb, [cacheable, uncacheable], Any[[1.0, 2.0, 3.0], "ignored"])
+                source_frame = DataFrame(
+                    voltage=[1.0, 2.0, 3.0],
+                    current=Union{Missing,Float64}[0.1, missing, 0.3],
+                )
+                cached_frame = view(source_frame, 1:3, :)
+                cached_item = MeasurementBrowser.DataItem(cacheable, cached_frame)
+                @test MeasurementBrowser.cacheable(cached_item)
+                ignored_item = MeasurementBrowser.DataItem(uncacheable, DataFrame(x=[1]))
+                ProjectCache.write_cached_item_data!(
+                    cachedb, [cacheable, uncacheable], Any[cached_item, ignored_item])
 
                 # The cacheable item round-trips; the fingerprint-less one is never stored.
-                got = ProjectCache.read_item_payloads(cachedb, [cacheable, uncacheable])
-                @test got[1] == [1.0, 2.0, 3.0]
+                got = ProjectCache.read_cached_item_data(cachedb, [cacheable, uncacheable])
+                @test got[1] isa MeasurementBrowser.DataItem
+                @test isequal(MeasurementBrowser.item_data(got[1]), DataFrame(cached_frame))
+                @test MeasurementBrowser.item_data(got[1]) isa DataFrame
                 @test got[2] === nothing
 
-                # A changed item fingerprint invalidates the stored payload.
+                rows = ProjectCache.with_persistent_reader(cachedb) do connection
+                    collect(DBInterface.execute(connection, """
+                        SELECT storage_id, row_count FROM item_data
+                    """))
+                end
+                @test length(rows) == 1
+                @test only(rows).row_count == 3
+
+                # A changed item fingerprint invalidates the stored data.
                 restamped = prec("a", ("si_a", 1), ("a", 2))
-                @test only(ProjectCache.read_item_payloads(cachedb, [restamped])) === nothing
+                @test only(ProjectCache.read_cached_item_data(cachedb, [restamped])) === nothing
             finally
                 ProjectCache.close_cache_db!(cachedb)
             end
@@ -320,7 +356,7 @@ const ProjectCache = MeasurementBrowser.Cache
         @test Cache.lookup_item(lru, "c", nothing) == (:fp, "C")
     end
 
-    @testset "materialization is served from the payload cache without the origin" begin
+    @testset "materialization is served from the item-data cache without the origin" begin
         mktempdir() do dir
             write_test_source(joinpath(dir, "first.csv"))
             records = scan_test_source(TEST_PROJECT, dir).hierarchy.all_items
@@ -330,10 +366,10 @@ const ProjectCache = MeasurementBrowser.Cache
                 first_pass = read_item_data(workspace, records)
                 @test all(!isnothing, first_pass)
 
-                # Populate the durable payload cache the way background analysis does (the interactive
+                # Populate the durable item-data cache the way source scanning does (the interactive
                 # read path itself never writes), then drop the origin file and the in-memory cache.
                 materialized = MeasurementBrowser.Workspace.materialize_items(workspace, records)
-                ProjectCache.write_item_payloads!(workspace.cache.db, records, materialized)
+                ProjectCache.write_cached_item_data!(workspace.cache.db, records, materialized)
                 rm(joinpath(dir, "first.csv"))
                 workspace.loaded_items = MeasurementBrowser.Workspace.ItemCache()
 

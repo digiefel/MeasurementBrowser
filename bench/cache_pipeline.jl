@@ -131,11 +131,11 @@ end
 """
 Build a project where ten percent of source items expand into 100 data items.
 
-Expanded items copy their columns into separate `DataFrame`s, matching ordinary project code that
-constructs one table per logical item. The read counter makes repeated origin reads visible instead
-of inferring them from elapsed time.
+`use_views=false` copies every expanded item, matching ordinary project code that constructs one
+table per logical item. `use_views=true` keeps row views into the parsed source table. The read
+counter makes repeated origin reads visible instead of inferring them from elapsed time.
 """
-function expansion_project()
+function expansion_project(; use_views::Bool=false)
     expanded_filenames = Set(
         "meas_$(lpad(index, 5, '0')).csv"
         for index in 1:EXPANDED_SOURCE_ITEMS
@@ -164,15 +164,16 @@ function expansion_project()
                 first_row = fld((part - 1) * row_count, ITEMS_PER_EXPANDED_SOURCE) + 1
                 last_row = fld(part * row_count, ITEMS_PER_EXPANDED_SOURCE)
                 rows = first_row:last_row
+                item_data = use_views ? view(data, rows, :) : DataFrame(
+                    v=data.v[rows],
+                    i=data.i[rows],
+                    t=data.t[rows],
+                )
                 push!(items, MB.DataItem(
                     kind=:iv,
                     collection=[splitext(file.filename)[1]],
                     parameters=Dict{Symbol,Any}(:part => part),
-                    data=DataFrame(
-                        v=data.v[rows],
-                        i=data.i[rows],
-                        t=data.t[rows],
-                    ),
+                    data=item_data,
                 ))
             end
             return items
@@ -228,7 +229,7 @@ function micro_benchmarks(sample_csv::AbstractString)
     sayf("  blob size (serialized DataFrame):     %s\n", kb(length(blob)))
     say()
     sayf("  parse CSV from disk (read once):      %s\n", ms(t_parse))
-    say("  --- if we cache the parsed payload, a later read costs one of: ---")
+    say("  --- if we cache the parsed item data, a later read costs one of: ---")
     sayf("  serialize DataFrame -> bytes:         %s\n", ms(t_ser))
     sayf("  deserialize bytes -> DataFrame:       %s\n", ms(t_deser))
     sayf("  DuckDB blob write (serialize+insert): %s\n", ms(t_blob_write))
@@ -288,45 +289,50 @@ function expansion_timings(dir::AbstractString)
         "($(EXPANDED_SOURCE_ITEMS)/$(N_FILES) sources expand to " *
         "$(ITEMS_PER_EXPANDED_SOURCE) data items)",
     )
-    project, read_count = expansion_project()
+    copied_project, copied_read_count = expansion_project()
+    view_project, view_read_count = expansion_project(; use_views=true)
     source = MB.DirectorySource(dir)
 
     # Compile the scan path before measuring it.
-    MB.scan_source(project, source)
-    Threads.atomic_xchg!(read_count, 0)
-    scan_timing = @timed scan = MB.scan_source(project, source)
-    scan_reads = read_count[]
+    MB.scan_source(copied_project, source)
+    MB.scan_source(view_project, source)
+    Threads.atomic_xchg!(copied_read_count, 0)
+    copied_scan_timing = @timed scan = MB.scan_source(copied_project, source)
+    copied_scan_reads = copied_read_count[]
+    Threads.atomic_xchg!(view_read_count, 0)
+    view_scan_timing = @timed MB.scan_source(view_project, source)
+    view_scan_reads = view_read_count[]
     records = scan.hierarchy.all_items
 
     function per_item_analysis()
         total = 0.0
         for record in records
-            item = MB.load_data_item(project, source, record.source_item_id, record.id)
-            total += MB.Projects.compute_item_stats(project, source, item)[:imean]
+            item = MB.load_data_item(copied_project, source, record.source_item_id, record.id)
+            total += MB.Projects.compute_item_stats(copied_project, source, item)[:imean]
         end
         return total
     end
 
     per_item_analysis()
-    Threads.atomic_xchg!(read_count, 0)
+    Threads.atomic_xchg!(copied_read_count, 0)
     per_item_timing = @timed per_item_analysis()
-    per_item_reads = read_count[]
+    per_item_reads = copied_read_count[]
 
     discovered = MB.source_items(source)
     function source_pass_analysis()
         total = 0.0
         for source_item in discovered
-            for item in MB.data_items(project, source, source_item)
-                total += MB.Projects.compute_item_stats(project, source, item)[:imean]
+            for item in MB.data_items(copied_project, source, source_item)
+                total += MB.Projects.compute_item_stats(copied_project, source, item)[:imean]
             end
         end
         return total
     end
 
     source_pass_analysis()
-    Threads.atomic_xchg!(read_count, 0)
+    Threads.atomic_xchg!(copied_read_count, 0)
     source_pass_timing = @timed source_pass_analysis()
-    source_pass_reads = read_count[]
+    source_pass_reads = copied_read_count[]
 
     expected_items =
         EXPANDED_SOURCE_ITEMS * ITEMS_PER_EXPANDED_SOURCE +
@@ -334,16 +340,25 @@ function expansion_timings(dir::AbstractString)
     length(records) == expected_items || error(
         "Expansion benchmark produced $(length(records)) data items; expected $expected_items",
     )
-    scan_reads == N_FILES || error(
-        "Expansion scan read $scan_reads source items; expected exactly $N_FILES",
+    copied_scan_reads == N_FILES || error(
+        "Copied expansion scan read $copied_scan_reads source items; expected exactly $N_FILES",
+    )
+    view_scan_reads == N_FILES || error(
+        "View expansion scan read $view_scan_reads source items; expected exactly $N_FILES",
     )
     source_pass_reads == N_FILES || error(
         "Read-once analysis read $source_pass_reads source items; expected exactly $N_FILES",
     )
 
-    sayf("  scan:                       %s  alloc=%s  gc=%s  source reads=%d  data items=%d\n",
-        ms(scan_timing.time), mib(scan_timing.bytes), ms(scan_timing.gctime),
-        scan_reads, length(records))
+    sayf("  copied-item scan:           %s  alloc=%s  gc=%s  source reads=%d  data items=%d\n",
+        ms(copied_scan_timing.time), mib(copied_scan_timing.bytes),
+        ms(copied_scan_timing.gctime), copied_scan_reads, length(records))
+    sayf("  view-item scan:             %s  alloc=%s  gc=%s  source reads=%d  data items=%d\n",
+        ms(view_scan_timing.time), mib(view_scan_timing.bytes), ms(view_scan_timing.gctime),
+        view_scan_reads, length(records))
+    sayf("  view gain:                  %.2fx time, %.2fx allocation\n",
+        copied_scan_timing.time / view_scan_timing.time,
+        copied_scan_timing.bytes / view_scan_timing.bytes)
     sayf("  current per-item analysis:  %s  alloc=%s  gc=%s  source reads=%d\n",
         ms(per_item_timing.time), mib(per_item_timing.bytes), ms(per_item_timing.gctime),
         per_item_reads)
@@ -351,12 +366,12 @@ function expansion_timings(dir::AbstractString)
         ms(source_pass_timing.time), mib(source_pass_timing.bytes), ms(source_pass_timing.gctime),
         source_pass_reads)
     sayf("  legacy two-pass total:      %s  alloc=%s  source reads=%d\n",
-        ms(scan_timing.time + per_item_timing.time),
-        mib(scan_timing.bytes + per_item_timing.bytes),
-        scan_reads + per_item_reads)
+        ms(copied_scan_timing.time + per_item_timing.time),
+        mib(copied_scan_timing.bytes + per_item_timing.bytes),
+        copied_scan_reads + per_item_reads)
     sayf("  read-once pipeline gain:    %.2fx time, %.2fx allocation\n",
-        (scan_timing.time + per_item_timing.time) / scan_timing.time,
-        (scan_timing.bytes + per_item_timing.bytes) / scan_timing.bytes)
+        (copied_scan_timing.time + per_item_timing.time) / copied_scan_timing.time,
+        (copied_scan_timing.bytes + per_item_timing.bytes) / copied_scan_timing.bytes)
     sayf("  isolated analysis gain:     %.2fx time, %.2fx allocation\n",
         per_item_timing.time / source_pass_timing.time,
         per_item_timing.bytes / source_pass_timing.bytes)
@@ -366,9 +381,13 @@ end
 # --------------------------------------------------------------------------------------------------
 # 4. Full workspace cold build: scan, stats, cache writes, then cache-only materialization.
 # --------------------------------------------------------------------------------------------------
-function workspace_cold_build(dir::AbstractString)
-    section("4. WORKSPACE COLD BUILD (expanded dataset, including DuckDB writes)")
-    project, read_count = expansion_project()
+function workspace_cold_build(dir::AbstractString; use_views::Bool)
+    item_storage = use_views ? "views" : "copies"
+    section(
+        "4. WORKSPACE COLD BUILD " *
+        "(expanded dataset using $item_storage, including DuckDB writes)",
+    )
+    project, read_count = expansion_project(; use_views)
     source = MB.DirectorySource(dir)
     identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
     MB.Cache._remove_cache_files(identity.cache_path)
@@ -437,14 +456,14 @@ function region_timings(project, source, records)
     MB.Cache._remove_cache_files(identity.cache_path)
     cachedb = MB.Cache.open_cache_db(identity)
     try
-        # Materialize every item from origin once, then persist all payloads, then read them back.
+        # Materialize every item from origin once, then persist and read their native item data.
         items = [MB.load_data_item(project, source, r.source_item_id, r.id) for r in records]
 
         MB.Profiling.reset!()   # timings already enabled at top level (avoids a world-age miss)
-        MB.Cache.write_item_payloads!(cachedb, records, items)   # serialize + insert (timed)
-        got = MB.Cache.read_item_payloads(cachedb, records)      # select + deserialize (timed)
+        MB.Cache.write_cached_item_data!(cachedb, records, items)
+        got = MB.Cache.read_cached_item_data(cachedb, records)
         MB.Profiling.report(out())
-        sayf("  payloads read back: %d/%d non-nothing\n", count(!isnothing, got), length(records))
+        sayf("  items read back: %d/%d non-nothing\n", count(!isnothing, got), length(records))
     finally
         MB.Cache.close_cache_db!(cachedb)
         MB.Cache._remove_cache_files(identity.cache_path)
@@ -459,7 +478,8 @@ function main(report_path::AbstractString)
     sayf("results=%s\n", report_path)
     ensure_dataset(DATA_DIR; n_files=N_FILES, rows=ROWS)
     if WORKSPACE_ONLY
-        workspace_cold_build(DATA_DIR)
+        workspace_cold_build(DATA_DIR; use_views=false)
+        workspace_cold_build(DATA_DIR; use_views=true)
         return nothing
     end
     project = bench_project()
@@ -467,7 +487,8 @@ function main(report_path::AbstractString)
     micro_benchmarks(sample)
     scan, source, records = macro_timings(project, DATA_DIR)
     expansion_timings(DATA_DIR)
-    workspace_cold_build(DATA_DIR)
+    workspace_cold_build(DATA_DIR; use_views=false)
+    workspace_cold_build(DATA_DIR; use_views=true)
     region_timings(project, source, records)
     return nothing
 end

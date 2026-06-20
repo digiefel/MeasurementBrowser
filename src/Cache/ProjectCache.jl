@@ -1,11 +1,13 @@
 using DuckDB
 using DBInterface
+using DataFrames: AbstractDataFrame, DataFrame, names, nrow
 using SHA
 using Serialization
 using Dates
 
-const PROJECT_CACHE_SCHEMA_VERSION = 1
+const PROJECT_CACHE_SCHEMA_VERSION = 2
 const PROJECT_CACHE_LOCK = ReentrantLock()
+const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
 
 """Which dict one metadata (EAV) row belongs to. Stored in the `scope` column."""
 @enum MetaScope::Int8 begin
@@ -41,6 +43,24 @@ end
 Base.showerror(io::IO, err::ProjectCacheError)::Nothing =
     print(io, "Invalid project cache $(err.path): $(err.message)")
 
+"""A cacheable item whose concrete item/data types have no native cache implementation."""
+struct UnsupportedItemDataCacheError <: Exception
+    item_id::String
+    item_type::DataType
+    data_type::DataType
+end
+
+"""Explain which item-data combination needs a cache implementation or explicit opt-out."""
+function Base.showerror(io::IO, err::UnsupportedItemDataCacheError)::Nothing
+    print(
+        io,
+        "Cannot persist item data for '$(err.item_id)': item type $(err.item_type) carries " *
+        "$(err.data_type), but the native cache currently supports DataItem values carrying " *
+        "AbstractDataFrame data. Define cacheable(::$(err.item_type)) = false to opt this item " *
+        "type out.",
+    )
+end
+
 """The source and DuckDB file belonging to one cache."""
 struct ProjectCacheIdentity
     cache_id::String
@@ -60,7 +80,7 @@ struct ProjectCacheStatus
     error_source_items::Int
 end
 
-"""All non-payload content needed to restore and compare a project cache."""
+"""All data-less content needed to restore and compare a project cache."""
 struct ProjectCacheIndex
     identity::ProjectCacheIdentity
     source::SourceScan
@@ -115,9 +135,8 @@ end
 """
 Open one DuckDB cache connection while holding the process-wide cache lock, then close it.
 
-Serializing all access keeps background cache updates from overlapping plot reads. A persistent
-writer/reader connection split is introduced when scanning writes incrementally; for now every
-operation opens and closes its own connection.
+This path is used for isolated cache operations outside a live workspace. A workspace keeps its own
+persistent reader and writer connections instead.
 """
 function with_cache_db(work::Function, path::AbstractString)::Any
     return lock(PROJECT_CACHE_LOCK) do
@@ -135,7 +154,7 @@ One open DuckDB cache file shared by all of a workspace's cache work.
 
 A single [`DuckDB.DB`](@ref) holds the file (and its lock) for the workspace's lifetime. The
 persistent `writer` connection serializes every mutation through `writer_lock`; the persistent
-`reader` (guarded by `reader_lock`) serves the interactive payload reads without per-call connection
+`reader` (guarded by `reader_lock`) serves interactive item-data reads without per-call connection
 setup. DuckDB's MVCC lets the reader snapshot committed state while a write is in flight, so plot
 reads never block the streaming scan. One-shot bulk reads (index load) still use a fresh connection.
 """
@@ -162,7 +181,7 @@ function open_cache_db(identity::ProjectCacheIdentity)::CacheDB
     catch err
         err isa InterruptException && rethrow()
         @warn(
-            "Discarding an unreadable project cache and rebuilding it",
+            "Discarding an incompatible or unreadable project cache and rebuilding it",
             cache_path=identity.cache_path,
             exception=err,
         )
@@ -176,6 +195,17 @@ function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
     db = DBInterface.connect(DuckDB.DB, identity.cache_path)
     try
         ensure_schema!(db)
+        schema_versions = String[
+            String(row.value)
+            for row in DBInterface.execute(
+                db,
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+            )
+        ]
+        if !isempty(schema_versions) &&
+           only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
+            throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
+        end
         writer = DBInterface.connect(db)
         reader = DBInterface.connect(db)
         return CacheDB(identity, db, writer, ReentrantLock(), reader, ReentrantLock())
@@ -225,6 +255,27 @@ function with_writer(work::Function, cachedb::CacheDB)::Any
     end
 end
 
+"""
+Run a complete cache update as one writer transaction.
+
+The caller may stream bounded batches through `connection`; DuckDB owns any uncommitted storage, so
+loaded source data can be released after each batch without paying one durable commit per batch.
+"""
+function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
+    return lock(cachedb.writer_lock) do
+        connection = cachedb.writer
+        DBInterface.execute(connection, "BEGIN TRANSACTION")
+        try
+            result = work(connection)
+            DBInterface.execute(connection, "COMMIT")
+            return result
+        catch
+            DBInterface.execute(connection, "ROLLBACK")
+            rethrow()
+        end
+    end
+end
+
 """Create the cache tables if they do not already exist."""
 function ensure_schema!(connection)::Nothing
     DBInterface.execute(connection, """
@@ -261,13 +312,18 @@ function ensure_schema!(connection)::Nothing
             PRIMARY KEY (scope, entity, key))
     """)
     DBInterface.execute(connection, """
-        CREATE TABLE IF NOT EXISTS payloads(
+        CREATE TABLE IF NOT EXISTS item_data(
             item_id TEXT PRIMARY KEY,
             source_item_id TEXT,
             sif_hash TEXT,
             if_hash TEXT,
-            format TEXT,
-            blob BLOB)
+            storage_id TEXT,
+            row_count BIGINT)
+    """)
+    DBInterface.execute(connection, """
+        CREATE TABLE IF NOT EXISTS dataframe_schemas(
+            storage_id TEXT PRIMARY KEY,
+            column_names VARCHAR[])
     """)
     return nothing
 end
@@ -479,8 +535,8 @@ function _source_item_locations(source::SourceScan)::Dict{String,Tuple{Union{Not
 end
 
 """
-Create or update a cache from a finished source scan. `replace=true` discards all existing payloads;
-a normal update preserves payloads for unchanged source items and removes only those invalidated by a
+Create or update a cache from a finished source scan. `replace=true` discards all existing item data;
+a normal update preserves item data for unchanged source items and removes only data invalidated by a
 changed, deleted, or newly failing source item. The whole index (source items, items, metadata) is
 rewritten from the scan.
 """
@@ -505,9 +561,9 @@ function write_project_cache!(
         ensure_schema!(connection)
         check_cancel()
 
-        # Decide which payloads survive before the index rows are replaced.
+        # Decide which cached item data survives before the index rows are replaced.
         if replace
-            DBInterface.execute(connection, "DELETE FROM payloads")
+            _delete_all_cached_item_data!(connection)
         else
             invalid = String[]
             for row in DBInterface.execute(
@@ -519,10 +575,8 @@ function write_project_cache!(
                 end
             end
             if !isempty(invalid)
-                delete_stmt =
-                    DBInterface.prepare(connection, "DELETE FROM payloads WHERE source_item_id = ?")
                 for id in invalid
-                    DBInterface.execute(delete_stmt, (id,))
+                    _delete_cached_source_item_data!(connection, id)
                 end
             end
         end
@@ -609,12 +663,13 @@ end
 # Incremental writing (per source item, as the scan streams)
 # --------------------------------------------------------------------------------------------------
 
-"""Delete every index and payload row, leaving an empty (but schema-valid) cache for a rebuild."""
+"""Delete every index and item-data row, leaving an empty (but schema-valid) cache for a rebuild."""
 function clear_cache_index!(cachedb::CacheDB)::Nothing
     with_writer(cachedb) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
-            for table in ("payloads", "metadata", "items", "source_items", "meta")
+            _delete_all_cached_item_data!(connection)
+            for table in ("metadata", "items", "source_items", "meta")
                 DBInterface.execute(connection, "DELETE FROM $table")
             end
             DBInterface.execute(connection, "COMMIT")
@@ -660,15 +715,13 @@ function _stored_fingerprint_hash(connection, source_item_id::AbstractString)
     return missing   # row absent (distinct from a present row whose hash is NULL)
 end
 
-"""Delete the index rows (and, when invalidated, payloads) belonging to one source item."""
+"""Delete the index rows and, when invalidated, cached data belonging to one source item."""
 function _delete_source_item_rows!(
     connection,
     source_item_id::AbstractString;
-    drop_payloads::Bool,
+    drop_item_data::Bool,
 )::Nothing
-    drop_payloads && DBInterface.execute(
-        DBInterface.prepare(connection, "DELETE FROM payloads WHERE source_item_id = ?"),
-        (source_item_id,))
+    drop_item_data && _delete_cached_source_item_data!(connection, source_item_id)
     DBInterface.execute(
         DBInterface.prepare(connection, """
             DELETE FROM metadata WHERE scope IN (?, ?)
@@ -686,12 +739,9 @@ end
 """Write one source-item batch on an already-open transaction."""
 function _reconcile_source_item!(
     connection,
-    records::Vector{ItemRecord};
-    data::Union{Nothing,AbstractVector}=nothing,
+    records::Vector{ItemRecord},
 )::String
     isempty(records) && throw(ArgumentError("reconcile_source_item! needs at least one record"))
-    data === nothing || length(records) == length(data) ||
-        throw(DimensionMismatch("records and data must have equal lengths"))
     source_item_id = first(records).source_item_id
     all(record -> record.source_item_id == source_item_id, records) ||
         throw(ArgumentError("reconcile_source_item! records must share one source item"))
@@ -703,7 +753,7 @@ function _reconcile_source_item!(
     previous_hash = _stored_fingerprint_hash(connection, source_item_id)
     fingerprint_changed = previous_hash === missing || previous_hash != new_hash
     _delete_source_item_rows!(
-        connection, source_item_id; drop_payloads=fingerprint_changed)
+        connection, source_item_id; drop_item_data=fingerprint_changed)
 
     DBInterface.execute(
         DBInterface.prepare(connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)"),
@@ -716,23 +766,57 @@ function _reconcile_source_item!(
             nothing,
         ))
 
-    item_stmt = DBInterface.prepare(connection, "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)")
-    metadata_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
-    for record in records
-        DBInterface.execute(item_stmt, (
-            record.id,
-            record.source_item_id,
-            record.item_label,
-            String(record.kind),
-            record.collection,
-            record.item_fingerprint === nothing ? nothing :
-                _serialize_bytes(record.item_fingerprint),
-        ))
-        _insert_metadata!(metadata_stmt, SCOPE_ITEM_PARAMETERS, record.id, record.parameters)
-        _insert_metadata!(metadata_stmt, SCOPE_ITEM_STATS, record.id, record.stats)
-    end
-    data === nothing || _write_payloads!(connection, records, data)
     return source_item_id
+end
+
+"""
+Append item records and their metadata in bulk.
+
+DuckDB.jl's Appender cannot currently append a non-null BLOB, so item fingerprints are filled by
+prepared updates only for the minority of records that have one. Everything else stays on the fast
+column/list appender path.
+"""
+function _append_item_records!(
+    connection,
+    records::Vector{ItemRecord},
+)::Nothing
+    item_appender = DuckDB.Appender(connection, "items")
+    metadata_appender = DuckDB.Appender(connection, "metadata")
+    try
+        for record in records
+            for value in (
+                record.id,
+                record.source_item_id,
+                record.item_label,
+                String(record.kind),
+                record.collection,
+                nothing,
+            )
+                DuckDB.append(item_appender, value)
+            end
+            DuckDB.end_row(item_appender)
+            _append_metadata!(
+                metadata_appender, SCOPE_ITEM_PARAMETERS, record.id, record.parameters)
+            _append_metadata!(
+                metadata_appender, SCOPE_ITEM_STATS, record.id, record.stats)
+        end
+        DuckDB.flush(item_appender)
+        DuckDB.flush(metadata_appender)
+    finally
+        DuckDB.close(item_appender)
+        DuckDB.close(metadata_appender)
+    end
+
+    fingerprint_stmt = DBInterface.prepare(
+        connection, "UPDATE items SET item_fingerprint = ? WHERE id = ?")
+    for record in records
+        record.item_fingerprint === nothing && continue
+        DBInterface.execute(
+            fingerprint_stmt,
+            (_serialize_bytes(record.item_fingerprint), record.id),
+        )
+    end
+    return nothing
 end
 
 """
@@ -760,28 +844,51 @@ The outer vectors and every records/data pair must align. Returns the source-ite
 same order.
 """
 function reconcile_source_items!(
-    cachedb::CacheDB,
+    connection,
     record_batches::Vector{Vector{ItemRecord}},
     data_batches::Vector{Vector{Any}},
 )::Vector{String}
     length(record_batches) == length(data_batches) ||
         throw(DimensionMismatch("record_batches and data_batches must have equal lengths"))
     isempty(record_batches) && return String[]
+    for (records, data) in zip(record_batches, data_batches)
+        length(records) == length(data) ||
+            throw(DimensionMismatch("each records/data batch must have equal lengths"))
+    end
 
-    return @timeit_debug TIMER "cache/reconcile" with_writer(cachedb) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            written = String[]
-            sizehint!(written, length(record_batches))
-            for (records, data) in zip(record_batches, data_batches)
-                push!(written, _reconcile_source_item!(connection, records; data))
+    return @timeit_debug TIMER "cache/reconcile" begin
+        written = String[]
+        sizehint!(written, length(record_batches))
+        @timeit_debug TIMER "cache/reconcile_index" begin
+            for records in record_batches
+                push!(written, _reconcile_source_item!(connection, records))
             end
-            DBInterface.execute(connection, "COMMIT")
-            written
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
         end
+        records = ItemRecord[]
+        data = Any[]
+        sizehint!(records, sum(length, record_batches))
+        sizehint!(data, sum(length, data_batches))
+        for batch in record_batches
+            append!(records, batch)
+        end
+        for batch in data_batches
+            append!(data, batch)
+        end
+        @timeit_debug TIMER "cache/reconcile_index" _append_item_records!(connection, records)
+        @timeit_debug TIMER "cache/reconcile_data" _write_cached_item_data!(
+            connection, records, data)
+        written
+    end
+end
+
+"""Write completed source-item batches in one standalone writer transaction."""
+function reconcile_source_items!(
+    cachedb::CacheDB,
+    record_batches::Vector{Vector{ItemRecord}},
+    data_batches::Vector{Vector{Any}},
+)::Vector{String}
+    return with_writer_transaction(cachedb) do connection
+        reconcile_source_items!(connection, record_batches, data_batches)
     end
 end
 
@@ -791,75 +898,79 @@ Finish an incremental scan: record bookkeeping the per-item writes can't carry.
 `written_ids` are the source items already persisted by [`reconcile_source_item!`](@ref). This writes
 the `meta` rows and collection-node parameters, records bare rows for skipped/failed source items,
 stamps per-source-item analysis errors, and deletes source items (cascading their items, metadata,
-and payloads) that the current scan no longer contains.
+and cached item data) that the current scan no longer contains.
 """
+function finalize_scan!(
+    connection,
+    identity::ProjectCacheIdentity,
+    source::SourceScan,
+    written_ids::AbstractSet{<:AbstractString},
+)::Nothing
+    new_index = ProjectCacheIndex(identity, source)
+    locations = _source_item_locations(source)
+    current_ids = keys(source.source_item_fingerprints)
+
+    @timeit_debug TIMER "cache/finalize" begin
+        _write_meta_rows!(connection, identity, source)
+
+        # Bare rows for source items the scan produced no records for (skipped or failed).
+        bare_stmt = DBInterface.prepare(connection,
+            "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)")
+        for (id, fingerprint) in source.source_item_fingerprints
+            id in written_ids && continue
+            path, timestamp = get(locations, id, (nothing, nothing))
+            DBInterface.execute(bare_stmt, (
+                id,
+                fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
+                _fingerprint_hash(fingerprint),
+                path,
+                timestamp,
+                get(new_index.analysis_errors, id, nothing),
+            ))
+        end
+
+        # Stamp errors onto source items that were written but later failed analysis interpretation.
+        error_stmt = DBInterface.prepare(connection,
+            "UPDATE source_items SET error = ? WHERE source_item_id = ?")
+        for (id, message) in new_index.analysis_errors
+            id in written_ids || continue
+            DBInterface.execute(error_stmt, (message, id))
+        end
+
+        # Collection-node parameters (node stats arrive later from analysis).
+        node_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
+        for (path, node) in source.hierarchy.index
+            entity = collection_path_key(collect(String, path))
+            DBInterface.execute(
+                DBInterface.prepare(connection,
+                    "DELETE FROM metadata WHERE scope = ? AND entity = ?"),
+                (Int8(SCOPE_NODE_PARAMETERS), entity))
+            isempty(node.parameters) ||
+                _insert_metadata!(node_stmt, SCOPE_NODE_PARAMETERS, entity, node.parameters)
+        end
+
+        # Drop source items (and everything they own) that the scan no longer contains.
+        stored_ids = String[
+            row.source_item_id
+            for row in DBInterface.execute(connection, "SELECT source_item_id FROM source_items")
+        ]
+        for id in stored_ids
+            id in current_ids && continue
+            _delete_source_item_rows!(connection, id; drop_item_data=true)
+        end
+    end
+    return nothing
+end
+
+"""Finish one scan in its own writer transaction."""
 function finalize_scan!(
     cachedb::CacheDB,
     source::SourceScan,
     written_ids::AbstractSet{<:AbstractString},
 )::Nothing
-    identity = cachedb.identity
-    new_index = ProjectCacheIndex(identity, source)
-    locations = _source_item_locations(source)
-    current_ids = keys(source.source_item_fingerprints)
-
-    @timeit_debug TIMER "cache/finalize" with_writer(cachedb) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            _write_meta_rows!(connection, identity, source)
-
-            # Bare rows for source items the scan produced no records for (skipped or failed).
-            bare_stmt = DBInterface.prepare(connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)")
-            for (id, fingerprint) in source.source_item_fingerprints
-                id in written_ids && continue
-                path, timestamp = get(locations, id, (nothing, nothing))
-                DBInterface.execute(bare_stmt, (
-                    id,
-                    fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
-                    _fingerprint_hash(fingerprint),
-                    path,
-                    timestamp,
-                    get(new_index.analysis_errors, id, nothing),
-                ))
-            end
-
-            # Stamp errors onto source items that were written but later failed analysis interpretation.
-            error_stmt = DBInterface.prepare(connection,
-                "UPDATE source_items SET error = ? WHERE source_item_id = ?")
-            for (id, message) in new_index.analysis_errors
-                id in written_ids || continue
-                DBInterface.execute(error_stmt, (message, id))
-            end
-
-            # Collection-node parameters (node stats arrive later from analysis).
-            node_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
-            for (path, node) in source.hierarchy.index
-                entity = collection_path_key(collect(String, path))
-                DBInterface.execute(
-                    DBInterface.prepare(connection,
-                        "DELETE FROM metadata WHERE scope = ? AND entity = ?"),
-                    (Int8(SCOPE_NODE_PARAMETERS), entity))
-                isempty(node.parameters) ||
-                    _insert_metadata!(node_stmt, SCOPE_NODE_PARAMETERS, entity, node.parameters)
-            end
-
-            # Drop source items (and everything they own) that the scan no longer contains.
-            stored_ids = String[
-                row.source_item_id
-                for row in DBInterface.execute(connection, "SELECT source_item_id FROM source_items")
-            ]
-            for id in stored_ids
-                id in current_ids && continue
-                _delete_source_item_rows!(connection, id; drop_payloads=true)
-            end
-
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
+    return with_writer_transaction(cachedb) do connection
+        finalize_scan!(connection, cachedb.identity, source, written_ids)
     end
-    return nothing
 end
 
 """
@@ -1046,172 +1157,5 @@ function _emit_cache_load_progress(
         skipped_source_items=index.source.hierarchy.skipped_count,
         current_source_item=index.identity.cache_path,
     )
-    return nothing
-end
-
-# --------------------------------------------------------------------------------------------------
-# Payloads
-# --------------------------------------------------------------------------------------------------
-
-# A payload is keyed by item id and validated against the current source-item and item fingerprints,
-# so a stale blob is never returned. The source-item fingerprint is the primary invalidation token;
-# the item fingerprint is optional (recipe items have none) and compared NULL-for-NULL when absent.
-# Without a source-item fingerprint there is nothing to validate against, so the item is never cached.
-_payload_cacheable(item::ItemRecord)::Bool = item.source_item_fingerprint !== nothing
-
-"""Fill one temporary request table with the item-data cache keys to read."""
-function _fill_payload_request!(connection, items::Vector{ItemRecord})::Nothing
-    DBInterface.execute(connection, """
-        CREATE TEMP TABLE IF NOT EXISTS requested_payloads(
-            position BIGINT,
-            item_id TEXT,
-            sif_hash TEXT,
-            if_hash TEXT)
-    """)
-    DBInterface.execute(connection, "DELETE FROM requested_payloads")
-
-    appender = DuckDB.Appender(connection, "requested_payloads")
-    try
-        for (position, item) in pairs(items)
-            check_cancel()
-            _payload_cacheable(item) || continue
-            row = (
-                Int64(position),
-                item.id,
-                _fingerprint_hash(item.source_item_fingerprint),
-                _fingerprint_hash(item.item_fingerprint),
-            )
-            for value in row
-                DuckDB.append(appender, value)
-            end
-            DuckDB.end_row(appender)
-        end
-        DuckDB.flush(appender)
-    finally
-        DuckDB.close(appender)
-    end
-    return nothing
-end
-
-"""Read valid item data for `items` on one connection; missing or stale entries stay `nothing`."""
-function _read_payloads(connection, items::Vector{ItemRecord})::Vector{Any}
-    data = Any[nothing for _ in items]
-    _fill_payload_request!(connection, items)
-    rows = DBInterface.execute(connection, """
-        SELECT r.position, p.blob
-        FROM requested_payloads r
-        JOIN payloads p ON p.item_id = r.item_id
-        WHERE p.sif_hash = r.sif_hash
-          AND (
-              (p.if_hash IS NULL AND r.if_hash IS NULL)
-              OR p.if_hash = r.if_hash
-          )
-        ORDER BY r.position
-    """)
-    for row in rows
-        check_cancel()
-        position = Int(row.position)
-        1 <= position <= length(data) || error(
-            "Invalid item-data cache read position $position for $(length(data)) requested items",
-        )
-        data[position] = _deserialize_blob(row.blob)
-    end
-    return data
-end
-
-"""Upsert item data for `items` on one connection; items with absent fingerprints are skipped."""
-function _write_payloads!(connection, items::Vector{ItemRecord}, data::Vector)::Nothing
-    statement = DBInterface.prepare(connection, """
-        INSERT INTO payloads VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT (item_id) DO UPDATE SET
-            source_item_id = excluded.source_item_id,
-            sif_hash = excluded.sif_hash,
-            if_hash = excluded.if_hash,
-            format = excluded.format,
-            blob = excluded.blob
-    """)
-    for (item, value) in zip(items, data)
-        check_cancel()
-        (_payload_cacheable(item) && value !== nothing) || continue
-        DBInterface.execute(statement, (
-            item.id,
-            item.source_item_id,
-            _fingerprint_hash(item.source_item_fingerprint),
-            _fingerprint_hash(item.item_fingerprint),
-            "serialize",
-            _serialize_bytes(value),
-        ))
-    end
-    return nothing
-end
-
-"""
-Read every valid requested item-data entry in one DuckDB operation. Missing or stale entries return
-`nothing`. Cached item data is valid only when both the source-item and item fingerprints still match.
-"""
-function cached_item_data(
-    index::Union{Nothing,ProjectCacheIndex},
-    items::Vector{ItemRecord},
-)::Vector{Any}
-    (index === nothing || isempty(items) || !isfile(index.identity.cache_path)) &&
-        return Any[nothing for _ in items]
-    return with_cache_db(index.identity.cache_path) do connection
-        _read_payloads(connection, items)
-    end
-end
-
-"""
-Write valid item data into the cache in one DuckDB operation. Items with a `nothing`
-source-item or item fingerprint are skipped (never persisted).
-"""
-function write_item_data_cache!(
-    index::Union{Nothing,ProjectCacheIndex},
-    items::Vector{ItemRecord},
-    data::Vector,
-)::Nothing
-    length(items) == length(data) ||
-        throw(DimensionMismatch("items and data must have equal lengths"))
-    (index === nothing || isempty(items) || !isfile(index.identity.cache_path)) && return nothing
-    with_cache_db(index.identity.cache_path) do connection
-        ensure_schema!(connection)
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            _write_payloads!(connection, items, data)
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
-    end
-    return nothing
-end
-
-"""Read valid cached item data for `items` from a workspace's open cache (no origin access)."""
-function read_item_payloads(cachedb::CacheDB, items::Vector{ItemRecord})::Vector{Any}
-    isempty(items) && return Any[]
-    return @timeit_debug TIMER "cache/read_payloads" with_persistent_reader(cachedb) do connection
-        _read_payloads(connection, items)
-    end
-end
-
-"""Persist `data` for `items` into a workspace's open cache (skipping uncacheable entries)."""
-function write_item_payloads!(
-    cachedb::CacheDB,
-    items::Vector{ItemRecord},
-    data::Vector,
-)::Nothing
-    length(items) == length(data) ||
-        throw(DimensionMismatch("items and data must have equal lengths"))
-    isempty(items) && return nothing
-    @timeit_debug TIMER "cache/write_payloads" with_writer(cachedb) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            _write_payloads!(connection, items, data)
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
-    end
     return nothing
 end

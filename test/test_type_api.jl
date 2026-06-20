@@ -5,7 +5,7 @@ using GLMakie: Figure, Axis
 const MB = MeasurementBrowser
 
 # A custom item via the type API: subtype AbstractDataItem, carry metadata as typed fields and the
-# payload directly. The engine indexes it through the same contract the package's DataItem answers.
+# data directly. The engine indexes it through the same contract the package's DataItem answers.
 struct Photo <: MB.AbstractDataItem
     id::String
     collection::Vector{String}

@@ -16,9 +16,9 @@ Current source items are processed concurrently. One worker owns one source item
 2. run `process` and item stats,
 3. returned the completed records and cacheable loaded items.
 
-The scan collector publishes records immediately and commits up to one source item per worker in one
-DuckDB transaction. Its bounded result queue prevents completed loaded batches from accumulating for
-the whole source.
+The scan collector publishes records immediately and stages up to one source item per worker at a
+time. All bounded batches share one DuckDB transaction, committed after the complete scan. The
+bounded result queue prevents loaded items from accumulating for the whole source.
 After all source items finish, collection stats run from data-less items containing the completed
 parameters and item stats.
 
@@ -56,10 +56,18 @@ unit. Parameter-only changes update metadata without discarding still-valid item
 | `source_items` | source-item fingerprints, locations, and errors |
 | `items` | data-less logical item records |
 | `metadata` | typed item/collection parameters and stats |
-| `payloads` | currently serialized cacheable loaded items, validated by fingerprints |
+| `item_data` | item fingerprints, native storage ids, and row counts |
+| `dataframe_schemas` | ordered user column names for each DataFrame shape |
+| `dataframe_<storage-id>` | native columnar rows for all cached DataFrames with one shape |
 
-The `payloads` name is internal storage terminology. The public model is `item_data(item)` plus the
-existing `cacheable(item)` and `fingerprint(item)` hooks.
+Standard `DataItem` values carrying any `AbstractDataFrame`, including row views returned by an
+expanding `entries` callback, are registered with DuckDB and copied directly into shared columnar
+tables. Cached reads return ordinary independent `DataFrame`s. Cache writes stage at most one source
+item per scan worker at a time, so an expanded source is written once without allowing loaded data
+to accumulate for the whole scan. Julia serialization is not involved. The public model remains
+`item_data(item)` plus the existing `cacheable(item)` and `fingerprint(item)` hooks.
+Built-in `DataItem`s carrying other data types remain source-backed until that type has a native
+cache implementation.
 
 ## Reads And Concurrency
 
@@ -70,8 +78,8 @@ Item materialization checks, in order:
 3. `load_data_item` from the source.
 
 One persistent writer connection serializes mutations. A separate persistent reader serves
-interactive item-data reads from committed snapshots. Item-data reads are requested in one joined
-query; batch writes use one transaction.
+interactive item-data reads from the last committed snapshot. Item-data reads are requested in one
+joined query; one complete scan uses one write transaction.
 
 ## Status
 

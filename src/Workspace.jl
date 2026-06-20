@@ -1,13 +1,13 @@
 module Workspace
 
 using DataFrames: DataFrame
+using DBInterface
 import ..Profiling
 using ..Profiling: TIMER
 using TimerOutputs: @timeit_debug
 
 import ..Cache:
     CacheDB,
-    ProjectCacheError,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
@@ -19,8 +19,10 @@ import ..Cache:
     persist_stats!,
     project_cache_id,
     project_cache_identity,
-    read_item_payloads,
+    read_cached_item_data,
     reconcile_source_items!,
+    with_reader,
+    with_writer_transaction,
     write_scan_identity!
 import ..ItemIndex:
     DataItem,
@@ -128,7 +130,7 @@ const DEFAULT_ITEM_CACHE_CAPACITY = 256
 Bounded least-recently-used cache of materialized items, keyed by item id.
 
 Each entry stores the `(source_item_fingerprint, item_fingerprint)` it was loaded at, so a stale entry
-is rejected on read. Eviction is cheap: an evicted item is re-materialized from the DuckDB payload
+is rejected on read. Eviction is cheap: an evicted item is re-materialized from cached item data
 cache without re-reading the origin.
 """
 mutable struct ItemCache

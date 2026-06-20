@@ -129,7 +129,7 @@ source_item_timestamp(::AbstractDataSourceItem) = nothing
 """Interpret one source item into lightweight logical data items."""
 function data_items end
 
-"""Reload one logical data item with its payload attached."""
+"""Reload one logical data item with its data attached."""
 function load_data_item end
 
 # ---------------------------------------------------------------------------
@@ -162,13 +162,13 @@ function parameters end
 """Computed statistics of an item (`Dict{Symbol,Any}`)."""
 function stats end
 
-"""The materialized payload carried by an item (also reachable as `item.data`)."""
+"""The materialized data carried by an item (also reachable as `item.data`)."""
 function item_data end
 
 """Process an item into the item a view consumes. Optional; default identity."""
 process(item::AbstractDataItem) = item
 
-"""Whether an item's payload should be persisted by the data cache. Optional; default `false`."""
+"""Whether an item's data should be persisted by the data cache. Optional; default `false`."""
 cacheable(::AbstractDataItem)::Bool = false
 
 fingerprint(::AbstractDataItem) = nothing

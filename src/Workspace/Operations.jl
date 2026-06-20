@@ -128,10 +128,10 @@ cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
 Start one source scan that progressively populates the workspace index and cache.
 
 The scan first surfaces any already-cached index for an instant first view, then streams freshly
-interpreted source items into the workspace and a bounded cache-write batch. One cache writer commits
-up to one source item per worker at a time, so progress survives an early exit without paying one
-transaction per source item. `rebuild=true` first wipes the cache and ignores the prior scan, forcing
-a full re-interpretation.
+interpreted source items into the workspace and a bounded cache-write batch. One cache writer stages
+up to one source item per worker at a time, then commits the complete scan once. This avoids both
+whole-tree loaded-data retention and one durable transaction per source item. `rebuild=true` first
+wipes the cache and ignores the prior scan, forcing a full re-interpretation.
 """
 function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
@@ -159,12 +159,13 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
             cached = if rebuild
                 nothing
             else
-                try
-                    load_cache_index(cachedb)
-                catch error
-                    error isa ProjectCacheError || rethrow()
-                    nothing
+                cache_built = with_reader(cachedb) do connection
+                    only(DBInterface.execute(
+                        connection,
+                        "SELECT count(*) > 0 AS built FROM meta WHERE key = 'schema_version'",
+                    )).built
                 end
+                cache_built ? load_cache_index(cachedb) : nothing
             end
             put!(events, (
                 kind=:cache_state,
@@ -173,7 +174,7 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
                 index=cached,
             ))
 
-            # Make completed cache batches loadable even if the scan is interrupted before finalizing.
+            # Establish cache identity before the scan transaction writes its replacement contents.
             write_scan_identity!(cachedb)
             wrote = Ref(false)
             written_ids = Set{String}()
@@ -181,50 +182,58 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
             data_batches = Vector{Vector{Any}}()
             cache_batch_size = max(1, Base.Threads.nthreads())
 
-            # The scan collector is the single cache writer. Batching one source item per worker
-            # keeps transactions cheap while the bounded worker-result queue limits resident data.
-            function flush_cache_batch!()::Nothing
-                isempty(record_batches) && return nothing
-                union!(
-                    written_ids,
-                    reconcile_source_items!(cachedb, record_batches, data_batches),
-                )
-                empty!(record_batches)
-                empty!(data_batches)
-                return nothing
-            end
+            source, cache_hit = with_writer_transaction(cachedb) do connection
+                # The collector writes one bounded worker-sized batch at a time. All batches share
+                # this transaction, so loaded data is released promptly but the durable commit is
+                # paid only once after the complete scan.
+                function flush_cache_batch!()::Nothing
+                    isempty(record_batches) && return nothing
+                    union!(
+                        written_ids,
+                        reconcile_source_items!(connection, record_batches, data_batches),
+                    )
+                    empty!(record_batches)
+                    empty!(data_batches)
+                    return nothing
+                end
 
-            source = with_cancel(() -> cancel_token[]) do
-                scan_source(
-                    workspace.project,
-                    workspace.source;
-                    cached_source=cached === nothing ? nothing : cached.source,
-                    on_progress=(progress) -> put!(events, (
-                        kind=:progress,
-                        job_id=scan_id,
-                        progress,
-                    )),
-                    on_items=(items) -> begin
-                        records = ItemRecord[ItemRecord(item) for item in items]
-                        put!(events, (kind=:items, job_id=scan_id, items=records))
-                    end,
-                    on_source_item=(interpretation::SourceItemInterpretation) -> begin
-                        records = interpretation.records
-                        data = Any[
-                            item !== nothing && cacheable(item) ? item : nothing
-                            for item in interpretation.loaded_items
-                        ]
-                        wrote[] || put!(events, (kind=:cache_writing, job_id=scan_id))
-                        wrote[] = true
-                        push!(record_batches, records)
-                        push!(data_batches, data)
-                        length(record_batches) >= cache_batch_size && flush_cache_batch!()
-                    end,
-                )
+                source = with_cancel(() -> cancel_token[]) do
+                    scan_source(
+                        workspace.project,
+                        workspace.source;
+                        cached_source=cached === nothing ? nothing : cached.source,
+                        on_progress=(progress) -> put!(events, (
+                            kind=:progress,
+                            job_id=scan_id,
+                            progress,
+                        )),
+                        on_items=(items) -> begin
+                            records = ItemRecord[ItemRecord(item) for item in items]
+                            put!(events, (kind=:items, job_id=scan_id, items=records))
+                        end,
+                        on_source_item=(interpretation::SourceItemInterpretation) -> begin
+                            records = interpretation.records
+                            data = Any[
+                                item !== nothing && cacheable(item) ? item : nothing
+                                for item in interpretation.loaded_items
+                            ]
+                            wrote[] || put!(events, (
+                                kind=:cache_writing,
+                                job_id=scan_id,
+                            ))
+                            wrote[] = true
+                            push!(record_batches, records)
+                            push!(data_batches, data)
+                            length(record_batches) >= cache_batch_size && flush_cache_batch!()
+                        end,
+                    )
+                end
+                flush_cache_batch!()
+                cache_hit = cached !== nothing && source === cached.source
+                cache_hit || finalize_scan!(
+                    connection, workspace.cache.identity, source, written_ids)
+                return source, cache_hit
             end
-            flush_cache_batch!()
-            cache_hit = cached !== nothing && source === cached.source
-            cache_hit || finalize_scan!(cachedb, source, written_ids)
             put!(events, (
                 kind=:source,
                 job_id=scan_id,

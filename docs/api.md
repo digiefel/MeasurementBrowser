@@ -195,16 +195,20 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
 - **`entries(file, data)`** enumerates the items in one file, returning `Vector{<:AbstractDataItem}`
   — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). It attaches
   the raw per-item data as `item.data`; optional `process(item)` returns the item that stats and views
-  receive. The source worker runs `process` and `stats` before releasing the file data, while records
-  are streamed to the workspace as each source item finishes. The adapter derives each internal record from the returned item and the
-  `SourceFile`. When a recipe entry does not provide an id, the adapter mints one from the
-  source-item path, kind, and `parameters`.
+  receive. When one source expands into many tabular items, `item.data` may be a row view such as
+  `view(data, rows, :)`; the view keeps the parsed source table alive without copying its columns.
+  The source worker runs `process`, item stats, and cache writing before releasing those items.
+  Overlapping views share storage, so project callbacks should treat them as read-only unless shared
+  mutation is intentional. Later cache materialization returns independent `DataFrame`s. Records are
+  streamed to the workspace as each source item finishes. The adapter derives each internal record
+  from the returned item and the `SourceFile`. When a recipe entry does not provide an id, the
+  adapter mints one from the source-item path, kind, and `parameters`.
   **Project code never constructs or names the internal record.**
 - **`register_collection_stat!`** is the high-level form of the source's `collection_stats` hook: its
   `compute_stats` fold runs in background analysis over each collection node's items and the result
   is stored on the node.
 - **`register_plot!`** `setup(workspace, items)` returns the `Figure`; `draw(workspace, items, figure)`
-  fills it, each item carrying its payload as `item.data`. See
+  fills it, each item carrying its loaded data as `item.data`. See
   [plans/plotting-api-design.md](plans/plotting-api-design.md).
 
 ## Types you name

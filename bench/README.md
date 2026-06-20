@@ -30,7 +30,7 @@ julia --project=bench --threads=auto bench/cache_pipeline.jl [n_files] [rows_per
 Generates a synthetic CSV dataset and reports, from real functions on real data:
 
 1. **per-item micro-benchmarks** — CSV parse vs serialize vs deserialize vs DuckDB blob round-trip
-   vs DuckDB columnar round-trip (this is what settles "what's the fastest way to cache a payload?");
+   vs DuckDB columnar round-trip (this settles the fastest way to cache item data);
 2. **whole-dataset macro timings** — the real parallel scan and a single-threaded analysis loop;
 3. **engine per-region timings** — the `Profiling` report over a representative cache exercise.
 

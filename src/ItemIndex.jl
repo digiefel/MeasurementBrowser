@@ -1,6 +1,7 @@
 module ItemIndex
 
 using Dates
+using DataFrames: AbstractDataFrame
 
 import ..Projects
 import ..Projects:
@@ -234,10 +235,10 @@ end
 """
 The normal concrete item the package ships and `register_item!` produces: a loaded, data-bearing
 value handed to plot/view callbacks. It answers the `AbstractDataItem` contract from its own fields
-and carries its payload as `item.data`. A project that needs more subtypes `AbstractDataItem`
+and carries its loaded data as `item.data`. A project that needs more subtypes `AbstractDataItem`
 directly instead, side by side with this type.
 
-The engine materializes a `DataItem` from an internal `ItemRecord` plus a data payload at view time,
+The engine materializes a `DataItem` from an internal `ItemRecord` plus loaded data at view time,
 sharing the record's `collection`/`parameters`/`stats` so engine-computed metadata is already
 present. `ItemRecord` is never a field of a `DataItem`.
 """
@@ -251,7 +252,7 @@ struct DataItem <: AbstractDataItem
     data::Any
 end
 
-"""Materialize a loaded item from an internal record and its (processed) payload."""
+"""Materialize a loaded item from an internal record and its processed data."""
 DataItem(record::ItemRecord, data)::DataItem = DataItem(
     record.id,
     record.item_label,
@@ -262,7 +263,7 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
     data,
 )
 
-"""Copy one `DataItem`, replacing only its payload."""
+"""Copy one `DataItem`, replacing only its data."""
 DataItem(item::DataItem, data)::DataItem = DataItem(
     item.id,
     item.label,
@@ -277,7 +278,7 @@ DataItem(item::DataItem, data)::DataItem = DataItem(
 Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
 
 A recipe supplies the metadata it knows: `kind`, `collection`, and optionally
-`label`/`parameters`/`id`. `data` carries the raw per-item payload; an optional `process` callback
+`label`/`parameters`/`id`. `data` carries the raw per-item data; an optional `process` callback
 can return another item before views receive it.
 """
 function DataItem(;
@@ -336,9 +337,10 @@ Projects.stats(item::DataItem)::Dict{Symbol,Any} = item.stats
 Projects.item_data(item::DataItem) = item.data
 Projects.fingerprint(item::DataItem) = nothing
 
-# The recipe API's standard item carries its parsed payload, which is exactly what the payload cache
-# exists to avoid re-reading from the origin; cache it by default. Type-API items opt in themselves.
-Projects.cacheable(::DataItem)::Bool = true
+# The built-in item opts DataFrame values and views into the native columnar cache. Other data types
+# remain source-backed until they receive their own native storage method. Type-API items opt in
+# themselves.
+Projects.cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame
 
 """
 One node in the collection hierarchy.

@@ -1,10 +1,10 @@
 """
 Materialize the loaded items for selected records.
 
-Each record is served from the in-memory LRU when fresh, else from the DuckDB payload cache (one
+Each record is served from the in-memory LRU when fresh, else from the DuckDB item-data cache (one
 snapshot read, no origin access), else by reloading from the origin. The interactive path performs no
-writes: background analysis is what populates the durable payload cache (it already reads every item),
-so a plot never pays a serialize-and-insert. Within a session the LRU keeps reselected items hot.
+writes: source scanning populates the durable cache while each loaded item is already in memory, so a
+plot never pays a database write. Within a session the LRU keeps reselected items hot.
 """
 function materialize_items(
     workspace::Workspace,
@@ -26,10 +26,10 @@ function materialize_items(
     end
     isempty(misses) && return loaded
 
-    # The DuckDB payload cache may already hold the raw loaded item, sparing an origin read.
-    payloads = read_item_payloads(workspace.cache.db, misses)
+    # DuckDB may already hold the loaded item data, sparing a source read.
+    cached_data = read_cached_item_data(workspace.cache.db, misses)
     for (index, record) in pairs(misses)
-        raw = payloads[index]
+        raw = cached_data[index]
         if raw === nothing
             # FIXME: The low-level contract reloads by source-item id and id, so sources may need
             # to re-find context they had during discovery. Pass a richer handle if this gets painful.
@@ -45,7 +45,7 @@ function materialize_items(
 end
 
 """
-Return loaded item payloads for callers that inspect raw tabular data.
+Return loaded item data for callers that inspect raw tabular values.
 """
 function read_item_data(
     workspace::Workspace,

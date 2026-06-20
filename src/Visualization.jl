@@ -131,7 +131,7 @@ end
 """
 Draw raw-data items directly while bypassing processed data.
 
-`items` carry the unprocessed payload as `item.data`, so a debug callback can tune the analysis live.
+`items` carry unprocessed data as `item.data`, so a debug callback can tune the analysis live.
 """
 function debug_plot(
     ::Workspace.Workspace,

@@ -159,7 +159,7 @@ Register (or replace) the recipe for one item kind.
 
 `detect`, `read`, and `entries` are required. `entries(file, data)` returns the per-item entries as
 `AbstractDataItem`s — the package's `DataItem` (recipe API) or your own subtype (type API); a
-single-item file just returns a vector of one. Attach the raw per-item payload as `item.data`;
+single-item file just returns a vector of one. Attach the raw per-item data as `item.data`;
 optional `process`/`stats`/`label` refine the recipe
 API. Re-calling with the same `kind` replaces the recipe in place, so editing and re-running the line
 updates a live project.

@@ -43,7 +43,7 @@ struct DataItem <: AbstractDataItem  # the normal item; the recipe API's `entrie
     collection::Vector{String}
     parameters::Dict{Symbol,Any}
     stats::Dict{Symbol,Any}
-    data::Any                        # the payload, reachable as `item.data`
+    data::Any                        # loaded item data, reachable as `item.data`
 end
 
 struct ItemRecord                    # internal metadata record (never seen by source/project code)
@@ -156,7 +156,10 @@ a source-item identity but must have distinct `id` values within the source. The
 missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
 
 The source item is read once for the expansion. Processing and item stats for every child complete
-before the worker releases the loaded source data.
+before the worker releases the loaded source data. A child may carry a view into that data instead
+of a copy. The view keeps its parent alive through processing, stats, and cache writing; afterward
+the temporary source data can be released. Overlapping views share storage and should normally be
+treated as read-only. DataFrames restored from the cache are independent ordinary `DataFrame`s.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
 into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number
