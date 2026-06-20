@@ -20,6 +20,8 @@ import DuckDB, DBInterface
 
 const N_FILES = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 500
 const ROWS = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 1000
+const EXPANDED_SOURCE_ITEMS = max(1, N_FILES ÷ 10)
+const ITEMS_PER_EXPANDED_SOURCE = 100
 const BENCH_DIR = @__DIR__
 const ROOT_DIR = normpath(joinpath(BENCH_DIR, ".."))
 const DATA_DIR = joinpath(BENCH_DIR, "data", "cache_pipeline_$(N_FILES)x$(ROWS)")
@@ -28,6 +30,7 @@ const OUT = Ref{IO}(stdout)
 
 ms(seconds) = @sprintf("%.3f ms", seconds * 1e3)
 kb(bytes) = @sprintf("%.1f KB", bytes / 1024)
+mib(bytes) = @sprintf("%.1f MiB", bytes / 1024^2)
 
 struct TeeIO <: IO
     a::IO
@@ -122,6 +125,63 @@ function bench_project()
         ),
     )
     return project
+end
+
+"""
+Build a project where ten percent of source items expand into 100 data items.
+
+Expanded items copy their columns into separate `DataFrame`s, matching ordinary project code that
+constructs one table per logical item. The read counter makes repeated origin reads visible instead
+of inferring them from elapsed time.
+"""
+function expansion_project()
+    expanded_filenames = Set(
+        "meas_$(lpad(index, 5, '0')).csv"
+        for index in 1:EXPANDED_SOURCE_ITEMS
+    )
+    read_count = Threads.Atomic{Int}(0)
+    project = MB.define_project("ExpansionBench")
+    MB.register_item!(
+        project, :iv;
+        detect=file -> endswith(file.filename, ".csv"),
+        read=function (file)
+            Threads.atomic_add!(read_count, 1)
+            return CSV.read(file.filepath, DataFrame)
+        end,
+        entries=function (file, data)
+            file.filename in expanded_filenames || return [MB.DataItem(
+                kind=:iv,
+                collection=[splitext(file.filename)[1]],
+                parameters=Dict{Symbol,Any}(),
+                data=data,
+            )]
+
+            row_count = nrow(data)
+            items = MB.AbstractDataItem[]
+            sizehint!(items, ITEMS_PER_EXPANDED_SOURCE)
+            for part in 1:ITEMS_PER_EXPANDED_SOURCE
+                first_row = fld((part - 1) * row_count, ITEMS_PER_EXPANDED_SOURCE) + 1
+                last_row = fld(part * row_count, ITEMS_PER_EXPANDED_SOURCE)
+                rows = first_row:last_row
+                push!(items, MB.DataItem(
+                    kind=:iv,
+                    collection=[splitext(file.filename)[1]],
+                    parameters=Dict{Symbol,Any}(:part => part),
+                    data=DataFrame(
+                        v=data.v[rows],
+                        i=data.i[rows],
+                        t=data.t[rows],
+                    ),
+                ))
+            end
+            return items
+        end,
+        stats=item -> Dict{Symbol,Any}(
+            :rows => nrow(item.data),
+            :imean => Statistics.mean(item.data.i),
+        ),
+    )
+    return project, read_count
 end
 
 # --------------------------------------------------------------------------------------------------
@@ -219,10 +279,87 @@ function macro_timings(project, dir::AbstractString)
 end
 
 # --------------------------------------------------------------------------------------------------
-# 3. Engine per-region timings (TimerOutputs) over a representative cache exercise.
+# 3. Source-item expansion: current per-item reloads versus a read-once source pass.
+# --------------------------------------------------------------------------------------------------
+function expansion_timings(dir::AbstractString)
+    section(
+        "3. SOURCE-ITEM EXPANSION " *
+        "($(EXPANDED_SOURCE_ITEMS)/$(N_FILES) sources expand to " *
+        "$(ITEMS_PER_EXPANDED_SOURCE) data items)",
+    )
+    project, read_count = expansion_project()
+    source = MB.DirectorySource(dir)
+
+    # Compile the scan path before measuring it.
+    MB.scan_source(project, source)
+    Threads.atomic_xchg!(read_count, 0)
+    scan_timing = @timed scan = MB.scan_source(project, source)
+    scan_reads = read_count[]
+    records = scan.hierarchy.all_items
+
+    function per_item_analysis()
+        total = 0.0
+        for record in records
+            item = MB.load_data_item(project, source, record.source_item_id, record.id)
+            total += MB.Projects.compute_item_stats(project, source, item)[:imean]
+        end
+        return total
+    end
+
+    per_item_analysis()
+    Threads.atomic_xchg!(read_count, 0)
+    per_item_timing = @timed per_item_analysis()
+    per_item_reads = read_count[]
+
+    discovered = MB.source_items(source)
+    function source_pass_analysis()
+        total = 0.0
+        for source_item in discovered
+            for item in MB.data_items(project, source, source_item)
+                total += MB.Projects.compute_item_stats(project, source, item)[:imean]
+            end
+        end
+        return total
+    end
+
+    source_pass_analysis()
+    Threads.atomic_xchg!(read_count, 0)
+    source_pass_timing = @timed source_pass_analysis()
+    source_pass_reads = read_count[]
+
+    expected_items =
+        EXPANDED_SOURCE_ITEMS * ITEMS_PER_EXPANDED_SOURCE +
+        (N_FILES - EXPANDED_SOURCE_ITEMS)
+    length(records) == expected_items || error(
+        "Expansion benchmark produced $(length(records)) data items; expected $expected_items",
+    )
+    scan_reads == N_FILES || error(
+        "Expansion scan read $scan_reads source items; expected exactly $N_FILES",
+    )
+    source_pass_reads == N_FILES || error(
+        "Read-once analysis read $source_pass_reads source items; expected exactly $N_FILES",
+    )
+
+    sayf("  scan:                       %s  alloc=%s  gc=%s  source reads=%d  data items=%d\n",
+        ms(scan_timing.time), mib(scan_timing.bytes), ms(scan_timing.gctime),
+        scan_reads, length(records))
+    sayf("  current per-item analysis:  %s  alloc=%s  gc=%s  source reads=%d\n",
+        ms(per_item_timing.time), mib(per_item_timing.bytes), ms(per_item_timing.gctime),
+        per_item_reads)
+    sayf("  read-once source pass:      %s  alloc=%s  gc=%s  source reads=%d\n",
+        ms(source_pass_timing.time), mib(source_pass_timing.bytes), ms(source_pass_timing.gctime),
+        source_pass_reads)
+    sayf("  avoidable analysis cost:    %.2fx time, %.2fx allocation\n",
+        per_item_timing.time / source_pass_timing.time,
+        per_item_timing.bytes / source_pass_timing.bytes)
+    return nothing
+end
+
+# --------------------------------------------------------------------------------------------------
+# 4. Engine per-region timings (TimerOutputs) over a representative cache exercise.
 # --------------------------------------------------------------------------------------------------
 function region_timings(project, source, records)
-    section("3. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
+    section("4. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
     identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
     MB.Cache._remove_cache_files(identity.cache_path)
     cachedb = MB.Cache.open_cache_db(identity)
@@ -252,6 +389,7 @@ function main(report_path::AbstractString)
     sample = joinpath(DATA_DIR, "meas_00001.csv")
     micro_benchmarks(sample)
     scan, source, records = macro_timings(project, DATA_DIR)
+    expansion_timings(DATA_DIR)
     region_timings(project, source, records)
     return nothing
 end
