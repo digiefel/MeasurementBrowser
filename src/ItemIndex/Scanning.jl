@@ -139,7 +139,11 @@ function interpret_source_items(
     source_items::Vector{<:AbstractDataSourceItem};
     on_items::Union{Nothing,Function}=nothing,
     on_source_item::Union{Nothing,Function}=nothing,
+    on_kept_source_item::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
+    unchanged_source_item_ids::Set{String}=Set{String}(),
+    cached_records_by_source_item::Dict{String,Vector{ItemRecord}}=
+        Dict{String,Vector{ItemRecord}}(),
 )::NamedTuple
     processed_count::Int = 0
     item_count::Int = 0
@@ -171,6 +175,24 @@ function interpret_source_items(
             Base.Threads.@spawn with_cancel(cancel_requested) do
                 for (index, source_item) in work
                     source_item_id_value = source_item_id(source_item)
+                    if source_item_id_value in unchanged_source_item_ids
+                        # Fingerprint unchanged: reuse the cached records without reading the origin
+                        # or recomputing process/stats. No loaded data is produced, so the cache
+                        # writer never touches this source item's existing rows.
+                        put!(results, (
+                            kind=:unchanged,
+                            index,
+                            source_item_id=source_item_id_value,
+                            interpretation=SourceItemInterpretation(
+                                get(cached_records_by_source_item, source_item_id_value,
+                                    ItemRecord[]),
+                                Union{Nothing,AbstractDataItem}[],
+                                ItemFailure[],
+                            ),
+                            failure=nothing,
+                        ))
+                        continue
+                    end
                     interpretation = try
                         check_cancel()
                         interpreted = interpret_source_item(project, source, source_item)
@@ -249,7 +271,14 @@ function interpret_source_items(
             records = interpretation.records
             records_by_position[index] = records
             isempty(records) || on_items === nothing || on_items(records)
-            isempty(records) || on_source_item === nothing || on_source_item(interpretation)
+            if result.kind === :unchanged
+                # Preserve the existing cached rows for this source item; never re-cache it.
+                on_kept_source_item === nothing ||
+                    on_kept_source_item(result.source_item_id)
+            else
+                isempty(records) || on_source_item === nothing ||
+                    on_source_item(interpretation)
+            end
             isempty(records) ? (skipped_count += 1) :
                 (item_count += length(records))
             processed_count += 1
@@ -276,6 +305,34 @@ function interpret_source_items(
 end
 
 """
+Decide which source items can be reused from a cached scan without re-reading them.
+
+A source item is reusable when it is still discovered and its fingerprint is exactly the cached one.
+Returns the cached records grouped by source item and the set of reusable source-item ids (including
+reusable items that previously produced no records, so the scan keeps their bare/error rows).
+"""
+function _incremental_reuse_plan(
+    cached_source::SourceScan,
+    fingerprints::Dict{String,Any},
+)::Tuple{Dict{String,Vector{ItemRecord}},Set{String}}
+    cached_fingerprints = cached_source.source_item_fingerprints
+    records_by_source_item = Dict{String,Vector{ItemRecord}}()
+    for record in cached_source.hierarchy.all_items
+        push!(
+            get!(() -> ItemRecord[], records_by_source_item, record.source_item_id),
+            record,
+        )
+    end
+    unchanged = Set{String}()
+    for (source_item, fingerprint) in fingerprints
+        haskey(cached_fingerprints, source_item) || continue
+        isequal(cached_fingerprints[source_item], fingerprint) || continue
+        push!(unchanged, source_item)
+    end
+    return records_by_source_item, unchanged
+end
+
+"""
 Scan one source into its complete item hierarchy.
 """
 function scan_source(
@@ -285,6 +342,7 @@ function scan_source(
     on_progress::Union{Nothing,Function}=nothing,
     on_items::Union{Nothing,Function}=nothing,
     on_source_item::Union{Nothing,Function}=nothing,
+    on_kept_source_item::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
     reset_scan_profile!(project)
@@ -329,12 +387,24 @@ function scan_source(
         loaded_items=0,
         skipped_source_items=0,
     )
+    # Reuse unchanged source items from the cache (read once, never again across sessions). Collection
+    # parameters bake into a record's stored parameters, so when they are present we re-interpret
+    # everything rather than risk serving stale effective parameters from a reused record.
+    cached_records_by_source_item, unchanged_source_item_ids =
+        if cached_source !== nothing && !has_collection_parameters(source)
+            _incremental_reuse_plan(cached_source, fingerprints)
+        else
+            (Dict{String,Vector{ItemRecord}}(), Set{String}())
+        end
     summary = interpret_source_items(
         project,
         source,
         discovered;
         on_items,
         on_source_item,
+        on_kept_source_item,
+        unchanged_source_item_ids,
+        cached_records_by_source_item,
         on_progress=progress -> emit_progress(
             on_progress;
             phase=:scanning,

@@ -381,6 +381,25 @@ end
 # --------------------------------------------------------------------------------------------------
 # 4. Full workspace cold build: scan, stats, cache writes, then cache-only materialization.
 # --------------------------------------------------------------------------------------------------
+"""Drive a workspace to a settled scan + analysis state, failing loudly on error or timeout."""
+function await_workspace!(workspace; timeout::Real=120)
+    deadline = time() + timeout
+    while time() < deadline
+        MB.Workspace.poll_workspace!(workspace)
+        workspace.scan.state == :error &&
+            error("Workspace scan failed: $(workspace.scan.error)")
+        workspace.analysis.state == :error &&
+            error("Workspace analysis failed: $(workspace.analysis.error)")
+        scan_done = workspace.scan.state in (:done, :unchanged)
+        analysis_idle = workspace.analysis.state in (:idle, :done, :canceled)
+        scan_done && analysis_idle && break
+        sleep(0.005)
+    end
+    workspace.scan.state in (:done, :unchanged) ||
+        error("Workspace scan did not finish within $timeout seconds")
+    return nothing
+end
+
 function workspace_cold_build(dir::AbstractString; use_views::Bool)
     item_storage = use_views ? "views" : "copies"
     section(
@@ -448,10 +467,60 @@ function workspace_cold_build(dir::AbstractString; use_views::Bool)
 end
 
 # --------------------------------------------------------------------------------------------------
-# 5. Engine per-region timings (TimerOutputs) over a representative cache exercise.
+# 5. Incremental warm reopen: a populated cache reopened with zero, then one, changed source item.
+# --------------------------------------------------------------------------------------------------
+function reopen_timings(dir::AbstractString)
+    section("5. INCREMENTAL WARM REOPEN (reopen a populated cache; read only what changed)")
+    project, read_count = expansion_project()
+    source = MB.DirectorySource(dir)
+    identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
+    MB.Cache._remove_cache_files(identity.cache_path)
+
+    function timed_scan!(; rebuild::Bool)
+        workspace = MB.Workspace.Workspace(project, source)
+        Threads.atomic_xchg!(read_count, 0)
+        started = time_ns()
+        MB.Workspace.scan_source!(workspace; rebuild)
+        await_workspace!(workspace)
+        seconds = (time_ns() - started) / 1e9
+        reads = read_count[]
+        item_count = length(workspace.index.hierarchy.all_items)
+        MB.close_workspace!(workspace)
+        return (; seconds, reads, item_count)
+    end
+
+    try
+        cold = timed_scan!(rebuild=true)              # populate the cache from scratch
+        warmup = timed_scan!(rebuild=false)           # compile the incremental path
+        unchanged = timed_scan!(rebuild=false)        # nothing changed: zero reads
+        touch(joinpath(dir, "meas_00001.csv"))        # one source item now looks changed
+        changed = timed_scan!(rebuild=false)
+
+        cold.reads == N_FILES ||
+            error("Cold build read $(cold.reads) source items; expected $N_FILES")
+        unchanged.reads == 0 ||
+            error("Unchanged reopen read $(unchanged.reads) source items; expected 0")
+        changed.reads == 1 ||
+            error("One-file-changed reopen read $(changed.reads) source items; expected 1")
+
+        sayf("  cold build:                 %s  source reads=%d  data items=%d\n",
+            ms(cold.seconds), cold.reads, cold.item_count)
+        sayf("  reopen, nothing changed:    %s  source reads=%d  (%.1fx faster than cold)\n",
+            ms(unchanged.seconds), unchanged.reads, cold.seconds / unchanged.seconds)
+        sayf("  reopen, one file changed:   %s  source reads=%d  (%.1fx faster than cold)\n",
+            ms(changed.seconds), changed.reads, cold.seconds / changed.seconds)
+        _ = warmup
+    finally
+        MB.Cache._remove_cache_files(identity.cache_path)
+    end
+    return nothing
+end
+
+# --------------------------------------------------------------------------------------------------
+# 6. Engine per-region timings (TimerOutputs) over a representative cache exercise.
 # --------------------------------------------------------------------------------------------------
 function region_timings(project, source, records)
-    section("5. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
+    section("6. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
     identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
     MB.Cache._remove_cache_files(identity.cache_path)
     cachedb = MB.Cache.open_cache_db(identity)
@@ -480,6 +549,7 @@ function main(report_path::AbstractString)
     if WORKSPACE_ONLY
         workspace_cold_build(DATA_DIR; use_views=false)
         workspace_cold_build(DATA_DIR; use_views=true)
+        reopen_timings(DATA_DIR)
         return nothing
     end
     project = bench_project()
@@ -489,6 +559,7 @@ function main(report_path::AbstractString)
     expansion_timings(DATA_DIR)
     workspace_cold_build(DATA_DIR; use_views=false)
     workspace_cold_build(DATA_DIR; use_views=true)
+    reopen_timings(DATA_DIR)
     region_timings(project, source, records)
     return nothing
 end

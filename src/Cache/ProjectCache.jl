@@ -225,6 +225,14 @@ end
 
 """Close a workspace cache's connections and the underlying database file."""
 function close_cache_db!(cachedb::CacheDB)::Nothing
+    # Fold the write-ahead log into the database file so the next workspace opened on this path within
+    # the same process reads the committed state instead of a pre-commit snapshot. The data is already
+    # durable, so a checkpoint blocked by an in-flight reader is only a deferred optimization.
+    try
+        DBInterface.execute(cachedb.writer, "CHECKPOINT")
+    catch err
+        err isa InterruptException && rethrow()
+    end
     DBInterface.close!(cachedb.writer)
     DBInterface.close!(cachedb.reader)
     DBInterface.close!(cachedb.db)

@@ -178,6 +178,7 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
             write_scan_identity!(cachedb)
             wrote = Ref(false)
             written_ids = Set{String}()
+            kept_ids = Set{String}()
             record_batches = Vector{Vector{ItemRecord}}()
             data_batches = Vector{Vector{Any}}()
             cache_batch_size = max(1, Base.Threads.nthreads())
@@ -226,9 +227,14 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
                             push!(data_batches, data)
                             length(record_batches) >= cache_batch_size && flush_cache_batch!()
                         end,
+                        on_kept_source_item=(source_item_id::String) ->
+                            push!(kept_ids, source_item_id),
                     )
                 end
                 flush_cache_batch!()
+                # Unchanged source items keep their existing rows: treat them as already written so
+                # finalize_scan! neither re-inserts a bare row nor deletes them.
+                union!(written_ids, kept_ids)
                 cache_hit = cached !== nothing && source === cached.source
                 cache_hit || finalize_scan!(
                     connection, workspace.cache.identity, source, written_ids)
@@ -239,7 +245,7 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
                 job_id=scan_id,
                 source,
                 cache_hit,
-                status=_post_write_status(workspace.cache.identity, source),
+                status=_post_write_status(workspace.cache.identity, source, cached),
             ))
         catch error
             if is_job_cancelled(error)
@@ -264,16 +270,30 @@ end
 rebuild_cache!(workspace::Workspace)::Nothing = scan_source!(workspace; rebuild=true)
 
 """
-Status of a cache that now mirrors `source` exactly: every source item is cached and fresh except
-those that failed, and nothing is stale, new, or deleted relative to the source.
+Status of a cache that now mirrors `source` exactly.
+
+Every source item is cached; `fresh` counts those without an analysis error. Relative to the cache
+that was loaded before this scan, `new`/`stale`/`deleted` count the source items that were added,
+re-read because their fingerprint changed, and removed — the work an incremental reopen actually did.
 """
 function _post_write_status(
     identity::ProjectCacheIdentity,
     source::SourceScan,
+    cached::Union{Nothing,ProjectCacheIndex},
 )::ProjectCacheStatus
-    total = length(source.source_item_fingerprints)
+    current = source.source_item_fingerprints
+    total = length(current)
     errors = length(ProjectCacheIndex(identity, source).analysis_errors)
-    return ProjectCacheStatus(total, total, total - errors, 0, 0, 0, errors)
+    fresh = total - errors
+    if cached === nothing
+        return ProjectCacheStatus(total, total, fresh, 0, total, 0, errors)
+    end
+    previous = cached.source.source_item_fingerprints
+    new_items = count(id -> !haskey(previous, id), keys(current))
+    stale = count(
+        id -> haskey(previous, id) && !isequal(previous[id], current[id]), keys(current))
+    deleted = count(id -> !haskey(current, id), keys(previous))
+    return ProjectCacheStatus(total, total, fresh, stale, new_items, deleted, errors)
 end
 
 """Replace the workspace item index with one complete hierarchy."""

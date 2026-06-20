@@ -250,3 +250,93 @@ end
         end
     end
 end
+
+@testset "incremental reopen re-reads only changed source items" begin
+    mktempdir() do dir
+        for i in 1:5
+            CSV.write(joinpath(dir, "f$i.csv"), DataFrame(x=Float64.(1:3), y=Float64.(4:6)))
+        end
+
+        read_count = Threads.Atomic{Int}(0)
+        project = MB.define_project("Reopen")
+        MB.register_item!(
+            project,
+            :table;
+            detect=file -> endswith(file.filename, ".csv"),
+            read=function (file)
+                Threads.atomic_add!(read_count, 1)
+                return CSV.read(file.filepath, DataFrame)
+            end,
+            entries=(file, data) -> [DataItem(
+                kind=:table, collection=[splitext(file.filename)[1]], data=data)],
+            stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        )
+
+        function run_scan!()
+            ws = MB.open_workspace(project, test_source(project, dir))
+            deadline = time() + 10
+            while time() < deadline
+                MB.Workspace.poll_workspace!(ws)
+                # A fully-unchanged reopen is a cache hit (state :unchanged) and runs no analysis.
+                scan_done = ws.scan.state in (:done, :unchanged, :error)
+                analysis_idle = ws.analysis.state in (:idle, :done, :canceled, :error)
+                scan_done && analysis_idle && break
+                sleep(0.02)
+            end
+            @test ws.scan.state in (:done, :unchanged)
+            return ws
+        end
+
+        # Cold build reads every file.
+        ws1 = run_scan!()
+        identity = ws1.cache.identity
+        @test read_count[] == 5
+        @test length(ws1.index.hierarchy.all_items) == 5
+        @test ws1.cache.status.new_source_items == 5
+        MB.close_workspace!(ws1)
+
+        try
+            # Reopen with nothing changed reads no files.
+            Threads.atomic_xchg!(read_count, 0)
+            ws2 = run_scan!()
+            @test read_count[] == 0
+            @test length(ws2.index.hierarchy.all_items) == 5
+            @test ws2.cache.status.new_source_items == 0
+            @test ws2.cache.status.stale_source_items == 0
+            @test ws2.cache.status.deleted_source_items == 0
+            MB.close_workspace!(ws2)
+
+            # Changing one file re-reads only that file.
+            CSV.write(joinpath(dir, "f3.csv"), DataFrame(x=Float64.(1:7), y=Float64.(8:14)))
+            Threads.atomic_xchg!(read_count, 0)
+            ws3 = run_scan!()
+            @test read_count[] == 1
+            @test ws3.cache.status.stale_source_items == 1
+            @test ws3.cache.status.new_source_items == 0
+            changed = only(
+                r for r in ws3.index.hierarchy.all_items if r.collection == ["f3"])
+            @test changed.stats[:rows] == 7
+            MB.close_workspace!(ws3)
+
+            # Adding a file reads only the new file.
+            CSV.write(joinpath(dir, "f6.csv"), DataFrame(x=Float64.(1:2), y=Float64.(3:4)))
+            Threads.atomic_xchg!(read_count, 0)
+            ws4 = run_scan!()
+            @test read_count[] == 1
+            @test ws4.cache.status.new_source_items == 1
+            @test length(ws4.index.hierarchy.all_items) == 6
+            MB.close_workspace!(ws4)
+
+            # Deleting a file reads nothing and drops its records.
+            rm(joinpath(dir, "f6.csv"))
+            Threads.atomic_xchg!(read_count, 0)
+            ws5 = run_scan!()
+            @test read_count[] == 0
+            @test ws5.cache.status.deleted_source_items == 1
+            @test length(ws5.index.hierarchy.all_items) == 5
+            MB.close_workspace!(ws5)
+        finally
+            MB.Cache._remove_cache_files(identity.cache_path)
+        end
+    end
+end

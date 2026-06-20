@@ -185,7 +185,7 @@ const ProjectCache = MeasurementBrowser.Cache
                        workspace.cache_job.state == :ready &&
                        status isa ProjectCache.ProjectCacheStatus &&
                        status.cached_source_items == 2 &&
-                       status.new_source_items == 0
+                       status.new_source_items == 1
                         break
                     end
                     sleep(0.02)
@@ -198,7 +198,10 @@ const ProjectCache = MeasurementBrowser.Cache
                 @test workspace.cache_job.state == :ready
                 @test status isa ProjectCache.ProjectCacheStatus
                 @test status.cached_source_items == 2
-                @test status.new_source_items == 0
+                # second.csv is genuinely new relative to the stale one-item cache; first.csv was
+                # reused without a re-read.
+                @test status.new_source_items == 1
+                @test status.stale_source_items == 0
                 close_workspace!(workspace)
             finally
                 rm(identity.cache_path; force=true)
