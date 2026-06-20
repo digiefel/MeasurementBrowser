@@ -1018,26 +1018,67 @@ end
 # Without a source-item fingerprint there is nothing to validate against, so the item is never cached.
 _payload_cacheable(item::ItemRecord)::Bool = item.source_item_fingerprint !== nothing
 
-"""Read valid payloads for `items` on one connection; missing or stale entries stay `nothing`."""
+"""Fill one temporary request table with the item-data cache keys to read."""
+function _fill_payload_request!(connection, items::Vector{ItemRecord})::Nothing
+    DBInterface.execute(connection, """
+        CREATE TEMP TABLE IF NOT EXISTS requested_payloads(
+            position BIGINT,
+            item_id TEXT,
+            sif_hash TEXT,
+            if_hash TEXT)
+    """)
+    DBInterface.execute(connection, "DELETE FROM requested_payloads")
+
+    appender = DuckDB.Appender(connection, "requested_payloads")
+    try
+        for (position, item) in pairs(items)
+            check_cancel()
+            _payload_cacheable(item) || continue
+            row = (
+                Int64(position),
+                item.id,
+                _fingerprint_hash(item.source_item_fingerprint),
+                _fingerprint_hash(item.item_fingerprint),
+            )
+            for value in row
+                DuckDB.append(appender, value)
+            end
+            DuckDB.end_row(appender)
+        end
+        DuckDB.flush(appender)
+    finally
+        DuckDB.close(appender)
+    end
+    return nothing
+end
+
+"""Read valid item data for `items` on one connection; missing or stale entries stay `nothing`."""
 function _read_payloads(connection, items::Vector{ItemRecord})::Vector{Any}
     data = Any[nothing for _ in items]
-    statement = DBInterface.prepare(connection,
-        "SELECT sif_hash, if_hash, blob FROM payloads WHERE item_id = ?")
-    for (position, item) in pairs(items)
+    _fill_payload_request!(connection, items)
+    rows = DBInterface.execute(connection, """
+        SELECT r.position, p.blob
+        FROM requested_payloads r
+        JOIN payloads p ON p.item_id = r.item_id
+        WHERE p.sif_hash = r.sif_hash
+          AND (
+              (p.if_hash IS NULL AND r.if_hash IS NULL)
+              OR p.if_hash = r.if_hash
+          )
+        ORDER BY r.position
+    """)
+    for row in rows
         check_cancel()
-        _payload_cacheable(item) || continue
-        sif = _fingerprint_hash(item.source_item_fingerprint)
-        iff = _fingerprint_hash(item.item_fingerprint)   # `nothing` when the item carries no fingerprint
-        for row in DBInterface.execute(statement, (item.id,))
-            _null_to_nothing(row.sif_hash) == sif || continue
-            _null_to_nothing(row.if_hash) == iff || continue
-            data[position] = _deserialize_blob(row.blob)
-        end
+        position = Int(row.position)
+        1 <= position <= length(data) || error(
+            "Invalid item-data cache read position $position for $(length(data)) requested items",
+        )
+        data[position] = _deserialize_blob(row.blob)
     end
     return data
 end
 
-"""Upsert payloads for `items` on one connection; items with absent fingerprints are skipped."""
+"""Upsert item data for `items` on one connection; items with absent fingerprints are skipped."""
 function _write_payloads!(connection, items::Vector{ItemRecord}, data::Vector)::Nothing
     statement = DBInterface.prepare(connection, """
         INSERT INTO payloads VALUES (?, ?, ?, ?, ?, ?)
@@ -1064,8 +1105,8 @@ function _write_payloads!(connection, items::Vector{ItemRecord}, data::Vector)::
 end
 
 """
-Read every valid requested payload in one DuckDB operation. Missing or stale entries return
-`nothing`. A payload is valid only when both the source-item and item fingerprints still match.
+Read every valid requested item-data entry in one DuckDB operation. Missing or stale entries return
+`nothing`. Cached item data is valid only when both the source-item and item fingerprints still match.
 """
 function cached_item_data(
     index::Union{Nothing,ProjectCacheIndex},
@@ -1079,7 +1120,7 @@ function cached_item_data(
 end
 
 """
-Write valid item payloads into the cache in one DuckDB operation. Items with a `nothing`
+Write valid item data into the cache in one DuckDB operation. Items with a `nothing`
 source-item or item fingerprint are skipped (never persisted).
 """
 function write_item_data_cache!(
@@ -1092,12 +1133,19 @@ function write_item_data_cache!(
     (index === nothing || isempty(items) || !isfile(index.identity.cache_path)) && return nothing
     with_cache_db(index.identity.cache_path) do connection
         ensure_schema!(connection)
-        _write_payloads!(connection, items, data)
+        DBInterface.execute(connection, "BEGIN TRANSACTION")
+        try
+            _write_payloads!(connection, items, data)
+            DBInterface.execute(connection, "COMMIT")
+        catch
+            DBInterface.execute(connection, "ROLLBACK")
+            rethrow()
+        end
     end
     return nothing
 end
 
-"""Read valid cached payloads for `items` from a workspace's open cache (no origin access)."""
+"""Read valid cached item data for `items` from a workspace's open cache (no origin access)."""
 function read_item_payloads(cachedb::CacheDB, items::Vector{ItemRecord})::Vector{Any}
     isempty(items) && return Any[]
     return @timeit_debug TIMER "cache/read_payloads" with_persistent_reader(cachedb) do connection
@@ -1115,7 +1163,14 @@ function write_item_payloads!(
         throw(DimensionMismatch("items and data must have equal lengths"))
     isempty(items) && return nothing
     @timeit_debug TIMER "cache/write_payloads" with_writer(cachedb) do connection
-        _write_payloads!(connection, items, data)
+        DBInterface.execute(connection, "BEGIN TRANSACTION")
+        try
+            _write_payloads!(connection, items, data)
+            DBInterface.execute(connection, "COMMIT")
+        catch
+            DBInterface.execute(connection, "ROLLBACK")
+            rethrow()
+        end
     end
     return nothing
 end
