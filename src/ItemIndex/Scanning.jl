@@ -71,11 +71,63 @@ function _effective_loaded_item(
     )
 end
 
+"""Below this many items per source item, per-item parallelism costs more than it saves."""
+const PARALLEL_ITEM_THRESHOLD = 64
+
+"""
+Process one handle and compute its stats, writing results into the aligned output slots.
+
+Each index owns its own record and failure list, so distinct indices never touch shared state and the
+loop body is safe to run on several threads at once.
+"""
+function _interpret_one_handle!(
+    project::Project,
+    source::AbstractDataSource,
+    source_item::AbstractDataSourceItem,
+    handle::AbstractDataItem,
+    index::Int,
+    records::Vector{ItemRecord},
+    loaded_items::Vector{Union{Nothing,AbstractDataItem}},
+    failures_per_item::Vector{Vector{ItemFailure}},
+)::Nothing
+    record = ItemRecord(
+        ItemRecord(handle; source_item);
+        parameters=_effective_parameters(source, collection(handle), parameters(handle)),
+    )
+    records[index] = record
+    local_failures = ItemFailure[]
+
+    loaded = try
+        process(project, source, handle)
+    catch error
+        is_job_cancelled(error) && rethrow()
+        push!(local_failures, ItemFailure(
+            record.source_item_id, record.id, "process: " * sprint(showerror, error)))
+        nothing
+    end
+    if loaded !== nothing
+        loaded = _effective_loaded_item(record, loaded)
+        try
+            computed = compute_item_stats(project, source, loaded)
+            merge!(record.stats, metadata_dict(computed))
+        catch error
+            is_job_cancelled(error) && rethrow()
+            push!(local_failures, ItemFailure(
+                record.source_item_id, record.id, "stats: " * sprint(showerror, error)))
+        end
+    end
+    loaded_items[index] = loaded
+    failures_per_item[index] = local_failures
+    return nothing
+end
+
 """
 Interpret, process, and analyze every data item produced by one source item.
 
-The source item is read only by `data_items`. All per-item work completes while those loaded values
-are still alive; the returned items exist only long enough for the scan collector to cache them.
+The source item is read only by `data_items`. A source item that expands into many items (a fatigue
+file of a million cycles) processes them across threads; an ordinary one-item file stays on the
+zero-overhead serial path. All per-item work completes while those loaded values are still alive; the
+returned items exist only long enough for the scan collector to cache them.
 """
 function interpret_source_item(
     project::Project,
@@ -83,50 +135,44 @@ function interpret_source_item(
     source_item::AbstractDataSourceItem,
 )::SourceItemInterpretation
     handles = data_items(project, source, source_item)::Vector{<:AbstractDataItem}
-    records = ItemRecord[]
-    loaded_items = Union{Nothing,AbstractDataItem}[]
-    failures = ItemFailure[]
-    sizehint!(records, length(handles))
-    sizehint!(loaded_items, length(handles))
+    item_count = length(handles)
+    records = Vector{ItemRecord}(undef, item_count)
+    loaded_items = Vector{Union{Nothing,AbstractDataItem}}(undef, item_count)
+    failures_per_item = Vector{Vector{ItemFailure}}(undef, item_count)
 
-    for handle in handles
-        record = ItemRecord(
-            ItemRecord(handle; source_item);
-            parameters=_effective_parameters(
-                source,
-                collection(handle),
-                parameters(handle),
-            ),
-        )
-        push!(records, record)
+    one!(index) = _interpret_one_handle!(
+        project, source, source_item, handles[index], index,
+        records, loaded_items, failures_per_item)
 
-        loaded = try
-            process(project, source, handle)
-        catch error
-            is_job_cancelled(error) && rethrow()
-            push!(failures, ItemFailure(
-                record.source_item_id,
-                record.id,
-                "process: " * sprint(showerror, error),
-            ))
-            push!(loaded_items, nothing)
-            continue
+    if item_count < PARALLEL_ITEM_THRESHOLD || Base.Threads.nthreads() == 1
+        for index in 1:item_count
+            one!(index)
         end
-        loaded = _effective_loaded_item(record, loaded)
-        push!(loaded_items, loaded)
-
-        try
-            computed = compute_item_stats(project, source, loaded)
-            merge!(record.stats, metadata_dict(computed))
-        catch error
-            is_job_cancelled(error) && rethrow()
-            push!(failures, ItemFailure(
-                record.source_item_id,
-                record.id,
-                "stats: " * sprint(showerror, error),
-            ))
+    else
+        # Chunk into roughly one task per thread so a huge expansion shares the cores instead of
+        # saturating one, without spawning a task per item. These tasks share the pool with the outer
+        # source-item parallelism; Julia's scheduler balances the nesting. The cancel callback is
+        # re-established per task because spawned tasks do not inherit task-local storage.
+        cancel_callback = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
+        cancelled = Base.Threads.Atomic{Bool}(false)
+        chunk = cld(item_count, Base.Threads.nthreads())
+        @sync for first_index in 1:chunk:item_count
+            last_index = min(first_index + chunk - 1, item_count)
+            Base.Threads.@spawn with_cancel(cancel_callback) do
+                try
+                    for index in first_index:last_index
+                        one!(index)
+                    end
+                catch error
+                    is_job_cancelled(error) || rethrow()
+                    cancelled[] = true
+                end
+            end
         end
+        cancelled[] && throw(JobCancelled())
     end
+
+    failures = reduce(append!, failures_per_item; init=ItemFailure[])
     return SourceItemInterpretation(records, loaded_items, failures)
 end
 
