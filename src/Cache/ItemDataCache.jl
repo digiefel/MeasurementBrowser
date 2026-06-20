@@ -395,6 +395,31 @@ function _write_cached_item_data!(
     return nothing
 end
 
+"""Whether a stored fingerprint hash matches the requested one, treating SQL NULL as `nothing`."""
+function _hash_matches(stored, requested)::Bool
+    stored = _null_to_nothing(stored)
+    stored === nothing && return requested === nothing
+    return requested !== nothing && String(stored) == requested
+end
+
+"""
+A small selection — an interactive plot of a handful of items — is served by the temp-table-free
+id-list path; a bulk materialization (collection analysis, a whole-tree reload) is served by the
+position-ordered temp-table join, which sorts by an integer instead of by item id and slices rows
+contiguously. Each path wins on its own regime.
+"""
+const SMALL_ITEM_DATA_READ = 16
+
+"""Read valid native item data, choosing the read strategy that fits the selection size."""
+function _read_cached_item_data(
+    connection,
+    items::Vector{ItemRecord},
+)::Vector{Any}
+    return count(_item_data_cacheable, items) <= SMALL_ITEM_DATA_READ ?
+        _read_cached_item_data_small(connection, items) :
+        _read_cached_item_data_bulk(connection, items)
+end
+
 """Fill the temporary request table with item-data cache keys and their original positions."""
 function _fill_item_data_request!(connection, items::Vector{ItemRecord})::Nothing
     DBInterface.execute(connection, """
@@ -427,8 +452,8 @@ function _fill_item_data_request!(connection, items::Vector{ItemRecord})::Nothin
     return nothing
 end
 
-"""Read valid native item data on one connection; missing or stale entries stay `nothing`."""
-function _read_cached_item_data(
+"""Bulk read: join a temp request table so rows come back in integer-position order for slicing."""
+function _read_cached_item_data_bulk(
     connection,
     items::Vector{ItemRecord},
 )::Vector{Any}
@@ -513,6 +538,105 @@ function _read_cached_item_data(
         row_start == nrow(raw) + 1 || error(
             "Cached DataFrame read returned $(nrow(raw) - row_start + 1) unexpected rows",
         )
+    end
+    return loaded
+end
+
+"""
+Small read: look up ids with bound id lists — no temporary request table — and validate fingerprint
+freshness in Julia, so an interactive selection pays two lightweight queries per schema instead of
+building, filling, and joining a temp table on every read.
+"""
+function _read_cached_item_data_small(
+    connection,
+    items::Vector{ItemRecord},
+)::Vector{Any}
+    loaded = Any[nothing for _ in items]
+    requested = Dict{String,Tuple{Int,Union{Nothing,String},Union{Nothing,String}}}()
+    ids = String[]
+    for (position, item) in pairs(items)
+        check_cancel()
+        _item_data_cacheable(item) || continue
+        haskey(requested, item.id) && continue
+        requested[item.id] = (
+            position,
+            _fingerprint_hash(item.source_item_fingerprint),
+            _fingerprint_hash(item.item_fingerprint),
+        )
+        push!(ids, item.id)
+    end
+    isempty(ids) && return loaded
+
+    # Map each fresh requested item to its storage table; the freshness check is done here in Julia.
+    by_storage = Dict{String,Vector{Tuple{String,Int,Int}}}()
+    meta_statement = DBInterface.prepare(connection, """
+        SELECT item_id, sif_hash, if_hash, storage_id, row_count FROM item_data WHERE item_id IN ?
+    """)
+    for row in DBInterface.execute(meta_statement, (ids,))
+        id = String(row.item_id)
+        entry = get(requested, id, nothing)
+        entry === nothing && continue
+        position, sif_hash, if_hash = entry
+        (_hash_matches(row.sif_hash, sif_hash) && _hash_matches(row.if_hash, if_hash)) || continue
+        push!(
+            get!(() -> Tuple{String,Int,Int}[], by_storage, String(row.storage_id)),
+            (id, position, Int(row.row_count)),
+        )
+    end
+    isempty(by_storage) && return loaded
+
+    schemas = _load_dataframe_schemas(connection)
+    for (storage_id, group) in by_storage
+        column_names = get(schemas, storage_id, nothing)
+        column_names === nothing && error(
+            "Cached item data refers to missing DataFrame schema '$storage_id'",
+        )
+        table = _quote_identifier(_dataframe_table_name(storage_id))
+        selected_columns = join(
+            (_quote_identifier("c$index") for index in eachindex(column_names)), ", ")
+        statement = DBInterface.prepare(connection, """
+            SELECT __mb_item_id, $selected_columns
+            FROM $table
+            WHERE __mb_item_id IN ?
+            ORDER BY __mb_item_id, __mb_row
+        """)
+        raw = DataFrame(DBInterface.execute(statement, (String[entry[1] for entry in group],)))
+        expected = Dict(entry[1] => (entry[2], entry[3]) for entry in group)
+
+        reconstruct(range) = DataFrame(
+            [Symbol(name) => raw[range, Symbol("c$index")]
+             for (index, name) in pairs(column_names)];
+            copycols=false,
+        )
+
+        identifiers = raw[!, :__mb_item_id]
+        seen = Set{String}()
+        first_row = 1
+        total = nrow(raw)
+        while first_row <= total
+            check_cancel()
+            id = String(identifiers[first_row])
+            last_row = first_row
+            while last_row < total && String(identifiers[last_row + 1]) == id
+                last_row += 1
+            end
+            position, expected_rows = expected[id]
+            (last_row - first_row + 1) == expected_rows || error(
+                "Cached DataFrame for item '$id' has $(last_row - first_row + 1) rows; " *
+                "expected $expected_rows",
+            )
+            loaded[position] = DataItem(items[position], reconstruct(first_row:last_row))
+            push!(seen, id)
+            first_row = last_row + 1
+        end
+        # Zero-row items never appear in the data table; rebuild them from the typed empty columns.
+        for (id, (position, expected_rows)) in expected
+            id in seen && continue
+            expected_rows == 0 || error(
+                "Cached DataFrame for item '$id' is missing its $expected_rows rows",
+            )
+            loaded[position] = DataItem(items[position], reconstruct(1:0))
+        end
     end
     return loaded
 end
