@@ -1,6 +1,9 @@
 module Workspace
 
 using DataFrames: DataFrame
+import ..Profiling
+using ..Profiling: TIMER
+using TimerOutputs: @timeit_debug
 
 import ..Cache:
     CacheDB,
@@ -250,5 +253,7 @@ end
 
 include("Workspace/Operations.jl")
 include("Workspace/DataAccess.jl")
+
+Profiling.register_instrumented!(@__MODULE__)
 
 end

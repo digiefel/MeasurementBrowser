@@ -3,6 +3,8 @@ module MeasurementBrowser
 using PrecompileTools
 using Annotations
 
+include("Profiling.jl")
+
 include("Projects.jl")
 using .Projects:
     AbstractDataSource,

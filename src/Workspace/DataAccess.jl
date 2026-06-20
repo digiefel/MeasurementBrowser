@@ -33,7 +33,7 @@ function materialize_items(
         if raw === nothing
             # FIXME: The low-level contract reloads by source-item id and id, so sources may need
             # to re-find context they had during discovery. Pass a richer handle if this gets painful.
-            raw = load_data_item(
+            raw = @timeit_debug TIMER "read/load_origin" load_data_item(
                 workspace.project, workspace.source, record.source_item_id, record.id)
         end
         item = _effective_loaded_item(record, raw)

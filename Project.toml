@@ -24,6 +24,7 @@ Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 SmoothData = "0112b07a-89eb-48f6-acf7-65d97704274c"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
 [compat]
 CImGui = "6.1.0"
@@ -38,6 +39,7 @@ Printf = "1.11.0"
 SHA = "0.7.0"
 SmoothData = "0.1.0"
 TOML = "1.0.3"
+TimerOutputs = "0.5.29"
 julia = "1.12"
 
 [extras]

@@ -16,7 +16,12 @@ import ..ItemIndex:
     emit_progress,
     source_parameter_state
 import ..Projects: source_id, source_label
+import ..Profiling
+using ..Profiling: TIMER
+using TimerOutputs: @timeit_debug
 
 include("Cache/ProjectCache.jl")
+
+Profiling.register_instrumented!(@__MODULE__)
 
 end

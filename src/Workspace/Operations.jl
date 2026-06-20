@@ -310,7 +310,8 @@ function _load_for_analysis(
 )::AbstractDataItem
     cached = get(loaded, record.id, nothing)
     cached !== nothing && return cached
-    item = load_data_item(workspace.project, workspace.source, record.source_item_id, record.id)
+    item = @timeit_debug TIMER "analysis/load_item" load_data_item(
+        workspace.project, workspace.source, record.source_item_id, record.id)
     item = _effective_loaded_item(record, item)
     loaded[record.id] = item
     return item
@@ -362,7 +363,8 @@ function start_analysis!(workspace::Workspace)::Nothing
                     check_cancel()
                     try
                         item = _load_for_analysis(workspace, record, loaded)
-                        computed = compute_item_stats(workspace.project, workspace.source, item)
+                        computed = @timeit_debug TIMER "analysis/item_stats" compute_item_stats(
+                            workspace.project, workspace.source, item)
                         if !isempty(computed)
                             item_stats[record.id] = computed
                             pending_stats[record.id] = computed

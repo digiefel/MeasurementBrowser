@@ -278,16 +278,18 @@ end
 
 """Serialize any value to a byte vector for a BLOB column."""
 function _serialize_bytes(value)::Vector{UInt8}
-    io = IOBuffer()
-    serialize(io, value)
-    return take!(io)
+    return @timeit_debug TIMER "cache/serialize" begin
+        io = IOBuffer()
+        serialize(io, value)
+        take!(io)
+    end
 end
 
 """Deserialize a BLOB column value (or `nothing` for SQL NULL)."""
 function _deserialize_blob(value)
     value === nothing && return nothing
     ismissing(value) && return nothing
-    return deserialize(IOBuffer(Vector{UInt8}(value)))
+    return @timeit_debug TIMER "cache/deserialize" deserialize(IOBuffer(Vector{UInt8}(value)))
 end
 
 """Map a SQL NULL (`missing`) to `nothing`, passing other values through."""
@@ -698,7 +700,7 @@ function reconcile_source_item!(cachedb::CacheDB, records::Vector{ItemRecord})::
     path = first(records).source_item_path
     timestamp = first(records).source_item_timestamp
 
-    with_writer(cachedb) do connection
+    @timeit_debug TIMER "cache/reconcile" with_writer(cachedb) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
             previous_hash = _stored_fingerprint_hash(connection, source_item_id)
@@ -760,7 +762,7 @@ function finalize_scan!(
     locations = _source_item_locations(source)
     current_ids = keys(source.source_item_fingerprints)
 
-    with_writer(cachedb) do connection
+    @timeit_debug TIMER "cache/finalize" with_writer(cachedb) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
             _write_meta_rows!(connection, identity, source)
@@ -832,7 +834,7 @@ function persist_stats!(
     node_stats::AbstractDict{<:Tuple,<:AbstractDict},
 )::Nothing
     (isempty(item_stats) && isempty(node_stats)) && return nothing
-    with_writer(cachedb) do connection
+    @timeit_debug TIMER "cache/persist_stats" with_writer(cachedb) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
             delete_stmt = DBInterface.prepare(connection,
@@ -982,7 +984,7 @@ function load_cache_index(
     on_progress::Union{Nothing,Function}=nothing,
 )::ProjectCacheIndex
     identity = cachedb.identity
-    index = with_reader(cachedb) do connection
+    index = @timeit_debug TIMER "cache/load_index" with_reader(cachedb) do connection
         ProjectCacheIndex(identity, _load_source_scan(connection, identity))
     end
     _emit_cache_load_progress(on_progress, index)
@@ -1098,7 +1100,7 @@ end
 """Read valid cached payloads for `items` from a workspace's open cache (no origin access)."""
 function read_item_payloads(cachedb::CacheDB, items::Vector{ItemRecord})::Vector{Any}
     isempty(items) && return Any[]
-    return with_persistent_reader(cachedb) do connection
+    return @timeit_debug TIMER "cache/read_payloads" with_persistent_reader(cachedb) do connection
         _read_payloads(connection, items)
     end
 end
@@ -1112,7 +1114,7 @@ function write_item_payloads!(
     length(items) == length(data) ||
         throw(DimensionMismatch("items and data must have equal lengths"))
     isempty(items) && return nothing
-    with_writer(cachedb) do connection
+    @timeit_debug TIMER "cache/write_payloads" with_writer(cachedb) do connection
         _write_payloads!(connection, items, data)
     end
     return nothing

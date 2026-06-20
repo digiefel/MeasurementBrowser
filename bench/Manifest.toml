@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "5923127147c2ccab850a7c6bbcea35dfc6b0fb14"
+project_hash = "dcedf0efe61d364b70a3ba44eda1686f84714442"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -59,7 +59,7 @@ version = "0.4.2"
 
 [[deps.Annotations]]
 deps = ["Dates"]
-path = "src/Annotations"
+path = "../src/Annotations"
 uuid = "ae6ca758-ef8f-47cf-869f-33c684d5c66b"
 version = "0.1.0"
 
@@ -97,6 +97,12 @@ version = "1.11.0"
 git-tree-sha1 = "bca794632b8a9bbe159d56bf9e31c422671b35e0"
 uuid = "18cc8868-cbac-4acf-b575-c8ff214dc66f"
 version = "1.3.2"
+
+[[deps.BenchmarkTools]]
+deps = ["Compat", "JSON", "Logging", "PrecompileTools", "Printf", "Profile", "Statistics", "UUIDs"]
+git-tree-sha1 = "9670d3febc2b6da60a0ae57846ba74670290653f"
+uuid = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+version = "1.8.0"
 
 [[deps.BitIntegers]]
 deps = ["Random"]
@@ -970,8 +976,8 @@ uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.9"
 
 [[deps.MeasurementBrowser]]
-deps = ["Annotations", "CImGui", "CSV", "DBInterface", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
-path = "."
+deps = ["Annotations", "CImGui", "CSV", "DBInterface", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML", "TimerOutputs"]
+path = ".."
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
 
@@ -1220,6 +1226,11 @@ version = "0.5.7"
 [[deps.Printf]]
 deps = ["Unicode"]
 uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+version = "1.11.0"
+
+[[deps.Profile]]
+deps = ["StyledStrings"]
+uuid = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
 version = "1.11.0"
 
 [[deps.ProgressMeter]]
