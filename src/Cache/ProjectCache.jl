@@ -134,15 +134,18 @@ end
 One open DuckDB cache file shared by all of a workspace's cache work.
 
 A single [`DuckDB.DB`](@ref) holds the file (and its lock) for the workspace's lifetime. The
-persistent `writer` connection serializes every mutation through `writer_lock`, while reads create
-short-lived connections from the same instance — DuckDB's MVCC lets them snapshot committed state
-while a write is in flight, so plot/status reads never block the streaming scan.
+persistent `writer` connection serializes every mutation through `writer_lock`; the persistent
+`reader` (guarded by `reader_lock`) serves the interactive payload reads without per-call connection
+setup. DuckDB's MVCC lets the reader snapshot committed state while a write is in flight, so plot
+reads never block the streaming scan. One-shot bulk reads (index load) still use a fresh connection.
 """
 mutable struct CacheDB
     identity::ProjectCacheIdentity
     db::DuckDB.DB
     writer::DuckDB.Connection
     writer_lock::ReentrantLock
+    reader::DuckDB.Connection
+    reader_lock::ReentrantLock
 end
 
 """
@@ -174,7 +177,8 @@ function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
     try
         ensure_schema!(db)
         writer = DBInterface.connect(db)
-        return CacheDB(identity, db, writer, ReentrantLock())
+        reader = DBInterface.connect(db)
+        return CacheDB(identity, db, writer, ReentrantLock(), reader, ReentrantLock())
     catch
         DBInterface.close!(db)
         rethrow()
@@ -189,11 +193,19 @@ function _remove_cache_files(cache_path::AbstractString)::Nothing
     return nothing
 end
 
-"""Close a workspace cache's writer connection and the underlying database file."""
+"""Close a workspace cache's connections and the underlying database file."""
 function close_cache_db!(cachedb::CacheDB)::Nothing
     DBInterface.close!(cachedb.writer)
+    DBInterface.close!(cachedb.reader)
     DBInterface.close!(cachedb.db)
     return nothing
+end
+
+"""Run `work` on the persistent reader connection, serialized against other readers."""
+function with_persistent_reader(work::Function, cachedb::CacheDB)::Any
+    return lock(cachedb.reader_lock) do
+        work(cachedb.reader)
+    end
 end
 
 """Run `work` on a fresh read connection that snapshots the latest committed cache state."""
@@ -1086,7 +1098,7 @@ end
 """Read valid cached payloads for `items` from a workspace's open cache (no origin access)."""
 function read_item_payloads(cachedb::CacheDB, items::Vector{ItemRecord})::Vector{Any}
     isempty(items) && return Any[]
-    return with_reader(cachedb) do connection
+    return with_persistent_reader(cachedb) do connection
         _read_payloads(connection, items)
     end
 end

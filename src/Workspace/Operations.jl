@@ -316,6 +316,9 @@ function _load_for_analysis(
     return item
 end
 
+"""How many item stats one analysis run accumulates before flushing them to the cache."""
+const STATS_PERSIST_BATCH = 64
+
 """Start background per-item and collection stats for the completed source scan."""
 function start_analysis!(workspace::Workspace)::Nothing
     analysis_work_running(workspace) && cancel_analysis!(workspace)
@@ -341,9 +344,18 @@ function start_analysis!(workspace::Workspace)::Nothing
             collection_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
             no_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
             no_item_stats = Dict{String,Dict{Symbol,Any}}()
+            pending_stats = Dict{String,Dict{Symbol,Any}}()
             failures = Dict{String,String}()
             loaded = Dict{String,AbstractDataItem}()
             processed = 0
+
+            # Flush computed stats to the cache in batches: one DuckDB transaction per item would
+            # dominate analysis time, while a single end write would lose everything on an early
+            # exit. Batching keeps writes cheap and progress durable within a batch.
+            flush_pending_stats!() = begin
+                isempty(pending_stats) || persist_stats!(cachedb, pending_stats, no_node_stats)
+                empty!(pending_stats)
+            end
 
             with_cancel(() -> cancel_token[]) do
                 for record in source.hierarchy.all_items
@@ -353,8 +365,8 @@ function start_analysis!(workspace::Workspace)::Nothing
                         computed = compute_item_stats(workspace.project, workspace.source, item)
                         if !isempty(computed)
                             item_stats[record.id] = computed
-                            # Persist each item's stats as it is computed so they survive an early exit.
-                            persist_stats!(cachedb, Dict(record.id => computed), no_node_stats)
+                            pending_stats[record.id] = computed
+                            length(pending_stats) >= STATS_PERSIST_BATCH && flush_pending_stats!()
                         end
                     catch error
                         is_job_cancelled(error) && rethrow()
@@ -374,6 +386,7 @@ function start_analysis!(workspace::Workspace)::Nothing
                         ),
                     ))
                 end
+                flush_pending_stats!()
 
                 for (path, node) in source.hierarchy.index
                     check_cancel()
@@ -389,16 +402,15 @@ function start_analysis!(workspace::Workspace)::Nothing
                             collect(path),
                             items,
                         )
-                        if !isempty(computed)
-                            collection_node_stats[path] = computed
-                            persist_stats!(cachedb, no_item_stats, Dict(path => computed))
-                        end
+                        isempty(computed) || (collection_node_stats[path] = computed)
                     catch error
                         is_job_cancelled(error) && rethrow()
                         failures[first(node.items).id] =
                             "collection_stats: " * sprint(showerror, error)
                     end
                 end
+                isempty(collection_node_stats) ||
+                    persist_stats!(cachedb, no_item_stats, collection_node_stats)
             end
 
             # Analysis has already read every payload from origin; persist the cacheable ones so

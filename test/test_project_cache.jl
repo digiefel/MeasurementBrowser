@@ -330,9 +330,13 @@ const ProjectCache = MeasurementBrowser.Cache
                 first_pass = read_item_data(workspace, records)
                 @test all(!isnothing, first_pass)
 
-                # Drop the origin file and the in-memory cache; the payload cache must still serve it.
+                # Populate the durable payload cache the way background analysis does (the interactive
+                # read path itself never writes), then drop the origin file and the in-memory cache.
+                materialized = MeasurementBrowser.Workspace.materialize_items(workspace, records)
+                ProjectCache.write_item_payloads!(workspace.cache.db, records, materialized)
                 rm(joinpath(dir, "first.csv"))
                 workspace.loaded_items = MeasurementBrowser.Workspace.ItemCache()
+
                 second_pass = read_item_data(workspace, records)
                 @test second_pass == first_pass
             finally
