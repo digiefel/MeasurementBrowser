@@ -517,7 +517,73 @@ function reopen_timings(dir::AbstractString)
 end
 
 # --------------------------------------------------------------------------------------------------
-# 6. Engine per-region timings (TimerOutputs) over a representative cache exercise.
+# 6b. Item-analysis throughput: a single source item that expands into many items with real per-item
+#     CPU work, so the within-source-item parallelism (not just per-file) is exercised.
+# --------------------------------------------------------------------------------------------------
+"""Smoothing + a trapezoidal cumulative integral — a synthetic stand-in for real per-item analysis."""
+function _heavy_process(data::DataFrame)::DataFrame
+    v = data.v
+    n = length(v)
+    window = 15
+    smoothed = similar(v)
+    @inbounds for i in 1:n
+        lo = max(1, i - window)
+        hi = min(n, i + window)
+        total = 0.0
+        for j in lo:hi
+            total += v[j]
+        end
+        smoothed[i] = total / (hi - lo + 1)
+    end
+    return DataFrame(v=v, smoothed=smoothed, q=vcat(0.0, cumsum(abs.(diff(smoothed)))))
+end
+
+function analysis_throughput()
+    section("6. ITEM-ANALYSIS THROUGHPUT (one file expands into many items, heavy per-item process)")
+    items = 1000
+    rows_each = 200
+    project = MB.define_project("AnalysisBench")
+    MB.register_item!(
+        project, :iv;
+        detect=file -> endswith(file.filename, ".csv"),
+        read=file -> CSV.read(file.filepath, DataFrame),
+        entries=function (_file, data)
+            row_count = nrow(data)
+            parts = MB.AbstractDataItem[]
+            sizehint!(parts, items)
+            for part in 1:items
+                first_row = fld((part - 1) * row_count, items) + 1
+                last_row = fld(part * row_count, items)
+                push!(parts, MB.DataItem(
+                    kind=:iv, collection=["dev"],
+                    parameters=Dict{Symbol,Any}(:part => part),
+                    data=DataFrame(v=data.v[first_row:last_row])))
+            end
+            return parts
+        end,
+        process=item -> MB.DataItem(item, _heavy_process(item.data)),
+        stats=item -> Dict{Symbol,Any}(:qmax => maximum(item.data.q)),
+    )
+    # A single transient source file isolates the within-source-item parallelism (one big expansion)
+    # from the per-file parallelism that would otherwise hide it.
+    single_dir = mktempdir()
+    try
+        CSV.write(joinpath(single_dir, "meas_00001.csv"),
+            DataFrame(v=collect(range(-1.0, 1.0; length=items * rows_each))))
+        single = MB.DirectorySource(single_dir)
+        MB.scan_source(project, single)          # warmup / compile
+        t = @elapsed scan = MB.scan_source(project, single)
+        n = length(scan.hierarchy.all_items)
+        sayf("  threads=%d  scan=%s for %d items  (%s/item, %.0f items/s)\n",
+            Threads.nthreads(), ms(t), n, ms(t / n), n / t)
+    finally
+        rm(single_dir; force=true, recursive=true)
+    end
+    return nothing
+end
+
+# --------------------------------------------------------------------------------------------------
+# 7. Engine per-region timings (TimerOutputs) over a representative cache exercise.
 # --------------------------------------------------------------------------------------------------
 function region_timings(project, source, records)
     section("6. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
@@ -550,6 +616,7 @@ function main(report_path::AbstractString)
         workspace_cold_build(DATA_DIR; use_views=false)
         workspace_cold_build(DATA_DIR; use_views=true)
         reopen_timings(DATA_DIR)
+        analysis_throughput()
         return nothing
     end
     project = bench_project()
@@ -560,6 +627,7 @@ function main(report_path::AbstractString)
     workspace_cold_build(DATA_DIR; use_views=false)
     workspace_cold_build(DATA_DIR; use_views=true)
     reopen_timings(DATA_DIR)
+    analysis_throughput()
     region_timings(project, source, records)
     return nothing
 end
