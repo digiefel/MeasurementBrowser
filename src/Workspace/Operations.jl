@@ -129,9 +129,9 @@ Start one source scan that progressively populates the workspace index and cache
 
 The scan first surfaces any already-cached index for an instant first view, then streams freshly
 interpreted source items into the workspace and a bounded cache-write batch. One cache writer stages
-up to one source item per worker at a time, then commits the complete scan once. This avoids both
-whole-tree loaded-data retention and one durable transaction per source item. `rebuild=true` first
-wipes the cache and ignores the prior scan, forcing a full re-interpretation.
+up to one source item per worker at a time, then commits that bounded batch. This avoids both
+whole-tree loaded-data retention and scan-wide DuckDB transaction growth. `rebuild=true` first wipes
+the cache and ignores the prior scan, forcing a full re-interpretation.
 `capture_profile=true` records a bounded all-thread CPU sampling profile for that operation.
 """
 function scan_source!(
@@ -195,63 +195,59 @@ function scan_source!(
             data_batches = Vector{Vector{Any}}()
             cache_batch_size = max(1, Base.Threads.nthreads())
 
-            source, cache_hit = with_writer_transaction(cachedb) do connection
-                # The collector writes one bounded worker-sized batch at a time. All batches share
-                # this transaction, so loaded data is released promptly but the durable commit is
-                # paid only once after the complete scan.
-                function flush_cache_batch!()::Nothing
-                    isempty(record_batches) && return nothing
-                    union!(
-                        written_ids,
-                        reconcile_source_items!(connection, record_batches, data_batches),
-                    )
-                    empty!(record_batches)
-                    empty!(data_batches)
-                    return nothing
-                end
-
-                source = with_cancel(() -> cancel_token[]) do
-                    scan_source(
-                        workspace.project,
-                        workspace.source;
-                        cached_source=cached === nothing ? nothing : cached.source,
-                        on_progress=(progress) -> put!(events, (
-                            kind=:progress,
-                            job_id=scan_id,
-                            progress,
-                        )),
-                        on_items=(items) -> begin
-                            records = ItemRecord[ItemRecord(item) for item in items]
-                            put!(events, (kind=:items, job_id=scan_id, items=records))
-                        end,
-                        on_source_item=(interpretation::SourceItemInterpretation) -> begin
-                            records = interpretation.records
-                            data = Any[
-                                item !== nothing && cacheable(item) ? item : nothing
-                                for item in interpretation.loaded_items
-                            ]
-                            wrote[] || put!(events, (
-                                kind=:cache_writing,
-                                job_id=scan_id,
-                            ))
-                            wrote[] = true
-                            push!(record_batches, records)
-                            push!(data_batches, data)
-                            length(record_batches) >= cache_batch_size && flush_cache_batch!()
-                        end,
-                        on_kept_source_item=(source_item_id::String) ->
-                            push!(kept_ids, source_item_id),
-                    )
-                end
-                flush_cache_batch!()
-                # Unchanged source items keep their existing rows: treat them as already written so
-                # finalize_scan! neither re-inserts a bare row nor deletes them.
-                union!(written_ids, kept_ids)
-                cache_hit = cached !== nothing && source === cached.source
-                cache_hit || finalize_scan!(
-                    connection, workspace.cache.identity, source, written_ids)
-                return source, cache_hit
+            # Each worker-sized batch commits independently. This bounds both loaded Julia data and
+            # DuckDB's transaction-owned write memory; an interrupted scan resumes from the source
+            # items already committed instead of discarding the whole rebuild.
+            function flush_cache_batch!()::Nothing
+                isempty(record_batches) && return nothing
+                union!(
+                    written_ids,
+                    reconcile_source_items!(cachedb, record_batches, data_batches),
+                )
+                empty!(record_batches)
+                empty!(data_batches)
+                return nothing
             end
+
+            source = with_cancel(() -> cancel_token[]) do
+                scan_source(
+                    workspace.project,
+                    workspace.source;
+                    cached_source=cached === nothing ? nothing : cached.source,
+                    on_progress=(progress) -> put!(events, (
+                        kind=:progress,
+                        job_id=scan_id,
+                        progress,
+                    )),
+                    on_items=(items) -> begin
+                        records = ItemRecord[ItemRecord(item) for item in items]
+                        put!(events, (kind=:items, job_id=scan_id, items=records))
+                    end,
+                    on_source_item=(interpretation::SourceItemInterpretation) -> begin
+                        records = interpretation.records
+                        data = Any[
+                            item !== nothing && cacheable(item) ? item : nothing
+                            for item in interpretation.loaded_items
+                        ]
+                        wrote[] || put!(events, (
+                            kind=:cache_writing,
+                            job_id=scan_id,
+                        ))
+                        wrote[] = true
+                        push!(record_batches, records)
+                        push!(data_batches, data)
+                        length(record_batches) >= cache_batch_size && flush_cache_batch!()
+                    end,
+                    on_kept_source_item=(source_item_id::String) ->
+                        push!(kept_ids, source_item_id),
+                )
+            end
+            flush_cache_batch!()
+            # Unchanged source items keep their existing rows: treat them as already written so
+            # finalize_scan! neither re-inserts a bare row nor deletes them.
+            union!(written_ids, kept_ids)
+            cache_hit = cached !== nothing && source === cached.source
+            cache_hit || finalize_scan!(cachedb, source, written_ids)
             sampling_profile = if capture_profile
                 result = Profiling.stop_sampling!()
                 sampling_running = false

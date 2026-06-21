@@ -147,12 +147,27 @@ function stop_sampling!()::SamplingProfile
         for (frame, samples) in counts
     ]
     sort!(rows; by=row -> (row.self_samples, row.samples), rev=true)
-    return SamplingProfile(total_samples, SAMPLING_DELAY_SECONDS, truncated, rows)
+    result = SamplingProfile(total_samples, SAMPLING_DELAY_SECONDS, truncated, rows)
+
+    # Retain only the compact report. Raw instruction pointers and line dictionaries can otherwise
+    # remain reachable until a later full collection, directly after the cache build's own peak.
+    empty!(data)
+    empty!(flat_data)
+    empty!(line_info)
+    empty!(flat_info)
+    empty!(frames)
+    empty!(counts)
+    empty!(self_counts)
+    Profile.clear()
+    GC.gc(true)
+    return result
 end
 
 """Stop an interrupted sampling run without producing a report."""
 function cancel_sampling!()::Nothing
     Profile.is_running() && Profile.stop_timer()
+    Profile.clear()
+    GC.gc(true)
     return nothing
 end
 

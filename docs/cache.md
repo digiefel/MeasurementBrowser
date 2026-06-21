@@ -23,8 +23,10 @@ Current source items are processed concurrently. One worker owns one source item
 3. returned the completed records and cacheable loaded items.
 
 The scan collector publishes records immediately and stages up to one source item per worker at a
-time. All bounded batches share one DuckDB transaction, committed after the complete scan. The
-bounded result queue prevents loaded items from accumulating for the whole source.
+time. Each worker-sized batch is committed independently. This bounds both loaded Julia data and
+DuckDB's transaction-owned write memory; a canceled or interrupted build can reuse the source items
+already committed. The bounded result queue prevents loaded items from accumulating for the whole
+source.
 After all source items finish, collection stats run from data-less items containing the completed
 parameters and item stats.
 
@@ -85,7 +87,10 @@ Item materialization checks, in order:
 
 One persistent writer connection serializes mutations. A separate persistent reader serves
 interactive item-data reads from the last committed snapshot. Item-data reads are requested in one
-joined query; one complete scan uses one write transaction.
+joined query; scans use bounded worker-sized write transactions. The cache database has a 512 MiB
+buffer-memory limit, so DuckDB evicts committed table blocks instead of growing toward its default
+system-wide allowance as the cache becomes large. Julia objects and DuckDB allocations outside its
+buffer manager remain visible in the process RSS separately.
 
 ## Status
 

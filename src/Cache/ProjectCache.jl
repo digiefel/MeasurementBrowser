@@ -8,6 +8,7 @@ using Dates
 const PROJECT_CACHE_SCHEMA_VERSION = 2
 const PROJECT_CACHE_LOCK = ReentrantLock()
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
+const PROJECT_CACHE_MEMORY_LIMIT = "512 MiB"
 
 """Which dict one metadata (EAV) row belongs to. Stored in the `scope` column."""
 @enum MetaScope::Int8 begin
@@ -194,6 +195,10 @@ end
 function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
     db = DBInterface.connect(DuckDB.DB, identity.cache_path)
     try
+        # DuckDB otherwise defaults to most of system RAM and retains committed table blocks while
+        # the workspace stays open. Cache writes are bounded batches, so a smaller buffer pool keeps
+        # large caches out of swap without reducing scan parallelism.
+        DBInterface.execute(db, "SET memory_limit = '$(PROJECT_CACHE_MEMORY_LIMIT)'")
         ensure_schema!(db)
         schema_versions = String[
             String(row.value)
@@ -262,10 +267,10 @@ function with_writer(work::Function, cachedb::CacheDB)::Any
 end
 
 """
-Run a complete cache update as one writer transaction.
+Run one cache mutation as a writer transaction.
 
-The caller may stream bounded batches through `connection`; DuckDB owns any uncommitted storage, so
-loaded source data can be released after each batch without paying one durable commit per batch.
+Large scans call this once per bounded source-item batch so DuckDB can release transaction-owned
+write memory between batches.
 """
 function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
     return lock(cachedb.writer_lock) do

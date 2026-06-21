@@ -52,7 +52,9 @@ remaining source items to a bounded worker pool. Each worker calls
 `data_items(project, source, source_item)` once. Large expansions share their independent
 `process`/item-stat work across scheduler threads while the parsed source data stays alive; ordinary
 source items stay on the direct serial path. Each source item returns one bounded batch to the
-index/cache collector. Collection-node stats run afterward from completed data-less item records.
+index/cache collector. The cache writer commits worker-sized batches so neither loaded source data
+nor DuckDB transaction memory grows with the full scan. Collection-node stats run afterward from
+completed data-less item records.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
 When a view needs item data, the engine reloads the selected items via
