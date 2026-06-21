@@ -269,7 +269,10 @@ end
             end,
             entries=(file, data) -> [DataItem(
                 kind=:table, collection=[splitext(file.filename)[1]], data=data)],
-            stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+            stats=function (item)
+                item.collection == ["f2"] && error("persistent f2 analysis failure")
+                return Dict{Symbol,Any}(:rows => nrow(item.data))
+            end,
         )
 
         function run_scan!()
@@ -293,6 +296,28 @@ end
         @test read_count[] == 5
         @test length(ws1.index.hierarchy.all_items) == 5
         @test ws1.cache.status.new_source_items == 5
+        failed_source_item_id = only(
+            record.source_item_id
+            for record in ws1.index.hierarchy.all_items
+            if record.collection == ["f2"]
+        )
+        @test haskey(ws1.index.analysis_errors, failed_source_item_id)
+
+        # A missing fingerprint cannot prove that a source item is unchanged.
+        cached_source = ws1.index.source
+        unverifiable = Dict{String,Any}(
+            id => nothing for id in keys(cached_source.source_item_fingerprints))
+        unverifiable_source = MB.SourceScan(
+            cached_source.source_id,
+            cached_source.source_label,
+            unverifiable,
+            cached_source.hierarchy,
+            cached_source.analysis_failures,
+        )
+        @test !MB.ItemIndex.source_unchanged(
+            test_source(project, dir), unverifiable, unverifiable_source)
+        _, reusable = MB.ItemIndex._incremental_reuse_plan(unverifiable_source, unverifiable)
+        @test isempty(reusable)
         MB.close_workspace!(ws1)
 
         try
@@ -304,6 +329,7 @@ end
             @test ws2.cache.status.new_source_items == 0
             @test ws2.cache.status.stale_source_items == 0
             @test ws2.cache.status.deleted_source_items == 0
+            @test haskey(ws2.index.analysis_errors, failed_source_item_id)
             MB.close_workspace!(ws2)
 
             # Changing one file re-reads only that file.
@@ -316,6 +342,7 @@ end
             changed = only(
                 r for r in ws3.index.hierarchy.all_items if r.collection == ["f3"])
             @test changed.stats[:rows] == 7
+            @test haskey(ws3.index.analysis_errors, failed_source_item_id)
             MB.close_workspace!(ws3)
 
             # Adding a file reads only the new file.

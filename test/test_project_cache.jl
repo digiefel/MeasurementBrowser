@@ -347,6 +347,43 @@ const ProjectCache = MeasurementBrowser.Cache
         end
     end
 
+    @testset "bulk native DataFrame read" begin
+        mktempdir() do dir
+            identity = ProjectCache.ProjectCacheIdentity(
+                "bulk", "bulk_src", "BulkSrc", joinpath(dir, "bulk.duckdb"))
+            cachedb = ProjectCache.open_cache_db(identity)
+            try
+                records = MeasurementBrowser.ItemIndex.ItemRecord[
+                    MeasurementBrowser.ItemIndex.ItemRecord(;
+                        id="item_$index",
+                        source_item_id="source_$index",
+                        source_item_fingerprint=(index, 1),
+                        source_item_path=nothing,
+                        item_label="Item $index",
+                        kind=:table,
+                        collection=["bulk"],
+                    )
+                    for index in 1:17
+                ]
+                frames = [DataFrame(x=[Float64(index), index + 0.5]) for index in 1:17]
+                items = Any[
+                    MeasurementBrowser.DataItem(record, frame)
+                    for (record, frame) in zip(records, frames)
+                ]
+                ProjectCache.write_cached_item_data!(cachedb, records, items)
+                loaded = ProjectCache.read_cached_item_data(cachedb, records)
+
+                @test length(loaded) == length(records)
+                @test all(
+                    isequal(MeasurementBrowser.item_data(item), frame)
+                    for (item, frame) in zip(loaded, frames)
+                )
+            finally
+                ProjectCache.close_cache_db!(cachedb)
+            end
+        end
+    end
+
     @testset "item LRU evicts least-recently-used entries" begin
         Cache = MeasurementBrowser.Workspace
         lru = Cache.ItemCache(2)

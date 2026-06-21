@@ -68,3 +68,47 @@ using Test
         end
     end
 end
+
+@testset "parallel expanded-item processing preserves order and failures" begin
+    @test Threads.nthreads() >= 4
+    mktempdir() do root
+        write(joinpath(root, "expanded.txt"), "expanded")
+        project = MeasurementBrowser.define_project("Parallel expansion")
+        MeasurementBrowser.register_item!(
+            project,
+            :expanded;
+            detect=file -> file.filename == "expanded.txt",
+            read=file -> read(file.filepath, String),
+            entries=(file, _data) -> MeasurementBrowser.AbstractDataItem[
+                MeasurementBrowser.DataItem(
+                    kind=:expanded,
+                    collection=["expanded"],
+                    parameters=Dict{Symbol,Any}(:index => index),
+                    data=index,
+                    id="$(file.filepath)#$index",
+                )
+                for index in 1:80
+            ],
+            process=function (item)
+                item.parameters[:index] == 17 && error("process failure 17")
+                return MeasurementBrowser.DataItem(item, item.data * 2)
+            end,
+            stats=function (item)
+                item.parameters[:index] == 23 && error("stats failure 23")
+                return Dict{Symbol,Any}(:value => item.data)
+            end,
+        )
+
+        scan = scan_test_source(project, root)
+        records = scan.hierarchy.all_items
+        @test [record.parameters[:index] for record in records] == collect(1:80)
+        @test length(scan.analysis_failures) == 2
+        @test any(occursin("process failure 17", failure.message)
+            for failure in scan.analysis_failures)
+        @test any(occursin("stats failure 23", failure.message)
+            for failure in scan.analysis_failures)
+        @test !haskey(records[17].stats, :value)
+        @test !haskey(records[23].stats, :value)
+        @test records[80].stats[:value] == 160
+    end
+end

@@ -156,9 +156,10 @@ a source-item identity but must have distinct `id` values within the source. The
 missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
 
 The source item is read once for the expansion. Processing and item stats for every child complete
-before the worker releases the loaded source data. A child may carry a view into that data instead
-of a copy. The view keeps its parent alive through processing, stats, and cache writing; afterward
-the temporary source data can be released. Overlapping views share storage and should normally be
+before the worker releases the loaded source data. Large expansions divide that independent child
+work across scheduler threads. A child may carry a view into the parsed data instead of a copy. The
+view keeps its parent alive through processing, stats, and cache writing; afterward the temporary
+source data can be released. Because siblings may run concurrently, overlapping views must be
 treated as read-only. DataFrames restored from the cache are independent ordinary `DataFrame`s.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep

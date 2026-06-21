@@ -10,10 +10,16 @@ Opening a workspace loads the existing DuckDB index while discovering the curren
 valid cached index can populate the previous hierarchy, parameters, stats, fingerprints, and failures
 immediately.
 
+Discovery compares each current source-item fingerprint with the cached one. An unchanged
+fingerprinted source item reuses its cached records without reading or analyzing the source again;
+new, changed, and unfingerprinted source items are interpreted normally. A fully unchanged source
+returns the cached scan directly. Sources with collection parameters currently re-interpret every
+source item because those parameters are folded into stored item records.
+
 Current source items are processed concurrently. One worker owns one source item until it has:
 
 1. produced its logical data items,
-2. run `process` and item stats,
+2. run `process` and item stats (across scheduler threads for a large expansion),
 3. returned the completed records and cacheable loaded items.
 
 The scan collector publishes records immediately and stages up to one source item per worker at a
@@ -42,7 +48,7 @@ A cache is accepted only when its source identity and schema version match.
 
 | Fingerprint | Scope | Missing (`nothing`) means |
 |---|---|---|
-| `fingerprint(source_item)` | records and cached item data produced by that source item | do not persist its item data |
+| `fingerprint(source_item)` | records and cached item data produced by that source item | re-read it every scan and do not persist its item data |
 | `fingerprint(data_item)` | cached data for that logical item | use only source-item invalidation |
 
 Changing one source-item fingerprint deletes only the records and cached item data derived from that

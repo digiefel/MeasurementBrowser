@@ -27,12 +27,18 @@ its per-file parse cost is in `MeasurementBrowser.scan_profile_summary(project)`
 julia --project=bench --threads=auto bench/cache_pipeline.jl [n_files] [rows_per_file]
 ```
 
-Generates a synthetic CSV dataset and reports, from real functions on real data:
+Creates a deterministic synthetic CSV dataset once under `bench/data/`, reuses it on later runs,
+and saves each report under `bench/results/`. The harness reports real functions on real data:
 
 1. **per-item micro-benchmarks** — CSV parse vs serialize vs deserialize vs DuckDB blob round-trip
    vs DuckDB columnar round-trip (this settles the fastest way to cache item data);
 2. **whole-dataset macro timings** — the real parallel scan and a single-threaded analysis loop;
-3. **engine per-region timings** — the `Profiling` report over a representative cache exercise.
+3. **source-item expansion** — copied child tables versus views, plus per-item reloads versus one
+   source read;
+4. **workspace cold builds** — full scan, item stats, native DuckDB writes, and cache-only reads;
+5. **incremental reopen** — no-change and one-changed-source read counts and elapsed time;
+6. **item-analysis throughput** — one source item expanded into many independently processed items;
+7. **engine per-region timings** — the `Profiling` report over a representative cache exercise.
 
 The `bench/` environment is separate from the package so its dev tools (BenchmarkTools, …) don't
 become runtime dependencies.

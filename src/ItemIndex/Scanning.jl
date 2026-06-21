@@ -44,13 +44,14 @@ function fingerprints_by_source_item(
     return Dict(source_item_id(item) => fingerprint(item) for item in items)
 end
 
-"""Whether a cached scan still matches the current source items."""
+"""Whether every current source item has a non-null fingerprint matching the cached scan."""
 function source_unchanged(
     source::AbstractDataSource,
     fingerprints::Dict{String,Any},
     cached::SourceScan,
 )::Bool
     cached.source_id == source_id(source) || return false
+    all(!isnothing, values(fingerprints)) || return false
     return cached.source_item_fingerprints == fingerprints
 end
 
@@ -353,9 +354,10 @@ end
 """
 Decide which source items can be reused from a cached scan without re-reading them.
 
-A source item is reusable when it is still discovered and its fingerprint is exactly the cached one.
-Returns the cached records grouped by source item and the set of reusable source-item ids (including
-reusable items that previously produced no records, so the scan keeps their bare/error rows).
+A source item is reusable when it is still discovered and its non-null fingerprint exactly matches
+the cached one. Returns the cached records grouped by source item and the set of reusable source-item
+ids (including reusable items that previously produced no records, so the scan keeps their bare/error
+rows).
 """
 function _incremental_reuse_plan(
     cached_source::SourceScan,
@@ -371,6 +373,7 @@ function _incremental_reuse_plan(
     end
     unchanged = Set{String}()
     for (source_item, fingerprint) in fingerprints
+        fingerprint === nothing && continue
         haskey(cached_fingerprints, source_item) || continue
         isequal(cached_fingerprints[source_item], fingerprint) || continue
         push!(unchanged, source_item)
@@ -475,6 +478,16 @@ function scan_source(
         source,
         summary.skipped_source_items,
     )
+    if cached_source !== nothing
+        append!(
+            summary.failures,
+            (
+                failure
+                for failure in cached_source.analysis_failures
+                if failure.source_item_id in unchanged_source_item_ids
+            ),
+        )
+    end
     append!(summary.failures, source_analysis_failures(project, source))
     source_scan = SourceScan(
         source_id(source),

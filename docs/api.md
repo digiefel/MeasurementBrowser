@@ -74,12 +74,14 @@ data items.
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
 | `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | read/interpret one unit into loaded logical items for processing, stats, and indexing |
 | `load_data_item(project, source, source_item_id, id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
-| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | invalidates records and cached item data from this source item |
+| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | stable change token for reusing records and cached item data; `nothing` forces re-interpretation |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
 
 `data_items` reads/interprets one source item and returns its logical data items. Their loaded data is
-processed, analyzed, and optionally cached before that source-item pass ends. `load_data_item`
+processed, analyzed, and optionally cached before that source-item pass ends. Different source items
+run concurrently, and a large expansion may also run sibling `process`/stats callbacks concurrently;
+those callbacks must therefore be safe for concurrent use. `load_data_item`
 rebuilds one item later when neither memory nor cache can serve it. Both are getters (no bang). The
 package's built-in file-backed source item is
 `SourceFile` (below); a bare `SourceFile` has **no** universal `data_items` — the source decides what
@@ -198,8 +200,8 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
   receive. When one source expands into many tabular items, `item.data` may be a row view such as
   `view(data, rows, :)`; the view keeps the parsed source table alive without copying its columns.
   The source worker runs `process`, item stats, and cache writing before releasing those items.
-  Overlapping views share storage, so project callbacks should treat them as read-only unless shared
-  mutation is intentional. Later cache materialization returns independent `DataFrame`s. Records are
+  Overlapping views share storage and sibling callbacks may run concurrently, so project callbacks
+  should treat them as read-only. Later cache materialization returns independent `DataFrame`s. Records are
   streamed to the workspace as each source item finishes. The adapter derives each internal record
   from the returned item and the `SourceFile`. When a recipe entry does not provide an id, the
   adapter mints one from the source-item path, kind, and `parameters`.

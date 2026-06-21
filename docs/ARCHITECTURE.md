@@ -47,11 +47,13 @@ AbstractDataSource│ scan          →  hierarchy  →  data       →  view   
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-then assigns each source item to one worker. That worker calls
-`data_items(project, source, source_item)` once, processes and computes stats for every resulting data
-item while its loaded data is still alive, and returns one bounded batch to the index/cache
-collector. Collection-node stats run afterward from completed data-less item records. The cache
-([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
+reuses cached records for source items whose non-null fingerprints are unchanged, and assigns the
+remaining source items to a bounded worker pool. Each worker calls
+`data_items(project, source, source_item)` once. Large expansions share their independent
+`process`/item-stat work across scheduler threads while the parsed source data stays alive; ordinary
+source items stay on the direct serial path. Each source item returns one bounded batch to the
+index/cache collector. Collection-node stats run afterward from completed data-less item records.
+The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
 When a view needs item data, the engine reloads the selected items via
 `load_data_item(project, source, source_item_id, id)` (memory → cache → source). Each item carries
