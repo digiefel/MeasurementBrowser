@@ -149,12 +149,20 @@ function interpret_source_item(
     source_item::AbstractDataSourceItem,
 )::SourceItemInterpretation
     source_item_id_value = source_item_id(source_item)
+    source_item_path_value = source_item_path(source_item)
+    source_item_label_value = if source_item_path_value !== nothing &&
+                                 isabspath(source_id(source))
+        relpath(source_item_path_value, source_id(source))
+    else
+        source_item_label(source_item)
+    end
     source_started = time_ns()
     handles = try
         data_items(project, source, source_item)::Vector{<:AbstractDataItem}
     catch
         finish_source_profile!(
-            project, source_item_id_value, :unmatched, 0, 0.0, 0.0,
+            project, source_item_id_value, source_item_label_value, source_item_path_value,
+            :unmatched, 0, 0.0, 0.0,
             (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
         rethrow()
     end
@@ -208,7 +216,8 @@ function interpret_source_item(
         stats_thread == 0 || push!(participating_threads, stats_thread)
     end
     finish_source_profile!(
-        project, source_item_id_value, source_kind, item_count,
+        project, source_item_id_value, source_item_label_value, source_item_path_value,
+        source_kind, item_count,
         sum(process_seconds), sum(stats_seconds),
         (time_ns() - source_started) / 1e9, participating_threads)
     return SourceItemInterpretation(records, loaded_items, failures)

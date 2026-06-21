@@ -51,6 +51,8 @@ end
 """Timing retained for one source item in the current scan."""
 mutable struct SourceItemProfile
     source_item_id::String
+    source_item_label::String
+    source_item_path::Union{Nothing,String}
     kind::Symbol
     item_count::Int
     detect_seconds::Float64
@@ -63,7 +65,8 @@ mutable struct SourceItemProfile
 end
 
 SourceItemProfile(source_item_id::AbstractString)::SourceItemProfile = SourceItemProfile(
-    String(source_item_id), :unmatched, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Set{Int}())
+    String(source_item_id), String(source_item_id), nothing,
+    :unmatched, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Set{Int}())
 
 """One item-kind summary derived from the current source-item timings."""
 mutable struct KindProfileRow
@@ -84,6 +87,8 @@ KindProfileRow(kind::Symbol)::KindProfileRow =
 """Read-only source-item row returned to the Performance window."""
 struct SourceProfileRow
     source_item_id::String
+    source_item_label::String
+    source_item_path::Union{Nothing,String}
     kind::Symbol
     items::Int
     detect_seconds::Float64

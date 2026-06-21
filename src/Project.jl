@@ -135,6 +135,8 @@ end
 function Projects.finish_source_profile!(
     project::Project,
     source_item_id::AbstractString,
+    source_item_label::AbstractString,
+    source_item_path::Union{Nothing,String},
     kind::Symbol,
     item_count::Int,
     process_seconds::Float64,
@@ -144,6 +146,8 @@ function Projects.finish_source_profile!(
 )::Nothing
     lock(project.profile_lock) do
         entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
+        entry.source_item_label = String(source_item_label)
+        entry.source_item_path = source_item_path
         entry.kind = kind
         entry.item_count = item_count
         entry.process_seconds = process_seconds
@@ -185,6 +189,8 @@ function scan_source_profile(project::Project)::Vector{SourceProfileRow}
     rows = lock(project.profile_lock) do
         [SourceProfileRow(
             profile.source_item_id,
+            profile.source_item_label,
+            profile.source_item_path,
             profile.kind,
             profile.item_count,
             profile.detect_seconds,

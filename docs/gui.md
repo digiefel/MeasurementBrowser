@@ -85,21 +85,25 @@ Both apply to multi-selection via `_set_collections_bad!` / `_set_items_bad!`.
 use it by providing callbacks rather than passing DataFrames or item objects directly.
 
 **State**: `DataGridState` (defined in `Browser/State.jl`) is owned by the consumer and passed by
-reference each frame. It tracks `selected_rows::Vector{Int}`, a `scroll_to_row` request, and a
-`focused` flag written back each frame.
+reference each frame. Row mode tracks `selected_rows::Vector{Int}`. Cell mode tracks the anchor and
+focus corners of one rectangular selection. Both modes share the scroll request and focus state.
 
 **Render API**:
 ```julia
 render_data_grid!(id, state;
     n_rows, columns, cell,         # cell(row, col) -> String
+    cell_link = (_, _) -> nothing, # optional local path or URL for one cell
     row_tint = _ -> nothing,       # row -> Union{Nothing,UInt32} packed RGBA
     on_selection_change = identity,
+    selection_mode = :rows,        # :rows or :cells
     height = 0.0f0)                # 0 = fill available
 ```
 
 The grid uses `ImGuiListClipper` for O(visible) rendering, sticky header via
 `TableSetupScrollFreeze(0, 1)`, `ImGuiTableFlags_Resizable` for drag-to-resize columns, and the
-shared `_update_multi_selection!` helper for click/Shift/Ctrl/arrow/Escape/Ctrl+A selection.
+shared `_update_multi_selection!` helper for row selection. Cell mode supports click-drag and
+Shift/arrow range extension, select-all, and spreadsheet-compatible TSV clipboard copy. The Table
+Inspector deliberately stays in row mode; diagnostic tables use cell mode.
 
 **Column width persistence**: Column widths are persisted across restarts via ImGui's ini file
 (see below). `ImGuiTableFlags_SizingFixedFit` auto-sizes columns on first appearance; on

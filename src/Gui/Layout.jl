@@ -308,87 +308,72 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
     return nothing
 end
 
+const SCAN_KIND_PROFILE_COLUMNS = String[
+    "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries", "Process", "Stats",
+]
+const SCAN_SOURCE_PROFILE_COLUMNS = String[
+    "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries", "Process", "Stats",
+    "Threads",
+]
+const SAMPLING_PROFILE_COLUMNS =
+    String["Active", "In call", "Call share", "Function", "File", "Line"]
+
 """Render the per-kind summary for the latest source scan."""
-function _render_scan_kind_table(rows::Vector{KindProfileRow})::Nothing
-    flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg |
-        ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_SizingFixedFit
-    ig.BeginTable("scan_kind_profile", 9, flags) || return nothing
-    for column in (
-        "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries",
-        "Process", "Stats",
-    )
-        ig.TableSetupColumn(column)
+function _render_scan_kind_table(
+    rows::Vector{KindProfileRow},
+    state::DataGridState,
+)::Nothing
+    function cell(row_index::Int, column::Int)::String
+        row = rows[row_index]
+        column == 1 && return String(row.kind)
+        column == 2 && return string(row.source_items)
+        column == 3 && return string(row.items)
+        seconds = column == 4 ? row.total_seconds :
+            column == 5 ? row.detect_seconds :
+            column == 6 ? row.read_seconds :
+            column == 7 ? row.entries_seconds :
+            column == 8 ? row.process_seconds : row.stats_seconds
+        return @sprintf("%.1f ms", 1000 * seconds)
     end
-    ig.TableHeadersRow()
-    for row in rows
-        values = (
-            String(row.kind), string(row.source_items), string(row.items),
-            @sprintf("%.1f ms", 1000 * row.total_seconds),
-            @sprintf("%.1f ms", 1000 * row.detect_seconds),
-            @sprintf("%.1f ms", 1000 * row.read_seconds),
-            @sprintf("%.1f ms", 1000 * row.entries_seconds),
-            @sprintf("%.1f ms", 1000 * row.process_seconds),
-            @sprintf("%.1f ms", 1000 * row.stats_seconds),
-        )
-        ig.TableNextRow()
-        for (column, value) in pairs(values)
-            ig.TableSetColumnIndex(column - 1)
-            ig.TextUnformatted(value)
-        end
-    end
-    ig.EndTable()
+    render_data_grid!(
+        "scan_kind_profile", state;
+        n_rows=length(rows), columns=SCAN_KIND_PROFILE_COLUMNS, cell,
+        selection_mode=:cells, height=180.0f0)
     return nothing
 end
 
 """Render source-item timings, sorted by total elapsed time."""
-function _render_scan_source_table(rows::Vector{SourceProfileRow})::Nothing
-    flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg |
-        ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_ScrollX |
-        ig.ImGuiTableFlags_ScrollY | ig.ImGuiTableFlags_SizingFixedFit
-    ig.BeginTable("scan_source_profile", 10, flags, (0.0f0, 260.0f0)) || return nothing
-    ig.TableSetupScrollFreeze(1, 1)
-    for column in (
-        "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries",
-        "Process", "Stats", "Threads",
-    )
-        ig.TableSetupColumn(column)
+function _render_scan_source_table(
+    rows::Vector{SourceProfileRow},
+    state::DataGridState,
+)::Nothing
+    function cell(row_index::Int, column::Int)::String
+        row = rows[row_index]
+        column == 1 && return row.source_item_label
+        column == 2 && return String(row.kind)
+        column == 3 && return string(row.items)
+        column == 10 && return join(row.thread_ids, ", ")
+        seconds = column == 4 ? row.total_seconds :
+            column == 5 ? row.detect_seconds :
+            column == 6 ? row.read_seconds :
+            column == 7 ? row.entries_seconds :
+            column == 8 ? row.process_seconds : row.stats_seconds
+        return @sprintf("%.2f ms", 1000 * seconds)
     end
-    ig.TableHeadersRow()
-
-    clipper = ig.lib.ImGuiListClipper()
-    try
-        ig.Begin(clipper, length(rows), ig.GetTextLineHeightWithSpacing())
-        while ig.Step(clipper)
-            first_row = Int(unsafe_load(clipper.DisplayStart)) + 1
-            last_row = Int(unsafe_load(clipper.DisplayEnd))
-            for index in first_row:last_row
-                row = rows[index]
-                values = (
-                    row.source_item_id, String(row.kind), string(row.items),
-                    @sprintf("%.2f ms", 1000 * row.total_seconds),
-                    @sprintf("%.2f ms", 1000 * row.detect_seconds),
-                    @sprintf("%.2f ms", 1000 * row.read_seconds),
-                    @sprintf("%.2f ms", 1000 * row.entries_seconds),
-                    @sprintf("%.2f ms", 1000 * row.process_seconds),
-                    @sprintf("%.2f ms", 1000 * row.stats_seconds),
-                    join(row.thread_ids, ", "),
-                )
-                ig.TableNextRow()
-                for (column, value) in pairs(values)
-                    ig.TableSetColumnIndex(column - 1)
-                    ig.TextUnformatted(value)
-                end
-            end
-        end
-    finally
-        ig.Destroy(clipper)
-    end
-    ig.EndTable()
+    cell_link(row::Int, column::Int)::Union{Nothing,String} =
+        column == 1 ? rows[row].source_item_path : nothing
+    render_data_grid!(
+        "scan_source_profile", state;
+        n_rows=length(rows), columns=SCAN_SOURCE_PROFILE_COLUMNS, cell, cell_link,
+        selection_mode=:cells, height=260.0f0)
     return nothing
 end
 
 """Render the flat source-line report captured by a profiled rebuild."""
-function _render_sampling_profile(profile::SamplingProfile)::Nothing
+function _render_sampling_profile(
+    profile::SamplingProfile,
+    state::DataGridState,
+)::Nothing
     profile.truncated && ig.TextColored(
         (0.95f0, 0.65f0, 0.15f0, 1.0f0),
         "The sampling buffer filled before the rebuild finished.",
@@ -397,40 +382,21 @@ function _render_sampling_profile(profile::SamplingProfile)::Nothing
         "%d samples at %.0f ms intervals", profile.total_samples,
         1000 * profile.delay_seconds,
     ))
-    flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg |
-        ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_ScrollX |
-        ig.ImGuiTableFlags_ScrollY | ig.ImGuiTableFlags_SizingFixedFit
-    ig.BeginTable("sampling_profile", 6, flags, (0.0f0, 320.0f0)) || return nothing
-    ig.TableSetupScrollFreeze(0, 1)
-    for column in ("Active", "In call", "Call share", "Function", "File", "Line")
-        ig.TableSetupColumn(column)
+    function cell(row_index::Int, column::Int)::String
+        row = profile.rows[row_index]
+        column == 1 && return string(row.self_samples)
+        column == 2 && return string(row.samples)
+        column == 3 && return @sprintf(
+            "%.1f%%", profile.total_samples == 0 ? 0.0 :
+                100 * row.samples / profile.total_samples)
+        column == 4 && return row.function_name
+        column == 5 && return row.file
+        return row.line > 0 ? string(row.line) : "?"
     end
-    ig.TableHeadersRow()
-    clipper = ig.lib.ImGuiListClipper()
-    try
-        ig.Begin(clipper, length(profile.rows), ig.GetTextLineHeightWithSpacing())
-        while ig.Step(clipper)
-            first_row = Int(unsafe_load(clipper.DisplayStart)) + 1
-            last_row = Int(unsafe_load(clipper.DisplayEnd))
-            for index in first_row:last_row
-                row = profile.rows[index]
-                share = profile.total_samples == 0 ?
-                    0.0 : 100 * row.samples / profile.total_samples
-                values = (
-                    string(row.self_samples), string(row.samples), @sprintf("%.1f%%", share),
-                    row.function_name, row.file, row.line > 0 ? string(row.line) : "?",
-                )
-                ig.TableNextRow()
-                for (column, value) in pairs(values)
-                    ig.TableSetColumnIndex(column - 1)
-                    ig.TextUnformatted(value)
-                end
-            end
-        end
-    finally
-        ig.Destroy(clipper)
-    end
-    ig.EndTable()
+    render_data_grid!(
+        "sampling_profile", state;
+        n_rows=length(profile.rows), columns=SAMPLING_PROFILE_COLUMNS, cell,
+        selection_mode=:cells, height=320.0f0)
     return nothing
 end
 
@@ -536,10 +502,10 @@ function render_perf_window(state::BrowserState)::Nothing
                 ig.TextDisabled(
                     "Total is elapsed per source item; process and stats are summed item work.",
                 )
-                _render_scan_kind_table(scan_rows)
+                _render_scan_kind_table(scan_rows, performance.scan_kind_grid)
                 ig.Spacing()
                 ig.Text("Slow source items")
-                _render_scan_source_table(source_rows)
+                _render_scan_source_table(source_rows, performance.scan_source_grid)
             end
         end
 
@@ -554,7 +520,8 @@ function render_perf_window(state::BrowserState)::Nothing
                 ig.SameLine()
                 ig.Text("Profiling...")
             elseif workspace isa Workspace.Workspace && workspace.sampling_profile !== nothing
-                _render_sampling_profile(workspace.sampling_profile)
+                _render_sampling_profile(
+                    workspace.sampling_profile, performance.sampling_grid)
             else
                 ig.TextDisabled("No sampled rebuild yet")
             end

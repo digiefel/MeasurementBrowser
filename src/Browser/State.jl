@@ -90,15 +90,19 @@ end
 const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
 
 """
-Transient row-selection and scroll state for a DataGrid widget.
+Transient selection and scroll state for a DataGrid widget.
 
 Owned by the consumer of the grid (e.g. TableInspectorState); passed by reference each frame.
 Column widths are persisted across restarts via the imgui.ini file, keyed by the grid `id`.
-Use `scroll_to_row` to request a programmatic scroll on the next frame.
+Row mode uses `selected_rows`. Cell mode stores the opposite corners of one rectangular selection in
+`cell_anchor` and `cell_focus`. Use `scroll_to_row` to request a programmatic scroll on the next frame.
 """
 Base.@kwdef mutable struct DataGridState
     selected_rows::Vector{Int}           = Int[]
     scroll_to_row::Union{Nothing,Int}    = nothing
+    cell_anchor::Union{Nothing,Tuple{Int,Int}} = nothing
+    cell_focus::Union{Nothing,Tuple{Int,Int}} = nothing
+    dragging_cells::Bool                 = false
     focused::Bool                        = false
 end
 
@@ -144,6 +148,9 @@ Base.@kwdef mutable struct PerformanceState
     scan_profile_refresh_at::Float64 = 0.0
     scan_kind_rows::Vector{KindProfileRow} = KindProfileRow[]
     scan_source_rows::Vector{SourceProfileRow} = SourceProfileRow[]
+    scan_kind_grid::DataGridState = DataGridState()
+    scan_source_grid::DataGridState = DataGridState()
+    sampling_grid::DataGridState = DataGridState()
 end
 
 """

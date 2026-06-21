@@ -83,6 +83,8 @@ end
         for i in 1:4
             write(joinpath(dir, "m$i.csv"), "x,y\n1,2\n3,4\n")
         end
+        mkpath(joinpath(dir, "sub"))
+        write(joinpath(dir, "sub", "m5.csv"), "x,y\n1,2\n3,4\n")
 
         project = _profile_project()
 
@@ -91,8 +93,8 @@ end
         @test length(rows) == 1
         row = only(rows)
         @test row.kind == :table
-        @test row.source_items == 4
-        @test row.items == 4
+        @test row.source_items == 5
+        @test row.items == 5
         @test row.detect_seconds >= 0
         @test row.read_seconds >= 0
         @test row.entries_seconds >= 0
@@ -101,10 +103,15 @@ end
         @test row.total_seconds >= row.read_seconds
 
         source_rows = MB.scan_source_profile(project)
-        @test length(source_rows) == 4
+        @test length(source_rows) == 5
         @test all(source_row -> source_row.kind == :table, source_rows)
         @test all(source_row -> source_row.items == 1, source_rows)
         @test all(source_row -> !isempty(source_row.thread_ids), source_rows)
+        @test Set(row.source_item_label for row in source_rows) ==
+            Set([("m$i.csv" for i in 1:4)..., joinpath("sub", "m5.csv")])
+        @test Set(row.source_item_path for row in source_rows) ==
+            Set([(joinpath(dir, "m$i.csv") for i in 1:4)..., joinpath(dir, "sub", "m5.csv")])
+        @test all(row -> !isabspath(row.source_item_label), source_rows)
         @test issorted(source_rows; by=row -> row.total_seconds, rev=true)
 
         # A cache hit does no per-kind work, so the profile resets to empty.
