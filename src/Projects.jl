@@ -48,14 +48,52 @@ struct PlotRecipe
     draw::Function
 end
 
-"""Accumulated read/stats timing for one item kind in the current scan."""
-mutable struct KindProfile
+"""Timing retained for one source item in the current scan."""
+mutable struct SourceItemProfile
+    source_item_id::String
+    kind::Symbol
+    item_count::Int
+    detect_seconds::Float64
+    read_seconds::Float64
+    entries_seconds::Float64
+    process_seconds::Float64
+    stats_seconds::Float64
+    total_seconds::Float64
+    thread_ids::Set{Int}
+end
+
+SourceItemProfile(source_item_id::AbstractString)::SourceItemProfile = SourceItemProfile(
+    String(source_item_id), :unmatched, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Set{Int}())
+
+"""One item-kind summary derived from the current source-item timings."""
+mutable struct KindProfileRow
+    kind::Symbol
     source_items::Int
     items::Int
+    detect_seconds::Float64
     read_seconds::Float64
+    entries_seconds::Float64
+    process_seconds::Float64
     stats_seconds::Float64
+    total_seconds::Float64
 end
-KindProfile() = KindProfile(0, 0, 0.0, 0.0)
+
+KindProfileRow(kind::Symbol)::KindProfileRow =
+    KindProfileRow(kind, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+"""Read-only source-item row returned to the Performance window."""
+struct SourceProfileRow
+    source_item_id::String
+    kind::Symbol
+    items::Int
+    detect_seconds::Float64
+    read_seconds::Float64
+    entries_seconds::Float64
+    process_seconds::Float64
+    stats_seconds::Float64
+    total_seconds::Float64
+    thread_ids::Vector{Int}
+end
 
 """
 A callback project assembled from registered recipes.
@@ -69,9 +107,9 @@ mutable struct Project
     recipes::Vector{ItemRecipe}
     collection_stats::Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}
     plots::Dict{Symbol,Dict{String,PlotRecipe}}
-    # Transient per-kind timing for the latest scan, surfaced in the performance window. Reset at the
-    # start of each scan and replaced wholesale, so it stays bounded to one row per item kind.
-    scan_profile::Dict{Symbol,KindProfile}
+    # Transient timing for the latest scan, surfaced in the performance window. One row per source
+    # item keeps the profile useful without retaining every expanded data-item event.
+    scan_profile::Dict{String,SourceItemProfile}
     profile_lock::ReentrantLock
 end
 
@@ -214,12 +252,20 @@ function collection_path_label end
 """Clear any per-scan timing a project accumulates. Called once at the start of every scan."""
 function reset_scan_profile! end
 
+"""Record one callback phase for a source item in the current scan."""
+function record_scan_phase! end
+
+"""Finish one source-item timing after all expanded items have been processed."""
+function finish_source_profile! end
+
 """
 Per-item-kind timing for the most recent scan, newest scan replacing the last.
 
-Returns one `(; kind, source_items, items, read_seconds, stats_seconds)` row per kind. Surfaced in
-the performance window.
+Returns one aggregate row per item kind. Surfaced in the performance window.
 """
 function scan_profile_summary end
+
+"""Return source-item timing rows for the latest scan, slowest first."""
+function scan_source_profile end
 
 end

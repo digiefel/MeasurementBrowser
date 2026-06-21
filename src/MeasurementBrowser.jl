@@ -14,10 +14,12 @@ using .Projects:
     CollectionStatRecipe,
     DEFAULT_PROJECT,
     ItemRecipe,
-    KindProfile,
+    KindProfileRow,
     PROJECTS,
     PlotRecipe,
     Project,
+    SourceItemProfile,
+    SourceProfileRow,
     cacheable,
     close_source!,
     collection,
@@ -47,8 +49,11 @@ import .Projects:
     process,
     project_description,
     project_name,
+    record_scan_phase!,
     reset_scan_profile!,
-    scan_profile_summary
+    scan_profile_summary,
+    scan_source_profile,
+    finish_source_profile!
 
 include("ItemIndex.jl")
 using .ItemIndex:

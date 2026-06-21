@@ -182,6 +182,8 @@ mutable struct Workspace{S<:AbstractDataSource}
     scan::WorkspaceJob
     analysis::WorkspaceJob
     cache_job::WorkspaceJob
+    sampling_profile::Union{Nothing,Profiling.SamplingProfile}
+    sampling_active::Bool
     loaded_items::ItemCache
     background_tasks::Vector{Task}
     closed::Bool
@@ -212,6 +214,8 @@ function Workspace(
         WorkspaceJob(),
         WorkspaceJob(),
         WorkspaceJob(),
+        nothing,
+        false,
         ItemCache(),
         Task[],
         false,

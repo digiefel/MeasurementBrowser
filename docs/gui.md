@@ -13,7 +13,9 @@ navigation and information, right side for plot-oriented work.
 
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
 to the open workspace. `PlotState` owns plot windows and choices, `TableInspectorState` owns the
-generic file-inspection window, and `PerformanceState` owns samples used only for diagnostics.
+generic file-inspection window, and `PerformanceState` owns frame/UI samples used only for
+diagnostics. Scan timings live with the project performing the callbacks; the workspace retains the
+last explicitly captured sampling profile.
 
 The workspace owns the source, item index, selected collection and item identities, loaded cache,
 loaded item memory, and the state of source-scan and cache work. Those values must not be copied
@@ -30,6 +32,20 @@ ownership. This prevents one operation from overwriting the status shown for the
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance, multi-select, and quick X/Y plot. |
+| Performance | Frame/memory diagnostics, scan phase/source timings, and an explicit profiled rebuild. |
+
+## Scan profiling
+
+The Performance window's always-on scan profile keeps one bounded row per source item. It shows
+`detect`, `read`, `entries`, `process`, and item-stat time, total source-item elapsed time, expanded
+item count, and the scheduler threads that participated. Kind rows are sums of those source rows;
+`process` and stats are summed item work and can overlap when an expanded source item uses several
+threads.
+
+`Profile full rebuild` clears the cache and runs the complete rebuild under Julia's CPU sampling
+profiler. The workspace keeps only the reduced source-line report, sorted by samples active on the
+line, rather than retaining raw stacks. The report also includes the number of samples in calls below
+each line. Sampling is explicit because it is more expensive than the always-on phase timers.
 
 ### Selection flow (tree → plot)
 

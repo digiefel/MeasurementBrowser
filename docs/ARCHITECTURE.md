@@ -96,6 +96,11 @@ user-authored tags, notes, coordinates, and spatial positions (currently next to
 `source_id`; see [cache.md](cache.md)). Other package modules own generic visualizers, workflow
 persistence, and figure composition.
 
+The Performance window exposes one transient timing row per source item for the latest scan and can
+run an explicit profiled rebuild. Phase timing identifies whether time belongs to detection, reading,
+entry expansion, processing, or stats; the sampled rebuild identifies active functions and source
+lines inside an otherwise opaque project callback. Neither diagnostic is persisted in the cache.
+
 Source code should not know whether data came from memory, cache, or the origin. Package code should
 not know the meaning of a source item beyond the contract methods it calls.
 

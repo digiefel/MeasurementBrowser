@@ -13,12 +13,16 @@ using NativeFileDialog: pick_folder
 const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
 using ..Projects:
+    KindProfileRow,
     DEFAULT_PROJECT,
     PROJECTS,
     project_description,
     project_name,
     scan_profile_summary,
+    scan_source_profile,
+    SourceProfileRow,
     source_label
+using ..Profiling: SamplingProfile
 using ..ItemIndex: SourceScan
 using ..Cache:
     ProjectCacheIdentity,
@@ -304,6 +308,132 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
     return nothing
 end
 
+"""Render the per-kind summary for the latest source scan."""
+function _render_scan_kind_table(rows::Vector{KindProfileRow})::Nothing
+    flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg |
+        ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_SizingFixedFit
+    ig.BeginTable("scan_kind_profile", 9, flags) || return nothing
+    for column in (
+        "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries",
+        "Process", "Stats",
+    )
+        ig.TableSetupColumn(column)
+    end
+    ig.TableHeadersRow()
+    for row in rows
+        values = (
+            String(row.kind), string(row.source_items), string(row.items),
+            @sprintf("%.1f ms", 1000 * row.total_seconds),
+            @sprintf("%.1f ms", 1000 * row.detect_seconds),
+            @sprintf("%.1f ms", 1000 * row.read_seconds),
+            @sprintf("%.1f ms", 1000 * row.entries_seconds),
+            @sprintf("%.1f ms", 1000 * row.process_seconds),
+            @sprintf("%.1f ms", 1000 * row.stats_seconds),
+        )
+        ig.TableNextRow()
+        for (column, value) in pairs(values)
+            ig.TableSetColumnIndex(column - 1)
+            ig.TextUnformatted(value)
+        end
+    end
+    ig.EndTable()
+    return nothing
+end
+
+"""Render source-item timings, sorted by total elapsed time."""
+function _render_scan_source_table(rows::Vector{SourceProfileRow})::Nothing
+    flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg |
+        ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_ScrollX |
+        ig.ImGuiTableFlags_ScrollY | ig.ImGuiTableFlags_SizingFixedFit
+    ig.BeginTable("scan_source_profile", 10, flags, (0.0f0, 260.0f0)) || return nothing
+    ig.TableSetupScrollFreeze(1, 1)
+    for column in (
+        "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries",
+        "Process", "Stats", "Threads",
+    )
+        ig.TableSetupColumn(column)
+    end
+    ig.TableHeadersRow()
+
+    clipper = ig.lib.ImGuiListClipper()
+    try
+        ig.Begin(clipper, length(rows), ig.GetTextLineHeightWithSpacing())
+        while ig.Step(clipper)
+            first_row = Int(unsafe_load(clipper.DisplayStart)) + 1
+            last_row = Int(unsafe_load(clipper.DisplayEnd))
+            for index in first_row:last_row
+                row = rows[index]
+                values = (
+                    row.source_item_id, String(row.kind), string(row.items),
+                    @sprintf("%.2f ms", 1000 * row.total_seconds),
+                    @sprintf("%.2f ms", 1000 * row.detect_seconds),
+                    @sprintf("%.2f ms", 1000 * row.read_seconds),
+                    @sprintf("%.2f ms", 1000 * row.entries_seconds),
+                    @sprintf("%.2f ms", 1000 * row.process_seconds),
+                    @sprintf("%.2f ms", 1000 * row.stats_seconds),
+                    join(row.thread_ids, ", "),
+                )
+                ig.TableNextRow()
+                for (column, value) in pairs(values)
+                    ig.TableSetColumnIndex(column - 1)
+                    ig.TextUnformatted(value)
+                end
+            end
+        end
+    finally
+        ig.Destroy(clipper)
+    end
+    ig.EndTable()
+    return nothing
+end
+
+"""Render the flat source-line report captured by a profiled rebuild."""
+function _render_sampling_profile(profile::SamplingProfile)::Nothing
+    profile.truncated && ig.TextColored(
+        (0.95f0, 0.65f0, 0.15f0, 1.0f0),
+        "The sampling buffer filled before the rebuild finished.",
+    )
+    ig.Text(@sprintf(
+        "%d samples at %.0f ms intervals", profile.total_samples,
+        1000 * profile.delay_seconds,
+    ))
+    flags = ig.ImGuiTableFlags_Borders | ig.ImGuiTableFlags_RowBg |
+        ig.ImGuiTableFlags_Resizable | ig.ImGuiTableFlags_ScrollX |
+        ig.ImGuiTableFlags_ScrollY | ig.ImGuiTableFlags_SizingFixedFit
+    ig.BeginTable("sampling_profile", 6, flags, (0.0f0, 320.0f0)) || return nothing
+    ig.TableSetupScrollFreeze(0, 1)
+    for column in ("Active", "In call", "Call share", "Function", "File", "Line")
+        ig.TableSetupColumn(column)
+    end
+    ig.TableHeadersRow()
+    clipper = ig.lib.ImGuiListClipper()
+    try
+        ig.Begin(clipper, length(profile.rows), ig.GetTextLineHeightWithSpacing())
+        while ig.Step(clipper)
+            first_row = Int(unsafe_load(clipper.DisplayStart)) + 1
+            last_row = Int(unsafe_load(clipper.DisplayEnd))
+            for index in first_row:last_row
+                row = profile.rows[index]
+                share = profile.total_samples == 0 ?
+                    0.0 : 100 * row.samples / profile.total_samples
+                values = (
+                    string(row.self_samples), string(row.samples), @sprintf("%.1f%%", share),
+                    row.function_name, row.file, row.line > 0 ? string(row.line) : "?",
+                )
+                ig.TableNextRow()
+                for (column, value) in pairs(values)
+                    ig.TableSetColumnIndex(column - 1)
+                    ig.TextUnformatted(value)
+                end
+            end
+        end
+    finally
+        ig.Destroy(clipper)
+    end
+    ig.EndTable()
+    return nothing
+end
+
 """Render diagnostic timing, allocation, memory, and OpenGL information."""
 function render_perf_window(state::BrowserState)::Nothing
     state.show_performance_window || return nothing
@@ -381,36 +511,56 @@ function render_perf_window(state::BrowserState)::Nothing
         end
 
         workspace = state.workspace
-        scan_rows = workspace isa Workspace.Workspace ?
-            scan_profile_summary(workspace.project) :
-            NamedTuple[]
-        if ig.CollapsingHeader("Scan timings (per kind)", ig.ImGuiTreeNodeFlags_DefaultOpen)
+        if workspace isa Workspace.Workspace
+            if performance.scan_profile_project !== workspace.project ||
+               time() >= performance.scan_profile_refresh_at
+                performance.scan_profile_project = workspace.project
+                performance.scan_kind_rows = scan_profile_summary(workspace.project)
+                performance.scan_source_rows = scan_source_profile(workspace.project)
+                performance.scan_profile_refresh_at = time() + 0.5
+            end
+        elseif performance.scan_profile_project !== nothing
+            performance.scan_profile_project = nothing
+            empty!(performance.scan_kind_rows)
+            empty!(performance.scan_source_rows)
+        end
+        scan_rows = performance.scan_kind_rows
+        source_rows = performance.scan_source_rows
+        if ig.CollapsingHeader("Scan profile", ig.ImGuiTreeNodeFlags_DefaultOpen)
             if isempty(scan_rows)
                 ig.TextDisabled("No scan timing yet (cache hit or no scan run)")
             else
-                total_read = sum(row.read_seconds for row in scan_rows)
-                total_stats = sum(row.stats_seconds for row in scan_rows)
                 source_items = sum(row.source_items for row in scan_rows)
                 meas = sum(row.items for row in scan_rows)
-                ig.Text(@sprintf(
-                    "Last scan: %d source items, %d items", source_items, meas,
-                ))
-                # Reads and stats run across worker threads, so these are summed CPU-time, not
-                # wall-clock; the total can exceed elapsed time by up to the thread count.
-                ig.TextDisabled(@sprintf(
-                    "Work summed across threads: read %.1fs, stats %.1fs", total_read, total_stats,
-                ))
-                for row in scan_rows
-                    ig.BulletText(@sprintf(
-                        "%s: %d source items read %.2fs  ·  %d items, stats %.2fs",
-                        String(row.kind), row.source_items, row.read_seconds,
-                        row.items, row.stats_seconds,
-                    ))
-                end
+                ig.Text(@sprintf("Last scan: %d source items, %d items", source_items, meas))
+                ig.TextDisabled(
+                    "Total is elapsed per source item; process and stats are summed item work.",
+                )
+                _render_scan_kind_table(scan_rows)
+                ig.Spacing()
+                ig.Text("Slow source items")
+                _render_scan_source_table(source_rows)
             end
         end
 
-        if ig.Button("Clear timings")
+        if ig.CollapsingHeader("Sampling profile", ig.ImGuiTreeNodeFlags_DefaultOpen)
+            can_profile = workspace isa Workspace.Workspace && !source_scan_running(workspace)
+            can_profile || ig.BeginDisabled()
+            if ig.Button("Profile full rebuild")
+                scan_source!(workspace; rebuild=true, capture_profile=true)
+            end
+            can_profile || ig.EndDisabled()
+            if workspace isa Workspace.Workspace && workspace.sampling_active
+                ig.SameLine()
+                ig.Text("Profiling...")
+            elseif workspace isa Workspace.Workspace && workspace.sampling_profile !== nothing
+                _render_sampling_profile(workspace.sampling_profile)
+            else
+                ig.TextDisabled("No sampled rebuild yet")
+            end
+        end
+
+        if ig.Button("Clear frame timings")
             empty!(performance.timings)
             empty!(performance.allocations)
         end

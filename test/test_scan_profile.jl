@@ -93,8 +93,19 @@ end
         @test row.kind == :table
         @test row.source_items == 4
         @test row.items == 4
+        @test row.detect_seconds >= 0
         @test row.read_seconds >= 0
+        @test row.entries_seconds >= 0
+        @test row.process_seconds >= 0
         @test row.stats_seconds >= 0
+        @test row.total_seconds >= row.read_seconds
+
+        source_rows = MB.scan_source_profile(project)
+        @test length(source_rows) == 4
+        @test all(source_row -> source_row.kind == :table, source_rows)
+        @test all(source_row -> source_row.items == 1, source_rows)
+        @test all(source_row -> !isempty(source_row.thread_ids), source_rows)
+        @test issorted(source_rows; by=row -> row.total_seconds, rev=true)
 
         # A cache hit does no per-kind work, so the profile resets to empty.
         MB.scan_source(
@@ -106,10 +117,36 @@ end
     end
 end
 
+@testset "profiled workspace rebuild" begin
+    mktempdir() do dir
+        for i in 1:4
+            write(joinpath(dir, "m$i.csv"), "x,y\n1,2\n3,4\n")
+        end
+        project = _profile_project()
+        workspace = MB.Workspace.Workspace(project, test_source(project, dir))
+        try
+            MB.Workspace.scan_source!(workspace; rebuild=true, capture_profile=true)
+            deadline = time() + 10
+            while time() < deadline && workspace.scan.state ∉ (:done, :error, :canceled)
+                MB.Workspace.poll_workspace!(workspace)
+                sleep(0.01)
+            end
+            MB.Workspace.poll_workspace!(workspace)
+
+            @test workspace.scan.state == :done
+            @test !workspace.sampling_active
+            @test workspace.sampling_profile isa MB.Profiling.SamplingProfile
+            @test length(MB.scan_source_profile(project)) == 4
+        finally
+            MB.close_workspace!(workspace)
+        end
+    end
+end
+
 @testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.
-    project.scan_profile[:table] = MB.KindProfile(2, 5, 1.0, 0.5)
+    project.scan_profile["source.csv"] = MB.Projects.SourceItemProfile("source.csv")
 
     io = IOBuffer()
     serialize(io, project)

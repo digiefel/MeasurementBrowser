@@ -132,8 +132,13 @@ interpreted source items into the workspace and a bounded cache-write batch. One
 up to one source item per worker at a time, then commits the complete scan once. This avoids both
 whole-tree loaded-data retention and one durable transaction per source item. `rebuild=true` first
 wipes the cache and ignores the prior scan, forcing a full re-interpretation.
+`capture_profile=true` records a bounded all-thread CPU sampling profile for that operation.
 """
-function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
+function scan_source!(
+    workspace::Workspace;
+    rebuild::Bool=false,
+    capture_profile::Bool=false,
+)::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
     workspace.closed && error("The workspace is closed")
     analysis_work_running(workspace) && cancel_analysis!(workspace)
@@ -152,9 +157,16 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
     cancel_token = Base.Threads.Atomic{Bool}(false)
     job.events = events
     job.cancel_token = cancel_token
+    workspace.sampling_active = capture_profile
+    capture_profile && (workspace.sampling_profile = nothing)
 
     task = Base.Threads.@spawn begin
+        sampling_running = false
         try
+            if capture_profile
+                Profiling.start_sampling!()
+                sampling_running = true
+            end
             rebuild && clear_cache_index!(cachedb)
             cached = if rebuild
                 nothing
@@ -240,14 +252,23 @@ function scan_source!(workspace::Workspace; rebuild::Bool=false)::Nothing
                     connection, workspace.cache.identity, source, written_ids)
                 return source, cache_hit
             end
+            sampling_profile = if capture_profile
+                result = Profiling.stop_sampling!()
+                sampling_running = false
+                result
+            else
+                nothing
+            end
             put!(events, (
                 kind=:source,
                 job_id=scan_id,
                 source,
                 cache_hit,
+                sampling_profile,
                 status=_post_write_status(workspace.cache.identity, source, cached),
             ))
         catch error
+            sampling_running && Profiling.cancel_sampling!()
             if is_job_cancelled(error)
                 put!(events, (kind=:canceled, job_id=scan_id))
             else
@@ -569,12 +590,16 @@ function poll_workspace!(workspace::Workspace)::Bool
                 index_changed = true
                 workspace.scan.state = event.cache_hit ? :unchanged : :done
                 workspace.cache_job.state = :ready
+                event.sampling_profile === nothing ||
+                    (workspace.sampling_profile = event.sampling_profile)
+                workspace.sampling_active = false
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :canceled
                 workspace.scan.state = :canceled
                 workspace.cache_job.state =
                     workspace.cache_job.state == :writing ? :canceled : workspace.cache_job.state
+                workspace.sampling_active = false
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :error
@@ -583,6 +608,7 @@ function poll_workspace!(workspace::Workspace)::Bool
                     "Source scan failed. See the console for full details."
                 workspace.cache_job.state == :writing &&
                     (workspace.cache_job.state = :error)
+                workspace.sampling_active = false
                 @error(
                     "Source scan job failed",
                     source=source_id(workspace.source),

@@ -44,7 +44,7 @@ function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{P
         "", "", ItemRecipe[],
         Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Dict{Symbol,KindProfile}(), ReentrantLock(),
+        Dict{String,SourceItemProfile}(), ReentrantLock(),
     )
     Serialization.deserialize_cycle(s, project)
     project.name = Serialization.deserialize(s)
@@ -107,32 +107,49 @@ function define_project(name::AbstractString; description::AbstractString="")::P
         ItemRecipe[],
         Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Dict{Symbol,KindProfile}(),
+        Dict{String,SourceItemProfile}(),
         ReentrantLock(),
     )
 end
 
-"""Accumulate one timed source-item read and the items it expanded to into the scan profile."""
-function _record_read!(
+function Projects.record_scan_phase!(
     project::Project,
+    source_item_id::AbstractString,
     kind::Symbol,
+    phase::Symbol,
     seconds::Float64,
-    item_count::Int,
+    thread_id::Int,
 )::Nothing
     lock(project.profile_lock) do
-        entry = get!(KindProfile, project.scan_profile, kind)
-        entry.source_items += 1
-        entry.read_seconds += seconds
-        entry.items += item_count
+        entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
+        kind !== :unmatched && (entry.kind = kind)
+        phase === :detect ? (entry.detect_seconds += seconds) :
+        phase === :read ? (entry.read_seconds += seconds) :
+        phase === :entries ? (entry.entries_seconds += seconds) :
+        error("Unknown scan timing phase: $phase")
+        push!(entry.thread_ids, thread_id)
     end
     return nothing
 end
 
-"""Accumulate one timed process+stats computation into the per-kind scan profile."""
-function _record_stats!(project::Project, kind::Symbol, seconds::Float64)::Nothing
+function Projects.finish_source_profile!(
+    project::Project,
+    source_item_id::AbstractString,
+    kind::Symbol,
+    item_count::Int,
+    process_seconds::Float64,
+    stats_seconds::Float64,
+    total_seconds::Float64,
+    thread_ids::Set{Int},
+)::Nothing
     lock(project.profile_lock) do
-        entry = get!(KindProfile, project.scan_profile, kind)
-        entry.stats_seconds += seconds
+        entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
+        entry.kind = kind
+        entry.item_count = item_count
+        entry.process_seconds = process_seconds
+        entry.stats_seconds = stats_seconds
+        entry.total_seconds = total_seconds
+        union!(entry.thread_ids, thread_ids)
     end
     return nothing
 end
@@ -144,13 +161,42 @@ function reset_scan_profile!(project::Project)::Nothing
     return nothing
 end
 
-function scan_profile_summary(project::Project)::Vector{NamedTuple}
+function scan_profile_summary(project::Project)::Vector{KindProfileRow}
     rows = lock(project.profile_lock) do
-        [(; kind, source_items=p.source_items, items=p.items,
-            read_seconds=p.read_seconds, stats_seconds=p.stats_seconds)
-         for (kind, p) in project.scan_profile]
+        by_kind = Dict{Symbol,KindProfileRow}()
+        for profile in values(project.scan_profile)
+            row = get!(() -> KindProfileRow(profile.kind), by_kind, profile.kind)
+            row.source_items += 1
+            row.items += profile.item_count
+            row.detect_seconds += profile.detect_seconds
+            row.read_seconds += profile.read_seconds
+            row.entries_seconds += profile.entries_seconds
+            row.process_seconds += profile.process_seconds
+            row.stats_seconds += profile.stats_seconds
+            row.total_seconds += profile.total_seconds
+        end
+        collect(values(by_kind))
     end
-    sort!(rows; by=row -> row.read_seconds + row.stats_seconds, rev=true)
+    sort!(rows; by=row -> row.total_seconds, rev=true)
+    return rows
+end
+
+function scan_source_profile(project::Project)::Vector{SourceProfileRow}
+    rows = lock(project.profile_lock) do
+        [SourceProfileRow(
+            profile.source_item_id,
+            profile.kind,
+            profile.item_count,
+            profile.detect_seconds,
+            profile.read_seconds,
+            profile.entries_seconds,
+            profile.process_seconds,
+            profile.stats_seconds,
+            profile.total_seconds,
+            sort!(collect(profile.thread_ids)),
+        ) for profile in values(project.scan_profile)]
+    end
+    sort!(rows; by=row -> row.total_seconds, rev=true)
     return rows
 end
 
@@ -319,16 +365,36 @@ function Projects.data_items(
     source::AbstractDataSource,
     file::SourceFile,
 )::Vector{<:AbstractDataItem}
-    recipe = _detect_recipe(project, file)
+    recipe = nothing
+    started = time_ns()
+    try
+        recipe = _detect_recipe(project, file)
+    finally
+        record_scan_phase!(
+            project, file.filepath,
+            recipe === nothing ? :unmatched : recipe.kind,
+            :detect, (time_ns() - started) / 1e9, Base.Threads.threadid())
+    end
     recipe === nothing && return DataItem[]
-    read_started = time_ns()
-    data = recipe.read(file)
-    read_seconds = (time_ns() - read_started) / 1e9
-    items = AbstractDataItem[
-        _normalize_entry(recipe, file.filepath, item)
-        for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
-    ]
-    _record_read!(project, recipe.kind, read_seconds, length(items))
+    started = time_ns()
+    data = try
+        recipe.read(file)
+    finally
+        record_scan_phase!(
+            project, file.filepath, recipe.kind, :read,
+            (time_ns() - started) / 1e9, Base.Threads.threadid())
+    end
+    started = time_ns()
+    items = try
+        AbstractDataItem[
+            _normalize_entry(recipe, file.filepath, item)
+            for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
+        ]
+    finally
+        record_scan_phase!(
+            project, file.filepath, recipe.kind, :entries,
+            (time_ns() - started) / 1e9, Base.Threads.threadid())
+    end
     return items
 end
 
@@ -391,8 +457,5 @@ function Projects.compute_item_stats(
 )::Dict{Symbol,Any}
     recipe = _recipe(project, kind(item))
     (recipe === nothing || recipe.stats === nothing) && return Dict{Symbol,Any}()
-    stats_started = time_ns()
-    result = recipe.stats(item)::Dict{Symbol,Any}
-    _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
-    return result
+    return recipe.stats(item)::Dict{Symbol,Any}
 end

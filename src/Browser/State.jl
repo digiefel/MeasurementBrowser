@@ -3,6 +3,7 @@ using GLMakie: Figure
 import CImGui as ig
 
 import ..Workspace
+using ..Projects: KindProfileRow, Project, SourceProfileRow
 using ..TableInspector: TablePreview, InspectorTable
 using ..Visualization: PlotKind
 
@@ -139,6 +140,10 @@ Base.@kwdef mutable struct PerformanceState
     memory_start_read_bytes::Union{Nothing,Int} = nothing
     timings::Dict{Symbol,Vector{Float64}} = Dict{Symbol,Vector{Float64}}()
     allocations::Dict{Symbol,Vector{Int}} = Dict{Symbol,Vector{Int}}()
+    scan_profile_project::Union{Nothing,Project} = nothing
+    scan_profile_refresh_at::Float64 = 0.0
+    scan_kind_rows::Vector{KindProfileRow} = KindProfileRow[]
+    scan_source_rows::Vector{SourceProfileRow} = SourceProfileRow[]
 end
 
 """

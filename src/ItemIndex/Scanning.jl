@@ -90,6 +90,9 @@ function _interpret_one_handle!(
     records::Vector{ItemRecord},
     loaded_items::Vector{Union{Nothing,AbstractDataItem}},
     failures_per_item::Vector{Vector{ItemFailure}},
+    process_seconds::Vector{Float64},
+    stats_seconds::Vector{Float64},
+    thread_ids::Vector{Tuple{Int,Int}},
 )::Nothing
     record = ItemRecord(
         ItemRecord(handle; source_item);
@@ -98,6 +101,8 @@ function _interpret_one_handle!(
     records[index] = record
     local_failures = ItemFailure[]
 
+    process_thread = Base.Threads.threadid()
+    started = time_ns()
     loaded = try
         process(project, source, handle)
     catch error
@@ -105,9 +110,14 @@ function _interpret_one_handle!(
         push!(local_failures, ItemFailure(
             record.source_item_id, record.id, "process: " * sprint(showerror, error)))
         nothing
+    finally
+        process_seconds[index] = (time_ns() - started) / 1e9
     end
+    stats_thread = 0
     if loaded !== nothing
         loaded = _effective_loaded_item(record, loaded)
+        stats_thread = Base.Threads.threadid()
+        started = time_ns()
         try
             computed = compute_item_stats(project, source, loaded)
             merge!(record.stats, metadata_dict(computed))
@@ -115,8 +125,11 @@ function _interpret_one_handle!(
             is_job_cancelled(error) && rethrow()
             push!(local_failures, ItemFailure(
                 record.source_item_id, record.id, "stats: " * sprint(showerror, error)))
+        finally
+            stats_seconds[index] = (time_ns() - started) / 1e9
         end
     end
+    thread_ids[index] = (process_thread, stats_thread)
     loaded_items[index] = loaded
     failures_per_item[index] = local_failures
     return nothing
@@ -135,15 +148,30 @@ function interpret_source_item(
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
 )::SourceItemInterpretation
-    handles = data_items(project, source, source_item)::Vector{<:AbstractDataItem}
+    source_item_id_value = source_item_id(source_item)
+    source_started = time_ns()
+    handles = try
+        data_items(project, source, source_item)::Vector{<:AbstractDataItem}
+    catch
+        finish_source_profile!(
+            project, source_item_id_value, :unmatched, 0, 0.0, 0.0,
+            (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
+        rethrow()
+    end
     item_count = length(handles)
+    item_kinds = unique(kind(handle) for handle in handles)
+    source_kind = length(item_kinds) == 1 ? only(item_kinds) :
+        isempty(item_kinds) ? :unmatched : :mixed
     records = Vector{ItemRecord}(undef, item_count)
     loaded_items = Vector{Union{Nothing,AbstractDataItem}}(undef, item_count)
     failures_per_item = Vector{Vector{ItemFailure}}(undef, item_count)
+    process_seconds = zeros(Float64, item_count)
+    stats_seconds = zeros(Float64, item_count)
+    thread_ids = Vector{Tuple{Int,Int}}(undef, item_count)
 
     one!(index) = _interpret_one_handle!(
         project, source, source_item, handles[index], index,
-        records, loaded_items, failures_per_item)
+        records, loaded_items, failures_per_item, process_seconds, stats_seconds, thread_ids)
 
     if item_count < PARALLEL_ITEM_THRESHOLD || Base.Threads.nthreads() == 1
         for index in 1:item_count
@@ -174,6 +202,15 @@ function interpret_source_item(
     end
 
     failures = reduce(append!, failures_per_item; init=ItemFailure[])
+    participating_threads = Set([Base.Threads.threadid()])
+    for (process_thread, stats_thread) in thread_ids
+        push!(participating_threads, process_thread)
+        stats_thread == 0 || push!(participating_threads, stats_thread)
+    end
+    finish_source_profile!(
+        project, source_item_id_value, source_kind, item_count,
+        sum(process_seconds), sum(stats_seconds),
+        (time_ns() - source_started) / 1e9, participating_threads)
     return SourceItemInterpretation(records, loaded_items, failures)
 end
 
