@@ -6,8 +6,8 @@
 # It reuses a synthetic dataset under bench/data, then reports:
 #   1. micro-benchmarks that settle "is serialization the bottleneck?" (parse vs serialize vs
 #      deserialize vs DuckDB blob round-trip vs DuckDB columnar round-trip),
-#   2. macro timings for the real scan (parallel) and a single-threaded analysis loop,
-#   3. the engine's own per-region TimerOutputs report for a representative cache exercise.
+#   2. macro timings for the real parallel source scan,
+#   3. full cold builds, warm reopens, source expansion, and processing throughput.
 #
 # Everything here measures real functions on real data — no estimates. Reports are saved under
 # bench/results/<datetime> <commit> results.txt.
@@ -263,25 +263,11 @@ function macro_timings(project, dir::AbstractString)
             row.kind, ms(row.read_seconds), ms(row.stats_seconds), row.items)
     end
 
-    # Single-threaded analysis loop: load each item from origin + compute stats (today's behavior).
-    function analysis_loop()
-        total = 0.0
-        for record in records
-            item = MB.load_data_item(project, source, record.source_item_id, record.id)
-            s = MB.Projects.compute_item_stats(project, source, item)
-            total += s[:imean]
-        end
-        return total
-    end
-    analysis_loop()                              # warmup
-    t_analysis = @elapsed analysis_loop()
-    sayf("  analysis (single-thread): %s for %d items  (%s/item)\n",
-        ms(t_analysis), length(records), ms(t_analysis / length(records)))
     return scan, source, records
 end
 
 # --------------------------------------------------------------------------------------------------
-# 3. Source-item expansion: current per-item reloads versus a read-once source pass.
+# 3. Source-item expansion: copied child tables versus views.
 # --------------------------------------------------------------------------------------------------
 function expansion_timings(dir::AbstractString)
     section(
@@ -304,36 +290,6 @@ function expansion_timings(dir::AbstractString)
     view_scan_reads = view_read_count[]
     records = scan.hierarchy.all_items
 
-    function per_item_analysis()
-        total = 0.0
-        for record in records
-            item = MB.load_data_item(copied_project, source, record.source_item_id, record.id)
-            total += MB.Projects.compute_item_stats(copied_project, source, item)[:imean]
-        end
-        return total
-    end
-
-    per_item_analysis()
-    Threads.atomic_xchg!(copied_read_count, 0)
-    per_item_timing = @timed per_item_analysis()
-    per_item_reads = copied_read_count[]
-
-    discovered = MB.source_items(source)
-    function source_pass_analysis()
-        total = 0.0
-        for source_item in discovered
-            for item in MB.data_items(copied_project, source, source_item)
-                total += MB.Projects.compute_item_stats(copied_project, source, item)[:imean]
-            end
-        end
-        return total
-    end
-
-    source_pass_analysis()
-    Threads.atomic_xchg!(copied_read_count, 0)
-    source_pass_timing = @timed source_pass_analysis()
-    source_pass_reads = copied_read_count[]
-
     expected_items =
         EXPANDED_SOURCE_ITEMS * ITEMS_PER_EXPANDED_SOURCE +
         (N_FILES - EXPANDED_SOURCE_ITEMS)
@@ -346,10 +302,6 @@ function expansion_timings(dir::AbstractString)
     view_scan_reads == N_FILES || error(
         "View expansion scan read $view_scan_reads source items; expected exactly $N_FILES",
     )
-    source_pass_reads == N_FILES || error(
-        "Read-once analysis read $source_pass_reads source items; expected exactly $N_FILES",
-    )
-
     sayf("  copied-item scan:           %s  alloc=%s  gc=%s  source reads=%d  data items=%d\n",
         ms(copied_scan_timing.time), mib(copied_scan_timing.bytes),
         ms(copied_scan_timing.gctime), copied_scan_reads, length(records))
@@ -359,22 +311,6 @@ function expansion_timings(dir::AbstractString)
     sayf("  view gain:                  %.2fx time, %.2fx allocation\n",
         copied_scan_timing.time / view_scan_timing.time,
         copied_scan_timing.bytes / view_scan_timing.bytes)
-    sayf("  current per-item analysis:  %s  alloc=%s  gc=%s  source reads=%d\n",
-        ms(per_item_timing.time), mib(per_item_timing.bytes), ms(per_item_timing.gctime),
-        per_item_reads)
-    sayf("  read-once source pass:      %s  alloc=%s  gc=%s  source reads=%d\n",
-        ms(source_pass_timing.time), mib(source_pass_timing.bytes), ms(source_pass_timing.gctime),
-        source_pass_reads)
-    sayf("  legacy two-pass total:      %s  alloc=%s  source reads=%d\n",
-        ms(copied_scan_timing.time + per_item_timing.time),
-        mib(copied_scan_timing.bytes + per_item_timing.bytes),
-        copied_scan_reads + per_item_reads)
-    sayf("  read-once pipeline gain:    %.2fx time, %.2fx allocation\n",
-        (copied_scan_timing.time + per_item_timing.time) / copied_scan_timing.time,
-        (copied_scan_timing.bytes + per_item_timing.bytes) / copied_scan_timing.bytes)
-    sayf("  isolated analysis gain:     %.2fx time, %.2fx allocation\n",
-        per_item_timing.time / source_pass_timing.time,
-        per_item_timing.bytes / source_pass_timing.bytes)
     return nothing
 end
 
@@ -582,30 +518,6 @@ function analysis_throughput(dir::AbstractString)
     return nothing
 end
 
-# --------------------------------------------------------------------------------------------------
-# 7. Engine per-region timings (TimerOutputs) over a representative cache exercise.
-# --------------------------------------------------------------------------------------------------
-function region_timings(project, source, records)
-    section("7. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
-    identity = MB.Cache.project_cache_identity(project.name, source)
-    MB.Cache._remove_cache_files(identity.cache_path)
-    cachedb = MB.Cache.open_cache_db(identity)
-    try
-        # Materialize every item from origin once, then persist and read their native item data.
-        items = [MB.load_data_item(project, source, r.source_item_id, r.id) for r in records]
-
-        MB.Profiling.reset!()   # timings already enabled at top level (avoids a world-age miss)
-        MB.Cache.write_cached_item_data!(cachedb, records, items)
-        got = MB.Cache.read_cached_item_data(cachedb, records)
-        MB.Profiling.report(out())
-        sayf("  items read back: %d/%d non-nothing\n", count(!isnothing, got), length(records))
-    finally
-        MB.Cache.close_cache_db!(cachedb)
-        MB.Cache._remove_cache_files(identity.cache_path)
-    end
-    return nothing
-end
-
 function main(report_path::AbstractString)
     say("MeasurementBrowser pipeline benchmark")
     sayf("threads=%d  n_files=%d  rows=%d\n", Threads.nthreads(), N_FILES, ROWS)
@@ -622,13 +534,12 @@ function main(report_path::AbstractString)
     project = bench_project()
     sample = joinpath(DATA_DIR, "meas_00001.csv")
     micro_benchmarks(sample)
-    scan, source, records = macro_timings(project, DATA_DIR)
+    macro_timings(project, DATA_DIR)
     expansion_timings(DATA_DIR)
     workspace_cold_build(DATA_DIR; use_views=false)
     workspace_cold_build(DATA_DIR; use_views=true)
     reopen_timings(DATA_DIR)
     analysis_throughput(DATA_DIR)
-    region_timings(project, source, records)
     return nothing
 end
 

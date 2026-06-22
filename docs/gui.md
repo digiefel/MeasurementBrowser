@@ -17,9 +17,8 @@ generic file-inspection window, and `PerformanceState` owns frame/UI samples use
 diagnostics. Scan timings live with the project performing the callbacks; the workspace retains the
 last explicitly captured sampling profile.
 
-The workspace owns the source, item index, selected collection and item identities, loaded cache,
-loaded item memory, and the state of source-scan and cache work. Those values must not be copied
-into browser state.
+The workspace owns the source, item index, selected collection and item identities, DuckDB cache,
+processing queue, and source-scan/cache state. Those values must not be copied into browser state.
 
 The GUI reads background-work state through one snapshot, `workspace.status` (a `WorkspaceStatus`):
 its level (color), short label, one merged detail line, busy flag, optional progress fraction, and the
@@ -43,10 +42,9 @@ stay live without racing any still-finishing analysis.
 ## Scan profiling
 
 The Performance window's always-on scan profile keeps one bounded row per source item. It shows
-`detect`, `read`, `entries`, `process`, and item-stat time, total source-item elapsed time, expanded
-item count, and the scheduler threads that participated. Kind rows are sums of those source rows;
-`process` and stats are summed item work and can overlap when an expanded source item uses several
-threads.
+interpretation time, expanded item count, and the scheduler thread that performed the source work.
+Processing and statistics belong to the separate processing/summarizing activities and are not
+reported as source-read time.
 
 `Profile full rebuild` clears the cache and runs the complete rebuild under Julia's CPU sampling
 profiler. The workspace keeps only the reduced source-line report, sorted by samples active on the
@@ -69,6 +67,10 @@ Plots render directly when their inputs change. `PlotViewState` stores stable it
 plot type, figure, errors, and Live setting. It resolves those ids from the workspace index when
 rendering, so browser state never keeps a second copy of item records. The main and detached
 plots use the same type and the same rendering path.
+
+One render materializes its selection once. The same processed item objects are passed to plot setup
+and drawing; the resulting Makie figure owns the plotted values for that plot state. There is no
+package-level object LRU and no separate debug-plot path.
 
 Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the items they were created with unless the user enables Live in that window.
 

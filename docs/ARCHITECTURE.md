@@ -35,13 +35,9 @@ presentation tools.
 ## Core Flow
 
 ```
-                 ┌──────────────────────────────────────────────────────────┐
-AbstractDataSource│ scan          →  hierarchy  →  data       →  view        │
-(root, DB, stream)│ ----------       ----------    ----           ----        │
-                 │ source_items     build tree    load_data_item  Makie      │
-                 │ + data_items     per-leaf       (memory →       figure /   │
-                 │ + process/stats  items          cache → source) table      │
-                 └──────────────────────────────────────────────────────────┘
+source item → data_items → interpreted data → process → processed data → views
+                    │              │              │
+                    └─ ItemRecord  └─ DuckDB      └─ DuckDB + item statistics
 ```
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
@@ -49,23 +45,22 @@ The engine is written against the **low-level source contract** ([api.md](api.md
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
 reuses cached records for source items whose non-null fingerprints are unchanged, and assigns the
 remaining source items to a bounded worker pool. Each worker calls
-`data_items(project, source, source_item)` once. Large expansions share their independent
-`process`/item-stat work across scheduler threads while the parsed source data stays alive; ordinary
-source items stay on the direct serial path. Each source item returns one bounded batch to the
-index/cache collector. The cache writer commits worker-sized batches so neither loaded source data
-nor DuckDB transaction memory grows with the full scan. Collection-node stats run afterward from
-completed data-less item records.
+`data_items(project, source, source_item)` once and normalizes its logical items into stable records
+and interpreted data. Small ready groups commit their records and cacheable interpreted data, then
+enter the shared processing queue. Background and selected work use the same job; selection only
+changes priority. Cacheable processed data and item statistics are committed before publication.
+Collection-node stats run afterward from completed records and item-stat results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
-When a view needs item data, the engine reloads the selected items via
-`load_data_item(project, source, source_item_id, id)` (memory → cache → source). Each item carries
-`item.data`. GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
+When a view needs item data, it asks the processing queue for the selected records. A valid processed
+stage loads from DuckDB. Otherwise the job loads interpreted data from DuckDB or reuses the normal
+`data_items` path as source fallback, then runs `process`. Each materialized item carries `item.data`.
+GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
 uses the built-in `DirectorySource <: AbstractDataSource`: the source walks a data root into
 `SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`process`/`stats`
-before that source-file data is released. Later materialization reads from memory, the cache, or
-`load_data_item`. Nothing downstream of the contract can tell a callback project from a hand-written
+through the same engine. Nothing downstream can tell a callback project from a hand-written
 project/source pair.
 
 ## Ownership Boundaries
@@ -80,7 +75,7 @@ A source owns:
 A project/source implementation owns:
 
 - interpreting each source item into logical data items
-- loading one item's data on demand (`load_data_item`)
+- processing one interpreted item
 - computing per-item and per-collection stats
 - defining project-specific visualizers when generic ones are not enough
 
@@ -91,7 +86,7 @@ The workspace owns:
 - selection identities
 - cache identity, freshness, storage, and repair
 - scanning, cache work, progress, errors, and cancellation
-- loaded items already materialized in memory
+- the bounded processing queue and source fallback
 
 The browser owns windows, controls, filters, and temporary rendering state. Annotations store
 user-authored tags, notes, coordinates, and spatial positions (currently next to the cache, keyed by

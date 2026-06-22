@@ -73,17 +73,15 @@ data items.
 | `source_item_id(item)::String` | yes | stable within `source_id(source)` |
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
 | `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | read/interpret one unit into loaded logical items for processing, stats, and indexing |
-| `load_data_item(project, source, source_item_id, id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
 | `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | stable change token for reusing records and cached item data; `nothing` forces re-interpretation |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
 
-`data_items` reads/interprets one source item and returns its logical data items. Their loaded data is
-processed, analyzed, and optionally cached before that source-item pass ends. Different source items
-run concurrently, and a large expansion may also run sibling `process`/stats callbacks concurrently;
-those callbacks must therefore be safe for concurrent use. `load_data_item`
-rebuilds one item later when neither memory nor cache can serve it. Both are getters (no bang). The
-package's built-in file-backed source item is
+`data_items` reads/interprets one source item and returns its loaded logical data items. Different
+source items run concurrently. Their items enter the shared processing queue, whose workers may run
+sibling `process`/stats callbacks concurrently; those callbacks must therefore be safe for concurrent
+use. When interpreted data is absent, the package calls the same `data_items` path as source fallback.
+The package's built-in file-backed source item is
 `SourceFile` (below); a bare `SourceFile` has **no** universal `data_items` — the source decides what
 a file means.
 
@@ -135,12 +133,9 @@ source_item_id(f::PhotoFile)          = f.path
 source_item_label(f::PhotoFile)       = basename(f.path)
 fingerprint(f::PhotoFile) = f.fingerprint
 function data_items(::Project, ::PhotoDataset, f::PhotoFile)
-    m = read_photo_header(f.path)                                   # cheap, data-less
-    [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path, nothing)]
-end
-function load_data_item(::Project, ds::PhotoDataset, source_item_id, id)
-    m = read_photo_header(source_item_id)
-    Photo(id, m.label, m.collection, m.exposure, source_item_id, read_photo_matrix(source_item_id))
+    m = read_photo_header(f.path)
+    [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path,
+        read_photo_matrix(f.path))]
 end
 
 # data item
@@ -160,9 +155,9 @@ open_browser(ws)
 ### Plotting
 
 The external plot API is `register_plot!(project, kind; label, setup, draw)`. The workspace
-materializes selected records into loaded data items before invoking the callbacks, so
-`setup(workspace, items)` and `draw(workspace, items, figure)` receive loaded `AbstractDataItem`s and
-never internal records.
+materializes a selection once before invoking either callback, so `setup(workspace, items)` and
+`draw(workspace, items, figure)` receive the same loaded `AbstractDataItem`s and never internal
+records.
 
 `PlotKind`, `RegisteredPlot`, `setup_plot`, and `plot_data!` are engine internals used by the GUI to
 dispatch registered plot callbacks. A source-level plot hook belongs with the future low-level export,
@@ -199,9 +194,9 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
   the raw per-item data as `item.data`; optional `process(item)` returns the item that stats and views
   receive. When one source expands into many tabular items, `item.data` may be a row view such as
   `view(data, rows, :)`; the view keeps the parsed source table alive without copying its columns.
-  The source worker runs `process`, item stats, and cache writing before releasing those items.
-  Overlapping views share storage and sibling callbacks may run concurrently, so project callbacks
-  should treat them as read-only. Later cache materialization returns independent `DataFrame`s. Records are
+  The processing queue owns those items until processing and any cache write finish. Overlapping
+  views share storage and sibling callbacks may run concurrently, so project callbacks should treat
+  them as read-only. Later cache materialization returns independent `DataFrame`s. Records are
   streamed to the workspace as each source item finishes. The adapter derives each internal record
   from the returned item and the `SourceFile`. When a recipe entry does not provide an id, the
   adapter mints one from the source-item path, kind, and `parameters`.

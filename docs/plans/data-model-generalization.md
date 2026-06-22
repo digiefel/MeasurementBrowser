@@ -208,6 +208,10 @@ forbids.
 
 ## Data and cache
 
+[Source, Cache, and Processing](source-cache-processing.md) owns the execution path: source
+items become interpreted item data, required processing runs through a priority queue, and plots
+receive processed data. This section owns the item payload and storage trait used by that path.
+
 The data type goes from `DataFrame` to `Any`. The load↔draw contract is owned locally by each item
 kind. GLMakie renders images natively (`image!`), so an `:image` kind needs only a `read_data`; it is
 drawn by the plot registered through `register_plot!` (see
@@ -223,34 +227,24 @@ data array — `draw(workspace, items, figure)` reading `item.data`, instead of 
 `draw(workspace, measurements, processed, figure)` zipped by index. (`payload` as a name is gone; the
 public surface is `item.data`, and the engine-internal loader is `read_data`.)
 
-### Caching stays a trait — deferred, and the transition must stay safe
+### Cache storage follows the data type
 
-Caching is a **trait**, not a wrapper type (a `Cacheable{T}` wrapper would force wrap/unwrap at every
-boundary):
+Caching is a policy on the complete item:
 
 ```julia
-cacheable(::Type) = false                   # arbitrary data: re-read from disk on demand
-cacheable(::Type{DataFrame}) = true         # tabular data: HDF5-cached as today
-store_data(io, x)                           # implemented for cacheable data types
-load_data(io, ::Type{T})
+cacheable(item::AbstractDataItem)::Bool
 ```
 
-The hard requirement is that **the cache stays usable across the transition**: the existing DataFrame
-payload cache keeps working exactly as today (it is the `cacheable(DataFrame) = true` case), and any
-new, non-tabular data type simply falls back to a disk re-read until it opts in. Image files are
-random-access and cheap to re-read, so "not cached yet" is never a correctness problem, only a
-performance one. An explicit **opt-out** disables caching regardless of type:
-`register_item!(…; cache=false)` or `cacheable(::MyItem) = false`. Wiring `store_data`/`load_data`
-for new data types can land whenever it is convenient — it does not block the item/data split.
+The default is false; the built-in `DataItem` DataFrame path returns true. The interpreted-data cache
+and processed-data cache apply the policy independently. A cacheable
+interpreted value protects later work from source access. A cacheable processed value protects plots,
+inspection, and stats from repeated computation. DataFrames use the current native DuckDB storage
+path. Other data types remain source-backed.
 
-### Cache invalidation under Revise — the minimal mechanism
+### Selective invalidation under project updates
 
-The only invalidation requirement: **edit an analysis function, and the cache recomputes.** Achieve
-it by adding the **project source file's fingerprint** to the cache key, alongside the data-file
-fingerprints already used. Editing and saving a `process`/`stats` function changes that file's hash,
-so the next `open_workspace`/rescan misses and recomputes. That is the entire mechanism — no
-content-hashing of closures, no per-item version keys, no compatibility handling. (A project
-defined directly in the REPL has no file to fingerprint; rescan manually — it's the throwaway case.)
+Automatic project-code identity is deferred. Changes to interpretation, processing, statistics, or
+cache policy require an explicit **Rebuild Cache**.
 
 ---
 
@@ -270,8 +264,8 @@ AbstractDataItem        → one logical browser item  (unchanged contract above)
 The middle type earns its keep: scanning a source and interpreting one discovered unit are separate
 concerns, and the unit is the natural grain of scan progress, failure reporting, and invalidation —
 which the current code already treats `SourceFile` as, implicitly.
-`data_items(project, source, source_item)` maps one unit to zero/one/many data items;
-`load_data_item(project, source, source_item_id, id)` reloads one with its payload.
+`data_items(project, source, source_item)` maps one unit to zero/one/many loaded data items. The same
+operation is used for refresh and source fallback.
 
 **No item registration in the low level.** A workspace still starts from a user-created project plus a
 configured source value (`open_workspace(project, mysource)`), never by walking `subtypes`. The
@@ -290,15 +284,13 @@ first; the second argument is either a data root or an explicit `AbstractDataSou
    on the `HierarchyNode` (node-level `stats`), not folded into member records. `register_collection_stat!`
    is its callback form. Bangless: it is a getter returning a `Dict`; the engine routine that writes the
    node is the mutator (now done by workspace background analysis).
-4. **`load_data_item` takes id strings and re-looks-up / re-reads.** Accepted for now (FIXME-marked):
-   the alternative of threading a source-item handle through the index is deferred.
-5. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on
+4. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on
    `SourceScan`** — no per-record duplication of `source_id`/`source_label`.
-6. **The low-level types are not exported yet** — reachable as `MeasurementBrowser.name`, staged for a
+5. **The low-level types are not exported yet** — reachable as `MeasurementBrowser.name`, staged for a
    dedicated submodule. The exported surface stays the conservative high-level set; `PlotKind` stays
    internal too.
-7. **`!` follows Julia's argument-mutation convention**, not "has side effects": `close_source!`
-   mutates the source → bang; `open_source`/`source_items`/`data_items`/`load_data_item`/`watch_source`
+6. **`!` follows Julia's argument-mutation convention**, not "has side effects": `close_source!`
+   mutates the source → bang; `open_source`/`source_items`/`data_items`/`watch_source`
    (default `nothing`) return values or observe → no bang.
 
 ## Anti-scope (what we are deliberately *not* doing)
@@ -349,9 +341,9 @@ Each step is independently testable and ends at a clean, restart-and-run state.
 3. **Collection model.** Replace stored `DeviceInfo.location` with a derived `collection` produced by
    a `collect` function: default = filesystem, project-overridable. Keep canonical vs. view
    distinction; re-key `metadata.txt`/annotations off `collection`.
-4. **Data `Any` + cache trait.** Loosen the data type from `DataFrame` to `Any`; add `cacheable`/
-   `store_data`/`load_data` and the `cache=` opt-out; add the project-source fingerprint to the cache
-   key. Land whenever convenient — the DataFrame cache keeps working untouched until then.
+4. **Data `Any` + cache policy.** Loosen the data type from `DataFrame` to `Any`; evaluate the existing
+   `cacheable(item)` policy at the interpreted and processed stages. DataFrames use native DuckDB
+   storage; other data types remain source-backed until a concrete need justifies another format.
 5. **First non-measurement kind.** Add an `Image` kind end-to-end *as an example project / test
    fixture* (not shipped in the package) — the proof the model holds for non-tabular data.
 6. **Live re-collecting + tags.** Built-in `collect_by` axes selectable in the UI; tag filtering. Its

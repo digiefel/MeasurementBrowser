@@ -28,9 +28,9 @@ Metadata and data live in two forms, bridged by the engine via the `AbstractData
 - **`ItemRecord`** — the **internal**, data-less metadata record the hierarchy, scan, and cache store.
   Source and project code never construct or name it.
 - **`AbstractDataItem`** instances — what callbacks and views see: the package's `DataItem` or a
-  source's own subtype. During a source-item pass they temporarily carry `item.data` through
-  processing, item stats, and cache writing; later selections materialize them from memory, cache,
-  or the source.
+  source's own subtype. They carry interpreted data into the processing queue and processed data into
+  views. Later selections materialize the processed stage from DuckDB or repeat the required
+  interpreted/processing work through the normal source path.
 
 ```julia
 abstract type AbstractDataItem end   # contract: id, item_label, kind, collection, parameters,
@@ -155,12 +155,11 @@ A single source item may yield several data items when `data_items` returns more
 a source-item identity but must have distinct `id` values within the source. The recipe API mints
 missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
 
-The source item is read once for the expansion. Processing and item stats for every child complete
-before the worker releases the loaded source data. Large expansions divide that independent child
-work across scheduler threads. A child may carry a view into the parsed data instead of a copy. The
-view keeps its parent alive through processing, stats, and cache writing; afterward the temporary
-source data can be released. Because siblings may run concurrently, overlapping views must be
-treated as read-only. DataFrames restored from the cache are independent ordinary `DataFrame`s.
+The source item is read once for the expansion. Its children enter the shared processing queue and
+may run on different scheduler threads. A child may carry a view into the parsed data instead of a
+copy; queue ownership keeps the parent alive until processing finishes. Because siblings may run
+concurrently, overlapping views must be treated as read-only. DataFrames restored from the cache are
+independent ordinary `DataFrame`s.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
 into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number

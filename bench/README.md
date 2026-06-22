@@ -32,13 +32,11 @@ and saves each report under `bench/results/`. The harness reports real functions
 
 1. **per-item micro-benchmarks** — CSV parse vs serialize vs deserialize vs DuckDB blob round-trip
    vs DuckDB columnar round-trip (this settles the fastest way to cache item data);
-2. **whole-dataset macro timings** — the real parallel scan and a single-threaded analysis loop;
-3. **source-item expansion** — copied child tables versus views, plus per-item reloads versus one
-   source read;
+2. **whole-dataset macro timings** — the real parallel source scan;
+3. **source-item expansion** — copied child tables versus views;
 4. **workspace cold builds** — full scan, item stats, native DuckDB writes, and cache-only reads;
 5. **incremental reopen** — no-change and one-changed-source read counts and elapsed time;
 6. **item-analysis throughput** — one source item expanded into many independently processed items;
-7. **engine per-region timings** — the `Profiling` report over a representative cache exercise.
 
 The `bench/` environment is separate from the package so its dev tools (BenchmarkTools, …) don't
 become runtime dependencies.

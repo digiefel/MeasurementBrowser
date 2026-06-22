@@ -1,102 +1,85 @@
 # Source Cache
 
-The cache makes a workspace useful before a current source scan finishes and prevents repeated
-source reads after data has already been interpreted. It is generated package data stored outside
-the source and is never exposed to project code.
+The cache is generated package data. Project code supplies source interpretation, processing, and
+statistics; the package decides where and when their reusable results are stored.
 
-The intended two-level cache and queued processing model is defined in
-[Source, Cache, and Processing](plans/source-cache-processing.md).
+## Location And Identity
 
-## Startup And Updates
-
-Opening a workspace loads the existing DuckDB index while discovering the current source items. A
-valid cached index can populate the previous hierarchy, parameters, stats, fingerprints, and failures
-immediately.
-
-Discovery compares each current source-item fingerprint with the cached one. An unchanged
-fingerprinted source item reuses its cached records without reading or analyzing the source again;
-new, changed, and unfingerprinted source items are interpreted normally. A fully unchanged source
-returns the cached scan directly. Sources with collection parameters currently re-interpret every
-source item because those parameters are folded into stored item records.
-
-Current source items are processed concurrently. One worker owns one source item until it has:
-
-1. produced its logical data items,
-2. run `process` and item stats (across scheduler threads for a large expansion),
-3. returned the completed records and cacheable loaded items.
-
-The scan collector publishes records immediately and stages up to one source item per worker at a
-time. Each worker-sized batch is committed independently. This bounds both loaded Julia data and
-DuckDB's transaction-owned write memory; a canceled or interrupted build can reuse the source items
-already committed. The bounded result queue prevents loaded items from accumulating for the whole
-source.
-After all source items finish, collection stats run from data-less items containing the completed
-parameters and item stats.
-
-## Identity
-
-Cache identity is source-based. The deterministic id is derived from `source_id(source)`:
+Each project has one predictable DuckDB file:
 
 ```text
-<source-label>-<source-id-digest>
+DEPOT_PATH[1]/measurementbrowser/<project-name>/cache.duckdb
 ```
 
-Cache files live under:
+The project name must be one safe path component and is used unchanged. The cache records the project
+name and `source_id(source)`. Opening the same project name for a different source fails rather than
+creating another cache. Old hash-named caches are ignored.
+
+## Stored State
+
+DuckDB stores source-item fingerprints, data-less item records, typed parameters and statistics,
+failures, and two independent item-data stages:
+
+- `interpreted`: data returned by `data_items` before `process`;
+- `processed`: data returned by `process` and consumed by views.
+
+The `item_data` key is `(item_id, stage)`, so the two forms cannot replace each other. Cacheable
+`AbstractDataFrame` values use shared native DuckDB tables grouped by compatible ordered columns and
+types. Other data types remain source-backed.
+
+`cacheable(item)` is evaluated independently for the interpreted and processed values. The built-in
+`DataItem` DataFrame path is cacheable; the low-level default is false. A false result removes any old
+entry for that stage while preserving the item record.
+
+## Refresh
+
+Opening a workspace loads the last committed index first, then discovers the current source items.
+An unchanged non-null source fingerprint reuses its records and cached stages. New, changed, and
+unfingerprinted source items run the one interpretation path:
 
 ```text
-DEPOT_PATH[1]/measurementbrowser/cache/<source-label>/<cache-id>.duckdb
+data_items → normalize records/data → optional interpreted write → processing queue
 ```
 
-A cache is accepted only when its source identity and schema version match.
+Small groups of up to four ready source results share a transaction. This keeps progress steps small
+without paying for one DuckDB transaction per item. Each committed group is independently reusable
+after cancellation or interruption.
 
-## Invalidation
+When interpreted data is absent, selection and background work use the same source fallback: find the
+current source item and call `data_items` again. Every logical item returned by that source pass is
+normalized and made available to its waiting processing job. There is no separate reload callback.
 
-| Fingerprint | Scope | Missing (`nothing`) means |
-|---|---|---|
-| `fingerprint(source_item)` | records and cached item data produced by that source item | re-read it every scan and do not persist its item data |
-| `fingerprint(data_item)` | cached data for that logical item | use only source-item invalidation |
+## Processing And Reads
 
-Changing one source-item fingerprint deletes only the records and cached item data derived from that
-unit. Parameter-only changes update metadata without discarding still-valid item data.
+The workspace owns one bounded processing queue. Background work and selected items use the same job;
+selection promotes an existing waiting job instead of starting another path. Before queuing warm
+background work, one metadata query finds all valid processed entries, so cached items are not checked
+one at a time.
 
-## DuckDB Contents
+Processing reads interpreted data from DuckDB or source fallback, calls `process`, evaluates
+`cacheable` on the processed item, and writes up to four simultaneously ready results together. Item
+statistics follow processing and are stored separately. Collection statistics run after processing
+settles.
 
-| Table | Purpose |
-|---|---|
-| `meta` | schema and source identity |
-| `source_items` | source-item fingerprints, locations, and errors |
-| `items` | data-less logical item records |
-| `metadata` | typed item/collection parameters and stats |
-| `item_data` | item fingerprints, native storage ids, and row counts |
-| `dataframe_schemas` | ordered user column names for each DataFrame shape |
-| `dataframe_<storage-id>` | native columnar rows for all cached DataFrames with one shape |
+DuckDB is the only package-level shared cache. There is no Julia object LRU. An active plot or
+inspector owns the processed items it currently displays; a later selection reads DuckDB or repeats
+the required upstream work. A plot selection is materialized once and the same item objects are
+passed to setup and drawing.
 
-Standard `DataItem` values carrying any `AbstractDataFrame`, including row views returned by an
-expanding `entries` callback, are registered with DuckDB and copied directly into shared columnar
-tables. Cached reads return ordinary independent `DataFrame`s. Cache writes stage at most one source
-item per scan worker at a time, so an expanded source is written once without allowing loaded data
-to accumulate for the whole scan. Julia serialization is not involved. The public model remains
-`item_data(item)` plus the existing `cacheable(item)` and `fingerprint(item)` hooks.
-Built-in `DataItem`s carrying other data types remain source-backed until that type has a native
-cache implementation.
+One persistent writer connection serializes mutations. A separate persistent reader serves committed
+item data. DuckDB's buffer pool is limited to 1 GiB by default through
+`CACHE_MEMORY_LIMIT_MIB`; `set_cache_memory_limit!` changes the default or an open workspace.
 
-## Reads And Concurrency
+## Invalidation And Recovery
 
-Item materialization checks, in order:
+Changing a source-item fingerprint replaces only that source item's records, both data stages, item
+statistics, and dependent collection results. A missing fingerprint is treated as changed on every
+refresh. There is no automatic project-code identity yet; project interpretation, processing,
+statistics, or cache-policy changes require **Rebuild Cache**.
 
-1. the workspace's bounded in-memory item cache,
-2. valid cached item data in DuckDB,
-3. `load_data_item` from the source.
+Corrupt or schema-incompatible generated caches are rebuilt automatically because no useful user
+choice exists. A project/source identity conflict is different: it fails clearly because silently
+replacing another source's valid cache would lose useful state.
 
-One persistent writer connection serializes mutations. A separate persistent reader serves
-interactive item-data reads from the last committed snapshot. Item-data reads are requested in one
-joined query; scans use bounded worker-sized write transactions. The cache database has a 1 GiB
-buffer-memory limit (`CACHE_MEMORY_LIMIT_MIB`, adjustable at runtime via `set_cache_memory_limit!`),
-so DuckDB evicts committed table blocks instead of growing toward its default system-wide allowance as
-the cache becomes large. Julia objects and DuckDB allocations outside its buffer manager remain
-visible in the process RSS separately.
-
-## Status
-
-The current status model compares cached and current source items as fresh, stale, new, deleted, or
-failed. Failures remain attached to their source/item and do not invalidate unrelated data.
+Failures remain attached to the smallest source item, logical item, or collection that failed. They
+do not invalidate unrelated committed work.
