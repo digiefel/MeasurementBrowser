@@ -4,8 +4,6 @@ using DataFrames: DataFrame
 using DBInterface
 using Printf
 import ..Profiling
-using ..Profiling: TIMER
-using TimerOutputs: @timeit_debug
 
 import ..Cache:
     CacheDB,
@@ -314,7 +312,5 @@ include("Workspace/Operations.jl")
 include("Workspace/Status.jl")
 include("Workspace/DataAccess.jl")
 include("Workspace/Processing.jl")
-
-Profiling.register_instrumented!(@__MODULE__)
 
 end
