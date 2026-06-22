@@ -79,9 +79,9 @@ function Base.showerror(io::IO, err::UnsupportedItemDataCacheError)::Nothing
     )
 end
 
-"""The source and DuckDB file belonging to one cache."""
+"""The project, source, and DuckDB file belonging to one cache."""
 struct ProjectCacheIdentity
-    cache_id::String
+    project_name::String
     source_id::String
     source_label::String
     cache_path::String
@@ -110,39 +110,28 @@ end
 # --------------------------------------------------------------------------------------------------
 
 """
-Return the deterministic cache id for a source.
+Bind one project name to a source and its package-owned cache path.
 
-The folder name keeps ids recognizable; the digest distinguishes equal labels at different origins.
-"""
-function project_cache_id(source)::String
-    id = source_id(source)
-    name = replace(lowercase(source_label(source)), r"[^a-z0-9_.-]+" => "_")
-    isempty(name) && (name = "source")
-    return "$name-$(bytes2hex(sha1(id))[1:12])"
-end
-
-"""
-Bind one cache id to a source.
-
-The returned identity also contains the package-owned DuckDB path.
+The project name is used exactly as one directory component. Invalid names fail instead of being
+silently rewritten into a different cache identity.
 """
 function project_cache_identity(
-    cache_id::AbstractString,
+    project_name::AbstractString,
     source,
 )::ProjectCacheIdentity
+    name = String(project_name)
+    isempty(name) && throw(ArgumentError("project name cannot be empty"))
+    name in (".", "..") && throw(ArgumentError("project name '$name' is not a safe directory name"))
+    (isabspath(name) || basename(name) != name || occursin('\\', name) || occursin('\0', name)) &&
+        throw(ArgumentError(
+            "project name '$name' must be one directory name without path separators",
+        ))
     depot = isempty(DEPOT_PATH) ? homedir() : DEPOT_PATH[1]
-    source_dir = replace(lowercase(source_label(source)), r"[^a-z0-9_.-]+" => "_")
     return ProjectCacheIdentity(
-        String(cache_id),
+        name,
         source_id(source),
         source_label(source),
-        joinpath(
-            depot,
-            "measurementbrowser",
-            "cache",
-            source_dir,
-            "$(String(cache_id)).duckdb",
-        ),
+        joinpath(depot, "measurementbrowser", name, "cache.duckdb"),
     )
 end
 
@@ -491,7 +480,7 @@ function _write_meta_rows!(connection, identity::ProjectCacheIdentity, source::S
         "INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
     for (key, value) in (
         "schema_version" => string(PROJECT_CACHE_SCHEMA_VERSION),
-        "cache_id" => identity.cache_id,
+        "project_name" => identity.project_name,
         "source_id" => identity.source_id,
         "source_label" => identity.source_label,
         "skipped_count" => string(source.hierarchy.skipped_count),
@@ -549,7 +538,7 @@ function write_scan_identity!(cachedb::CacheDB)::Nothing
             "INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
         for (key, value) in (
             "schema_version" => string(PROJECT_CACHE_SCHEMA_VERSION),
-            "cache_id" => identity.cache_id,
+            "project_name" => identity.project_name,
             "source_id" => identity.source_id,
             "source_label" => identity.source_label,
         )
@@ -860,10 +849,17 @@ function _load_meta(connection, identity::ProjectCacheIdentity)::Dict{String,Str
         throw(ProjectCacheError(identity.cache_path, "cache has not been built yet"))
     get(meta, "schema_version", "") == string(PROJECT_CACHE_SCHEMA_VERSION) ||
         throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
-    (get(meta, "cache_id", "") == identity.cache_id &&
-     get(meta, "source_id", "") == identity.source_id &&
-     get(meta, "source_label", "") == identity.source_label) ||
-        throw(ProjectCacheError(identity.cache_path, "cache identity does not match"))
+    cached_project = get(meta, "project_name", "")
+    cached_project == identity.project_name || throw(ProjectCacheError(
+        identity.cache_path,
+        "cache belongs to project '$cached_project', not '$(identity.project_name)'",
+    ))
+    cached_source = get(meta, "source_id", "")
+    cached_source == identity.source_id || throw(ProjectCacheError(
+        identity.cache_path,
+        "project '$(identity.project_name)' is cached for source '$cached_source', not " *
+        "'$(identity.source_id)'; use Rebuild Cache to replace it",
+    ))
     return meta
 end
 

@@ -26,16 +26,44 @@ end
 @testset "project DuckDB cache" begin
     mktempdir() do dir
         source = test_source(TEST_PROJECT, dir)
-        @test basename(ProjectCache.project_cache_identity(
-            "20260430_120001",
-            source,
-        ).cache_path) == "20260430_120001.duckdb"
+        identity = ProjectCache.project_cache_identity("Cache path test", source)
+        @test identity.cache_path == joinpath(
+            DEPOT_PATH[1], "measurementbrowser", "Cache path test", "cache.duckdb")
+        @test identity.project_name == "Cache path test"
+    end
+
+    for invalid_name in ("", ".", "..", "nested/project", "nested\\project")
+        mktempdir() do dir
+            source = test_source(TEST_PROJECT, dir)
+            @test_throws ArgumentError ProjectCache.project_cache_identity(invalid_name, source)
+        end
     end
 
     mktempdir() do first_root
         mktempdir() do second_root
-            @test ProjectCache.project_cache_id(test_source(TEST_PROJECT, first_root)) !=
-                  ProjectCache.project_cache_id(test_source(TEST_PROJECT, second_root))
+            first = ProjectCache.ProjectCacheIdentity(
+                "One project", first_root, "First", joinpath(first_root, "cache.duckdb"))
+            cachedb = ProjectCache.open_cache_db(first)
+            ProjectCache.write_scan_identity!(cachedb)
+            ProjectCache.close_cache_db!(cachedb)
+
+            second = ProjectCache.ProjectCacheIdentity(
+                "One project", second_root, "Second", first.cache_path)
+            other = ProjectCache.open_cache_db(second)
+            try
+                error = try
+                    ProjectCache.load_cache_index(other)
+                    nothing
+                catch caught
+                    caught
+                end
+                @test error isa ProjectCache.ProjectCacheError
+                @test occursin("use Rebuild Cache", sprint(showerror, error))
+                @test occursin(first_root, sprint(showerror, error))
+                @test occursin(second_root, sprint(showerror, error))
+            finally
+                ProjectCache.close_cache_db!(other)
+            end
         end
     end
 
@@ -45,8 +73,8 @@ end
         write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\n")
         source = scan_test_source(TEST_PROJECT, dir)
         adapter = test_source(TEST_PROJECT, dir)
-        identity = ProjectCache.project_cache_identity("20260430_120005", adapter)
-        rm(identity.cache_path; force=true)
+        identity = ProjectCache.project_cache_identity("Cache round trip", adapter)
+        ProjectCache._remove_cache_files(identity.cache_path)
 
         try
             cachedb = ProjectCache.open_cache_db(identity)
@@ -95,7 +123,7 @@ end
             failed = ProjectCache.ProjectCacheIndex(identity, failed_source)
             @test only(values(failed.analysis_errors)) == "synthetic analysis failure"
         finally
-            rm(identity.cache_path; force=true)
+            ProjectCache._remove_cache_files(identity.cache_path)
         end
     end
 
@@ -161,10 +189,8 @@ end
             source = scan_test_source(TEST_PROJECT, dir)
             adapter = test_source(TEST_PROJECT, dir)
             identity = ProjectCache.project_cache_identity(
-                ProjectCache.project_cache_id(adapter),
-                adapter,
-            )
-            rm(identity.cache_path; force=true)
+                MeasurementBrowser.project_name(TEST_PROJECT), adapter)
+            ProjectCache._remove_cache_files(identity.cache_path)
             try
                 stale_cache = ProjectCache.open_cache_db(identity)
                 cache_source_scan!(stale_cache, source)
@@ -208,7 +234,7 @@ end
                 @test status.stale_source_items == 0
                 close_workspace!(workspace)
             finally
-                rm(identity.cache_path; force=true)
+                ProjectCache._remove_cache_files(identity.cache_path)
             end
         end
     end

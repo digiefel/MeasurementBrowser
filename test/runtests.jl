@@ -1,5 +1,9 @@
 using Test
 
+const TEST_CACHE_DEPOT = mktempdir()
+pushfirst!(DEPOT_PATH, TEST_CACHE_DEPOT)
+atexit(() -> rm(TEST_CACHE_DEPOT; force=true, recursive=true))
+
 include("test_project.jl")
 
 @testset "MeasurementBrowser Tests" begin

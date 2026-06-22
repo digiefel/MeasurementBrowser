@@ -18,7 +18,6 @@ import ..Cache:
     load_cache_index,
     open_cache_db,
     persist_stats!,
-    project_cache_id,
     project_cache_identity,
     read_cached_item_data,
     reconcile_source_items!,
@@ -233,7 +232,7 @@ function Workspace(
     source::S,
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
-    identity = project_cache_identity(project_cache_id(source), source)
+    identity = project_cache_identity(project_name(project), source)
     cache_db = open_cache_db(identity)
     return Workspace(
         project,
