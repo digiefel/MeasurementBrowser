@@ -678,6 +678,31 @@ function read_cached_item_data(
     end
 end
 
+"""Return item ids whose requested cache stage exists with matching fingerprints."""
+function cached_item_data_ids(
+    cachedb::CacheDB,
+    items::Vector{ItemRecord};
+    stage::Symbol=:processed,
+)::Set{String}
+    isempty(items) && return Set{String}()
+    stage in (:interpreted, :processed) ||
+        throw(ArgumentError("unknown item-data cache stage '$stage'"))
+    return with_persistent_reader(cachedb) do connection
+        _fill_item_data_request!(connection, items)
+        Set(String(row.item_id) for row in DBInterface.execute(connection, """
+            SELECT r.item_id
+            FROM requested_item_data r
+            JOIN item_data d ON d.item_id = r.item_id
+            WHERE d.stage = ?
+              AND d.sif_hash = r.sif_hash
+              AND (
+                  (d.if_hash IS NULL AND r.if_hash IS NULL)
+                  OR d.if_hash = r.if_hash
+              )
+        """, (String(stage),)))
+    end
+end
+
 """Persist aligned loaded items for one stage through a workspace's persistent writer."""
 function write_cached_item_data!(
     cachedb::CacheDB,

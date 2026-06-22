@@ -408,7 +408,7 @@ function workspace_cold_build(dir::AbstractString; use_views::Bool)
     )
     project, read_count = expansion_project(; use_views)
     source = MB.DirectorySource(dir)
-    identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
+    identity = MB.Cache.project_cache_identity(project.name, source)
     MB.Cache._remove_cache_files(identity.cache_path)
     workspace = MB.Workspace.Workspace(project, source)
 
@@ -473,7 +473,7 @@ function reopen_timings(dir::AbstractString)
     section("5. INCREMENTAL WARM REOPEN (reopen a populated cache; read only what changed)")
     project, read_count = expansion_project()
     source = MB.DirectorySource(dir)
-    identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
+    identity = MB.Cache.project_cache_identity(project.name, source)
     MB.Cache._remove_cache_files(identity.cache_path)
 
     function timed_scan!(; rebuild::Bool)
@@ -587,7 +587,7 @@ end
 # --------------------------------------------------------------------------------------------------
 function region_timings(project, source, records)
     section("7. ENGINE PER-REGION TIMINGS (cache write-all then read-all)")
-    identity = MB.Cache.project_cache_identity(MB.Cache.project_cache_id(source), source)
+    identity = MB.Cache.project_cache_identity(project.name, source)
     MB.Cache._remove_cache_files(identity.cache_path)
     cachedb = MB.Cache.open_cache_db(identity)
     try
@@ -647,11 +647,14 @@ function run_with_report(path::AbstractString)::Nothing
     return nothing
 end
 
-# Enable engine timings here at top level so the new method definitions are in a newer world age than
-# the workload calls below (enabling inside the workload function would not take effect — world age).
-MB.Profiling.enable!()
-try
+if WORKSPACE_ONLY
     run_with_report(result_path())
-finally
-    MB.Profiling.disable!()
+else
+    # TimerOutputs is not thread-safe, so keep it out of the concurrent workspace benchmark.
+    MB.Profiling.enable!()
+    try
+        run_with_report(result_path())
+    finally
+        MB.Profiling.disable!()
+    end
 end

@@ -25,6 +25,48 @@ function stop_processing_workers!(workspace::Workspace)::Nothing
     return nothing
 end
 
+"""Commit one processed value with up to three other results that are already ready."""
+function commit_processed_item!(
+    workspace::Workspace,
+    record::ItemRecord,
+    item::Union{Nothing,AbstractDataItem},
+)::Nothing
+    queue = workspace.processing
+    request = ProcessedWriteRequest(record, item, Channel{Any}(1))
+    lock(queue.lock) do
+        push!(queue.pending_writes, request)
+    end
+    yield()
+    batch = lock(queue.lock) do
+        if any(pending -> pending === request, queue.pending_writes)
+            ready = copy(queue.pending_writes)
+            empty!(queue.pending_writes)
+            ready
+        else
+            nothing
+        end
+    end
+    if batch !== nothing
+        failure = try
+            write_cached_item_data!(
+                workspace.cache.db,
+                ItemRecord[pending.record for pending in batch],
+                Any[pending.item for pending in batch];
+                stage=:processed,
+            )
+            nothing
+        catch error
+            CapturedException(error, catch_backtrace())
+        end
+        for pending in batch
+            put!(pending.completion, failure)
+        end
+    end
+    result = take!(request.completion)
+    result === nothing || throw(result)
+    return nothing
+end
+
 """Return the next valid waiting job, preferring selected items."""
 function take_processing_job!(queue::ProcessingQueue)::Union{Nothing,ProcessingJob}
     while true
@@ -167,10 +209,7 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
     interpreted = interpreted_item(workspace, job)
     processed = process(workspace.project, workspace.source, interpreted)
     view_item = DataItem(job.record, item_data(processed))
-    if cacheable(processed)
-        write_cached_item_data!(
-            workspace.cache.db, [job.record], Any[view_item]; stage=:processed)
-    end
+    commit_processed_item!(workspace, job.record, cacheable(processed) ? view_item : nothing)
 
     item_stats = copy(job.record.stats)
     try

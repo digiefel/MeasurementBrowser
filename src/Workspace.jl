@@ -12,6 +12,7 @@ import ..Cache:
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
+    cached_item_data_ids,
     clear_cache_index!,
     close_cache_db!,
     finalize_scan!,
@@ -121,6 +122,13 @@ mutable struct ProcessingJob
     waiters::Vector{Channel{Any}}
 end
 
+"""One completed processed value waiting for its small shared cache batch."""
+struct ProcessedWriteRequest
+    record::ItemRecord
+    item::Union{Nothing,AbstractDataItem}
+    completion::Channel{Any}
+end
+
 """Workspace-owned processing work; completed values are not retained after delivery."""
 mutable struct ProcessingQueue
     lock::ReentrantLock
@@ -132,6 +140,7 @@ mutable struct ProcessingQueue
     source_locks::Dict{String,ReentrantLock}
     events::Channel{NamedTuple}
     workers::Vector{Task}
+    pending_writes::Vector{ProcessedWriteRequest}
     limit::Int
     total::Int
     completed::Int
@@ -150,6 +159,7 @@ function ProcessingQueue()::ProcessingQueue
         Dict{String,ReentrantLock}(),
         Channel{NamedTuple}(Inf),
         Task[],
+        ProcessedWriteRequest[],
         max(4, 2 * Base.Threads.nthreads()),
         0,
         0,

@@ -212,16 +212,19 @@ function scan_source!(
             kept_ids = Set{String}()
             record_batches = Vector{Vector{ItemRecord}}()
             data_batches = Vector{Vector{Any}}()
-            # Each source item commits independently. The writer starts as soon as one interpretation
-            # finishes, so progress no longer waits for an arbitrary thread-sized batch.
+            processing_batches = Vector{Vector{AbstractDataItem}}()
             function flush_cache_batch!()::Nothing
                 isempty(record_batches) && return nothing
                 union!(
                     written_ids,
                     reconcile_source_items!(cachedb, record_batches, data_batches),
                 )
+                for (records, items) in zip(record_batches, processing_batches)
+                    enqueue_processing!(workspace, records, items)
+                end
                 empty!(record_batches)
                 empty!(data_batches)
+                empty!(processing_batches)
                 return nothing
             end
 
@@ -252,9 +255,8 @@ function scan_source!(
                         wrote[] = true
                         push!(record_batches, records)
                         push!(data_batches, data)
-                        flush_cache_batch!()
-                        enqueue_processing!(
-                            workspace, records, interpretation.interpreted_items)
+                        push!(processing_batches, interpretation.interpreted_items)
+                        length(record_batches) >= 4 && flush_cache_batch!()
                     end,
                     on_kept_source_item=(source_item_id::String) ->
                         push!(kept_ids, source_item_id),
@@ -268,8 +270,10 @@ function scan_source!(
             union!(written_ids, kept_ids)
             cache_hit = reuse_index !== nothing && source === reuse_index.source
             cache_hit || finalize_scan!(cachedb, source, written_ids)
-            for record in source.hierarchy.all_items
-                enqueue_processing!(workspace, record)
+            records = source.hierarchy.all_items
+            processed_ids = cached_item_data_ids(cachedb, records; stage=:processed)
+            for record in records
+                record.id in processed_ids || enqueue_processing!(workspace, record)
             end
             sampling_profile = if capture_profile
                 result = Profiling.stop_sampling!()

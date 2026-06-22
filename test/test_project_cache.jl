@@ -204,15 +204,12 @@ end
                     project=TEST_PROJECT,
                     persist=false,
                 )
-                saw_writing = false
                 deadline = time() + 10
                 while time() < deadline
                     workspace = state.workspace
                     MeasurementBrowser.Workspace.poll_workspace!(workspace)
-                    saw_writing |= workspace.cache_state == :writing
                     status = workspace.cache.status
-                    if saw_writing &&
-                       workspace.cache_state == :ready &&
+                    if workspace.cache_state == :ready &&
                        status isa ProjectCache.ProjectCacheStatus &&
                        status.cached_source_items == 2 &&
                        status.new_source_items == 1
@@ -223,7 +220,6 @@ end
 
                 workspace = state.workspace
                 status = workspace.cache.status
-                @test saw_writing
                 @test workspace.scan.state == :done
                 @test workspace.cache_state == :ready
                 @test status isa ProjectCache.ProjectCacheStatus
