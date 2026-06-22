@@ -62,11 +62,20 @@ using DataFrames: DataFrame, nrow
             only(items_for_file(project, joinpath(fixture_dir, filename)))
             for filename in filenames
         ]
-        workspace = Workspace.Workspace(project, DirectorySource(fixture_dir))
-        read_item_data(workspace, records)
-        plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
-        figure = setup_plot(workspace, plot_kind, records)
-        plot_data!(workspace, plot_kind, records, figure)
+        precompile_depot = mktempdir()
+        pushfirst!(DEPOT_PATH, precompile_depot)
+        workspace = nothing
+        try
+            workspace = Workspace.Workspace(project, DirectorySource(fixture_dir))
+            read_item_data(workspace, records)
+            plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
+            figure = setup_plot(workspace, plot_kind, records)
+            plot_data!(workspace, plot_kind, records, figure)
+        finally
+            workspace === nothing || close_workspace!(workspace)
+            popfirst!(DEPOT_PATH)
+            rm(precompile_depot; force=true, recursive=true)
+        end
         source = DirectorySource(scan_dir)
         scan_source(project, source)
         scan_source(project, source; count_first=true)

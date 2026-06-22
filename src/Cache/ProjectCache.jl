@@ -5,7 +5,7 @@ using SHA
 using Serialization
 using Dates
 
-const PROJECT_CACHE_SCHEMA_VERSION = 2
+const PROJECT_CACHE_SCHEMA_VERSION = 3
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
 
 """
@@ -186,6 +186,10 @@ function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
     try
         DBInterface.execute(db, _memory_limit_sql(CACHE_MEMORY_LIMIT_MIB[]))   # see CACHE_MEMORY_LIMIT_MIB
         ensure_schema!(db)
+        item_data_columns = Set(String(row.name) for row in
+            DBInterface.execute(db, "PRAGMA table_info('item_data')"))
+        "stage" in item_data_columns ||
+            throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
         schema_versions = String[
             String(row.value)
             for row in DBInterface.execute(
@@ -317,12 +321,14 @@ function ensure_schema!(connection)::Nothing
     """)
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS item_data(
-            item_id TEXT PRIMARY KEY,
+            item_id TEXT,
+            stage TEXT,
             source_item_id TEXT,
             sif_hash TEXT,
             if_hash TEXT,
             storage_id TEXT,
-            row_count BIGINT)
+            row_count BIGINT,
+            PRIMARY KEY (item_id, stage))
     """)
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS dataframe_schemas(
@@ -701,7 +707,7 @@ function reconcile_source_items!(
         end
         @timeit_debug TIMER "cache/reconcile_index" _append_item_records!(connection, records)
         @timeit_debug TIMER "cache/reconcile_data" _write_cached_item_data!(
-            connection, records, data)
+            connection, records, data, :processed)
         written
     end
 end

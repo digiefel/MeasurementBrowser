@@ -11,9 +11,10 @@ function _quote_identifier(identifier::AbstractString)::String
     return "\"" * replace(String(identifier), "\"" => "\"\"") * "\""
 end
 
-"""Return a stable id for a DataFrame's ordered column names and Julia element types."""
-function _dataframe_storage_id(data::AbstractDataFrame)::String
+"""Return a stable id for one stage and a DataFrame's ordered column names and element types."""
+function _dataframe_storage_id(data::AbstractDataFrame, stage::Symbol)::String
     schema = IOBuffer()
+    print(schema, String(stage), ':')
     for name in names(data)
         type_name = string(eltype(data[!, name]))
         print(schema, ncodeunits(name), ':', name, ncodeunits(type_name), ':', type_name)
@@ -61,12 +62,16 @@ function _temporary_column_name(
     return candidate
 end
 
-"""Delete one item's physical rows and item-data index row."""
-function _delete_cached_item_data!(connection, item_id::AbstractString)::Nothing
+"""Delete one item's physical rows and item-data index row for one cache stage."""
+function _delete_cached_item_data!(
+    connection,
+    item_id::AbstractString,
+    stage::Symbol,
+)::Nothing
     statement = DBInterface.prepare(
-        connection, "SELECT storage_id FROM item_data WHERE item_id = ?")
+        connection, "SELECT storage_id FROM item_data WHERE item_id = ? AND stage = ?")
     storage_id = nothing
-    for row in DBInterface.execute(statement, (String(item_id),))
+    for row in DBInterface.execute(statement, (String(item_id), String(stage)))
         storage_id = String(row.storage_id)
     end
     if storage_id !== nothing
@@ -76,8 +81,9 @@ function _delete_cached_item_data!(connection, item_id::AbstractString)::Nothing
             (String(item_id),),
         )
         DBInterface.execute(
-            DBInterface.prepare(connection, "DELETE FROM item_data WHERE item_id = ?"),
-            (String(item_id),),
+            DBInterface.prepare(
+                connection, "DELETE FROM item_data WHERE item_id = ? AND stage = ?"),
+            (String(item_id), String(stage)),
         )
         _drop_unused_dataframe_storage!(connection, storage_id)
     end
@@ -154,6 +160,7 @@ end
 function _dataframe_cache_entry(
     record::ItemRecord,
     item::DataItem,
+    stage::Symbol,
 )::DataFrameCacheEntry
     data = item_data(item)
     data isa AbstractDataFrame || throw(UnsupportedItemDataCacheError(
@@ -165,7 +172,7 @@ function _dataframe_cache_entry(
     return DataFrameCacheEntry(
         record,
         data,
-        _dataframe_storage_id(data),
+        _dataframe_storage_id(data, stage),
         column_names,
     )
 end
@@ -174,6 +181,7 @@ end
 function _dataframe_cache_entry(
     record::ItemRecord,
     item::AbstractDataItem,
+    ::Symbol,
 )::DataFrameCacheEntry
     data = item_data(item)
     throw(UnsupportedItemDataCacheError(record.id, typeof(item), typeof(data)))
@@ -230,10 +238,14 @@ function _write_dataframe_group!(
             DELETE FROM $table
             WHERE __mb_item_id IN (SELECT item_id FROM writing_item_data)
         """)
-        DBInterface.execute(connection, """
-            DELETE FROM item_data
-            WHERE item_id IN (SELECT item_id FROM writing_item_data)
-        """)
+        DBInterface.execute(
+            DBInterface.prepare(connection, """
+                DELETE FROM item_data
+                WHERE storage_id = ?
+                  AND item_id IN (SELECT item_id FROM writing_item_data)
+            """),
+            (storage_id,),
+        )
     end
 
     item_column = _temporary_column_name(entries, "__mb_item_id")
@@ -344,23 +356,26 @@ function _write_cached_item_data!(
     connection,
     items::Vector{ItemRecord},
     data::Vector,
+    stage::Symbol,
 )::Nothing
+    stage in (:interpreted, :processed) ||
+        throw(ArgumentError("unknown item-data cache stage '$stage'"))
     schemas = _load_dataframe_schemas(connection)
     groups = Dict{String,Vector{DataFrameCacheEntry}}()
     @timeit_debug TIMER "cache/prepare_item_data" begin
         for (record, value) in zip(items, data)
             check_cancel()
             if !_item_data_cacheable(record) || value === nothing
-                _delete_cached_item_data!(connection, record.id)
+                _delete_cached_item_data!(connection, record.id, stage)
                 continue
             end
             value isa AbstractDataItem || throw(UnsupportedItemDataCacheError(
                 record.id, typeof(value), typeof(value)))
             if !cacheable(value)
-                _delete_cached_item_data!(connection, record.id)
+                _delete_cached_item_data!(connection, record.id, stage)
                 continue
             end
-            entry = _dataframe_cache_entry(record, value)
+            entry = _dataframe_cache_entry(record, value, stage)
             push!(get!(() -> DataFrameCacheEntry[], groups, entry.storage_id), entry)
         end
     end
@@ -377,6 +392,7 @@ function _write_cached_item_data!(
                 record = entry.record
                 for value in (
                     record.id,
+                    String(stage),
                     record.source_item_id,
                     _fingerprint_hash(record.source_item_fingerprint),
                     _fingerprint_hash(record.item_fingerprint),
@@ -414,10 +430,13 @@ const SMALL_ITEM_DATA_READ = 16
 function _read_cached_item_data(
     connection,
     items::Vector{ItemRecord},
+    stage::Symbol,
 )::Vector{Any}
+    stage in (:interpreted, :processed) ||
+        throw(ArgumentError("unknown item-data cache stage '$stage'"))
     return count(_item_data_cacheable, items) <= SMALL_ITEM_DATA_READ ?
-        _read_cached_item_data_small(connection, items) :
-        _read_cached_item_data_bulk(connection, items)
+        _read_cached_item_data_small(connection, items, stage) :
+        _read_cached_item_data_bulk(connection, items, stage)
 end
 
 """Fill the temporary request table with item-data cache keys and their original positions."""
@@ -456,21 +475,24 @@ end
 function _read_cached_item_data_bulk(
     connection,
     items::Vector{ItemRecord},
+    stage::Symbol,
 )::Vector{Any}
     loaded = Any[nothing for _ in items]
     _fill_item_data_request!(connection, items)
     grouped = Dict{String,Vector{Tuple{Int,Int}}}()
-    for row in DBInterface.execute(connection, """
+    metadata_statement = DBInterface.prepare(connection, """
         SELECT r.position, d.storage_id, d.row_count
         FROM requested_item_data r
         JOIN item_data d ON d.item_id = r.item_id
-        WHERE d.sif_hash = r.sif_hash
+        WHERE d.stage = ?
+          AND d.sif_hash = r.sif_hash
           AND (
               (d.if_hash IS NULL AND r.if_hash IS NULL)
               OR d.if_hash = r.if_hash
           )
         ORDER BY r.position
     """)
+    for row in DBInterface.execute(metadata_statement, (String(stage),))
         position = Int(row.position)
         1 <= position <= length(items) || error(
             "Invalid item-data cache read position $position for $(length(items)) requested items",
@@ -501,6 +523,7 @@ function _read_cached_item_data_bulk(
             JOIN item_data i ON i.item_id = r.item_id
             JOIN $table d ON d.__mb_item_id = r.item_id
             WHERE i.storage_id = ?
+              AND i.stage = ?
               AND i.sif_hash = r.sif_hash
               AND (
                   (i.if_hash IS NULL AND r.if_hash IS NULL)
@@ -508,7 +531,7 @@ function _read_cached_item_data_bulk(
               )
             ORDER BY r.position, d.__mb_row
         """)
-        raw = DataFrame(DBInterface.execute(statement, (storage_id,)))
+        raw = DataFrame(DBInterface.execute(statement, (storage_id, String(stage))))
         row_start = 1
         for (position, expected_rows) in entries
             check_cancel()
@@ -550,6 +573,7 @@ building, filling, and joining a temp table on every read.
 function _read_cached_item_data_small(
     connection,
     items::Vector{ItemRecord},
+    stage::Symbol,
 )::Vector{Any}
     loaded = Any[nothing for _ in items]
     requested = Dict{String,Tuple{Int,Union{Nothing,String},Union{Nothing,String}}}()
@@ -570,9 +594,10 @@ function _read_cached_item_data_small(
     # Map each fresh requested item to its storage table; the freshness check is done here in Julia.
     by_storage = Dict{String,Vector{Tuple{String,Int,Int}}}()
     meta_statement = DBInterface.prepare(connection, """
-        SELECT item_id, sif_hash, if_hash, storage_id, row_count FROM item_data WHERE item_id IN ?
+        SELECT item_id, sif_hash, if_hash, storage_id, row_count
+        FROM item_data WHERE stage = ? AND item_id IN ?
     """)
-    for row in DBInterface.execute(meta_statement, (ids,))
+    for row in DBInterface.execute(meta_statement, (String(stage), ids))
         id = String(row.item_id)
         entry = get(requested, id, nothing)
         entry === nothing && continue
@@ -641,19 +666,24 @@ function _read_cached_item_data_small(
     return loaded
 end
 
-"""Read valid cached item data from a workspace's persistent reader, without source access."""
-function read_cached_item_data(cachedb::CacheDB, items::Vector{ItemRecord})::Vector{Any}
+"""Read valid cached item data for one stage without source access."""
+function read_cached_item_data(
+    cachedb::CacheDB,
+    items::Vector{ItemRecord};
+    stage::Symbol=:processed,
+)::Vector{Any}
     isempty(items) && return Any[]
     return @timeit_debug TIMER "cache/read_item_data" with_persistent_reader(cachedb) do connection
-        _read_cached_item_data(connection, items)
+        _read_cached_item_data(connection, items, stage)
     end
 end
 
-"""Persist aligned loaded items through a workspace's persistent writer."""
+"""Persist aligned loaded items for one stage through a workspace's persistent writer."""
 function write_cached_item_data!(
     cachedb::CacheDB,
     items::Vector{ItemRecord},
-    data::Vector,
+    data::Vector;
+    stage::Symbol=:processed,
 )::Nothing
     length(items) == length(data) ||
         throw(DimensionMismatch("items and data must have equal lengths"))
@@ -661,7 +691,7 @@ function write_cached_item_data!(
     @timeit_debug TIMER "cache/write_item_data" with_writer(cachedb) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
-            _write_cached_item_data!(connection, items, data)
+            _write_cached_item_data!(connection, items, data, stage)
             DBInterface.execute(connection, "COMMIT")
         catch
             DBInterface.execute(connection, "ROLLBACK")

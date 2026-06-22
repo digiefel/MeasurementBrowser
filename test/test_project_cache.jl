@@ -355,6 +355,10 @@ end
                 ignored_item = MeasurementBrowser.DataItem(uncacheable, DataFrame(x=[1]))
                 ProjectCache.write_cached_item_data!(
                     cachedb, [cacheable, uncacheable], Any[cached_item, ignored_item])
+                interpreted_item = MeasurementBrowser.DataItem(
+                    cacheable, DataFrame(voltage=[1.0], current=[0.05]))
+                ProjectCache.write_cached_item_data!(
+                    cachedb, [cacheable], Any[interpreted_item]; stage=:interpreted)
 
                 # The cacheable item round-trips; the fingerprint-less one is never stored.
                 got = ProjectCache.read_cached_item_data(cachedb, [cacheable, uncacheable])
@@ -362,14 +366,23 @@ end
                 @test isequal(MeasurementBrowser.item_data(got[1]), DataFrame(cached_frame))
                 @test MeasurementBrowser.item_data(got[1]) isa DataFrame
                 @test got[2] === nothing
+                interpreted = only(ProjectCache.read_cached_item_data(
+                    cachedb, [cacheable]; stage=:interpreted))
+                @test isequal(
+                    MeasurementBrowser.item_data(interpreted),
+                    MeasurementBrowser.item_data(interpreted_item),
+                )
 
                 rows = ProjectCache.with_persistent_reader(cachedb) do connection
                     collect(DBInterface.execute(connection, """
-                        SELECT storage_id, row_count FROM item_data
+                        SELECT stage, storage_id, row_count FROM item_data ORDER BY stage
                     """))
                 end
-                @test length(rows) == 1
-                @test only(rows).row_count == 3
+                @test length(rows) == 2
+                @test Set(String(row.stage) for row in rows) == Set(["interpreted", "processed"])
+                @test Dict(String(row.stage) => row.row_count for row in rows) ==
+                      Dict("interpreted" => 1, "processed" => 3)
+                @test length(unique(String(row.storage_id) for row in rows)) == 2
 
                 # A changed item fingerprint invalidates the stored data.
                 restamped = prec("a", ("si_a", 1), ("a", 2))
