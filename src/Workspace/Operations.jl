@@ -14,7 +14,6 @@ function close_workspace!(workspace::Workspace)::Nothing
     workspace.closed && return nothing
     cancel_job!(workspace.scan)
     cancel_job!(workspace.analysis)
-    cancel_job!(workspace.cache_job)
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
@@ -94,7 +93,7 @@ source_scan_running(workspace::Workspace)::Bool =
     workspace.scan.state in (:counting, :discovering, :scanning, :canceling)
 
 cache_work_running(workspace::Workspace)::Bool =
-    workspace.cache_job.state in (:loading, :writing, :canceling)
+    workspace.cache_state in (:loading, :writing, :canceling)
 
 analysis_work_running(workspace::Workspace)::Bool =
     workspace.analysis.state in (:analyzing, :canceling)
@@ -150,9 +149,15 @@ function scan_source!(
     job.state = :discovering
     job.progress = WorkspaceProgress()
     job.error = ""
-    workspace.cache_job.state = :loading
-    workspace.cache_job.error = ""
+    workspace.cache_state = :loading
+    workspace.cache_error = ""
     workspace.cache.operation = rebuild ? :rebuild : :update
+    # Detach the previous scan so this one streams into a fresh hierarchy: progressive results update
+    # the displayed tree live while any still-finishing analysis from the previous scan keeps reading
+    # its own, now-detached hierarchy — no shared mutable state, no race. Errors reset so stale ones
+    # from the previous scan never linger.
+    workspace.index.source = nothing
+    empty!(workspace.index.analysis_errors)
     events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
     job.events = events
@@ -179,6 +184,12 @@ function scan_source!(
                 end
                 cache_built ? load_cache_index(cachedb) : nothing
             end
+            # The UI owns `cached` (it displays it and streams progressive items into it). The scan
+            # reuses unchanged source items by record object, then rewrites their effective parameters
+            # while building its result — so it must work on its OWN deep copy, or it would mutate the
+            # very records the render thread is mutating, racing on each record's parameter dict. The
+            # copy is taken here, before `cached` is handed to the UI, so nothing else touches it yet.
+            reuse_index = cached === nothing ? nothing : deepcopy(cached)
             put!(events, (
                 kind=:cache_state,
                 job_id=scan_id,
@@ -213,7 +224,7 @@ function scan_source!(
                 scan_source(
                     workspace.project,
                     workspace.source;
-                    cached_source=cached === nothing ? nothing : cached.source,
+                    cached_source=reuse_index === nothing ? nothing : reuse_index.source,
                     on_progress=(progress) -> put!(events, (
                         kind=:progress,
                         job_id=scan_id,
@@ -240,13 +251,15 @@ function scan_source!(
                     end,
                     on_kept_source_item=(source_item_id::String) ->
                         push!(kept_ids, source_item_id),
+                    on_failure=(failure::ItemFailure) ->
+                        put!(events, (kind=:failure, job_id=scan_id, failure)),
                 )
             end
             flush_cache_batch!()
             # Unchanged source items keep their existing rows: treat them as already written so
             # finalize_scan! neither re-inserts a bare row nor deletes them.
             union!(written_ids, kept_ids)
-            cache_hit = cached !== nothing && source === cached.source
+            cache_hit = reuse_index !== nothing && source === reuse_index.source
             cache_hit || finalize_scan!(cachedb, source, written_ids)
             sampling_profile = if capture_profile
                 result = Profiling.stop_sampling!()
@@ -261,7 +274,7 @@ function scan_source!(
                 source,
                 cache_hit,
                 sampling_profile,
-                status=_post_write_status(workspace.cache.identity, source, cached),
+                status=_post_write_status(workspace.cache.identity, source, reuse_index),
             ))
         catch error
             sampling_running && Profiling.cancel_sampling!()
@@ -285,6 +298,10 @@ end
 
 """Wipe the cache and re-scan the source from scratch."""
 rebuild_cache!(workspace::Workspace)::Nothing = scan_source!(workspace; rebuild=true)
+
+"""Resize this workspace's DuckDB cache buffer-pool limit (MiB) live; suits a GUI control."""
+set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
+    set_cache_memory_limit!(workspace.cache.db, mib)
 
 """
 Status of a cache that now mirrors `source` exactly.
@@ -362,19 +379,6 @@ function append_items!(
     workspace.index.items = item_index
     workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
     return true
-end
-
-function _effective_loaded_item(record::ItemRecord, item::AbstractDataItem)::AbstractDataItem
-    item isa DataItem || return item
-    return DataItem(
-        item.id,
-        item.label,
-        item.kind,
-        item.collection,
-        record.parameters,
-        record.stats,
-        item.data,
-    )
 end
 
 """Start background collection stats for the completed source scan."""
@@ -509,31 +513,25 @@ function apply_analysis!(
     return changed || !isempty(failures)
 end
 
-"""Surface the cached index for an instant first view, before the fresh scan replaces it."""
+"""Surface the cached index as an instant, independent first view, before the fresh scan refines it."""
 function apply_cache_index!(
     workspace::Workspace,
     index::ProjectCacheIndex,
-)::Bool
+)::Nothing
     index.identity.source_id == source_id(workspace.source) ||
         error("Loaded cache belongs to $(index.identity.source_id), not $(source_id(workspace.source))")
     workspace.cache.identity = index.identity
     workspace.cache.index = index
 
-    index_changed = false
-    if workspace.index.source === nothing
-        if isempty(workspace.index.items)
-            replace_item_index!(workspace, index.source.hierarchy)
-            index_changed = true
-        else
-            index_changed = append_items!(workspace, index.source.hierarchy.all_items)
-        end
-    end
+    # The cached hierarchy is its own freshly-loaded snapshot (distinct record objects), so the live
+    # scan can refine it without touching any hierarchy a previous scan's analysis still reads.
+    replace_item_index!(workspace, index.source.hierarchy)
 
     cached_items = length(index.source.source_item_fingerprints)
     workspace.cache.status = ProjectCacheStatus(
         cached_items, cached_items, 0, 0, 0, 0, length(index.analysis_errors))
     workspace.index.analysis_errors = copy(index.analysis_errors)
-    return index_changed
+    return nothing
 end
 
 """Apply the authoritative completed source scan (already mirrored into the cache) to the workspace."""
@@ -567,25 +565,47 @@ function poll_workspace!(workspace::Workspace)::Bool
             if event.kind == :progress
                 workspace.scan.progress = WorkspaceProgress(event.progress)
                 workspace.scan.state = event.progress.phase
+            elseif event.kind == :failure
+                # Source-item failures stream in as they happen, so a long scan shows current errors
+                # instead of revealing them all at the end. apply_source_scan! later replaces this with
+                # the authoritative set.
+                failure = event.failure
+                previous = get(workspace.index.analysis_errors, failure.source_item_id, "")
+                workspace.index.analysis_errors[failure.source_item_id] =
+                    isempty(previous) ? failure.message : previous * "\n" * failure.message
+                index_changed = true
             elseif event.kind == :items
-                append!(pending_items, event.items)
+                # Progressive first-view items only matter until a complete scan is applied. Once
+                # `index.source` is set, a background analysis task iterates that hierarchy, so
+                # mutating it here (insert_item!/apply_collection_parameters!) would race that task
+                # and corrupt the heap. The next :source replaces the whole index anyway.
+                workspace.index.source === nothing && append!(pending_items, event.items)
             elseif event.kind == :cache_state
-                # The cache the scan found on disk, surfaced before fresh results replace it.
-                event.index === nothing ||
-                    (index_changed |= apply_cache_index!(workspace, event.index))
-                workspace.cache_job.state = event.state
+                if event.index === nothing
+                    # Rebuild, or first build with no cache: clear to a fresh empty tree so the scan
+                    # streams the new hierarchy in from scratch.
+                    replace_item_index!(workspace, Hierarchy(source_id(workspace.source), false))
+                    empty!(workspace.index.analysis_errors)
+                else
+                    # The cache found on disk, surfaced as a complete, independent snapshot before fresh
+                    # results refine it.
+                    apply_cache_index!(workspace, event.index)
+                end
+                index_changed = true
+                workspace.cache_state = event.state
                 event.state == :missing && workspace.cache.operation != :rebuild &&
                     (workspace.cache.operation = :build)
             elseif event.kind == :cache_writing
-                workspace.cache_job.state = :writing
+                workspace.cache_state = :writing
             elseif event.kind == :source
-                index_changed |= append_items!(workspace, pending_items)
+                # No progressive append here: apply_source_scan! rebuilds the index wholesale from
+                # event.source, which already contains every record accumulated in pending_items.
                 empty!(pending_items)
                 apply_source_scan!(
                     workspace, event.source, event.status; analyze=!event.cache_hit)
                 index_changed = true
                 workspace.scan.state = event.cache_hit ? :unchanged : :done
-                workspace.cache_job.state = :ready
+                workspace.cache_state = :ready
                 event.sampling_profile === nothing ||
                     (workspace.sampling_profile = event.sampling_profile)
                 workspace.sampling_active = false
@@ -593,8 +613,8 @@ function poll_workspace!(workspace::Workspace)::Bool
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :canceled
                 workspace.scan.state = :canceled
-                workspace.cache_job.state =
-                    workspace.cache_job.state == :writing ? :canceled : workspace.cache_job.state
+                workspace.cache_state =
+                    workspace.cache_state == :writing ? :canceled : workspace.cache_state
                 workspace.sampling_active = false
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
@@ -602,8 +622,8 @@ function poll_workspace!(workspace::Workspace)::Bool
                 workspace.scan.state = :error
                 workspace.scan.error =
                     "Source scan failed. See the console for full details."
-                workspace.cache_job.state == :writing &&
-                    (workspace.cache_job.state = :error)
+                workspace.cache_state == :writing &&
+                    (workspace.cache_state = :error)
                 workspace.sampling_active = false
                 @error(
                     "Source scan job failed",
@@ -615,7 +635,8 @@ function poll_workspace!(workspace::Workspace)::Bool
                 workspace.scan.cancel_token = nothing
             end
         end
-        index_changed |= append_items!(workspace, pending_items)
+        workspace.index.source === nothing &&
+            (index_changed |= append_items!(workspace, pending_items))
     end
 
     analysis_events = workspace.analysis.events
@@ -655,5 +676,11 @@ function poll_workspace!(workspace::Workspace)::Bool
         end
     end
 
+    # Refresh the watcher snapshot while work runs (progress advances without an index change) and for
+    # the one frame after it stops; idle frames skip the rebuild entirely.
+    busy = source_scan_running(workspace) || analysis_work_running(workspace) ||
+           cache_work_running(workspace)
+    (index_changed || busy || workspace.status.busy) &&
+        (workspace.status = workspace_status(workspace))
     return index_changed
 end

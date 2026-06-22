@@ -1,0 +1,75 @@
+"""Fold a workspace's job and cache state into the watcher-facing [`WorkspaceStatus`](@ref)."""
+function workspace_status(workspace::Workspace)::WorkspaceStatus
+    errors = sort!(collect(workspace.index.analysis_errors); by=first)
+    scan = workspace.scan
+    progress = scan.progress
+    fraction = total -> total > 0 ?
+        Float32(clamp(progress.processed_source_items / total, 0, 1)) : nothing
+
+    # Active work: one live line, determinate bar when totals are known.
+    if scan.state in (:counting, :discovering)
+        found = progress.processed_source_items
+        return WorkspaceStatus(:busy, "Scanning",
+            found > 0 ? "Finding source items… $found found" : "Finding source items…",
+            true, nothing, errors)
+    elseif scan.state == :scanning
+        label = workspace.cache.operation === :rebuild ? "Rebuilding" :
+                workspace.cache.operation === :build ? "Building" : "Scanning"
+        detail = progress.total_source_items > 0 ?
+            @sprintf("Reading %d/%d source items · %d items",
+                progress.processed_source_items, progress.total_source_items,
+                progress.loaded_items) :
+            "Reading source items…"
+        return WorkspaceStatus(
+            :busy, label, detail, true, fraction(progress.total_source_items), errors)
+    elseif scan.state == :canceling
+        return WorkspaceStatus(:busy, "Canceling", "Canceling…", true, nothing, errors)
+    elseif workspace.analysis.state == :analyzing
+        analysis = workspace.analysis.progress
+        detail = analysis.total_source_items > 0 ?
+            @sprintf("Summarizing %d/%d collections",
+                analysis.processed_source_items, analysis.total_source_items) :
+            "Summarizing collections…"
+        frac = analysis.total_source_items > 0 ?
+            Float32(clamp(analysis.processed_source_items / analysis.total_source_items, 0, 1)) :
+            nothing
+        return WorkspaceStatus(:busy, "Summarizing", detail, true, frac, errors)
+    end
+
+    # Settled: a single merged summary line, no bar.
+    workspace.cache.identity === nothing && return WorkspaceStatus(
+        :none, "No Project", "Open a project folder to build a cache.", false, nothing, errors)
+    scan.state == :error && return WorkspaceStatus(
+        :error, "Scan Error", scan.error, false, nothing, errors)
+    workspace.cache_state == :error && return WorkspaceStatus(
+        :error, "Cache Error", workspace.cache_error, false, nothing, errors)
+    workspace.cache_state == :missing && return WorkspaceStatus(
+        :missing, "Cache Missing", "No cache has been built for this project yet.",
+        false, nothing, errors)
+    scan.state == :canceled && return WorkspaceStatus(
+        :none, "Canceled", "The last scan was canceled.", false, nothing, errors)
+
+    status = workspace.cache.status
+    status isa ProjectCacheStatus || return WorkspaceStatus(
+        :none, "Idle", "No cache loaded.", false, nothing, errors)
+    item_count = length(workspace.index.items)
+    if !isempty(errors) || status.error_source_items > 0
+        failed = max(length(errors), status.error_source_items)
+        return WorkspaceStatus(:error, "Errors",
+            @sprintf("%d source item(s) failed · %d items cached", failed, item_count),
+            false, nothing, errors)
+    elseif !(workspace.index.source isa SourceScan)
+        return WorkspaceStatus(:fresh, "Loaded",
+            @sprintf("%d source items cached (source not checked)", status.cached_source_items),
+            false, nothing, errors)
+    elseif status.stale_source_items > 0 || status.new_source_items > 0 ||
+           status.deleted_source_items > 0
+        return WorkspaceStatus(:stale, "Stale",
+            @sprintf("%d stale · %d new · %d deleted", status.stale_source_items,
+                status.new_source_items, status.deleted_source_items),
+            false, nothing, errors)
+    end
+    return WorkspaceStatus(:fresh, "Fresh",
+        @sprintf("%d source items · %d items cached", status.total_source_items, item_count),
+        false, nothing, errors)
+end

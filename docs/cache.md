@@ -4,6 +4,9 @@ The cache makes a workspace useful before a current source scan finishes and pre
 source reads after data has already been interpreted. It is generated package data stored outside
 the source and is never exposed to project code.
 
+The intended two-level cache and queued processing model is defined in
+[Source, Cache, and Processing](plans/source-cache-processing.md).
+
 ## Startup And Updates
 
 Opening a workspace loads the existing DuckDB index while discovering the current source items. A
@@ -87,10 +90,11 @@ Item materialization checks, in order:
 
 One persistent writer connection serializes mutations. A separate persistent reader serves
 interactive item-data reads from the last committed snapshot. Item-data reads are requested in one
-joined query; scans use bounded worker-sized write transactions. The cache database has a 512 MiB
-buffer-memory limit, so DuckDB evicts committed table blocks instead of growing toward its default
-system-wide allowance as the cache becomes large. Julia objects and DuckDB allocations outside its
-buffer manager remain visible in the process RSS separately.
+joined query; scans use bounded worker-sized write transactions. The cache database has a 1 GiB
+buffer-memory limit (`CACHE_MEMORY_LIMIT_MIB`, adjustable at runtime via `set_cache_memory_limit!`),
+so DuckDB evicts committed table blocks instead of growing toward its default system-wide allowance as
+the cache becomes large. Julia objects and DuckDB allocations outside its buffer manager remain
+visible in the process RSS separately.
 
 ## Status
 

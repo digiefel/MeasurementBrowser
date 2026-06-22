@@ -24,285 +24,57 @@ using ..Projects:
     source_label
 using ..Profiling: SamplingProfile
 using ..ItemIndex: SourceScan
-using ..Cache:
-    ProjectCacheIdentity,
-    ProjectCacheStatus
+using ..Cache: ProjectCacheIdentity
 import ..Workspace
 using ..Workspace:
-    WorkspaceProgress,
-    cache_work_running,
-    cancel_cache!,
+    WorkspaceStatus,
     cancel_scan!,
     poll_workspace!,
     rebuild_cache!,
     scan_source!,
     source_scan_running
 
-"""Describe the current cache operation for toolbar and progress rendering."""
-function _cache_activity_model(state::BrowserState)::NamedTuple
-    workspace = state.workspace
-    job_state = workspace isa Workspace.Workspace ? workspace.cache_job.state : :idle
-    progress = workspace isa Workspace.Workspace ?
-        workspace.cache_job.progress :
-        WorkspaceProgress()
-    total = progress.total_source_items
-    processed = progress.processed_source_items
-    loaded = progress.loaded_items
-    fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
+"""Brighten or darken an ImGui button color by `delta` per RGB channel, clamped to [0, 1]."""
+shifted_color(color::NTuple{4,Float64}, delta::Real)::NTuple{4,Float64} =
+    (clamp(color[1] + delta, 0, 1), clamp(color[2] + delta, 0, 1),
+     clamp(color[3] + delta, 0, 1), color[4])
 
-    if job_state == :loading
-        progress_text = total > 0 ?
-            @sprintf("Read %d/%d cached source items, loaded %d items", processed, total, loaded) :
-            @sprintf("Loaded %d items", loaded)
-        return (
-            title="Cache: Loading",
-            detail="Reading cached items from the cache.",
-            progress=progress_text,
-            fraction,
-            cancel_label="Cancel Reload",
-        )
-    elseif job_state == :writing
-        phase = progress.phase
-        progress_text = phase == :cache_finalize ?
-            "Finalizing cache metadata and indexes" :
-            total > 0 ?
-            @sprintf("Processed %d/%d cache entries, cached %d items", processed, total, loaded) :
-            @sprintf("Cached %d items", loaded)
-        operation = workspace.cache.operation
-        title = phase == :cache_finalize ? "Cache: Finalizing" :
-            operation == :build ? "Cache: Building" :
-            operation == :rebuild ? "Cache: Rebuilding" : "Cache: Updating"
-        return (
-            title,
-            detail=phase == :cache_finalize ?
-                "Finalizing the cache." :
-                "Writing source items into the cache.",
-            progress=progress_text,
-            fraction,
-            cancel_label="Cancel Cache Build",
-        )
-    elseif job_state == :canceling
-        return (
-            title="Canceling",
-            detail="Waiting for the active background job to stop.",
-            progress="Canceling...",
-            fraction,
-            cancel_label="Cancel",
-        )
-    elseif job_state == :canceled
-        return (
-            title="Canceled",
-            detail="The last background job was canceled.",
-            progress="Canceled",
-            fraction,
-            cancel_label="Cancel",
-        )
-    elseif job_state == :error
-        return (
-            title="Error",
-            detail=workspace.cache_job.error,
-            progress="Failed",
-            fraction,
-            cancel_label="Cancel",
-        )
-    elseif job_state == :done
-        return (
-            title="Ready",
-            detail="No background cache or source job is running.",
-            progress="Complete",
-            fraction=1.0f0,
-            cancel_label="Cancel",
-        )
-    end
-    return (
-        title="Idle",
-        detail="No background cache or source job is running.",
-        progress="Idle",
-        fraction=0.0f0,
-        cancel_label="Cancel",
-    )
+"""Button color for a [`WorkspaceStatus`](@ref) level."""
+function status_color(level::Symbol)::NTuple{4,Float64}
+    level === :busy && return (0.18, 0.42, 0.78, 1.0)
+    level === :fresh && return (0.20, 0.58, 0.30, 1.0)
+    level === :stale && return (0.78, 0.58, 0.12, 1.0)
+    level === :missing && return (0.82, 0.48, 0.12, 1.0)
+    level === :error && return (0.72, 0.18, 0.18, 1.0)
+    return (0.34, 0.34, 0.34, 1.0)
 end
 
-"""Describe source-scan progress independently from cache progress."""
-function _source_rescan_progress_model(
-    state::BrowserState,
-)::Union{Nothing,NamedTuple}
-    workspace = state.workspace
-    workspace isa Workspace.Workspace || return nothing
-    source_state = workspace.scan.state
-    source_state in (:counting, :discovering, :scanning,
-                     :canceling, :canceled, :done, :unchanged, :error) || return nothing
+"""The workspace status snapshot, or a neutral placeholder when no source is open."""
+current_status(state::BrowserState)::WorkspaceStatus =
+    state.workspace isa Workspace.Workspace ? state.workspace.status :
+    WorkspaceStatus(:none, "No Project", "Open a project folder to build a cache.",
+        false, nothing, Pair{String,String}[])
 
-    progress = workspace.scan.progress
-    total = progress.total_source_items
-    processed = progress.processed_source_items
-    loaded = progress.loaded_items
-    skipped = progress.skipped_source_items
-    fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
-
-    # A single status line; the bar appears only while files are actively being read.
-    if source_state == :error
-        return (text=workspace.scan.error, fraction=0.0f0, show_bar=false)
-    elseif source_state == :canceling
-        return (text="Canceling scan...", fraction=fraction, show_bar=false)
-    elseif source_state == :canceled
-        return (text="Scan canceled", fraction=0.0f0, show_bar=false)
-    elseif source_state in (:counting, :discovering)
-        text = processed > 0 ? "Finding source items... $processed found" : "Finding source items..."
-        return (text=text, fraction=0.0f0, show_bar=false)
-    elseif source_state == :scanning
-        text = total > 0 ?
-            @sprintf("Reading %d/%d source items, %d items", processed, total, loaded) :
-            "Reading source items..."
-        return (text=text, fraction=fraction, show_bar=total > 0)
-    elseif workspace.analysis.state == :analyzing
-        analysis = workspace.analysis.progress
-        total = analysis.total_source_items
-        processed = analysis.processed_source_items
-        loaded = analysis.loaded_items
-        fraction = total > 0 ? Float32(clamp(processed / total, 0, 1)) : 0.0f0
-        text = total > 0 ?
-            @sprintf("Analyzing %d/%d, %d items", processed, total, loaded) :
-            @sprintf("Analyzing %d items...", loaded)
-        return (text=text, fraction=fraction, show_bar=total > 0)
-    elseif workspace.analysis.state == :error
-        return (text=workspace.analysis.error, fraction=0.0f0, show_bar=false)
-    elseif source_state == :unchanged
-        return (
-            text=@sprintf("Up to date: %d items (%d source items unchanged)", loaded, total),
-            fraction=0.0f0,
-            show_bar=false,
-        )
-    else # :done
-        text = skipped > 0 ?
-            @sprintf("Scanned %d source items, %d items (%d skipped)", total, loaded, skipped) :
-            @sprintf("Scanned %d source items, %d items", total, loaded)
-        return (text=text, fraction=0.0f0, show_bar=false)
-    end
-end
-
-"""Describe the cache button from the workspace cache state."""
-function _cache_toolbar_model(state::BrowserState)::NamedTuple
-    workspace = state.workspace
-    identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
-    status = workspace isa Workspace.Workspace ? workspace.cache.status : nothing
-    cache_state = workspace isa Workspace.Workspace ?
-        workspace.cache_job.state :
-        :idle
-    activity = _cache_activity_model(state)
-
-    if identity === nothing
-        return (
-            label="Cache: No Project",
-            color=(0.28, 0.28, 0.28, 1.0),
-            detail="Open a project folder before building a cache.",
-        )
-    elseif cache_state == :writing
-        return (
-            label=activity.title,
-            color=(0.18, 0.42, 0.78, 1.0),
-            detail=activity.detail,
-        )
-    elseif cache_state == :loading
-        return (
-            label="Cache: Loading",
-            color=(0.18, 0.42, 0.78, 1.0),
-            detail="Reading cached items from the cache.",
-        )
-    elseif cache_state == :missing
-        message = workspace.cache_job.error
-        return (
-            label="Cache: Missing",
-            color=(0.82, 0.48, 0.12, 1.0),
-            detail=isempty(message) ? "No cache has been built for this project yet." : message,
-        )
-    elseif cache_state == :error
-        return (
-            label="Cache: Error",
-            color=(0.72, 0.18, 0.18, 1.0),
-            detail=workspace.cache_job.error,
-        )
-    elseif cache_state == :canceled
-        return (
-            label="Cache: Canceled",
-            color=(0.45, 0.45, 0.45, 1.0),
-            detail="Cache update was canceled.",
-        )
-    elseif status isa ProjectCacheStatus
-        if !(workspace.index.source isa SourceScan)
-            return (
-                label="Cache: Loaded",
-                color=(0.20, 0.58, 0.30, 1.0),
-                detail="$(status.cached_source_items) source items cached; source not checked",
-            )
-        end
-        if status.error_source_items > 0
-            return (
-                label="Cache: Errors",
-                color=(0.72, 0.18, 0.18, 1.0),
-                detail="$(status.error_source_items) cached source item(s) failed to transform",
-            )
-        end
-        has_changes = status.stale_source_items > 0 ||
-            status.new_source_items > 0 ||
-            status.deleted_source_items > 0
-        if has_changes
-            return (
-                label="Cache: Stale",
-                color=(0.78, 0.58, 0.12, 1.0),
-                detail="$(status.stale_source_items) stale, $(status.new_source_items) new, $(status.deleted_source_items) deleted",
-            )
-        end
-        return (
-            label="Cache: Fresh",
-            color=(0.20, 0.58, 0.30, 1.0),
-            detail="$(status.fresh_source_items) source items cached",
-        )
-    end
-
-    return (
-        label="Cache: Idle",
-        color=(0.36, 0.36, 0.36, 1.0),
-        detail="No cache loaded.",
-    )
-end
-
-"""Render the cache status button and its detailed control popup."""
+"""Render the cache status button and its control popup, colored by the workspace status."""
 function _render_cache_toolbar_button!(state::BrowserState)::Nothing
-    model = _cache_toolbar_model(state)
-    color = model.color
-    ig.PushStyleColor(ig.ImGuiCol_Button, model.color)
-    ig.PushStyleColor(
-        ig.ImGuiCol_ButtonHovered,
-        (
-            min(color[1] + 0.10, 1.0),
-            min(color[2] + 0.10, 1.0),
-            min(color[3] + 0.10, 1.0),
-            color[4],
-        ),
-    )
-    ig.PushStyleColor(
-        ig.ImGuiCol_ButtonActive,
-        (
-            max(color[1] - 0.08, 0.0),
-            max(color[2] - 0.08, 0.0),
-            max(color[3] - 0.08, 0.0),
-            color[4],
-        ),
-    )
-    if ig.Button(model.label)
+    status = current_status(state)
+    color = status_color(status.level)
+    ig.PushStyleColor(ig.ImGuiCol_Button, color)
+    ig.PushStyleColor(ig.ImGuiCol_ButtonHovered, shifted_color(color, 0.10))
+    ig.PushStyleColor(ig.ImGuiCol_ButtonActive, shifted_color(color, -0.08))
+    if ig.Button("Cache: $(status.label)")
         ig.OpenPopup("cache_toolbar_popup")
     end
     ig.PopStyleColor()
     ig.PopStyleColor()
     ig.PopStyleColor()
     if ig.BeginItemTooltip()
-        ig.TextUnformatted(model.detail)
+        ig.TextUnformatted(status.detail)
         ig.EndTooltip()
     end
     ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Always)
     if ig.BeginPopup("cache_toolbar_popup")
-        _render_cache_controls!(state; compact=false)
+        _render_cache_controls!(state)
         ig.EndPopup()
     end
     return nothing
@@ -636,46 +408,16 @@ function render_menu_bar(state::BrowserState)::Nothing
     return nothing
 end
 
-"""
-Draw source and cache progress, differences, errors, and controls.
-"""
-function _render_cache_controls!(
-    state::BrowserState;
-    compact::Bool,
-)::Nothing
+"""Draw the workspace status line, progress, source identity, errors, and scan controls."""
+function _render_cache_controls!(state::BrowserState)::Nothing
     workspace = state.workspace
-    identity = workspace isa Workspace.Workspace ? workspace.cache.identity : nothing
-    status = workspace isa Workspace.Workspace ? workspace.cache.status : nothing
-    cache_state = workspace isa Workspace.Workspace ?
-        workspace.cache_job.state :
-        :idle
-    model = _cache_toolbar_model(state)
-    running = workspace isa Workspace.Workspace &&
-        cache_work_running(workspace)
-    activity = _cache_activity_model(state)
+    status = current_status(state)
+    ig.TextColored(status_color(status.level), status.label)
+    ig.TextWrapped(status.detail)
+    status.progress === nothing || ig.ProgressBar(status.progress, (-1, 0))
 
-    if compact
-        ig.Text("Cache")
-    else
-        ig.TextColored(model.color, model.label)
-    end
-    ig.TextWrapped(model.detail)
-    if running
-        if cache_state in (:loading, :writing, :canceling)
-            ig.TextDisabled(activity.title)
-            ig.TextDisabled(activity.progress)
-            ig.ProgressBar(activity.fraction, (-1, 0))
-        end
-    end
-
-    source_progress = _source_rescan_progress_model(state)
-    if source_progress !== nothing
-        ig.Separator()
-        ig.TextDisabled(source_progress.text)
-        source_progress.show_bar &&
-            ig.ProgressBar(source_progress.fraction, (-1, 0))
-    end
-
+    workspace isa Workspace.Workspace || return nothing
+    identity = workspace.cache.identity
     if identity isa ProjectCacheIdentity
         ig.Separator()
         ig.Text("Source: $(identity.source_label)")
@@ -683,34 +425,13 @@ function _render_cache_controls!(
         ig.TextWrapped("File: $(identity.cache_path)")
     end
 
-    if status isa ProjectCacheStatus
-        ig.Separator()
-        ig.Text("Source Items")
-        ig.Text("Total: $(status.total_source_items)")
-        ig.Text("Cached: $(status.cached_source_items)")
-        ig.Text("Fresh: $(status.fresh_source_items)")
-        ig.Text("Stale: $(status.stale_source_items)")
-        ig.Text("New: $(status.new_source_items)")
-        ig.Text("Deleted: $(status.deleted_source_items)")
-        status.error_source_items > 0 && ig.TextColored(
-            (1.0, 0.35, 0.35, 1.0),
-            "Errors: $(status.error_source_items)",
-        )
-    elseif cache_state == :error
-        message = workspace.cache_job.error
-        !isempty(message) && ig.TextWrapped(message)
-    end
-
-    cache_errors = workspace isa Workspace.Workspace ?
-        sort!(collect(workspace.index.analysis_errors); by=first) :
-        Pair{String,String}[]
-    if !isempty(cache_errors)
+    if !isempty(status.errors)
         ig.Separator()
         ig.TextColored((1.0, 0.35, 0.35, 1.0), "Source Item Errors")
         ig.TextDisabled("Select a source item to show its items")
-        for (index, source_item_error) in enumerate(cache_errors)
-            index > 20 && break
-            source_item_id, message = source_item_error
+        shown = min(length(status.errors), 20)
+        for index in 1:shown
+            source_item_id, message = status.errors[index]
             ig.PushID(source_item_id)
             if ig.TextLink(basename(source_item_id)) && select_source_item!(state, source_item_id)
                 state.tree_filter = ""
@@ -723,42 +444,24 @@ function _render_cache_controls!(
             end
             ig.TextWrapped(first(split(message, '\n'; limit=2)))
             ig.PopID()
-            index < min(length(cache_errors), 20) && ig.Separator()
+            index < shown && ig.Separator()
         end
-        length(cache_errors) > 20 && ig.TextDisabled("$(length(cache_errors) - 20) more file errors")
+        length(status.errors) > shown &&
+            ig.TextDisabled("$(length(status.errors) - shown) more file errors")
     end
 
     ig.Separator()
-    has_identity = identity isa ProjectCacheIdentity
-    can_build = has_identity &&
-        workspace.index.source isa SourceScan &&
-        cache_state != :error
-    can_scan = workspace isa Workspace.Workspace
-    scan_running = can_scan && source_scan_running(workspace)
-
-    !can_scan && ig.BeginDisabled()
+    scan_running = source_scan_running(workspace)
     scan_label = scan_running ? "Cancel Scan" : "Scan Source"
     if ig.Button(scan_label, (-1, 0))
-        if scan_running
-            cancel_scan!(workspace)
-        else
-            scan_source!(workspace)
-        end
+        scan_running ? cancel_scan!(workspace) : scan_source!(workspace)
     end
-    !can_scan && ig.EndDisabled()
-
-    (!can_build || running || scan_running) && ig.BeginDisabled()
-    build_label = cache_state == :missing ? "Build Cache" : "Rebuild Cache"
-    if ig.Button(build_label, (-1, 0))
+    rebuild_disabled = scan_running || !(workspace.index.source isa SourceScan)
+    rebuild_disabled && ig.BeginDisabled()
+    if ig.Button(status.level === :missing ? "Build Cache" : "Rebuild Cache", (-1, 0))
         rebuild_cache!(workspace)
     end
-    (!can_build || running || scan_running) && ig.EndDisabled()
-
-    if running
-        if ig.Button(activity.cancel_label, (-1, 0))
-            cancel_cache!(workspace)
-        end
-    end
+    rebuild_disabled && ig.EndDisabled()
     return nothing
 end
 

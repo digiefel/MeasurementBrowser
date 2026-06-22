@@ -2,6 +2,7 @@ module Workspace
 
 using DataFrames: DataFrame
 using DBInterface
+using Printf
 import ..Profiling
 using ..Profiling: TIMER
 using TimerOutputs: @timeit_debug
@@ -21,6 +22,7 @@ import ..Cache:
     project_cache_identity,
     read_cached_item_data,
     reconcile_source_items!,
+    set_cache_memory_limit!,
     with_reader,
     with_writer_transaction,
     write_scan_identity!
@@ -33,6 +35,7 @@ import ..ItemIndex:
     SourceScan,
     apply_collection_parameters!,
     check_cancel,
+    _effective_loaded_item,
     insert_item!,
     is_job_cancelled,
     metadata_dict,
@@ -171,6 +174,35 @@ function cache_item!(cache::ItemCache, id::String, fingerprint, item)
 end
 
 """
+A single snapshot of everything a watcher needs to show about a workspace's background work.
+
+This is the stable contract between the engine and any watcher (the GUI today, scripts and workflows
+later): watchers read `WorkspaceStatus` and nothing else about jobs, progress, or the cache. It is
+recomputed only when [`poll_workspace!`](@ref) observes a change or work is active, so an idle render
+loop reads a cached value instead of rebuilding strings every frame.
+
+- `level` drives the watcher's color/emphasis: `:none`, `:busy`, `:fresh`, `:stale`, `:missing`,
+  `:error`.
+- `label` is a short word for a button or chip ("Building", "Fresh", "Errors").
+- `detail` is the one merged human line — the live activity while `busy`, otherwise a cache summary.
+- `busy` is true while any scan, analysis, or cache work runs.
+- `progress` is a determinate fraction when counts are known, or `nothing` for an indeterminate or
+  absent bar.
+- `errors` lists source-item failures as `id => first message line`, streamed as they occur.
+"""
+struct WorkspaceStatus
+    level::Symbol
+    label::String
+    detail::String
+    busy::Bool
+    progress::Union{Nothing,Float32}
+    errors::Vector{Pair{String,String}}
+end
+
+WorkspaceStatus() =
+    WorkspaceStatus(:none, "Opening", "Opening the source…", true, nothing, Pair{String,String}[])
+
+"""
 One open project/source pair and all package-managed state belonging to it.
 """
 mutable struct Workspace{S<:AbstractDataSource}
@@ -181,11 +213,15 @@ mutable struct Workspace{S<:AbstractDataSource}
     cache::WorkspaceCache
     scan::WorkspaceJob
     analysis::WorkspaceJob
-    cache_job::WorkspaceJob
+    # The cache is the persistence side of the scan, not a separately cancellable job, so it needs
+    # only a visible state and last error rather than a full WorkspaceJob.
+    cache_state::Symbol
+    cache_error::String
     sampling_profile::Union{Nothing,Profiling.SamplingProfile}
     sampling_active::Bool
     loaded_items::ItemCache
     background_tasks::Vector{Task}
+    status::WorkspaceStatus
     closed::Bool
 end
 
@@ -213,11 +249,13 @@ function Workspace(
         WorkspaceCache(identity, cache_db, nothing, nothing, :load),
         WorkspaceJob(),
         WorkspaceJob(),
-        WorkspaceJob(),
+        :idle,
+        "",
         nothing,
         false,
         ItemCache(),
         Task[],
+        WorkspaceStatus(),
         false,
     )
 end
@@ -250,13 +288,14 @@ function Base.show(io::IO, ::MIME"text/plain", workspace::Workspace)
     println(io, "  source label: ", source_label(workspace.source))
     println(io, "  source:       ", source_id(workspace.source))
     println(io, "  scan:         ", _scan_summary(workspace))
-    println(io, "  cache:        ", workspace.cache_job.state)
+    println(io, "  cache:        ", workspace.cache_state)
     println(io, "  items:        ", length(workspace.index.items))
     print(io,   "  failures:     ", length(workspace.index.analysis_errors))
     workspace.closed && print(io, "\n  (closed)")
 end
 
 include("Workspace/Operations.jl")
+include("Workspace/Status.jl")
 include("Workspace/DataAccess.jl")
 
 Profiling.register_instrumented!(@__MODULE__)

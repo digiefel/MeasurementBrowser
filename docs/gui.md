@@ -21,8 +21,14 @@ The workspace owns the source, item index, selected collection and item identiti
 loaded item memory, and the state of source-scan and cache work. Those values must not be copied
 into browser state.
 
-Source-scan and cache work each have independent state, progress, errors, cancellation, and task
-ownership. This prevents one operation from overwriting the status shown for the other.
+The GUI reads background-work state through one snapshot, `workspace.status` (a `WorkspaceStatus`):
+its level (color), short label, one merged detail line, busy flag, optional progress fraction, and the
+live error list. `poll_workspace!` recomputes that snapshot only when something changes or work is
+active, so idle frames are allocation-free, and the GUI never reaches into the scan/analysis/cache
+internals directly. This is the stable contract: the cache's internals can change without touching the
+UI as long as it still produces the same status. Scanning streams items, per-item failures, and
+collection summaries into that snapshot as they happen; a rescan detaches the previous scan so updates
+stay live without racing any still-finishing analysis.
 
 ## Panels
 

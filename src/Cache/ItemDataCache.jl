@@ -641,44 +641,6 @@ function _read_cached_item_data_small(
     return loaded
 end
 
-"""
-Read every valid requested item-data entry. Missing or stale entries return `nothing`; cached entries
-are reconstructed as ordinary `DataItem` values carrying ordinary `DataFrame`s.
-"""
-function read_cached_item_data(
-    index::Union{Nothing,ProjectCacheIndex},
-    items::Vector{ItemRecord},
-)::Vector{Any}
-    (index === nothing || isempty(items) || !isfile(index.identity.cache_path)) &&
-        return Any[nothing for _ in items]
-    return with_cache_db(index.identity.cache_path) do connection
-        _read_cached_item_data(connection, items)
-    end
-end
-
-"""Write aligned cacheable loaded items through a one-shot cache connection."""
-function write_cached_item_data!(
-    index::Union{Nothing,ProjectCacheIndex},
-    items::Vector{ItemRecord},
-    data::Vector,
-)::Nothing
-    length(items) == length(data) ||
-        throw(DimensionMismatch("items and data must have equal lengths"))
-    (index === nothing || isempty(items) || !isfile(index.identity.cache_path)) && return nothing
-    with_cache_db(index.identity.cache_path) do connection
-        ensure_schema!(connection)
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            _write_cached_item_data!(connection, items, data)
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
-    end
-    return nothing
-end
-
 """Read valid cached item data from a workspace's persistent reader, without source access."""
 function read_cached_item_data(cachedb::CacheDB, items::Vector{ItemRecord})::Vector{Any}
     isempty(items) && return Any[]

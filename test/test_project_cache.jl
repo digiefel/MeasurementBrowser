@@ -6,6 +6,23 @@ import DuckDB, DBInterface
 
 const ProjectCache = MeasurementBrowser.Cache
 
+"""Persist a finished SourceScan through the live CacheDB streaming API, the way scanning does."""
+function cache_source_scan!(cachedb, scan; data_by_id=Dict{String,Any}())
+    ProjectCache.write_scan_identity!(cachedb)
+    batches = Dict{String,Vector{MeasurementBrowser.ItemIndex.ItemRecord}}()
+    for record in scan.hierarchy.all_items
+        push!(
+            get!(() -> MeasurementBrowser.ItemIndex.ItemRecord[], batches, record.source_item_id),
+            record)
+    end
+    record_batches = collect(values(batches))
+    data_batches = [Any[get(data_by_id, r.id, nothing) for r in batch] for batch in record_batches]
+    written = isempty(record_batches) ? String[] :
+        ProjectCache.reconcile_source_items!(cachedb, record_batches, data_batches)
+    ProjectCache.finalize_scan!(cachedb, scan, Set(written))
+    return nothing
+end
+
 @testset "project DuckDB cache" begin
     mktempdir() do dir
         source = test_source(TEST_PROJECT, dir)
@@ -28,71 +45,54 @@ const ProjectCache = MeasurementBrowser.Cache
         write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\n")
         source = scan_test_source(TEST_PROJECT, dir)
         adapter = test_source(TEST_PROJECT, dir)
-        identity = ProjectCache.project_cache_identity(
-            "20260430_120005",
-            adapter,
-        )
+        identity = ProjectCache.project_cache_identity("20260430_120005", adapter)
         rm(identity.cache_path; force=true)
 
         try
-            progress = NamedTuple[]
-            snapshot = ProjectCache.write_project_cache!(
-                identity,
-                source;
-                replace=true,
-                on_progress=event -> push!(progress, event),
-            )
-            @test length(snapshot.source.hierarchy.all_items) == 2
-            @test ProjectCache.cache_status(snapshot, source).fresh_source_items == 2
-            @test any(event -> event.phase == :cache_finalize, progress)
+            cachedb = ProjectCache.open_cache_db(identity)
+            try
+                cache_source_scan!(cachedb, source)
+                loaded = ProjectCache.load_cache_index(cachedb)
+                @test length(loaded.source.hierarchy.all_items) == 2
+                @test loaded.source.hierarchy.index[("test", "first")].parameters[:wafer] == "A"
+                @test Set(item.id for item in loaded.source.hierarchy.all_items) ==
+                      Set(item.id for item in source.hierarchy.all_items)
+                @test all(item -> item.parameters[:wafer] == "A", loaded.source.hierarchy.all_items)
+                # No item data was written, so an interactive read finds nothing cached.
+                @test ProjectCache.read_cached_item_data(
+                    cachedb, loaded.source.hierarchy.all_items) == Any[nothing, nothing]
+            finally
+                ProjectCache.close_cache_db!(cachedb)
+            end
 
-            loaded = ProjectCache.load_project_cache(identity)
-            @test loaded.source.hierarchy.index[("test", "first")].parameters[:wafer] == "A"
-            @test Set(
-                item.id
-                for item in loaded.source.hierarchy.all_items
-            ) == Set(
-                item.id
-                for item in source.hierarchy.all_items
-            )
-            @test all(
-                item -> item.parameters[:wafer] == "A",
-                loaded.source.hierarchy.all_items,
-            )
-            @test ProjectCache.read_cached_item_data(
-                loaded,
-                loaded.source.hierarchy.all_items,
-            ) == Any[nothing, nothing]
-
+            # Freshness counts compare a fresh scan against the previously cached index.
             sleep(0.05)
             touch(first(source.hierarchy.all_items).source_item_path)
             rm(joinpath(dir, "second.csv"))
             write_test_source(joinpath(dir, "third.csv"), 20)
             updated_source = scan_test_source(TEST_PROJECT, dir)
-            status = ProjectCache.cache_status(loaded, updated_source)
+            status = MeasurementBrowser.Workspace._post_write_status(
+                identity, updated_source, ProjectCache.ProjectCacheIndex(identity, source))
             @test status.stale_source_items == 1
             @test status.new_source_items == 1
             @test status.deleted_source_items == 1
 
-            updated = ProjectCache.write_project_cache!(loaded.identity, updated_source)
-            updated_status = ProjectCache.cache_status(updated, updated_source)
-            @test updated_status.fresh_source_items == 2
-            @test updated_status.stale_source_items == 0
-            @test updated_status.new_source_items == 0
-            @test updated_status.deleted_source_items == 0
+            settled = MeasurementBrowser.Workspace._post_write_status(
+                identity, updated_source,
+                ProjectCache.ProjectCacheIndex(identity, updated_source))
+            @test settled.fresh_source_items == 2
+            @test settled.stale_source_items == 0
+            @test settled.new_source_items == 0
+            @test settled.deleted_source_items == 0
 
             failed_source = MeasurementBrowser.SourceScan(
-                updated_source.source_id,
-                updated_source.source_label,
-                updated_source.source_item_fingerprints,
-                updated_source.hierarchy,
+                updated_source.source_id, updated_source.source_label,
+                updated_source.source_item_fingerprints, updated_source.hierarchy,
                 [ItemFailure(
                     first(updated_source.hierarchy.all_items).source_item_id,
                     first(updated_source.hierarchy.all_items).id,
-                    "synthetic analysis failure",
-                )],
-            )
-            failed = ProjectCache.write_project_cache!(loaded.identity, failed_source)
+                    "synthetic analysis failure")])
+            failed = ProjectCache.ProjectCacheIndex(identity, failed_source)
             @test only(values(failed.analysis_errors)) == "synthetic analysis failure"
         finally
             rm(identity.cache_path; force=true)
@@ -122,8 +122,10 @@ const ProjectCache = MeasurementBrowser.Cache
         mktempdir() do dir
             identity = ProjectCache.ProjectCacheIdentity(
                 "rt", "round_trip_src", "RoundTripSrc", joinpath(dir, "rt.duckdb"))
-            ProjectCache.write_project_cache!(identity, scan; replace=true)
-            loaded = ProjectCache.load_project_cache(identity)
+            cachedb = ProjectCache.open_cache_db(identity)
+            cache_source_scan!(cachedb, scan)
+            loaded = ProjectCache.load_cache_index(cachedb)
+            ProjectCache.close_cache_db!(cachedb)
             by_id = Dict(r.id => r for r in loaded.source.hierarchy.all_items)
             a = by_id["a"]
 
@@ -164,7 +166,9 @@ const ProjectCache = MeasurementBrowser.Cache
             )
             rm(identity.cache_path; force=true)
             try
-                ProjectCache.write_project_cache!(identity, source; replace=true)
+                stale_cache = ProjectCache.open_cache_db(identity)
+                cache_source_scan!(stale_cache, source)
+                ProjectCache.close_cache_db!(stale_cache)
                 write_test_source(joinpath(dir, "second.csv"), 10)
 
                 state = MeasurementBrowser.Browser.BrowserState(project_locked=true)
@@ -179,10 +183,10 @@ const ProjectCache = MeasurementBrowser.Cache
                 while time() < deadline
                     workspace = state.workspace
                     MeasurementBrowser.Workspace.poll_workspace!(workspace)
-                    saw_writing |= workspace.cache_job.state == :writing
+                    saw_writing |= workspace.cache_state == :writing
                     status = workspace.cache.status
                     if saw_writing &&
-                       workspace.cache_job.state == :ready &&
+                       workspace.cache_state == :ready &&
                        status isa ProjectCache.ProjectCacheStatus &&
                        status.cached_source_items == 2 &&
                        status.new_source_items == 1
@@ -195,7 +199,7 @@ const ProjectCache = MeasurementBrowser.Cache
                 status = workspace.cache.status
                 @test saw_writing
                 @test workspace.scan.state == :done
-                @test workspace.cache_job.state == :ready
+                @test workspace.cache_state == :ready
                 @test status isa ProjectCache.ProjectCacheStatus
                 @test status.cached_source_items == 2
                 # second.csv is genuinely new relative to the stale one-item cache; first.csv was
@@ -225,6 +229,9 @@ const ProjectCache = MeasurementBrowser.Cache
                 "inc_src", "IncSrc", fingerprints, hierarchy, ItemFailure[])
         end
         ids(index) = Set(record.id for record in index.source.hierarchy.all_items)
+        # Write one source item's records as scanning does (one bounded batch, no loaded data).
+        reconcile_one!(cachedb, records) = ProjectCache.reconcile_source_items!(
+            cachedb, [records], [Any[nothing for _ in records]])
 
         mktempdir() do dir
             identity = ProjectCache.ProjectCacheIdentity(
@@ -237,11 +244,11 @@ const ProjectCache = MeasurementBrowser.Cache
                 # An interrupted scan (identity stamped, one source item written, no finalize)
                 # is still loadable and shows the progress made so far.
                 ProjectCache.write_scan_identity!(cachedb)
-                ProjectCache.reconcile_source_item!(cachedb, recs_a)
+                reconcile_one!(cachedb, recs_a)
                 partial = ProjectCache.load_cache_index(cachedb)
                 @test ids(partial) == Set(["a1", "a2"])
 
-                ProjectCache.reconcile_source_item!(cachedb, recs_b)
+                reconcile_one!(cachedb, recs_b)
                 ProjectCache.finalize_scan!(
                     cachedb, make_scan([recs_a; recs_b]), Set(["si_a", "si_b"]))
                 @test ids(ProjectCache.load_cache_index(cachedb)) == Set(["a1", "a2", "b1"])
@@ -257,7 +264,7 @@ const ProjectCache = MeasurementBrowser.Cache
                 @test a1.stats[:vmax] === 3.5
 
                 # Dropping si_a from the next scan cascades its items out of the cache.
-                ProjectCache.reconcile_source_item!(cachedb, recs_b)
+                reconcile_one!(cachedb, recs_b)
                 ProjectCache.finalize_scan!(cachedb, make_scan(recs_b), Set(["si_b"]))
                 @test ids(ProjectCache.load_cache_index(cachedb)) == Set(["b1"])
             finally

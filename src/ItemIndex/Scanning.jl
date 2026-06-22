@@ -94,6 +94,9 @@ function _interpret_one_handle!(
     stats_seconds::Vector{Float64},
     thread_ids::Vector{Tuple{Int,Int}},
 )::Nothing
+    # Bail before each item's work so a cancelled scan of a huge single-file expansion stops promptly
+    # instead of grinding through every remaining item.
+    check_cancel()
     record = ItemRecord(
         ItemRecord(handle; source_item);
         parameters=_effective_parameters(source, collection(handle), parameters(handle)),
@@ -234,6 +237,7 @@ function interpret_source_items(
     on_source_item::Union{Nothing,Function}=nothing,
     on_kept_source_item::Union{Nothing,Function}=nothing,
     on_progress::Union{Nothing,Function}=nothing,
+    on_failure::Union{Nothing,Function}=nothing,
     unchanged_source_item_ids::Set{String}=Set{String}(),
     cached_records_by_source_item::Dict{String,Vector{ItemRecord}}=
         Dict{String,Vector{ItemRecord}}(),
@@ -358,9 +362,13 @@ function interpret_source_items(
                 "'$(result.source_item_id)', expected '$expected_source_item_id'",
             )
             received[index] = true
-            result.failure === nothing || push!(failures, result.failure)
+            if result.failure !== nothing
+                push!(failures, result.failure)
+                on_failure === nothing || on_failure(result.failure)
+            end
             interpretation = result.interpretation
             append!(failures, interpretation.failures)
+            on_failure === nothing || foreach(on_failure, interpretation.failures)
             records = interpretation.records
             records_by_position[index] = records
             isempty(records) || on_items === nothing || on_items(records)
@@ -438,6 +446,7 @@ function scan_source(
     on_items::Union{Nothing,Function}=nothing,
     on_source_item::Union{Nothing,Function}=nothing,
     on_kept_source_item::Union{Nothing,Function}=nothing,
+    on_failure::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
 )::SourceScan
     reset_scan_profile!(project)
@@ -498,6 +507,7 @@ function scan_source(
         on_items,
         on_source_item,
         on_kept_source_item,
+        on_failure,
         unchanged_source_item_ids,
         cached_records_by_source_item,
         on_progress=progress -> emit_progress(

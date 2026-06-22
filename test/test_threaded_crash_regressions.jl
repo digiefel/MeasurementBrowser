@@ -1,6 +1,17 @@
 using MeasurementBrowser
 using Test
 
+"""Poll a workspace until its scan settles (or a timeout), so tests can assert the steady state."""
+function poll_to_done(workspace; timeout=20)
+    deadline = time() + timeout
+    while time() < deadline
+        MeasurementBrowser.Workspace.poll_workspace!(workspace)
+        workspace.scan.state in (:done, :unchanged) && return nothing
+        sleep(0.01)
+    end
+    return nothing
+end
+
 @testset "threaded workspace smoke test" begin
     @test Threads.nthreads() >= 4
     mktempdir() do root
@@ -110,5 +121,101 @@ end
         @test !haskey(records[17].stats, :value)
         @test !haskey(records[23].stats, :value)
         @test records[80].stats[:value] == 160
+    end
+end
+
+@testset "late progressive items never mutate a scanned hierarchy" begin
+    # Regression: a rescan streams :items while the previous scan's analysis task still iterates the
+    # live hierarchy. Mutating that hierarchy from poll_workspace! raced the analysis task and
+    # corrupted the heap. Once index.source is set, progressive items must be ignored; the next
+    # :source replaces the index wholesale.
+    mktempdir() do root
+        write(joinpath(root, "a.txt"), "value=1\n")
+        project = MeasurementBrowser.define_project("Late items regression")
+        MeasurementBrowser.register_item!(
+            project,
+            :text;
+            detect=file -> endswith(file.filename, ".txt"),
+            read=file -> read(file.filepath, String),
+            entries=(file, data) -> [MeasurementBrowser.DataItem(
+                kind=:text,
+                collection=["root"],
+                label=file.filename,
+                data=data,
+                id=file.filepath * "#text",
+            )],
+        )
+
+        workspace = MeasurementBrowser.open_workspace(
+            project, MeasurementBrowser.DirectorySource(root))
+        try
+            deadline = time() + 20
+            while time() < deadline
+                MeasurementBrowser.Workspace.poll_workspace!(workspace)
+                workspace.scan.state in (:done, :unchanged) && break
+                sleep(0.01)
+            end
+            @test workspace.scan.state in (:done, :unchanged)
+            @test workspace.index.source !== nothing
+            hierarchy = workspace.index.hierarchy
+            item_count = length(workspace.index.items)
+
+            # Inject a late :items event the way a rescan would, with index.source already set.
+            channel = Channel{NamedTuple}(Inf)
+            workspace.scan.id += 1
+            workspace.scan.events = channel
+            workspace.scan.state = :scanning
+            late = MeasurementBrowser.ItemIndex.ItemRecord(;
+                id="late#text",
+                source_item_id="late",
+                item_label="late",
+                kind=:text,
+                collection=["root"],
+            )
+            put!(channel, (kind=:items, job_id=workspace.scan.id, items=[late]))
+            MeasurementBrowser.Workspace.poll_workspace!(workspace)
+
+            @test !haskey(workspace.index.items, "late#text")
+            @test length(workspace.index.items) == item_count
+            @test workspace.index.hierarchy === hierarchy
+        finally
+            MeasurementBrowser.close_workspace!(workspace)
+        end
+    end
+end
+
+@testset "rescan detaches the previous scan for live, race-free updates" begin
+    mktempdir() do root
+        write(joinpath(root, "a.txt"), "value=1\n")
+        project = MeasurementBrowser.define_project("Rescan detach")
+        MeasurementBrowser.register_item!(
+            project,
+            :text;
+            detect=file -> endswith(file.filename, ".txt"),
+            read=file -> read(file.filepath, String),
+            entries=(file, data) -> [MeasurementBrowser.DataItem(
+                kind=:text, collection=["root"], label=file.filename,
+                data=data, id=file.filepath * "#text")],
+        )
+        workspace = MeasurementBrowser.open_workspace(
+            project, MeasurementBrowser.DirectorySource(root))
+        try
+            poll_to_done(workspace)
+            @test workspace.index.source !== nothing
+            first_count = length(workspace.index.items)
+
+            # A rescan must immediately detach the previous scan (so a still-running analysis keeps
+            # its own hierarchy) and clear stale errors, then recover a complete index live.
+            workspace.index.analysis_errors["stale"] = "old error"
+            MeasurementBrowser.Workspace.scan_source!(workspace)
+            @test workspace.index.source === nothing
+            @test isempty(workspace.index.analysis_errors)
+
+            poll_to_done(workspace)
+            @test workspace.index.source !== nothing
+            @test length(workspace.index.items) == first_count
+        finally
+            MeasurementBrowser.close_workspace!(workspace)
+        end
     end
 end

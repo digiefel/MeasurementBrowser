@@ -6,9 +6,26 @@ using Serialization
 using Dates
 
 const PROJECT_CACHE_SCHEMA_VERSION = 2
-const PROJECT_CACHE_LOCK = ReentrantLock()
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
-const PROJECT_CACHE_MEMORY_LIMIT = "512 MiB"
+
+"""
+DuckDB buffer-pool limit (MiB) for cache connections.
+
+DuckDB otherwise defaults to most of system RAM and retains committed table blocks for the workspace's
+lifetime; cache writes are bounded batches, so a smaller buffer keeps large caches out of swap without
+reducing scan parallelism. Settable at runtime — e.g. from a GUI slider — via
+[`set_cache_memory_limit!`](@ref). Changes apply to caches opened afterward; pass an open
+[`CacheDB`](@ref) to also resize it live.
+"""
+const CACHE_MEMORY_LIMIT_MIB = Ref(1024)
+
+_memory_limit_sql(mib::Integer)::String = "SET memory_limit = '$(Int(mib)) MiB'"
+
+"""Set the default cache buffer-pool limit (MiB) for caches opened later."""
+function set_cache_memory_limit!(mib::Integer)::Int
+    mib >= 1 || throw(ArgumentError("cache memory limit must be at least 1 MiB"))
+    return CACHE_MEMORY_LIMIT_MIB[] = Int(mib)
+end
 
 """Which dict one metadata (EAV) row belongs to. Stored in the `scope` column."""
 @enum MetaScope::Int8 begin
@@ -134,23 +151,6 @@ end
 # --------------------------------------------------------------------------------------------------
 
 """
-Open one DuckDB cache connection while holding the process-wide cache lock, then close it.
-
-This path is used for isolated cache operations outside a live workspace. A workspace keeps its own
-persistent reader and writer connections instead.
-"""
-function with_cache_db(work::Function, path::AbstractString)::Any
-    return lock(PROJECT_CACHE_LOCK) do
-        connection = DBInterface.connect(DuckDB.DB, String(path))
-        try
-            return work(connection)
-        finally
-            DBInterface.close!(connection)
-        end
-    end
-end
-
-"""
 One open DuckDB cache file shared by all of a workspace's cache work.
 
 A single [`DuckDB.DB`](@ref) holds the file (and its lock) for the workspace's lifetime. The
@@ -195,10 +195,7 @@ end
 function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
     db = DBInterface.connect(DuckDB.DB, identity.cache_path)
     try
-        # DuckDB otherwise defaults to most of system RAM and retains committed table blocks while
-        # the workspace stays open. Cache writes are bounded batches, so a smaller buffer pool keeps
-        # large caches out of swap without reducing scan parallelism.
-        DBInterface.execute(db, "SET memory_limit = '$(PROJECT_CACHE_MEMORY_LIMIT)'")
+        DBInterface.execute(db, _memory_limit_sql(CACHE_MEMORY_LIMIT_MIB[]))   # see CACHE_MEMORY_LIMIT_MIB
         ensure_schema!(db)
         schema_versions = String[
             String(row.value)
@@ -240,6 +237,13 @@ function close_cache_db!(cachedb::CacheDB)::Nothing
         DBInterface.close!(cachedb.db)
     end
     return nothing
+end
+
+"""Set the cache buffer-pool limit (MiB) and apply it immediately to one open cache."""
+function set_cache_memory_limit!(cachedb::CacheDB, mib::Integer)::Int
+    set_cache_memory_limit!(mib)
+    DBInterface.execute(cachedb.db, _memory_limit_sql(mib))
+    return Int(mib)
 end
 
 """Run `work` on the persistent reader connection, serialized against other readers."""
@@ -442,42 +446,6 @@ function ProjectCacheIndex(
     )
 end
 
-"""
-Compare a cached index with the index produced by the current source scan.
-
-The result counts matching, changed, new, deleted, and failed source items.
-"""
-function cache_status(
-    cached::ProjectCacheIndex,
-    source::SourceScan,
-)::ProjectCacheStatus
-    current = ProjectCacheIndex(cached.identity, source)
-    stale = 0
-    fresh = 0
-    cached_parameters = source_parameter_state(cached.source)
-    current_parameters = source_parameter_state(source)
-    for (id, fingerprint) in source.source_item_fingerprints
-        previous = get(cached.source.source_item_fingerprints, id, nothing)
-        previous === nothing && continue
-        changed = previous != fingerprint ||
-            get(cached_parameters, id, nothing) != get(current_parameters, id, nothing) ||
-            get(cached.analysis_errors, id, "") != get(current.analysis_errors, id, "")
-        stale += changed
-        fresh += !changed && !haskey(current.analysis_errors, id)
-    end
-    current_ids = keys(source.source_item_fingerprints)
-    cached_ids = keys(cached.source.source_item_fingerprints)
-    return ProjectCacheStatus(
-        length(current_ids),
-        length(cached_ids),
-        fresh,
-        stale,
-        count(id -> !haskey(cached.source.source_item_fingerprints, id), current_ids),
-        count(id -> !haskey(source.source_item_fingerprints, id), cached_ids),
-        length(current.analysis_errors),
-    )
-end
-
 # --------------------------------------------------------------------------------------------------
 # Writing the index
 # --------------------------------------------------------------------------------------------------
@@ -500,8 +468,8 @@ function _append_metadata!(appender, scope::MetaScope, entity::AbstractString, d
 end
 
 # A positional INSERT covering every metadata column: scope, entity, key, vtype, then the nine value
-# slots in `META_VALUE_COLUMNS` order. Used for the incremental (small-batch) writes; the bulk
-# `write_project_cache!` path keeps the faster appender.
+# slots in `META_VALUE_COLUMNS` order. Used for stats/node updates; bulk item writes use the faster
+# appender (see `_append_item_records!`).
 const _METADATA_INSERT_SQL = "INSERT INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 """Insert every key of one metadata dict as EAV rows under `scope`/`entity` via a prepared insert."""
@@ -543,131 +511,6 @@ function _source_item_locations(source::SourceScan)::Dict{String,Tuple{Union{Not
             (record.source_item_path, record.source_item_timestamp)
     end
     return locations
-end
-
-"""
-Create or update a cache from a finished source scan. `replace=true` discards all existing item data;
-a normal update preserves item data for unchanged source items and removes only data invalidated by a
-changed, deleted, or newly failing source item. The whole index (source items, items, metadata) is
-rewritten from the scan.
-"""
-function write_project_cache!(
-    identity::ProjectCacheIdentity,
-    source::SourceScan;
-    replace::Bool=false,
-    on_progress::Union{Nothing,Function}=nothing,
-)::ProjectCacheIndex
-    identity.source_id == source.source_id ||
-        error("Cache source does not match source scan")
-
-    new_index = ProjectCacheIndex(identity, source)
-    locations = _source_item_locations(source)
-    new_hashes = Dict(
-        id => _fingerprint_hash(fingerprint)
-        for (id, fingerprint) in source.source_item_fingerprints
-    )
-
-    mkpath(dirname(identity.cache_path))
-    with_cache_db(identity.cache_path) do connection
-        ensure_schema!(connection)
-        check_cancel()
-
-        # Decide which cached item data survives before the index rows are replaced.
-        if replace
-            _delete_all_cached_item_data!(connection)
-        else
-            invalid = String[]
-            for row in DBInterface.execute(
-                connection, "SELECT source_item_id, fingerprint_hash FROM source_items")
-                id = row.source_item_id
-                old_hash = _null_to_nothing(row.fingerprint_hash)
-                if !haskey(new_hashes, id) || new_hashes[id] != old_hash
-                    push!(invalid, id)
-                end
-            end
-            if !isempty(invalid)
-                for id in invalid
-                    _delete_cached_source_item_data!(connection, id)
-                end
-            end
-        end
-
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            DBInterface.execute(connection, "DELETE FROM source_items")
-            DBInterface.execute(connection, "DELETE FROM items")
-            DBInterface.execute(connection, "DELETE FROM metadata")
-            DBInterface.execute(connection, "DELETE FROM meta")
-
-            _write_meta_rows!(connection, identity, source)
-
-            source_item_stmt = DBInterface.prepare(connection,
-                "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)")
-            for (id, fingerprint) in source.source_item_fingerprints
-                path, timestamp = get(locations, id, (nothing, nothing))
-                DBInterface.execute(source_item_stmt, (
-                    id,
-                    fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
-                    new_hashes[id],
-                    path,
-                    timestamp,
-                    get(new_index.analysis_errors, id, nothing),
-                ))
-            end
-
-            # `items`/`source_items` carry BLOB fingerprints, which the DuckDB.jl appender mishandles,
-            # so they use prepared statements. The far higher-volume `metadata` table is blob-free and
-            # written through the (much faster) appender.
-            item_stmt = DBInterface.prepare(connection,
-                "INSERT INTO items VALUES (?, ?, ?, ?, ?, ?)")
-            metadata_appender = DuckDB.Appender(connection, "metadata")
-            try
-                for record in source.hierarchy.all_items
-                    DBInterface.execute(item_stmt, (
-                        record.id,
-                        record.source_item_id,
-                        record.item_label,
-                        String(record.kind),
-                        record.collection,
-                        record.item_fingerprint === nothing ? nothing :
-                            _serialize_bytes(record.item_fingerprint),
-                    ))
-                    _append_metadata!(
-                        metadata_appender, SCOPE_ITEM_PARAMETERS, record.id, record.parameters)
-                    _append_metadata!(
-                        metadata_appender, SCOPE_ITEM_STATS, record.id, record.stats)
-                end
-
-                for (path, node) in source.hierarchy.index
-                    entity = collection_path_key(collect(String, path))
-                    isempty(node.parameters) || _append_metadata!(
-                        metadata_appender, SCOPE_NODE_PARAMETERS, entity, node.parameters)
-                    isempty(node.stats) || _append_metadata!(
-                        metadata_appender, SCOPE_NODE_STATS, entity, node.stats)
-                end
-                DuckDB.flush(metadata_appender)   # flush buffered rows into the transaction
-            finally
-                DuckDB.close(metadata_appender)
-            end
-
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
-
-        emit_progress(
-            on_progress;
-            phase=:cache_finalize,
-            total_source_items=1,
-            processed_source_items=1,
-            loaded_items=length(source.hierarchy.all_items),
-            skipped_source_items=0,
-            current_source_item=identity.cache_path,
-        )
-    end
-
-    return new_index
 end
 
 # --------------------------------------------------------------------------------------------------
@@ -752,10 +595,10 @@ function _reconcile_source_item!(
     connection,
     records::Vector{ItemRecord},
 )::String
-    isempty(records) && throw(ArgumentError("reconcile_source_item! needs at least one record"))
+    isempty(records) && throw(ArgumentError("a source-item batch needs at least one record"))
     source_item_id = first(records).source_item_id
     all(record -> record.source_item_id == source_item_id, records) ||
-        throw(ArgumentError("reconcile_source_item! records must share one source item"))
+        throw(ArgumentError("a source-item batch must share one source item"))
     fingerprint = first(records).source_item_fingerprint
     new_hash = _fingerprint_hash(fingerprint)
     path = first(records).source_item_path
@@ -831,24 +674,6 @@ function _append_item_records!(
 end
 
 """
-Durably write one source item's records and optional loaded item data.
-
-Existing rows for that source item are replaced in one transaction. When `data` is supplied it must
-align with `records`; `nothing` entries are skipped.
-"""
-function reconcile_source_item!(
-    cachedb::CacheDB,
-    records::Vector{ItemRecord};
-    data::Union{Nothing,AbstractVector}=nothing,
-)::String
-    return only(reconcile_source_items!(
-        cachedb,
-        [records],
-        [data === nothing ? Any[nothing for _ in records] : collect(Any, data)],
-    ))
-end
-
-"""
 Durably write several completed source-item batches in one transaction.
 
 The outer vectors and every records/data pair must align. Returns the source-item ids written in the
@@ -906,7 +731,7 @@ end
 """
 Finish an incremental scan: record bookkeeping the per-item writes can't carry.
 
-`written_ids` are the source items already persisted by [`reconcile_source_item!`](@ref). This writes
+`written_ids` are the source items already persisted by [`reconcile_source_items!`](@ref). This writes
 the `meta` rows and collection-node parameters, records bare rows for skipped/failed source items,
 stamps per-source-item analysis errors, and deletes source items (cascading their items, metadata,
 and cached item data) that the current scan no longer contains.
@@ -1121,26 +946,9 @@ function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceSc
 end
 
 """
-Load the complete browser index without scanning or opening any source file.
-"""
-function load_project_cache(
-    identity::ProjectCacheIdentity;
-    on_progress::Union{Nothing,Function}=nothing,
-)::ProjectCacheIndex
-    isfile(identity.cache_path) ||
-        throw(ProjectCacheError(identity.cache_path, "file does not exist"))
-    index = with_cache_db(identity.cache_path) do connection
-        ProjectCacheIndex(identity, _load_source_scan(connection, identity))
-    end
-    _emit_cache_load_progress(on_progress, index)
-    return index
-end
-
-"""
 Load the complete browser index from a workspace's open cache, snapshotting committed state.
 
-Unlike [`load_project_cache`](@ref) this reuses the workspace's already-open [`CacheDB`](@ref)
-instead of opening a second handle to the same file.
+Reuses the workspace's already-open [`CacheDB`](@ref) instead of opening a second handle to the file.
 """
 function load_cache_index(
     cachedb::CacheDB;
