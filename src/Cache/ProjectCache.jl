@@ -335,6 +335,12 @@ function ensure_schema!(connection)::Nothing
             storage_id TEXT PRIMARY KEY,
             column_names VARCHAR[])
     """)
+    DBInterface.execute(connection, """
+        CREATE TABLE IF NOT EXISTS item_failures(
+            item_id TEXT PRIMARY KEY,
+            source_item_id TEXT,
+            message TEXT)
+    """)
     return nothing
 end
 
@@ -432,7 +438,8 @@ function ProjectCacheIndex(
 )::ProjectCacheIndex
     errors = Dict{String,Vector{String}}()
     for failure in source.analysis_failures
-        push!(get!(errors, failure.source_item_id, String[]), failure.message)
+        owner = isempty(failure.id) ? failure.source_item_id : failure.id
+        push!(get!(() -> String[], errors, owner), failure.message)
     end
     return ProjectCacheIndex(
         identity,
@@ -518,7 +525,7 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
             _delete_all_cached_item_data!(connection)
-            for table in ("metadata", "items", "source_items", "meta")
+            for table in ("item_failures", "metadata", "items", "source_items", "meta")
                 DBInterface.execute(connection, "DELETE FROM $table")
             end
             DBInterface.execute(connection, "COMMIT")
@@ -571,6 +578,9 @@ function _delete_source_item_rows!(
     drop_item_data::Bool,
 )::Nothing
     drop_item_data && _delete_cached_source_item_data!(connection, source_item_id)
+    DBInterface.execute(
+        DBInterface.prepare(connection, "DELETE FROM item_failures WHERE source_item_id = ?"),
+        (source_item_id,))
     DBInterface.execute(
         DBInterface.prepare(connection, """
             DELETE FROM metadata WHERE scope IN (?, ?)
@@ -677,7 +687,8 @@ same order.
 function reconcile_source_items!(
     connection,
     record_batches::Vector{Vector{ItemRecord}},
-    data_batches::Vector{Vector{Any}},
+    data_batches::Vector{Vector{Any}};
+    stage::Symbol=:interpreted,
 )::Vector{String}
     length(record_batches) == length(data_batches) ||
         throw(DimensionMismatch("record_batches and data_batches must have equal lengths"))
@@ -707,7 +718,7 @@ function reconcile_source_items!(
         end
         @timeit_debug TIMER "cache/reconcile_index" _append_item_records!(connection, records)
         @timeit_debug TIMER "cache/reconcile_data" _write_cached_item_data!(
-            connection, records, data, :processed)
+            connection, records, data, stage)
         written
     end
 end
@@ -716,10 +727,11 @@ end
 function reconcile_source_items!(
     cachedb::CacheDB,
     record_batches::Vector{Vector{ItemRecord}},
-    data_batches::Vector{Vector{Any}},
+    data_batches::Vector{Vector{Any}};
+    stage::Symbol=:interpreted,
 )::Vector{String}
     return with_writer_transaction(cachedb) do connection
-        reconcile_source_items!(connection, record_batches, data_batches)
+        reconcile_source_items!(connection, record_batches, data_batches; stage)
     end
 end
 
@@ -841,6 +853,30 @@ function persist_stats!(
     return nothing
 end
 
+"""Replace or clear one processing/statistics failure for an item."""
+function persist_item_failure!(
+    cachedb::CacheDB,
+    record::ItemRecord,
+    message::Union{Nothing,String},
+)::Nothing
+    with_writer(cachedb) do connection
+        statement = if message === nothing
+            DBInterface.prepare(connection, "DELETE FROM item_failures WHERE item_id = ?")
+        else
+            DBInterface.prepare(connection, """
+                INSERT INTO item_failures VALUES (?, ?, ?)
+                ON CONFLICT (item_id) DO UPDATE SET
+                    source_item_id = excluded.source_item_id,
+                    message = excluded.message
+            """)
+        end
+        values = message === nothing ? (record.id,) :
+            (record.id, record.source_item_id, message)
+        DBInterface.execute(statement, values)
+    end
+    return nothing
+end
+
 # --------------------------------------------------------------------------------------------------
 # Loading the index
 # --------------------------------------------------------------------------------------------------
@@ -900,6 +936,11 @@ function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceSc
         error_message = _null_to_nothing(row.error)
         error_message === nothing ||
             push!(failures, ItemFailure(id, "", String(error_message)))
+    end
+    for row in DBInterface.execute(connection, """
+        SELECT item_id, source_item_id, message FROM item_failures
+    """)
+        push!(failures, ItemFailure(row.source_item_id, row.item_id, row.message))
     end
 
     metadata = _load_metadata(connection)

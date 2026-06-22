@@ -46,10 +46,9 @@ MB.item_data(p::Photo) = p.data
         draw=function (ws, items, figure)
             Axis(figure[1, 1])
             for it in items
-                # The bridge hands back the project's own subtype, carrying its data.
-                @test it isa Photo
-                @test MB.item_data(it) === it.data
-                drawn_pixels[] += length(it.data)
+                # The persistent boundary keeps the data, while the view receives the package item.
+                @test it isa MB.DataItem
+                drawn_pixels[] += length(MB.item_data(it))
             end
             nothing
         end,
@@ -68,8 +67,12 @@ MB.item_data(p::Photo) = p.data
     # so draw receives the Photos with item.data populated.
     workspace = MB.Workspace.Workspace(project, test_source(project, dir))
     plot_kind = MB.RegisteredPlot{:photo,Symbol("Image")}
-    figure = MB.setup_plot(workspace, plot_kind, records)
-    @test figure isa Figure
-    @test MB.plot_data!(workspace, plot_kind, records, figure) === nothing
-    @test drawn_pixels[] == 8   # two 2x2 matrices
+    try
+        figure = MB.setup_plot(workspace, plot_kind, records)
+        @test figure isa Figure
+        @test MB.plot_data!(workspace, plot_kind, records, figure) === nothing
+        @test drawn_pixels[] == 8   # two 2x2 matrices
+    finally
+        MB.close_workspace!(workspace)
+    end
 end

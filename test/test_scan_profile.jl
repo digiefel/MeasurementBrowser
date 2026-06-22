@@ -213,8 +213,8 @@ end
             @test workspace.analysis.state == :done
             @test isempty(workspace.index.analysis_errors)
             ok = only(workspace.index.hierarchy.all_items)
-            @test ok.stats[:rows] == 1
-            @test ok.stats[:area_um2] == 42
+            @test workspace.index.item_stats[ok.id][:rows] == 1
+            @test workspace.index.item_stats[ok.id][:area_um2] == 42
         finally
             MB.close_workspace!(workspace)
         end
@@ -283,7 +283,7 @@ end
             @test read_count[] == 1
             records = workspace.index.hierarchy.all_items
             @test length(records) == 100
-            @test all(record -> record.stats[:rows] == 10, records)
+            @test all(record -> workspace.index.item_stats[record.id][:rows] == 10, records)
 
             loaded = MB.Workspace.materialize_items(workspace, records)
             @test length(loaded) == 100
@@ -340,12 +340,12 @@ end
         @test read_count[] == 5
         @test length(ws1.index.hierarchy.all_items) == 5
         @test ws1.cache.status.new_source_items == 5
-        failed_source_item_id = only(
-            record.source_item_id
+        failed_item_id = only(
+            record.id
             for record in ws1.index.hierarchy.all_items
             if record.collection == ["f2"]
         )
-        @test haskey(ws1.index.analysis_errors, failed_source_item_id)
+        @test haskey(ws1.index.analysis_errors, failed_item_id)
 
         # A missing fingerprint cannot prove that a source item is unchanged.
         cached_source = ws1.index.source
@@ -373,7 +373,7 @@ end
             @test ws2.cache.status.new_source_items == 0
             @test ws2.cache.status.stale_source_items == 0
             @test ws2.cache.status.deleted_source_items == 0
-            @test haskey(ws2.index.analysis_errors, failed_source_item_id)
+            @test haskey(ws2.index.analysis_errors, failed_item_id)
             MB.close_workspace!(ws2)
 
             # Changing one file re-reads only that file.
@@ -385,8 +385,8 @@ end
             @test ws3.cache.status.new_source_items == 0
             changed = only(
                 r for r in ws3.index.hierarchy.all_items if r.collection == ["f3"])
-            @test changed.stats[:rows] == 7
-            @test haskey(ws3.index.analysis_errors, failed_source_item_id)
+            @test ws3.index.item_stats[changed.id][:rows] == 7
+            @test haskey(ws3.index.analysis_errors, failed_item_id)
             MB.close_workspace!(ws3)
 
             # Adding a file reads only the new file.

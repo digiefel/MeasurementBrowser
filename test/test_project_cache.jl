@@ -430,18 +430,6 @@ end
         end
     end
 
-    @testset "item LRU evicts least-recently-used entries" begin
-        Cache = MeasurementBrowser.Workspace
-        lru = Cache.ItemCache(2)
-        Cache.cache_item!(lru, "a", :fp, "A")
-        Cache.cache_item!(lru, "b", :fp, "B")
-        @test Cache.lookup_item(lru, "a", nothing) == (:fp, "A")   # refreshes "a" as most-recent
-        Cache.cache_item!(lru, "c", :fp, "C")                      # capacity 2 → evict "b" (oldest)
-        @test Cache.lookup_item(lru, "b", nothing) === nothing
-        @test Cache.lookup_item(lru, "a", nothing) == (:fp, "A")
-        @test Cache.lookup_item(lru, "c", nothing) == (:fp, "C")
-    end
-
     @testset "materialization is served from the item-data cache without the origin" begin
         mktempdir() do dir
             write_test_source(joinpath(dir, "first.csv"))
@@ -452,12 +440,9 @@ end
                 first_pass = read_item_data(workspace, records)
                 @test all(!isnothing, first_pass)
 
-                # Populate the durable item-data cache the way source scanning does (the interactive
-                # read path itself never writes), then drop the origin file and the in-memory cache.
-                materialized = MeasurementBrowser.Workspace.materialize_items(workspace, records)
-                ProjectCache.write_cached_item_data!(workspace.cache.db, records, materialized)
+                # Processing committed the selected result. With no package-level item LRU, the
+                # second read must come from DuckDB after the source disappears.
                 rm(joinpath(dir, "first.csv"))
-                workspace.loaded_items = MeasurementBrowser.Workspace.ItemCache()
 
                 second_pass = read_item_data(workspace, records)
                 @test second_pass == first_pass

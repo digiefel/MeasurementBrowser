@@ -4,12 +4,12 @@ source_analysis_failures(::Project, ::AbstractDataSource)::Vector{ItemFailure} =
 """
 One completed source-item pass.
 
-`records` are retained by the index. `loaded_items` are the processed items kept only until the scan
-collector has cached them; `nothing` marks an item whose processing failed.
+`records` are retained by the index. `interpreted_items` carry effective item data until the cache
+writer accepts it and processing is queued.
 """
 struct SourceItemInterpretation
     records::Vector{ItemRecord}
-    loaded_items::Vector{Union{Nothing,AbstractDataItem}}
+    interpreted_items::Vector{AbstractDataItem}
     failures::Vector{ItemFailure}
 end
 
@@ -72,79 +72,11 @@ function _effective_loaded_item(
     )
 end
 
-"""Below this many items per source item, per-item parallelism costs more than it saves."""
-const PARALLEL_ITEM_THRESHOLD = 64
-
 """
-Process one handle and compute its stats, writing results into the aligned output slots.
+Interpret every logical data item produced by one source item.
 
-Each index owns its own record and failure list, so distinct indices never touch shared state and the
-loop body is safe to run on several threads at once.
-"""
-function _interpret_one_handle!(
-    project::Project,
-    source::AbstractDataSource,
-    source_item::AbstractDataSourceItem,
-    handle::AbstractDataItem,
-    index::Int,
-    records::Vector{ItemRecord},
-    loaded_items::Vector{Union{Nothing,AbstractDataItem}},
-    failures_per_item::Vector{Vector{ItemFailure}},
-    process_seconds::Vector{Float64},
-    stats_seconds::Vector{Float64},
-    thread_ids::Vector{Tuple{Int,Int}},
-)::Nothing
-    # Bail before each item's work so a cancelled scan of a huge single-file expansion stops promptly
-    # instead of grinding through every remaining item.
-    check_cancel()
-    record = ItemRecord(
-        ItemRecord(handle; source_item);
-        parameters=_effective_parameters(source, collection(handle), parameters(handle)),
-    )
-    records[index] = record
-    local_failures = ItemFailure[]
-
-    process_thread = Base.Threads.threadid()
-    started = time_ns()
-    loaded = try
-        process(project, source, handle)
-    catch error
-        is_job_cancelled(error) && rethrow()
-        push!(local_failures, ItemFailure(
-            record.source_item_id, record.id, "process: " * sprint(showerror, error)))
-        nothing
-    finally
-        process_seconds[index] = (time_ns() - started) / 1e9
-    end
-    stats_thread = 0
-    if loaded !== nothing
-        loaded = _effective_loaded_item(record, loaded)
-        stats_thread = Base.Threads.threadid()
-        started = time_ns()
-        try
-            computed = compute_item_stats(project, source, loaded)
-            merge!(record.stats, metadata_dict(computed))
-        catch error
-            is_job_cancelled(error) && rethrow()
-            push!(local_failures, ItemFailure(
-                record.source_item_id, record.id, "stats: " * sprint(showerror, error)))
-        finally
-            stats_seconds[index] = (time_ns() - started) / 1e9
-        end
-    end
-    thread_ids[index] = (process_thread, stats_thread)
-    loaded_items[index] = loaded
-    failures_per_item[index] = local_failures
-    return nothing
-end
-
-"""
-Interpret, process, and analyze every data item produced by one source item.
-
-The source item is read only by `data_items`. A source item that expands into many items (a fatigue
-file of a million cycles) processes them across threads; an ordinary one-item file stays on the
-zero-overhead serial path. All per-item work completes while those loaded values are still alive; the
-returned items exist only long enough for the scan collector to cache them.
+The source item is read only by `data_items`. Each result is normalized to a package `DataItem` with
+effective parameters. Processing and statistics belong to the workspace processing queue.
 """
 function interpret_source_item(
     project::Project,
@@ -174,56 +106,21 @@ function interpret_source_item(
     source_kind = length(item_kinds) == 1 ? only(item_kinds) :
         isempty(item_kinds) ? :unmatched : :mixed
     records = Vector{ItemRecord}(undef, item_count)
-    loaded_items = Vector{Union{Nothing,AbstractDataItem}}(undef, item_count)
-    failures_per_item = Vector{Vector{ItemFailure}}(undef, item_count)
-    process_seconds = zeros(Float64, item_count)
-    stats_seconds = zeros(Float64, item_count)
-    thread_ids = Vector{Tuple{Int,Int}}(undef, item_count)
-
-    one!(index) = _interpret_one_handle!(
-        project, source, source_item, handles[index], index,
-        records, loaded_items, failures_per_item, process_seconds, stats_seconds, thread_ids)
-
-    if item_count < PARALLEL_ITEM_THRESHOLD || Base.Threads.nthreads() == 1
-        for index in 1:item_count
-            one!(index)
-        end
-    else
-        # Chunk into roughly one task per thread so a huge expansion shares the cores instead of
-        # saturating one, without spawning a task per item. These tasks share the pool with the outer
-        # source-item parallelism; Julia's scheduler balances the nesting. The cancel callback is
-        # re-established per task because spawned tasks do not inherit task-local storage.
-        cancel_callback = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
-        cancelled = Base.Threads.Atomic{Bool}(false)
-        chunk = cld(item_count, Base.Threads.nthreads())
-        @sync for first_index in 1:chunk:item_count
-            last_index = min(first_index + chunk - 1, item_count)
-            Base.Threads.@spawn with_cancel(cancel_callback) do
-                try
-                    for index in first_index:last_index
-                        one!(index)
-                    end
-                catch error
-                    is_job_cancelled(error) || rethrow()
-                    cancelled[] = true
-                end
-            end
-        end
-        cancelled[] && throw(JobCancelled())
-    end
-
-    failures = reduce(append!, failures_per_item; init=ItemFailure[])
-    participating_threads = Set([Base.Threads.threadid()])
-    for (process_thread, stats_thread) in thread_ids
-        push!(participating_threads, process_thread)
-        stats_thread == 0 || push!(participating_threads, stats_thread)
+    interpreted_items = Vector{AbstractDataItem}(undef, item_count)
+    for (index, handle) in pairs(handles)
+        check_cancel()
+        record = ItemRecord(
+            ItemRecord(handle; source_item);
+            parameters=_effective_parameters(source, collection(handle), parameters(handle)),
+        )
+        records[index] = record
+        interpreted_items[index] = DataItem(record, item_data(handle))
     end
     finish_source_profile!(
         project, source_item_id_value, source_item_label_value, source_item_path_value,
-        source_kind, item_count,
-        sum(process_seconds), sum(stats_seconds),
-        (time_ns() - source_started) / 1e9, participating_threads)
-    return SourceItemInterpretation(records, loaded_items, failures)
+        source_kind, item_count, 0.0, 0.0,
+        (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
+    return SourceItemInterpretation(records, interpreted_items, ItemFailure[])
 end
 
 """
@@ -258,7 +155,7 @@ function interpret_source_items(
         records=ItemRecord[],
     )
 
-    worker_count = min(max(1, Base.Threads.nthreads()), length(source_items))
+    worker_count = min(max(1, Base.Threads.nthreads() ÷ 2), length(source_items))
     work = Channel{Tuple{Int,eltype(source_items)}}(length(source_items))
     results = Channel{NamedTuple}(worker_count)
     for (index, source_item) in pairs(source_items)
@@ -283,7 +180,7 @@ function interpret_source_items(
                             interpretation=SourceItemInterpretation(
                                 get(cached_records_by_source_item, source_item_id_value,
                                     ItemRecord[]),
-                                Union{Nothing,AbstractDataItem}[],
+                                AbstractDataItem[],
                                 ItemFailure[],
                             ),
                             failure=nothing,
@@ -303,7 +200,7 @@ function interpret_source_items(
                                 source_item_id=source_item_id_value,
                                 interpretation=SourceItemInterpretation(
                                     ItemRecord[],
-                                    Union{Nothing,AbstractDataItem}[],
+                                    AbstractDataItem[],
                                     ItemFailure[],
                                 ),
                                 failure=nothing,
@@ -323,7 +220,7 @@ function interpret_source_items(
                             source_item_id=source_item_id_value,
                             interpretation=SourceItemInterpretation(
                                 ItemRecord[],
-                                Union{Nothing,AbstractDataItem}[],
+                                AbstractDataItem[],
                                 ItemFailure[],
                             ),
                             failure=ItemFailure(

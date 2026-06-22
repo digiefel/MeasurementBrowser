@@ -24,6 +24,19 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
             :busy, label, detail, true, fraction(progress.total_source_items), errors)
     elseif scan.state == :canceling
         return WorkspaceStatus(:busy, "Canceling", "Canceling…", true, nothing, errors)
+    elseif processing_work_running(workspace)
+        completed, total = lock(workspace.processing.lock) do
+            (workspace.processing.completed, workspace.processing.total)
+        end
+        progress = total > 0 ? Float32(clamp(completed / total, 0, 1)) : nothing
+        return WorkspaceStatus(
+            :busy,
+            "Caching",
+            @sprintf("Processing %d/%d items", completed, total),
+            true,
+            progress,
+            errors,
+        )
     elseif workspace.analysis.state == :analyzing
         analysis = workspace.analysis.progress
         detail = analysis.total_source_items > 0 ?

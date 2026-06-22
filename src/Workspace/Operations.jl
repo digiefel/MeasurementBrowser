@@ -17,6 +17,7 @@ function close_workspace!(workspace::Workspace)::Nothing
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
+    stop_processing_workers!(workspace)
     close_cache_db!(workspace.cache.db)
     close_source!(workspace.source)
     workspace.closed = true
@@ -97,6 +98,13 @@ cache_work_running(workspace::Workspace)::Bool =
 
 analysis_work_running(workspace::Workspace)::Bool =
     workspace.analysis.state in (:analyzing, :canceling)
+
+"""Whether any item is waiting for or currently running processing."""
+function processing_work_running(workspace::Workspace)::Bool
+    return lock(workspace.processing.lock) do
+        !isempty(workspace.processing.jobs)
+    end
+end
 
 """Keep a background task alive until workspace shutdown."""
 function track_task!(workspace::Workspace, task::Task)::Task
@@ -204,11 +212,8 @@ function scan_source!(
             kept_ids = Set{String}()
             record_batches = Vector{Vector{ItemRecord}}()
             data_batches = Vector{Vector{Any}}()
-            cache_batch_size = max(1, Base.Threads.nthreads())
-
-            # Each worker-sized batch commits independently. This bounds both loaded Julia data and
-            # DuckDB's transaction-owned write memory; an interrupted scan resumes from the source
-            # items already committed instead of discarding the whole rebuild.
+            # Each source item commits independently. The writer starts as soon as one interpretation
+            # finishes, so progress no longer waits for an arbitrary thread-sized batch.
             function flush_cache_batch!()::Nothing
                 isempty(record_batches) && return nothing
                 union!(
@@ -238,7 +243,7 @@ function scan_source!(
                         records = interpretation.records
                         data = Any[
                             item !== nothing && cacheable(item) ? item : nothing
-                            for item in interpretation.loaded_items
+                            for item in interpretation.interpreted_items
                         ]
                         wrote[] || put!(events, (
                             kind=:cache_writing,
@@ -247,7 +252,9 @@ function scan_source!(
                         wrote[] = true
                         push!(record_batches, records)
                         push!(data_batches, data)
-                        length(record_batches) >= cache_batch_size && flush_cache_batch!()
+                        flush_cache_batch!()
+                        enqueue_processing!(
+                            workspace, records, interpretation.interpreted_items)
                     end,
                     on_kept_source_item=(source_item_id::String) ->
                         push!(kept_ids, source_item_id),
@@ -261,6 +268,9 @@ function scan_source!(
             union!(written_ids, kept_ids)
             cache_hit = reuse_index !== nothing && source === reuse_index.source
             cache_hit || finalize_scan!(cachedb, source, written_ids)
+            for record in source.hierarchy.all_items
+                enqueue_processing!(workspace, record)
+            end
             sampling_profile = if capture_profile
                 result = Profiling.stop_sampling!()
                 sampling_running = false
@@ -345,9 +355,19 @@ function replace_item_index!(
     for node in values(hierarchy.index)
         union!(parameter_keys, keys(node.parameters))
     end
+    item_stats = Dict{String,Dict{Symbol,Any}}()
+    for item in hierarchy.all_items
+        previous = get(workspace.index.item_stats, item.id, nothing)
+        if previous !== nothing
+            item_stats[item.id] = previous
+        elseif !isempty(item.stats)
+            item_stats[item.id] = copy(item.stats)
+        end
+    end
     workspace.index = WorkspaceIndex(
         hierarchy,
         items,
+        item_stats,
         sort!(collect(parameter_keys); by=String),
         workspace.index.source,
         workspace.index.analysis_errors,
@@ -413,7 +433,11 @@ function start_analysis!(workspace::Workspace)::Nothing
                     isempty(node.items) && continue
                     try
                         items = AbstractDataItem[
-                            DataItem(record, nothing)
+                            DataItem(
+                                ItemRecord(record; stats=get(
+                                    workspace.index.item_stats, record.id, record.stats)),
+                                nothing,
+                            )
                             for record in node.items
                         ]
                         computed = collection_stats(
@@ -485,9 +509,8 @@ function apply_analysis!(
         error("Analysis belongs to $(source_id_value), not $(source_id(workspace.source))")
     changed = false
     for (id, computed) in item_stats
-        record = get(workspace.index.items, id, nothing)
-        record === nothing && continue
-        merge!(record.stats, metadata_dict(computed))
+        haskey(workspace.index.items, id) || continue
+        workspace.index.item_stats[id] = metadata_dict(computed)
         changed = true
     end
     for (path, computed) in collection_node_stats
@@ -548,7 +571,7 @@ function apply_source_scan!(
     identity = workspace.cache.identity
     workspace.index.analysis_errors = ProjectCacheIndex(identity, source).analysis_errors
     workspace.cache.status = status
-    analyze && start_analysis!(workspace)
+    analyze && (workspace.analysis.state = :pending)
     return nothing
 end
 
@@ -639,6 +662,19 @@ function poll_workspace!(workspace::Workspace)::Bool
             (index_changed |= append_items!(workspace, pending_items))
     end
 
+    processing_events = workspace.processing.events
+    while isready(processing_events)
+        event = take!(processing_events)
+        if event.kind == :stats
+            workspace.index.item_stats[event.item_id] = metadata_dict(event.stats)
+        elseif event.kind == :failure
+            workspace.index.analysis_errors[event.item_id] = event.message
+        else
+            error("Unknown processing event kind $(event.kind)")
+        end
+        index_changed = true
+    end
+
     analysis_events = workspace.analysis.events
     if analysis_events !== nothing
         while isready(analysis_events)
@@ -676,9 +712,13 @@ function poll_workspace!(workspace::Workspace)::Bool
         end
     end
 
+    workspace.analysis.state == :pending && !processing_work_running(workspace) &&
+        start_analysis!(workspace)
+
     # Refresh the watcher snapshot while work runs (progress advances without an index change) and for
     # the one frame after it stops; idle frames skip the rebuild entirely.
-    busy = source_scan_running(workspace) || analysis_work_running(workspace) ||
+    busy = source_scan_running(workspace) || processing_work_running(workspace) ||
+           analysis_work_running(workspace) ||
            cache_work_running(workspace)
     (index_changed || busy || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))

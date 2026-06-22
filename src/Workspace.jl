@@ -17,6 +17,7 @@ import ..Cache:
     finalize_scan!,
     load_cache_index,
     open_cache_db,
+    persist_item_failure!,
     persist_stats!,
     project_cache_identity,
     read_cached_item_data,
@@ -24,6 +25,7 @@ import ..Cache:
     set_cache_memory_limit!,
     with_reader,
     with_writer_transaction,
+    write_cached_item_data!,
     write_scan_identity!
 import ..ItemIndex:
     DataItem,
@@ -38,6 +40,7 @@ import ..ItemIndex:
     insert_item!,
     is_job_cancelled,
     metadata_dict,
+    interpret_source_item,
     scan_source,
     with_cancel
 import ..Projects:
@@ -46,12 +49,15 @@ import ..Projects:
     Project,
     close_source!,
     collection_stats,
+    compute_item_stats,
     cacheable,
     id,
     item_data,
-    load_data_item,
+    process,
     project_name,
     source_id,
+    source_item_id,
+    source_items,
     source_label
 
 """
@@ -101,9 +107,53 @@ The progressively populated item index for one open source.
 mutable struct WorkspaceIndex
     hierarchy::Hierarchy
     items::Dict{String,ItemRecord}
+    item_stats::Dict{String,Dict{Symbol,Any}}
     collection_parameter_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
+end
+
+"""One deduplicated processing request and the selected callers waiting for its result."""
+mutable struct ProcessingJob
+    record::ItemRecord
+    interpreted::Union{Nothing,AbstractDataItem}
+    state::Symbol
+    priority::Int
+    waiters::Vector{Channel{Any}}
+end
+
+"""Workspace-owned processing work; completed values are not retained after delivery."""
+mutable struct ProcessingQueue
+    lock::ReentrantLock
+    condition::Base.Threads.Condition
+    jobs::Dict{String,ProcessingJob}
+    selected::Vector{String}
+    background::Vector{String}
+    background_index::Int
+    source_locks::Dict{String,ReentrantLock}
+    events::Channel{NamedTuple}
+    workers::Vector{Task}
+    total::Int
+    completed::Int
+    closed::Bool
+end
+
+function ProcessingQueue()::ProcessingQueue
+    queue_lock = ReentrantLock()
+    return ProcessingQueue(
+        queue_lock,
+        Base.Threads.Condition(queue_lock),
+        Dict{String,ProcessingJob}(),
+        String[],
+        String[],
+        1,
+        Dict{String,ReentrantLock}(),
+        Channel{NamedTuple}(Inf),
+        Task[],
+        0,
+        0,
+        false,
+    )
 end
 
 """
@@ -123,53 +173,6 @@ mutable struct WorkspaceCache
     index::Union{Nothing,ProjectCacheIndex}
     status::Union{Nothing,ProjectCacheStatus}
     operation::Symbol
-end
-
-"""How many materialized items one workspace keeps resident before evicting the oldest."""
-const DEFAULT_ITEM_CACHE_CAPACITY = 256
-
-"""
-Bounded least-recently-used cache of materialized items, keyed by item id.
-
-Each entry stores the `(source_item_fingerprint, item_fingerprint)` it was loaded at, so a stale entry
-is rejected on read. Eviction is cheap: an evicted item is re-materialized from cached item data
-cache without re-reading the origin.
-"""
-mutable struct ItemCache
-    capacity::Int
-    entries::Dict{String,Tuple{Any,Any}}
-    order::Vector{String}
-end
-
-ItemCache(capacity::Integer=DEFAULT_ITEM_CACHE_CAPACITY)::ItemCache =
-    ItemCache(Int(capacity), Dict{String,Tuple{Any,Any}}(), String[])
-
-"""Mark `id` most-recently-used."""
-function _touch_item!(cache::ItemCache, id::String)::Nothing
-    index = findfirst(==(id), cache.order)
-    index === nothing || deleteat!(cache.order, index)
-    push!(cache.order, id)
-    return nothing
-end
-
-"""Return the cached `(fingerprint, item)` for `id`, marking it used, or `default` when absent."""
-function lookup_item(cache::ItemCache, id::String, default)
-    entry = get(cache.entries, id, nothing)
-    entry === nothing && return default
-    _touch_item!(cache, id)
-    return entry
-end
-
-"""Insert or refresh one cached item, evicting the least-recently-used entries past capacity."""
-function cache_item!(cache::ItemCache, id::String, fingerprint, item)
-    if !haskey(cache.entries, id)
-        while length(cache.order) >= cache.capacity && !isempty(cache.order)
-            delete!(cache.entries, popfirst!(cache.order))
-        end
-    end
-    cache.entries[id] = (fingerprint, item)
-    _touch_item!(cache, id)
-    return item
 end
 
 """
@@ -218,7 +221,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     cache_error::String
     sampling_profile::Union{Nothing,Profiling.SamplingProfile}
     sampling_active::Bool
-    loaded_items::ItemCache
+    processing::ProcessingQueue
     background_tasks::Vector{Task}
     status::WorkspaceStatus
     closed::Bool
@@ -234,12 +237,13 @@ function Workspace(
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_name(project), source)
     cache_db = open_cache_db(identity)
-    return Workspace(
+    workspace = Workspace(
         project,
         source,
         WorkspaceIndex(
             hierarchy,
             Dict{String,ItemRecord}(),
+            Dict{String,Dict{Symbol,Any}}(),
             Symbol[],
             nothing,
             Dict{String,String}(),
@@ -252,11 +256,13 @@ function Workspace(
         "",
         nothing,
         false,
-        ItemCache(),
+        ProcessingQueue(),
         Task[],
         WorkspaceStatus(),
         false,
     )
+    start_processing_workers!(workspace)
+    return workspace
 end
 
 # ---------------------------------------------------------------------------
@@ -296,6 +302,7 @@ end
 include("Workspace/Operations.jl")
 include("Workspace/Status.jl")
 include("Workspace/DataAccess.jl")
+include("Workspace/Processing.jl")
 
 Profiling.register_instrumented!(@__MODULE__)
 

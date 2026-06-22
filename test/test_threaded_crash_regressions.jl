@@ -6,7 +6,10 @@ function poll_to_done(workspace; timeout=20)
     deadline = time() + timeout
     while time() < deadline
         MeasurementBrowser.Workspace.poll_workspace!(workspace)
-        workspace.scan.state in (:done, :unchanged) && return nothing
+        scan_done = workspace.scan.state in (:done, :unchanged)
+        processing_done = !MeasurementBrowser.Workspace.processing_work_running(workspace)
+        analysis_done = workspace.analysis.state in (:idle, :done, :error)
+        scan_done && processing_done && analysis_done && return nothing
         sleep(0.01)
     end
     return nothing
@@ -72,8 +75,9 @@ end
             records = collect(values(workspace.index.items))
             @test all(startswith(String(record.parameters[:wafer]), "W") for record in records)
             @test all(record.parameters[:owner] == "item" for record in records)
-            @test all(record.stats[:bytes] > 0 for record in records)
-            @test all(record.stats[:owner] == "item" for record in records)
+            @test all(workspace.index.item_stats[record.id][:bytes] > 0 for record in records)
+            @test all(
+                workspace.index.item_stats[record.id][:owner] == "item" for record in records)
         finally
             MeasurementBrowser.close_workspace!(workspace)
         end
@@ -110,17 +114,23 @@ end
             end,
         )
 
-        scan = scan_test_source(project, root)
-        records = scan.hierarchy.all_items
-        @test [record.parameters[:index] for record in records] == collect(1:80)
-        @test length(scan.analysis_failures) == 2
-        @test any(occursin("process failure 17", failure.message)
-            for failure in scan.analysis_failures)
-        @test any(occursin("stats failure 23", failure.message)
-            for failure in scan.analysis_failures)
-        @test !haskey(records[17].stats, :value)
-        @test !haskey(records[23].stats, :value)
-        @test records[80].stats[:value] == 160
+        workspace = MeasurementBrowser.open_workspace(
+            project, MeasurementBrowser.DirectorySource(root))
+        try
+            poll_to_done(workspace)
+            records = workspace.index.hierarchy.all_items
+            @test [record.parameters[:index] for record in records] == collect(1:80)
+            @test length(workspace.index.analysis_errors) == 2
+            @test any(occursin("process failure 17", message)
+                for message in values(workspace.index.analysis_errors))
+            @test any(occursin("stats failure 23", message)
+                for message in values(workspace.index.analysis_errors))
+            @test !haskey(workspace.index.item_stats, records[17].id)
+            @test !haskey(workspace.index.item_stats, records[23].id)
+            @test workspace.index.item_stats[records[80].id][:value] == 160
+        finally
+            MeasurementBrowser.close_workspace!(workspace)
+        end
     end
 end
 

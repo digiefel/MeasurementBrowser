@@ -18,6 +18,7 @@ import ..Projects:
     finish_source_profile!,
     has_collection_parameters,
     id,
+    item_data,
     kind,
     kind_label,
     load_data_item,
