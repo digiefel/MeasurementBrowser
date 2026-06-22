@@ -48,12 +48,16 @@ function commit_processed_item!(
     end
     if batch !== nothing
         failure = try
+            write_started = time_ns()
             write_cached_item_data!(
                 workspace.cache.db,
                 ItemRecord[pending.record for pending in batch],
                 Any[pending.item for pending in batch];
                 stage=:processed,
             )
+            record_cache_phase!(
+                workspace.monitor.processed_write_ns,
+                workspace.monitor.processed_writes, write_started)
             nothing
         catch error
             CapturedException(error, catch_backtrace())
@@ -215,11 +219,17 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
     try
         merge!(item_stats, metadata_dict(compute_item_stats(
             workspace.project, workspace.source, view_item)))
-        isempty(item_stats) || persist_stats!(
-            workspace.cache.db,
-            Dict(job.record.id => item_stats),
-            Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
-        )
+        if !isempty(item_stats)
+            stats_started = time_ns()
+            persist_stats!(
+                workspace.cache.db,
+                Dict(job.record.id => item_stats),
+                Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
+            )
+            record_cache_phase!(
+                workspace.monitor.stats_write_ns,
+                workspace.monitor.stats_writes, stats_started)
+        end
         persist_item_failure!(workspace.cache.db, job.record, nothing)
         put!(workspace.processing.events, (
             kind=:stats,

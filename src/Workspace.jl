@@ -53,6 +53,7 @@ import ..Projects:
     item_data,
     process,
     project_name,
+    scan_profile_summary,
     source_id,
     source_item_id,
     source_items,
@@ -213,6 +214,8 @@ end
 WorkspaceStatus() =
     WorkspaceStatus(:none, "Opening", "Opening the source…", true, nothing, Pair{String,String}[])
 
+include("Workspace/BuildMonitor.jl")
+
 """
 One open project/source pair and all package-managed state belonging to it.
 """
@@ -232,6 +235,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     sampling_active::Bool
     processing::ProcessingQueue
     background_tasks::Vector{Task}
+    monitor::BuildMonitor
     status::WorkspaceStatus
     closed::Bool
 end
@@ -267,6 +271,7 @@ function Workspace(
         false,
         ProcessingQueue(),
         Task[],
+        BuildMonitor(),
         WorkspaceStatus(),
         false,
     )

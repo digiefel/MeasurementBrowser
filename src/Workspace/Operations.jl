@@ -160,6 +160,7 @@ function scan_source!(
     workspace.cache_state = :loading
     workspace.cache_error = ""
     workspace.cache.operation = rebuild ? :rebuild : :update
+    begin_build_monitor!(workspace.monitor, workspace.cache.operation)
     # Detach the previous scan so this one streams into a fresh hierarchy: progressive results update
     # the displayed tree live while any still-finishing analysis from the previous scan keeps reading
     # its own, now-detached hierarchy — no shared mutable state, no race. Errors reset so stale ones
@@ -215,10 +216,12 @@ function scan_source!(
             processing_batches = Vector{Vector{AbstractDataItem}}()
             function flush_cache_batch!()::Nothing
                 isempty(record_batches) && return nothing
-                union!(
-                    written_ids,
-                    reconcile_source_items!(cachedb, record_batches, data_batches),
-                )
+                write_started = time_ns()
+                reconciled = reconcile_source_items!(cachedb, record_batches, data_batches)
+                record_cache_phase!(
+                    workspace.monitor.interpreted_write_ns,
+                    workspace.monitor.interpreted_writes, write_started)
+                union!(written_ids, reconciled)
                 for (records, items) in zip(record_batches, processing_batches)
                     enqueue_processing!(workspace, records, items)
                 end
@@ -733,6 +736,11 @@ function poll_workspace!(workspace::Workspace)::Bool
     busy = source_scan_running(workspace) || processing_work_running(workspace) ||
            analysis_work_running(workspace) ||
            cache_work_running(workspace)
+    if busy
+        maybe_report_build!(workspace)
+    elseif workspace.monitor.active && workspace.analysis.state != :pending
+        finish_build_monitor!(workspace)
+    end
     (index_changed || busy || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))
     return index_changed
