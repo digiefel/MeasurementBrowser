@@ -36,7 +36,6 @@ import ..ItemIndex:
     SourceScan,
     apply_collection_parameters!,
     check_cancel,
-    _effective_loaded_item,
     insert_item!,
     is_job_cancelled,
     metadata_dict,
@@ -133,6 +132,7 @@ mutable struct ProcessingQueue
     source_locks::Dict{String,ReentrantLock}
     events::Channel{NamedTuple}
     workers::Vector{Task}
+    limit::Int
     total::Int
     completed::Int
     closed::Bool
@@ -150,6 +150,7 @@ function ProcessingQueue()::ProcessingQueue
         Dict{String,ReentrantLock}(),
         Channel{NamedTuple}(Inf),
         Task[],
+        max(4, 2 * Base.Threads.nthreads()),
         0,
         0,
         false,

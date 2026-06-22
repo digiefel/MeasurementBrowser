@@ -569,7 +569,15 @@ function apply_source_scan!(
     workspace.index.source = source
     replace_item_index!(workspace, source.hierarchy)
     identity = workspace.cache.identity
-    workspace.index.analysis_errors = ProjectCacheIndex(identity, source).analysis_errors
+    source_errors = ProjectCacheIndex(identity, source).analysis_errors
+    item_ids = keys(workspace.index.items)
+    processing_errors = Dict(
+        id => message
+        for (id, message) in workspace.index.analysis_errors
+        if id in item_ids
+    )
+    merge!(source_errors, processing_errors)
+    workspace.index.analysis_errors = source_errors
     workspace.cache.status = status
     analyze && (workspace.analysis.state = :pending)
     return nothing
@@ -667,6 +675,7 @@ function poll_workspace!(workspace::Workspace)::Bool
         event = take!(processing_events)
         if event.kind == :stats
             workspace.index.item_stats[event.item_id] = metadata_dict(event.stats)
+            delete!(workspace.index.analysis_errors, event.item_id)
         elseif event.kind == :failure
             workspace.index.analysis_errors[event.item_id] = event.message
         else

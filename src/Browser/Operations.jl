@@ -59,7 +59,7 @@ function _attach_workspace!(
     previous_workspace = state.workspace
     previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
         close_workspace!(previous_workspace)
-    state.plots = PlotState(debug=state.plots.debug)
+    state.plots = PlotState()
     state.workspace = workspace
     view = isempty(source_root) ? PersistedProjectView() : _load_project_view(source_root)
     project = project_name(workspace.project)

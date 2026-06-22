@@ -61,6 +61,11 @@ function enqueue_processing!(
     waiter = selected ? Channel{Any}(1) : nothing
     lock(queue.lock) do
         queue.closed && error("Cannot queue processing after the workspace has closed")
+        while !selected && length(queue.jobs) >= queue.limit &&
+              !haskey(queue.jobs, record.id) && !queue.closed
+            wait(queue.condition)
+        end
+        queue.closed && error("Cannot queue processing after the workspace has closed")
         job = get(queue.jobs, record.id, nothing)
         if job === nothing
             job = ProcessingJob(
@@ -213,6 +218,14 @@ function processing_worker!(workspace::Workspace)::Nothing
             )
             ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
         end
+        if result.failure !== nothing
+            put!(queue.events, (
+                kind=:failure,
+                item_id=job.record.id,
+                source_item_id=job.record.source_item_id,
+                message="process: " * sprint(showerror, result.failure.ex),
+            ))
+        end
         waiters = lock(queue.lock) do
             delete!(queue.jobs, job.record.id)
             queue.completed += 1
@@ -222,14 +235,6 @@ function processing_worker!(workspace::Workspace)::Nothing
         for waiter in waiters
             put!(waiter, result)
         end
-        if result.failure !== nothing
-            put!(queue.events, (
-                kind=:failure,
-                item_id=job.record.id,
-                source_item_id=job.record.source_item_id,
-                message="process: " * sprint(showerror, result.failure.ex),
-            ))
-        end
     end
 end
 
@@ -237,9 +242,9 @@ end
 function request_processed_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
-)::Vector{Any}
+)::Vector{AbstractDataItem}
     cached = read_cached_item_data(workspace.cache.db, records; stage=:processed)
-    loaded = Vector{Any}(undef, length(records))
+    loaded = Vector{AbstractDataItem}(undef, length(records))
     waiters = Tuple{Int,Channel{Any}}[]
     for (position, record) in pairs(records)
         item = cached[position]
@@ -247,6 +252,9 @@ function request_processed_items(
             waiter = enqueue_processing!(workspace, record; selected=true)
             push!(waiters, (position, waiter::Channel{Any}))
         else
+            item isa AbstractDataItem || error(
+                "Processed cache returned $(typeof(item)) for item '$(record.id)'",
+            )
             stats = get(workspace.index.item_stats, record.id, record.stats)
             loaded[position] = DataItem(
                 ItemRecord(record; stats=stats),
@@ -257,7 +265,7 @@ function request_processed_items(
     for (position, waiter) in waiters
         result = take!(waiter)::ProcessingResult
         result.failure === nothing || throw(result.failure)
-        loaded[position] = result.item
+        loaded[position] = result.item::AbstractDataItem
     end
     return loaded
 end

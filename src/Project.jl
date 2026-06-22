@@ -404,26 +404,6 @@ function Projects.data_items(
     return items
 end
 
-function Projects.load_data_item(
-    project::Project,
-    source::AbstractDataSource,
-    source_item_id::AbstractString,
-    requested_id::AbstractString,
-)::AbstractDataItem
-    file = index_source_file(source_item_id)
-    recipe = _detect_recipe(project, file)
-    recipe === nothing && error("No registered item recipe for source item $(source_item_id)")
-    raw = recipe.read(file)
-    items = AbstractDataItem[
-        _normalize_entry(recipe, source_item_id, item)
-        for item in recipe.entries(file, raw)::Vector{<:AbstractDataItem}
-    ]
-    index = findfirst(item -> id(item) == requested_id, items)
-    index === nothing &&
-        error("Source item $(source_item_id) did not produce item id $(requested_id)")
-    return Projects.process(project, source, items[index])
-end
-
 """Interpret one physical file through the high-level callback adapter."""
 function items_for_file(
     project::Project,

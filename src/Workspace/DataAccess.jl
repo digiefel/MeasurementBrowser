@@ -7,7 +7,7 @@ create one whose interpreted-data dependency may use DuckDB or the normal source
 function materialize_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
-)::Vector{Any}
+)::Vector{AbstractDataItem}
     return request_processed_items(workspace, records)
 end
 

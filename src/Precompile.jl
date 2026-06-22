@@ -69,8 +69,9 @@ using DataFrames: DataFrame, nrow
             workspace = Workspace.Workspace(project, DirectorySource(fixture_dir))
             read_item_data(workspace, records)
             plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
-            figure = setup_plot(workspace, plot_kind, records)
-            plot_data!(workspace, plot_kind, records, figure)
+            items = Workspace.materialize_items(workspace, records)
+            figure = setup_plot(workspace, plot_kind, items)
+            plot_data!(workspace, plot_kind, items, figure)
         finally
             workspace === nothing || close_workspace!(workspace)
             popfirst!(DEPOT_PATH)

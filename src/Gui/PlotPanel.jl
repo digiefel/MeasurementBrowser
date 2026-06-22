@@ -10,7 +10,6 @@ using ..ItemIndex: ItemRecord
 import ..Workspace
 using ..Visualization:
     PlotKind,
-    debug_plot,
     plot_data!,
     plot_kind_label,
     plot_kind_name,
@@ -45,19 +44,15 @@ function draw_plot_view!(
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
     source = workspace.source
-    plots = state.plots
     started_ns = time_ns()
     draw_alloc = 0
     try
         figure = nothing
         draw_alloc = @allocated begin
-            figure = if plots.debug
-                debug_plot(workspace, Workspace.materialize_items(workspace, records); plot_kind)
-            else
-                result = setup_plot(workspace, plot_kind, records)
-                plot_data!(workspace, plot_kind, records, result)
-                result
-            end
+            items = Workspace.materialize_items(workspace, records)
+            result = setup_plot(workspace, plot_kind, items)
+            plot_data!(workspace, plot_kind, items, result)
+            figure = result
         end
         figure === nothing && error("Plot renderer returned no figure.")
         _append_perf_sample!(
@@ -68,7 +63,6 @@ function draw_plot_view!(
         )
         view.figure = figure
         view.last_key = plot_key
-        view.debug = plots.debug
         view.error = ""
     catch err
         bt = catch_backtrace()
@@ -80,7 +74,6 @@ function draw_plot_view!(
         )
         view.figure = nothing
         view.last_key = plot_key
-        view.debug = plots.debug
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
         view.error = "Plot failed: $summary. See the console for full details."
         item_context = join(
@@ -212,11 +205,6 @@ function render_plot_body!(
     status::Symbol,
 )::Nothing
     plots = state.plots
-    if plots.debug
-        ig.TextColored((0.2, 0.8, 0.2, 1.0), "Debug Plot Mode")
-        ig.SameLine()
-        _helpmarker("Debug mode bypasses cache and reads source files directly.")
-    end
 
     if view.figure !== nothing
         makie_id = view === plots.main ?
@@ -306,7 +294,6 @@ function render_plot_view!(
             view.id,
             plot_kind_name(view.plot_kind),
             [record.id for record in records],
-            plots.debug,
         )
         view.last_key == plot_key ||
             draw_plot_view!(
@@ -376,7 +363,6 @@ function render_additional_plot_windows(state::BrowserState)::Nothing
         open = Ref(true)
         window_id = replace(view.id, '/' => '_')
         if ig.Begin("Plot: $(view.title)###plot_window_$window_id", open)
-            view.debug == plots.debug || (view.last_key = nothing)
             render_plot_view!(state, view, selected)
         end
         ig.End()

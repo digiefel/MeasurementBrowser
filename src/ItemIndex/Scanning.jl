@@ -55,23 +55,6 @@ function source_unchanged(
     return cached.source_item_fingerprints == fingerprints
 end
 
-"""Apply indexed parameters/stats to a package `DataItem`, preserving custom item subtypes."""
-function _effective_loaded_item(
-    record::ItemRecord,
-    item::AbstractDataItem,
-)::AbstractDataItem
-    item isa DataItem || return item
-    return DataItem(
-        item.id,
-        item.label,
-        item.kind,
-        item.collection,
-        record.parameters,
-        record.stats,
-        item.data,
-    )
-end
-
 """
 Interpret every logical data item produced by one source item.
 

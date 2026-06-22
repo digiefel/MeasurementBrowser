@@ -172,9 +172,6 @@ source_item_timestamp(::AbstractDataSourceItem) = nothing
 """Interpret one source item into lightweight logical data items."""
 function data_items end
 
-"""Reload one logical data item with its data attached."""
-function load_data_item end
-
 # ---------------------------------------------------------------------------
 # The AbstractDataItem contract
 #

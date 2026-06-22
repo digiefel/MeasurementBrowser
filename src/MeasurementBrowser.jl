@@ -29,7 +29,6 @@ using .Projects:
     id,
     item_data,
     item_label,
-    load_data_item,
     open_source,
     parameters,
     source_id,
@@ -98,7 +97,6 @@ using .Visualization:
     plot_kinds,
     registered_plot_kinds
 import .Visualization:
-    debug_plot,
     plot_data!,
     setup_plot
 

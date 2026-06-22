@@ -396,11 +396,6 @@ function render_menu_bar(state::BrowserState)::Nothing
             )
                 state.show_performance_window = !state.show_performance_window
             end
-            plots = state.plots
-            if ig.MenuItem("Debug Plot Mode", C_NULL, plots.debug)
-                plots.debug = !plots.debug
-                clear_plot_views!(plots)
-            end
             ig.EndMenu()
         end
         ig.EndMenuBar()
