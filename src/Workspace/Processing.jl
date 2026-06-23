@@ -185,14 +185,21 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
     cached === nothing || return cached
 
     interpreted = interpreted_item(workspace, job)
+    process_started = time_ns()
     processed = process(workspace.project, workspace.source, interpreted)
+    record_scan_phase!(workspace.project, job.record.source_item_id, job.record.kind,
+        :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
     view_item = DataItem(job.record, item_data(processed))
     commit_processed_item!(workspace, job.record, cacheable(processed) ? view_item : nothing)
 
     item_stats = copy(job.record.stats)
     try
-        merge!(item_stats, metadata_dict(compute_item_stats(
-            workspace.project, workspace.source, view_item)))
+        stats_started = time_ns()
+        computed = metadata_dict(compute_item_stats(
+            workspace.project, workspace.source, view_item))
+        record_scan_phase!(workspace.project, job.record.source_item_id, job.record.kind,
+            :stats, (time_ns() - stats_started) / 1e9, Base.Threads.threadid())
+        merge!(item_stats, computed)
         if !isempty(item_stats)
             stats_started = time_ns()
             persist_stats!(

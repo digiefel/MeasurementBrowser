@@ -118,27 +118,28 @@ function maybe_report_build!(workspace)::Nothing
 
     rows = scan_profile_summary(workspace.project)
     if !isempty(rows)
-        @printf(io, "   %-14s %5s %8s %8s %8s %8s   (avg/item)\n",
-            "kind", "n", "read", "entries", "process", "stats")
+        # read/entries run once per source file (scan); process/stats run once per data item (analysis).
+        @printf(io, "   %-13s %6s %8s %9s %9s %8s\n",
+            "kind", "items", "read/f", "entries/f", "process/i", "stats/i")
         for row in Iterators.take(rows, 6)
-            n = max(row.source_items, 1)
-            @printf(io, "   %-14s %5d %7.1fms %6.1fms %6.1fms %6.1fms\n",
-                String(row.kind), row.source_items,
-                1e3 * row.read_seconds / n, 1e3 * row.entries_seconds / n,
-                1e3 * row.process_seconds / n, 1e3 * row.stats_seconds / n)
+            files = max(row.source_items, 1)
+            items = max(row.items, 1)
+            @printf(io, "   %-13s %6d %6.1fms %7.1fms %7.1fms %6.1fms\n",
+                String(row.kind), row.items,
+                1e3 * row.read_seconds / files, 1e3 * row.entries_seconds / files,
+                1e3 * row.process_seconds / items, 1e3 * row.stats_seconds / items)
         end
     end
 
-    iw_s = monitor.interpreted_write_ns[] / 1e9
-    pw_s = monitor.processed_write_ns[] / 1e9
-    sw_s = monitor.stats_write_ns[] / 1e9
-    # Summed across worker threads, so the total can exceed wall-clock; a ratio above ~1× means the
-    # cache write phase is saturating more than one thread.
-    @printf(io, "   cache I/O (Σ worker-time): interp %.0fms×%d=%.1fs · processed %.0fms×%d=%.1fs · stats %.1fms×%d=%.1fs  (%.1f× elapsed)\n",
-        _avg_ms(monitor.interpreted_write_ns, monitor.interpreted_writes), monitor.interpreted_writes[], iw_s,
-        _avg_ms(monitor.processed_write_ns, monitor.processed_writes), monitor.processed_writes[], pw_s,
-        _avg_ms(monitor.stats_write_ns, monitor.stats_writes), monitor.stats_writes[], sw_s,
-        elapsed > 0 ? (iw_s + pw_s + sw_s) / elapsed : 0.0)
+    # The single writer is shared by the scan (interpreted) and analysis (processed/stats). Busy is the
+    # real serialized write work; wait is how long threads blocked for their turn. Busy near elapsed
+    # with large wait means the one writer is the bottleneck.
+    busy_s = workspace.cache.db.writer_busy_ns[] / 1e9
+    wait_s = workspace.cache.db.writer_wait_ns[] / 1e9
+    @printf(io, "   writer: busy %.1fs (%.0f%% of elapsed) · threads waited %.0fs total · interp %.1fs processed %.1fs stats %.1fs\n",
+        busy_s, elapsed > 0 ? 100 * busy_s / elapsed : 0.0, wait_s,
+        monitor.interpreted_write_ns[] / 1e9, monitor.processed_write_ns[] / 1e9,
+        monitor.stats_write_ns[] / 1e9)
     flush(io)
 
     monitor.last_report_at = now
@@ -157,12 +158,12 @@ function finish_build_monitor!(workspace)::Nothing
     progress = workspace.scan.progress
     monitor.peak_rss = max(monitor.peak_rss, Int64(Sys.maxrss()))
     rate = elapsed > 0 ? progress.total_source_items / elapsed : 0.0
+    busy_s = workspace.cache.db.writer_busy_ns[] / 1e9
     println(monitor.io,
         "✓ build done in $(_fmt_eta(elapsed))  ·  $(progress.total_source_items) source items, " *
-        "$(progress.loaded_items) data items ($(@sprintf("%.1f", rate)) src/s)  ·  cache I/O interp " *
-        "$(@sprintf("%.1f", monitor.interpreted_write_ns[] / 1e9))s processed " *
-        "$(@sprintf("%.1f", monitor.processed_write_ns[] / 1e9))s stats " *
-        "$(@sprintf("%.1f", monitor.stats_write_ns[] / 1e9))s  ·  RSS peak $(_fmt_bytes(monitor.peak_rss))")
+        "$(progress.loaded_items) data items ($(@sprintf("%.1f", rate)) src/s)  ·  writer busy " *
+        "$(@sprintf("%.1f", busy_s))s ($(elapsed > 0 ? round(Int, 100 * busy_s / elapsed) : 0)% of elapsed) " *
+        "· RSS peak $(_fmt_bytes(monitor.peak_rss))")
     flush(monitor.io)
     return nothing
 end

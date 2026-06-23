@@ -53,6 +53,7 @@ import ..Projects:
     item_data,
     process,
     project_name,
+    record_scan_phase!,
     scan_profile_summary,
     source_id,
     source_item_id,

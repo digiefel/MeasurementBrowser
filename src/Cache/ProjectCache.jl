@@ -155,6 +155,10 @@ mutable struct CacheDB
     writer_lock::ReentrantLock
     reader::DuckDB.Connection
     reader_lock::ReentrantLock
+    # Time threads spend waiting for the single writer lock vs. holding it doing work. When wait
+    # dominates and busy approaches wall-clock, the one serialized writer is the bottleneck.
+    writer_wait_ns::Base.Threads.Atomic{Int64}
+    writer_busy_ns::Base.Threads.Atomic{Int64}
 end
 
 """
@@ -203,7 +207,8 @@ function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
         end
         writer = DBInterface.connect(db)
         reader = DBInterface.connect(db)
-        return CacheDB(identity, db, writer, ReentrantLock(), reader, ReentrantLock())
+        return CacheDB(identity, db, writer, ReentrantLock(), reader, ReentrantLock(),
+            Base.Threads.Atomic{Int64}(0), Base.Threads.Atomic{Int64}(0))
     catch
         DBInterface.close!(db)
         rethrow()
@@ -258,8 +263,15 @@ end
 
 """Run `work` on the persistent writer connection, serialized against other writers."""
 function with_writer(work::Function, cachedb::CacheDB)::Any
+    requested = time_ns()
     return lock(cachedb.writer_lock) do
-        work(cachedb.writer)
+        acquired = time_ns()
+        Base.Threads.atomic_add!(cachedb.writer_wait_ns, Int64(acquired - requested))
+        try
+            return work(cachedb.writer)
+        finally
+            Base.Threads.atomic_add!(cachedb.writer_busy_ns, Int64(time_ns() - acquired))
+        end
     end
 end
 
@@ -270,7 +282,10 @@ Large scans call this once per bounded source-item batch so DuckDB can release t
 write memory between batches.
 """
 function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
+    requested = time_ns()
     return lock(cachedb.writer_lock) do
+        acquired = time_ns()
+        Base.Threads.atomic_add!(cachedb.writer_wait_ns, Int64(acquired - requested))
         connection = cachedb.writer
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
@@ -280,6 +295,8 @@ function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
         catch
             DBInterface.execute(connection, "ROLLBACK")
             rethrow()
+        finally
+            Base.Threads.atomic_add!(cachedb.writer_busy_ns, Int64(time_ns() - acquired))
         end
     end
 end

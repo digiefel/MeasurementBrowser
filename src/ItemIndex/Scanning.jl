@@ -80,7 +80,7 @@ function interpret_source_item(
     catch
         finish_source_profile!(
             project, source_item_id_value, source_item_label_value, source_item_path_value,
-            :unmatched, 0, 0.0, 0.0,
+            :unmatched, 0,
             (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
         rethrow()
     end
@@ -101,7 +101,7 @@ function interpret_source_item(
     end
     finish_source_profile!(
         project, source_item_id_value, source_item_label_value, source_item_path_value,
-        source_kind, item_count, 0.0, 0.0,
+        source_kind, item_count,
         (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
     return SourceItemInterpretation(records, interpreted_items, ItemFailure[])
 end

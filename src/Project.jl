@@ -126,6 +126,8 @@ function Projects.record_scan_phase!(
         phase === :detect ? (entry.detect_seconds += seconds) :
         phase === :read ? (entry.read_seconds += seconds) :
         phase === :entries ? (entry.entries_seconds += seconds) :
+        phase === :process ? (entry.process_seconds += seconds) :
+        phase === :stats ? (entry.stats_seconds += seconds) :
         error("Unknown scan timing phase: $phase")
         push!(entry.thread_ids, thread_id)
     end
@@ -139,8 +141,6 @@ function Projects.finish_source_profile!(
     source_item_path::Union{Nothing,String},
     kind::Symbol,
     item_count::Int,
-    process_seconds::Float64,
-    stats_seconds::Float64,
     total_seconds::Float64,
     thread_ids::Set{Int},
 )::Nothing
@@ -150,8 +150,8 @@ function Projects.finish_source_profile!(
         entry.source_item_path = source_item_path
         entry.kind = kind
         entry.item_count = item_count
-        entry.process_seconds = process_seconds
-        entry.stats_seconds = stats_seconds
+        # process_seconds and stats_seconds are accumulated separately during analysis via
+        # record_scan_phase!, so finish (which runs at scan time) must not overwrite them.
         entry.total_seconds = total_seconds
         union!(entry.thread_ids, thread_ids)
     end
