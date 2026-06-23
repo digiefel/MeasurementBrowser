@@ -295,10 +295,11 @@ function _write_dataframe_group!(
     item_expression = length(entries) == 1 ? "? AS __mb_item_id" :
         "$(_quote_identifier(item_column)) AS __mb_item_id"
     operation = exists ? "INSERT INTO $table" : "CREATE TABLE $table AS"
+    view_name = string(ITEM_DATA_VIEW, "_", Base.Threads.atomic_add!(ITEM_DATA_VIEW_COUNTER, 1))
     registered = false
     @timeit_debug TIMER "cache/write_dataframe" begin
         try
-            DuckDB.register_data_frame(connection, staged, ITEM_DATA_VIEW)
+            DuckDB.register_data_frame(connection, staged, view_name)
             registered = true
             statement = DBInterface.prepare(connection, """
                 $operation
@@ -306,7 +307,7 @@ function _write_dataframe_group!(
                     $item_expression,
                     $(_quote_identifier(row_column))::BIGINT AS __mb_row,
                     $source_columns
-                FROM $(_quote_identifier(ITEM_DATA_VIEW))
+                FROM $(_quote_identifier(view_name))
             """)
             if length(entries) == 1
                 DBInterface.execute(statement, (first_entry.record.id,))
@@ -314,7 +315,15 @@ function _write_dataframe_group!(
                 DBInterface.execute(statement)
             end
         finally
-            registered && DuckDB.unregister_data_frame(connection, ITEM_DATA_VIEW)
+            # If the transaction aborted (e.g. a write-write conflict on the shared table), the view's
+            # CREATE is rolled back with it and this DROP would itself throw "transaction is aborted",
+            # masking the original error and defeating the retry. Cleanup must never mask the cause.
+            if registered
+                try
+                    DuckDB.unregister_data_frame(connection, view_name)
+                catch
+                end
+            end
         end
     end
     if !exists
@@ -405,7 +414,12 @@ function _write_cached_item_data!(
             end
             DuckDB.flush(appender)
         finally
-            DuckDB.close(appender)
+            # Closing flushes; on an already-aborted transaction that itself throws and would mask the
+            # real error (see _write_dataframe_group!). The rollback discards the appended rows anyway.
+            try
+                DuckDB.close(appender)
+            catch
+            end
         end
     end
     return nothing
@@ -713,15 +727,8 @@ function write_cached_item_data!(
     length(items) == length(data) ||
         throw(DimensionMismatch("items and data must have equal lengths"))
     isempty(items) && return nothing
-    @timeit_debug TIMER "cache/write_item_data" with_writer(cachedb) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            _write_cached_item_data!(connection, items, data, stage)
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
+    @timeit_debug TIMER "cache/write_item_data" with_writer_transaction(cachedb) do connection
+        _write_cached_item_data!(connection, items, data, stage)
     end
     return nothing
 end
