@@ -115,7 +115,6 @@ end
 """One deduplicated processing request and the selected callers waiting for its result."""
 mutable struct ProcessingJob
     record::ItemRecord
-    interpreted::Union{Nothing,AbstractDataItem}
     state::Symbol
     priority::Int
     waiters::Vector{Channel{Any}}
@@ -140,7 +139,6 @@ mutable struct ProcessingQueue
     events::Channel{NamedTuple}
     workers::Vector{Task}
     pending_writes::Vector{ProcessedWriteRequest}
-    limit::Int
     total::Int
     completed::Int
     closed::Bool
@@ -159,7 +157,6 @@ function ProcessingQueue()::ProcessingQueue
         Channel{NamedTuple}(Inf),
         Task[],
         ProcessedWriteRequest[],
-        max(4, 2 * Base.Threads.nthreads()),
         0,
         0,
         false,

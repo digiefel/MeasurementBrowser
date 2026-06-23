@@ -96,60 +96,35 @@ function take_processing_job!(queue::ProcessingQueue)::Union{Nothing,ProcessingJ
     end
 end
 
-"""Queue one item once, optionally promoting it and attaching a selected waiter."""
+"""
+Queue one item once, optionally promoting it and attaching a selected waiter.
+
+The queue is unbounded and this never blocks: it holds only data-less records, so producing work
+cannot stall the upstream scan. Processing reads each item's interpreted data back from the cache.
+"""
 function enqueue_processing!(
     workspace::Workspace,
-    record::ItemRecord,
-    interpreted::Union{Nothing,AbstractDataItem}=nothing;
+    record::ItemRecord;
     selected::Bool=false,
 )::Union{Nothing,Channel{Any}}
     queue = workspace.processing
     waiter = selected ? Channel{Any}(1) : nothing
     lock(queue.lock) do
         queue.closed && error("Cannot queue processing after the workspace has closed")
-        while !selected && length(queue.jobs) >= queue.limit &&
-              !haskey(queue.jobs, record.id) && !queue.closed
-            wait(queue.condition)
-        end
-        queue.closed && error("Cannot queue processing after the workspace has closed")
         job = get(queue.jobs, record.id, nothing)
         if job === nothing
-            job = ProcessingJob(
-                record,
-                interpreted,
-                :waiting,
-                selected ? 1 : 0,
-                Channel{Any}[],
-            )
+            job = ProcessingJob(record, :waiting, selected ? 1 : 0, Channel{Any}[])
             queue.jobs[record.id] = job
             queue.total += 1
             push!(selected ? queue.selected : queue.background, record.id)
-        else
-            job.interpreted === nothing && interpreted !== nothing &&
-                (job.interpreted = interpreted)
-            if selected && job.state == :waiting && job.priority == 0
-                job.priority = 1
-                push!(queue.selected, record.id)
-            end
+        elseif selected && job.state == :waiting && job.priority == 0
+            job.priority = 1
+            push!(queue.selected, record.id)
         end
         waiter === nothing || push!(job.waiters, waiter)
         notify(queue.condition)
     end
     return waiter
-end
-
-"""Queue aligned interpreted items for background processing."""
-function enqueue_processing!(
-    workspace::Workspace,
-    records::Vector{ItemRecord},
-    interpreted_items::Vector{<:AbstractDataItem},
-)::Nothing
-    length(records) == length(interpreted_items) ||
-        throw(DimensionMismatch("records and interpreted items must have equal lengths"))
-    for (record, interpreted) in zip(records, interpreted_items)
-        enqueue_processing!(workspace, record, interpreted)
-    end
-    return nothing
 end
 
 """Return the lock that deduplicates source fallback for one source item."""
@@ -196,9 +171,8 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     end
 end
 
-"""Load interpreted data from the job, DuckDB, or the shared source fallback."""
+"""Load interpreted data from DuckDB, or the shared source fallback."""
 function interpreted_item(workspace::Workspace, job::ProcessingJob)::AbstractDataItem
-    job.interpreted === nothing || return job.interpreted
     cached = only(read_cached_item_data(
         workspace.cache.db, [job.record]; stage=:interpreted))
     return cached === nothing ? source_fallback(workspace, job.record) : cached

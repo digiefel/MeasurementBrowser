@@ -213,7 +213,6 @@ function scan_source!(
             kept_ids = Set{String}()
             record_batches = Vector{Vector{ItemRecord}}()
             data_batches = Vector{Vector{Any}}()
-            processing_batches = Vector{Vector{AbstractDataItem}}()
             function flush_cache_batch!()::Nothing
                 isempty(record_batches) && return nothing
                 write_started = time_ns()
@@ -222,12 +221,14 @@ function scan_source!(
                     workspace.monitor.interpreted_write_ns,
                     workspace.monitor.interpreted_writes, write_started)
                 union!(written_ids, reconciled)
-                for (records, items) in zip(record_batches, processing_batches)
-                    enqueue_processing!(workspace, records, items)
+                # Interpreted data is now persisted, so enqueue data-less records and let processing
+                # read it back from the cache. The scan never holds a queue's worth of parsed data and
+                # never blocks on the processing queue draining.
+                for records in record_batches, record in records
+                    enqueue_processing!(workspace, record)
                 end
                 empty!(record_batches)
                 empty!(data_batches)
-                empty!(processing_batches)
                 return nothing
             end
 
@@ -258,7 +259,6 @@ function scan_source!(
                         wrote[] = true
                         push!(record_batches, records)
                         push!(data_batches, data)
-                        push!(processing_batches, interpretation.interpreted_items)
                         length(record_batches) >= 4 && flush_cache_batch!()
                     end,
                     on_kept_source_item=(source_item_id::String) ->
