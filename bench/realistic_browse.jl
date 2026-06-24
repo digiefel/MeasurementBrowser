@@ -15,6 +15,8 @@
 #
 # Tunables via ENV (counts are per the documented diversity; see DEFAULTS below):
 #   MB_BENCH_KIND1_FILES, MB_BENCH_KIND2_FILES, MB_BENCH_KIND3_FILES, MB_BENCH_KIND3_CYCLES
+# Set MB_PROFILE_INTERNAL=1 for a full structured capture; add MB_PROFILE_CPU=1 for Julia sampling.
+# Set MB_BENCH_START_PROFILE=0 to measure enabled-but-idle overhead.
 
 using MeasurementBrowser
 const MB = MeasurementBrowser
@@ -41,6 +43,13 @@ end
 scale = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0
 _env_int(key, default) = parse(Int, get(ENV, key, string(default)))
 _scaled(n) = max(1, round(Int, n * scale))
+const PROFILE_INTERNAL = MB.Profiling.environment_flag("MB_PROFILE_INTERNAL")
+const PROFILE_CPU = MB.Profiling.environment_flag("MB_PROFILE_CPU")
+const START_PROFILE = MB.Profiling.environment_flag(
+    "MB_BENCH_START_PROFILE", PROFILE_INTERNAL)
+START_PROFILE && !PROFILE_INTERNAL && error(
+    "MB_BENCH_START_PROFILE=1 requires MB_PROFILE_INTERNAL=1",
+)
 
 # kind1: tiny files, one item each (IV-style, ~120 rows).      many → the long tail of small files
 # kind2: medium files, one item each (CV-style, ~5000 rows).   some → the mid bucket
@@ -259,7 +268,28 @@ function run_benchmark()
     samples = Sample[]
 
     println("Building cache + browsing during the scan …")
-    ws = MB.open_workspace(project, data_root)
+    profile_output = PROFILE_INTERNAL ? something(
+        MB.Profiling.environment_path("MB_PROFILE_OUTPUT"),
+        joinpath(outdir, "profile.json"),
+    ) : nothing
+    ws = MB.open_workspace(
+        project,
+        data_root;
+        profile_internal=PROFILE_INTERNAL,
+        profile_cpu=PROFILE_CPU,
+        profile_output=profile_output,
+    )
+    if START_PROFILE
+        MB.Workspace.start_internal_profile!(ws)
+        deadline = time() + 60
+        while ws.profiler.state !== :recording
+            MB.Workspace.poll_workspace!(ws)
+            time() < deadline || error(
+                "Profiler did not reach recording state within 60 seconds; state=$(ws.profiler.state)",
+            )
+            sleep(0.004)
+        end
+    end
     t_start = time()
     build_seconds = 0.0
     scan_seconds = 0.0
@@ -269,6 +299,7 @@ function run_benchmark()
     analysis_seconds = 0.0
     global_queries = NamedTuple[]
     build_stats = nothing
+    profile_report = nothing
     try
         last_probe = 0.0
         kind_cursor = 1
@@ -326,7 +357,7 @@ function run_benchmark()
         completed, queued = lock(ws.processing.lock) do
             (ws.processing.completed, ws.processing.total)
         end
-        monitor = ws.monitor
+        metrics = ws.metrics
         db = ws.cache.db
         build_stats = (
             scan_seconds,
@@ -336,20 +367,22 @@ function run_benchmark()
             completed_jobs=completed,
             queued_items=queued,
             collection_nodes=ws.analysis.progress.total_source_items,
-            interpreted_write_ns=monitor.interpreted_write_ns[],
-            interpreted_writes=monitor.interpreted_writes[],
-            processed_write_ns=monitor.processed_write_ns[],
-            processed_writes=monitor.processed_writes[],
-            stats_write_ns=monitor.stats_write_ns[],
-            stats_writes=monitor.stats_writes[],
+            interpreted_write_ns=metrics.interpreted_write_ns[],
+            interpreted_writes=metrics.interpreted_writes[],
+            processed_write_ns=metrics.processed_write_ns[],
+            processed_writes=metrics.processed_writes[],
+            stats_write_ns=metrics.stats_write_ns[],
+            stats_writes=metrics.stats_writes[],
             writer_busy_ns=db.writer_busy_ns[],
             writer_wait_ns=db.writer_wait_ns[],
         )
+        START_PROFILE &&
+            (profile_report = MB.Workspace.stop_internal_profile!(ws))
     finally
         MB.close_workspace!(ws)
     end
 
-    report(samples, global_queries, build_stats, outdir,
+    report(samples, global_queries, build_stats, profile_report, outdir,
         n_files, n_items, data_bytes, build_seconds)
 
     rm(tmp; force=true, recursive=true)   # synthetic data + cache gone; results kept
@@ -363,7 +396,7 @@ end
 
 _stat(v, f) = isempty(v) ? NaN : f(v)
 
-function report(samples, global_queries, stats, outdir,
+function report(samples, global_queries, stats, profile_report, outdir,
     n_files, n_items, data_bytes, build_seconds)
     # responsiveness CSV
     open(joinpath(outdir, "responsiveness.csv"), "w") do io
@@ -381,6 +414,30 @@ function report(samples, global_queries, stats, outdir,
         end
     end
 
+    if profile_report isa MB.Profiling.ProfileReport
+        open(joinpath(outdir, "profile_summary.csv"), "w") do io
+            println(io, "category,operation,count,total_ms,p50_ms,p90_ms,p99_ms,max_ms," *
+                "wait_ms,service_ms,mean_batch,p50_batch,p90_batch,max_batch")
+            for row in profile_report.summary
+                @printf(io, "%s,%s,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+                    row.category, row.operation, row.count, row.total_ms, row.median_ms,
+                    row.p90_ms, row.p99_ms, row.max_ms, row.wait_ms, row.service_ms,
+                    row.mean_batch, row.median_batch, row.p90_batch, row.max_batch)
+            end
+        end
+        if profile_report.cpu !== nothing
+            open(joinpath(outdir, "cpu_hotspots.csv"), "w") do io
+                println(io, "samples,self_samples,function,file,line")
+                for row in profile_report.cpu.rows
+                    function_name = replace(row.function_name, '"' => "\"\"")
+                    file = replace(row.file, '"' => "\"\"")
+                    @printf(io, "%d,%d,\"%s\",\"%s\",%d\n",
+                        row.samples, row.self_samples, function_name, file, row.line)
+                end
+            end
+        end
+    end
+
     write_calls = stats.interpreted_writes + stats.processed_writes + stats.stats_writes
     write_ns = stats.interpreted_write_ns + stats.processed_write_ns + stats.stats_write_ns
     mean_write_ms = write_calls == 0 ? 0.0 : write_ns / write_calls / 1e6
@@ -391,8 +448,13 @@ function report(samples, global_queries, stats, outdir,
         println(io, "build_s,scan_s,scan_per_s,processing_s,items_per_s,analysis_s," *
             "end_to_end_items_per_s,mean_write_ms,writer_busy_s,writer_wait_s," *
             "during_median_ms,during_p90_ms,during_p99_ms,during_max_ms," *
-            "after_median_ms,after_p90_ms,after_p99_ms,after_max_ms")
-        @printf(io, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
+            "after_median_ms,after_p90_ms,after_p99_ms,after_max_ms," *
+            "profile_events,profile_dropped")
+        event_count = profile_report isa MB.Profiling.ProfileReport ?
+            length(profile_report.events) : 0
+        dropped = profile_report isa MB.Profiling.ProfileReport ?
+            profile_report.dropped_events : 0
+        @printf(io, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d\n",
             build_seconds, stats.scan_seconds, n_files / stats.scan_seconds,
             stats.processing_seconds, stats.processed_items / stats.processing_seconds,
             stats.analysis_seconds, stats.processed_items / build_seconds, mean_write_ms,
@@ -400,7 +462,8 @@ function report(samples, global_queries, stats, outdir,
             read_stat(during, median), read_stat(during, values -> quantile(values, 0.9)),
             read_stat(during, values -> quantile(values, 0.99)), read_stat(during, maximum),
             read_stat(after, median), read_stat(after, values -> quantile(values, 0.9)),
-            read_stat(after, values -> quantile(values, 0.99)), read_stat(after, maximum))
+            read_stat(after, values -> quantile(values, 0.99)), read_stat(after, maximum),
+            event_count, dropped)
     end
 
     println("\n==================== REALISTIC BROWSE BENCHMARK ====================")
@@ -469,6 +532,13 @@ function report(samples, global_queries, stats, outdir,
     println("\nGlobal aggregate latency, ms:")
     for sample in global_queries
         @printf("  %-8s %8.1f\n", sample.kind, sample.median_ms)
+    end
+
+    if profile_report isa MB.Profiling.ProfileReport
+        @printf("\nStructured profile: %d events, %d counters, %d dropped, %d CPU samples\n",
+            length(profile_report.events), length(profile_report.counters),
+            profile_report.dropped_events,
+            profile_report.cpu === nothing ? 0 : profile_report.cpu.total_samples)
     end
 
     allduring = [s.read_ms for s in samples if s.phase === :during_build]

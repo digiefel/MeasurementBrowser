@@ -561,11 +561,5 @@ end
 if WORKSPACE_ONLY
     run_with_report(result_path())
 else
-    # TimerOutputs is not thread-safe, so keep it out of the concurrent workspace benchmark.
-    MB.Profiling.enable!()
-    try
-        run_with_report(result_path())
-    finally
-        MB.Profiling.disable!()
-    end
+    run_with_report(result_path())
 end

@@ -1,25 +1,23 @@
 # Profiling & benchmarking
 
-Performance is the reason this app exists, so the engine ships permanent, zero-cost-when-off
-instrumentation plus a headless benchmark harness.
+Performance is the reason this app exists, so the engine ships cheap aggregate metrics, opt-in
+structured profiling, and a headless benchmark harness.
 
-## Engine timers (`MeasurementBrowser.Profiling`)
+## Structured profiling
 
-Hot **sequential** regions are wrapped with `@timeit_debug TIMER "label" …`. They compile to nothing
-until you enable them, so normal runs pay nothing.
+The realistic benchmark can record the same workspace-owned trace as the internal GUI:
 
-```julia
-using MeasurementBrowser
-MeasurementBrowser.Profiling.enable!()   # turn on (do this at top level — see note)
-# … exercise a workload …
-MeasurementBrowser.Profiling.report()    # print per-region time / calls / allocations
-MeasurementBrowser.Profiling.disable!()
+```bash
+MB_PROFILE_INTERNAL=1 julia --project=bench --threads=auto bench/realistic_browse.jl
+MB_PROFILE_INTERNAL=1 MB_PROFILE_CPU=1 julia --project=bench --threads=auto bench/realistic_browse.jl 0.1
+MB_PROFILE_INTERNAL=1 MB_BENCH_START_PROFILE=0 julia --project=bench --threads=auto bench/realistic_browse.jl
 ```
 
-Note: `enable!()` redefines methods, so calls made *in the same function* that called `enable!()`
-won't see it yet (Julia world age). Enable at top level (or in a separate REPL step) before running
-the workload. The parallel scan is **not** instrumented this way (a shared timer isn't thread-safe);
-its per-file parse cost is in `MeasurementBrowser.scan_profile_summary(project)` instead.
+The first command captures the full default workload without CPU sampling. The second runs the 10%
+CPU-sampled workload. The third measures enabled-but-idle overhead without recording events.
+`profile.json` is Perfetto-compatible, `profile_summary.csv` contains grouped latencies, and
+`scorecard.csv` records event and drop counts. See [profiling.md](../docs/profiling.md) for runtime
+flags and data policy.
 
 ## Benchmark harness
 
@@ -51,4 +49,5 @@ Builds a deterministic three-kind project with thousands of files and measures r
 materialization while the cache is being built and after it settles. The default scale models 4,500
 files and about 10,400 items; smaller scales are useful for iteration. `scorecard.csv` records scan,
 processing, and end-to-end throughput; mean write latency and writer occupancy; and aggregate
-during-build and after-build median, p90, p99, and maximum read latency.
+during-build and after-build median, p90, p99, and maximum read latency. Diagnostics that add locks or
+flushes are disabled in the normal run.
