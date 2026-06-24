@@ -1,3 +1,4 @@
+using Printf
 using GLMakie: Axis, Figure, lines!
 import GLMakie.Makie as Makie
 import CImGui as ig
@@ -8,6 +9,7 @@ using ..Projects:
     source_label
 using ..ItemIndex: ItemRecord
 import ..Workspace
+import ..Profiling
 using ..Visualization:
     PlotKind,
     plot_data!,
@@ -31,9 +33,69 @@ function clear_plot_views!(plots::PlotState)::Nothing
 end
 
 """
+Arm a full profile of the next plot redraw.
+
+This is the programmatic hook behind the toolbar "Profile" button: set it, then trigger any redraw
+(switch items, toggle a plot kind) and the breakdown is printed to the console. Invalidating
+`last_key` forces the next frame to actually redraw rather than reuse the cached figure.
+"""
+function request_plot_profile!(state::BrowserState)::Nothing
+    state.profile_next_plot = true
+    plots = state.plots
+    for view in (plots.main, plots.windows...)
+        view.last_key = nothing
+    end
+    return nothing
+end
+
+"""Print a captured plot-redraw profile to the console: phase split, cache timers, and hotspots."""
+function _print_plot_profile(
+    phases::NamedTuple,
+    profile::Union{Nothing,Profiling.SamplingProfile},
+)::Nothing
+    io = stdout
+    println(io, "\n======================= PLOT REDRAW PROFILE =======================")
+    @printf(io, "  load  (cache read + DataFrame rebuild)  %9.1f ms   %9.1f MiB\n",
+        phases.load_ms, phases.load_alloc / 1024^2)
+    @printf(io, "  setup (Makie figure + axes)             %9.1f ms   %9.1f MiB\n",
+        phases.setup_ms, phases.setup_alloc / 1024^2)
+    @printf(io, "  draw  (plot the data)                   %9.1f ms   %9.1f MiB\n",
+        phases.data_ms, phases.data_alloc / 1024^2)
+    @printf(io, "  TOTAL                                   %9.1f ms\n",
+        phases.load_ms + phases.setup_ms + phases.data_ms)
+
+    println(io, "\n  ---- cache timers (@timeit_debug regions hit this redraw) ----")
+    Profiling.report(io; sortby=:time)
+
+    if profile !== nothing
+        secs_per_sample = profile.delay_seconds
+        total = max(profile.total_samples, 1)
+        println(io, "  ---- sampling hotspots (self time, all threads) ----")
+        profile.truncated && println(io, "  (sample buffer filled — result truncated)")
+        @printf(io, "  %6s %7s  %-32s %s\n", "self%", "ms", "function", "location")
+        shown = 0
+        for row in profile.rows
+            row.self_samples == 0 && continue
+            @printf(io, "  %5.1f%% %7.0f  %-32s %s:%d\n",
+                100 * row.self_samples / total, 1e3 * secs_per_sample * row.self_samples,
+                first(row.function_name, 32), basename(row.file), row.line)
+            shown += 1
+            shown >= 15 && break
+        end
+        @printf(io, "  (%d samples over %.2f s wall)\n",
+            profile.total_samples, secs_per_sample * profile.total_samples)
+    end
+    println(io, "===================================================================\n")
+    flush(io)
+    return nothing
+end
+
+"""
 Draw one plot and keep a short UI error when drawing fails.
 
 The console receives the complete exception together with the source, plot type, and source items.
+When `state.profile_next_plot` is set, this redraw is wrapped in the sampling profiler and the cache
+`@timeit_debug` timers, and a full breakdown is printed to the console (see [`_print_plot_profile`](@ref)).
 """
 function draw_plot_view!(
     state::BrowserState,
@@ -46,21 +108,51 @@ function draw_plot_view!(
     source = workspace.source
     started_ns = time_ns()
     draw_alloc = 0
+
+    # Arm the real profiler for this one redraw if requested. Sampling is all-thread and bounded;
+    # enabling the cache debug timers makes the @timeit_debug regions in the read path record.
+    profiling = state.profile_next_plot
+    state.profile_next_plot = false
+    sampling = false
+    if profiling
+        try
+            Profiling.enable!()
+            Profiling.start_sampling!()
+            sampling = true
+        catch profile_err
+            @warn "Could not start plot profiling (a profile may already be running)" exception =
+                profile_err
+        end
+    end
+
     try
         figure = nothing
-        draw_alloc = @allocated begin
-            items = Workspace.materialize_items(workspace, records)
-            result = setup_plot(workspace, plot_kind, items)
-            plot_data!(workspace, plot_kind, items, result)
-            figure = result
-        end
+        items = nothing
+        result = nothing
+        load_alloc = @allocated (items = Workspace.materialize_items(workspace, records))
+        load_ns = time_ns()
+        setup_alloc = @allocated (result = setup_plot(workspace, plot_kind, items))
+        setup_ns = time_ns()
+        data_alloc = @allocated plot_data!(workspace, plot_kind, items, result)
+        data_ns = time_ns()
+        figure = result
         figure === nothing && error("Plot renderer returned no figure.")
-        _append_perf_sample!(
-            state,
-            :plot_draw,
-            (time_ns() - started_ns) / 1e6,
-            draw_alloc,
-        )
+        draw_alloc = load_alloc + setup_alloc + data_alloc
+        _append_perf_sample!(state, :plot_load, (load_ns - started_ns) / 1e6, load_alloc)
+        _append_perf_sample!(state, :plot_setup, (setup_ns - load_ns) / 1e6, setup_alloc)
+        _append_perf_sample!(state, :plot_data, (data_ns - setup_ns) / 1e6, data_alloc)
+        _append_perf_sample!(state, :plot_draw, (data_ns - started_ns) / 1e6, draw_alloc)
+        if profiling
+            captured = sampling ? Profiling.stop_sampling!() : nothing
+            sampling = false
+            captured === nothing || (workspace.sampling_profile = captured)
+            _print_plot_profile(
+                (load_ms=(load_ns - started_ns) / 1e6, load_alloc=load_alloc,
+                 setup_ms=(setup_ns - load_ns) / 1e6, setup_alloc=setup_alloc,
+                 data_ms=(data_ns - setup_ns) / 1e6, data_alloc=data_alloc),
+                captured)
+            state.show_performance_window = true
+        end
         view.figure = figure
         view.last_key = plot_key
         view.error = ""
@@ -91,6 +183,12 @@ function draw_plot_view!(
             "Items: $(length(records))\n$item_context",
             exception=(err, bt),
         )
+    finally
+        # Never leave the profiler running or the debug timers enabled, even if the redraw threw.
+        if profiling
+            sampling && Profiling.cancel_sampling!()
+            Profiling.disable!()
+        end
     end
     return nothing
 end
@@ -179,6 +277,15 @@ function render_plot_toolbar!(
         end
     end
     !can_export && ig.EndDisabled()
+
+    ig.SameLine()
+    if ig.Button("Profile##plot_profile_$(view.id)")
+        request_plot_profile!(state)
+    end
+    if ig.BeginItemTooltip()
+        ig.TextUnformatted("Profile the next redraw and print the full breakdown to the console")
+        ig.EndTooltip()
+    end
 
     ig.SameLine()
     if ig.Button("?##plot_help_$(view.id)")

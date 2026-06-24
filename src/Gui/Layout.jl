@@ -18,11 +18,8 @@ using ..Projects:
     PROJECTS,
     project_description,
     project_name,
-    scan_profile_summary,
-    scan_source_profile,
     SourceProfileRow,
     source_label
-using ..Profiling: SamplingProfile
 using ..ItemIndex: SourceScan
 using ..Cache: ProjectCacheIdentity
 import ..Workspace
@@ -87,9 +84,6 @@ const SCAN_SOURCE_PROFILE_COLUMNS = String[
     "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries", "Process", "Stats",
     "Threads",
 ]
-const SAMPLING_PROFILE_COLUMNS =
-    String["Active", "In call", "Call share", "Function", "File", "Line"]
-
 """Render the per-kind summary for the latest source scan."""
 function _render_scan_kind_table(
     rows::Vector{KindProfileRow},
@@ -141,172 +135,6 @@ function _render_scan_source_table(
     return nothing
 end
 
-"""Render the flat source-line report captured by a profiled rebuild."""
-function _render_sampling_profile(
-    profile::SamplingProfile,
-    state::DataGridState,
-)::Nothing
-    profile.truncated && ig.TextColored(
-        (0.95f0, 0.65f0, 0.15f0, 1.0f0),
-        "The sampling buffer filled before the rebuild finished.",
-    )
-    ig.Text(@sprintf(
-        "%d samples at %.0f ms intervals", profile.total_samples,
-        1000 * profile.delay_seconds,
-    ))
-    function cell(row_index::Int, column::Int)::String
-        row = profile.rows[row_index]
-        column == 1 && return string(row.self_samples)
-        column == 2 && return string(row.samples)
-        column == 3 && return @sprintf(
-            "%.1f%%", profile.total_samples == 0 ? 0.0 :
-                100 * row.samples / profile.total_samples)
-        column == 4 && return row.function_name
-        column == 5 && return row.file
-        return row.line > 0 ? string(row.line) : "?"
-    end
-    render_data_grid!(
-        "sampling_profile", state;
-        n_rows=length(profile.rows), columns=SAMPLING_PROFILE_COLUMNS, cell,
-        selection_mode=:cells, height=320.0f0)
-    return nothing
-end
-
-"""Render diagnostic timing, allocation, memory, and OpenGL information."""
-function render_perf_window(state::BrowserState)::Nothing
-    state.show_performance_window || return nothing
-    performance = state.performance
-
-    if ig.Begin("Performance")
-        raw_io = ig.GetIO()
-        fps = unsafe_load(raw_io.Framerate)
-        if fps > 0
-            ig.Text(
-                "FPS: $(round(fps; digits=1))  Frame: " *
-                "$(round(1000 / fps; digits=2)) ms"
-            )
-        end
-
-        if !isempty(performance.gl_info)
-            gi = performance.gl_info
-            for k in (:vendor, :renderer, :version)
-                haskey(gi, k) && ig.Text("GL $(k): $(gi[k])")
-            end
-        end
-
-        ig.Text("Tree nodes rendered: $(performance.node_count)")
-        rows_visible = performance.item_rows_visible
-        rows_rendered = performance.item_rows_rendered
-        ig.Text("Items visible/rendered: $rows_visible / $rows_rendered")
-
-        mem = _memory_snapshot()
-        if mem.vmrss_kb !== nothing
-            performance.memory_start_rss_kb === nothing &&
-                (performance.memory_start_rss_kb = mem.vmrss_kb)
-            start_rss = something(performance.memory_start_rss_kb)
-            peak_rss = max(
-                something(performance.memory_peak_rss_kb, mem.vmrss_kb),
-                mem.vmrss_kb,
-            )
-            performance.memory_peak_rss_kb = peak_rss
-
-            read_bytes = mem.read_bytes === nothing ? 0 : mem.read_bytes
-            performance.memory_start_read_bytes === nothing &&
-                (performance.memory_start_read_bytes = read_bytes)
-            start_read = something(performance.memory_start_read_bytes)
-
-            ig.Separator()
-            ig.Text("Process memory")
-            ig.BulletText(
-                "RSS=$( _fmt_kb(mem.vmrss_kb) )  Δstart=$( _fmt_kb(mem.vmrss_kb - start_rss) )  peak=$( _fmt_kb(peak_rss) )",
-            )
-            ig.BulletText("Anon=$( _fmt_kb(mem.rssanon_kb) )  VSize=$( _fmt_kb(mem.vmsize_kb) )  VPeak=$( _fmt_kb(mem.vmpeak_kb) )")
-            ig.BulletText("GC live=$( _fmt_bytes(mem.gc_live_bytes) )  maxrss=$( _fmt_bytes(mem.maxrss_bytes) )")
-            ig.BulletText("read_bytes Δstart=$( _fmt_bytes(read_bytes - start_read) )")
-        end
-
-        timings = performance.timings
-        allocs = performance.allocations
-
-        plot_timing_keys = haskey(timings, :plot_draw) ? [:plot_draw] : Symbol[]
-        other_timing_keys = sort([key for key in keys(timings) if key != :plot_draw])
-        for (title, keys_to_show) in (("Plot drawing", plot_timing_keys), ("Frame/UI timings", other_timing_keys))
-            isempty(keys_to_show) && continue
-            ig.Separator()
-            ig.Text(title)
-            for key in keys_to_show
-                samples = timings[key]
-                isempty(samples) && continue
-                bytes = get(allocs, key, Int[])
-                last_ms = round(samples[end]; digits=2)
-                mean_ms = round(mean(samples); digits=2)
-                last_alloc = isempty(bytes) ? 0.0 : round(bytes[end] / 1024; digits=1)
-                mean_alloc = isempty(bytes) ? 0.0 : round(mean(bytes) / 1024; digits=1)
-                msg = @sprintf "%s: n=%d  last=%.2f ms  mean=%.2f ms  alloc_last=%.1f KB  alloc_mean=%.1f KB" String(key) length(samples) last_ms mean_ms last_alloc mean_alloc
-
-                ig.BulletText(msg)
-            end
-        end
-
-        workspace = state.workspace
-        if workspace isa Workspace.Workspace
-            if performance.scan_profile_project !== workspace.project ||
-               time() >= performance.scan_profile_refresh_at
-                performance.scan_profile_project = workspace.project
-                performance.scan_kind_rows = scan_profile_summary(workspace.project)
-                performance.scan_source_rows = scan_source_profile(workspace.project)
-                performance.scan_profile_refresh_at = time() + 0.5
-            end
-        elseif performance.scan_profile_project !== nothing
-            performance.scan_profile_project = nothing
-            empty!(performance.scan_kind_rows)
-            empty!(performance.scan_source_rows)
-        end
-        scan_rows = performance.scan_kind_rows
-        source_rows = performance.scan_source_rows
-        if ig.CollapsingHeader("Scan profile", ig.ImGuiTreeNodeFlags_DefaultOpen)
-            if isempty(scan_rows)
-                ig.TextDisabled("No scan timing yet (cache hit or no scan run)")
-            else
-                source_items = sum(row.source_items for row in scan_rows)
-                meas = sum(row.items for row in scan_rows)
-                ig.Text(@sprintf("Last scan: %d source items, %d items", source_items, meas))
-                ig.TextDisabled(
-                    "Total is elapsed per source item; process and stats are summed item work.",
-                )
-                _render_scan_kind_table(scan_rows, performance.scan_kind_grid)
-                ig.Spacing()
-                ig.Text("Slow source items")
-                _render_scan_source_table(source_rows, performance.scan_source_grid)
-            end
-        end
-
-        if ig.CollapsingHeader("Sampling profile", ig.ImGuiTreeNodeFlags_DefaultOpen)
-            can_profile = workspace isa Workspace.Workspace && !source_scan_running(workspace)
-            can_profile || ig.BeginDisabled()
-            if ig.Button("Profile full rebuild")
-                scan_source!(workspace; rebuild=true, capture_profile=true)
-            end
-            can_profile || ig.EndDisabled()
-            if workspace isa Workspace.Workspace && workspace.sampling_active
-                ig.SameLine()
-                ig.Text("Profiling...")
-            elseif workspace isa Workspace.Workspace && workspace.sampling_profile !== nothing
-                _render_sampling_profile(
-                    workspace.sampling_profile, performance.sampling_grid)
-            else
-                ig.TextDisabled("No sampled rebuild yet")
-            end
-        end
-
-        if ig.Button("Clear frame timings")
-            empty!(performance.timings)
-            empty!(performance.allocations)
-        end
-    end
-    ig.End()
-    return nothing
-end
 
 """Render project, cache, annotation, workflow, and debug controls."""
 function render_menu_bar(state::BrowserState)::Nothing

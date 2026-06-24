@@ -15,6 +15,7 @@ include("Gui/TableInspector.jl")
 include("Gui/TreePanel.jl")
 include("Gui/InfoModal.jl")
 include("Gui/Layout.jl")
+include("Gui/PerformanceWindow.jl")
 
 export open_browser
 
