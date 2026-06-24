@@ -21,4 +21,13 @@ const PERFORMANCE_BROWSER = MeasurementBrowser.Browser
     @test length(live.elapsed_obs[]) == 1
     @test length(live.elapsed_obs[]) == length(live.throughput_obs[])
     @test length(live.elapsed_obs[]) == length(live.rss_obs[])
+
+    profiler = MeasurementBrowser.Profiling.ProfileSession(true, false, nothing, nothing)
+    called = Ref(false)
+    PERFORMANCE_BROWSER._profile_action!(profiler) do
+        called[] = true
+    end
+    @test called[]
+    @test profiler.state === :idle
+    MeasurementBrowser.Profiling.close!(profiler)
 end

@@ -562,10 +562,9 @@ function _export_live_figure(
 end
 
 """
-Render the normal redraw plot or the opt-in internal build dashboard.
+Render redraw timings and aggregate build plots, or just the build plots inside the Internal tab.
 
-Each figure is created only when its owning tab is visible. `MakieFigure` polls GLMakie for pending
-updates and renders only dirty frames.
+`MakieFigure` polls GLMakie for pending updates and renders only dirty frames.
 """
 function _render_live_plots_tab!(
     state::BrowserState;
@@ -596,7 +595,9 @@ function _render_live_plots_tab!(
             auto_resize_x=true,
             auto_resize_y=false,
         )
-        return nothing
+        ig.Spacing()
+        ig.Separator()
+        ig.Spacing()
     end
 
     lp.build_figure === nothing && (lp.build_figure = _make_build_figure(lp))
@@ -627,7 +628,7 @@ function _render_live_plots_tab!(
 end
 
 """Run one internal profiler UI action and retain an actionable error."""
-function _profile_action!(profiler::Profiling.ProfileSession, action::Function)::Nothing
+function _profile_action!(action::Function, profiler::Profiling.ProfileSession)::Nothing
     try
         action()
         profiler.error = ""
