@@ -93,10 +93,11 @@ user-authored tags, notes, coordinates, and spatial positions (currently next to
 `source_id`; see [cache.md](cache.md)). Other package modules own generic visualizers, workflow
 persistence, and figure composition.
 
-The Performance window exposes one transient timing row per source item for the latest scan and can
-run an explicit profiled rebuild. Phase timing identifies whether time belongs to detection, reading,
-entry expansion, processing, or stats; the sampled rebuild identifies active functions and source
-lines inside an otherwise opaque project callback. Neither diagnostic is persisted in the cache.
+The Performance window always exposes bounded project callback timings, plot timings, failures,
+memory, and rendering diagnostics. A workspace opened with internal profiling enabled also owns a
+manual structured trace session for engine spans, process counters, and optional CPU samples. Starting
+that session during a build first cancels and drains the current work, then records one clean rebuild.
+See [profiling.md](profiling.md). No diagnostic is persisted in the generated cache.
 
 Source code should not know whether data came from memory, cache, or the origin. Package code should
 not know the meaning of a source item beyond the contract methods it calls.
@@ -153,6 +154,7 @@ Current-state reference docs:
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
 | [cache.md](cache.md) | You're touching DuckDB cache identity, loading, writing, status, or item data. |
+| [profiling.md](profiling.md) | You're measuring project callbacks, engine spans, build counters, CPU hotspots, or crash traces. |
 | [annotations.md](annotations.md) | You're touching annotations: coordinates, layout, tags, or notes. |
 
 Future-facing docs and roadmaps live under [plans/](plans/), separate from the current-state docs

@@ -14,8 +14,8 @@ navigation and information, right side for plot-oriented work.
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
 to the open workspace. `PlotState` owns plot windows and choices, `TableInspectorState` owns the
 generic file-inspection window, and `PerformanceState` owns frame/UI samples used only for
-diagnostics. Scan timings live with the project performing the callbacks; the workspace retains the
-last explicitly captured sampling profile.
+diagnostics. Scan timings live with the project performing the callbacks. Internal structured traces
+and optional CPU samples belong to the workspace that captured them.
 
 The workspace owns the source, item index, selected collection and item identities, DuckDB cache,
 processing queue, and source-scan/cache state. Those values must not be copied into browser state.
@@ -37,7 +37,7 @@ stay live without racing any still-finishing analysis.
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance, multi-select, and quick X/Y plot. |
-| Performance | Frame/memory diagnostics, scan phase/source timings, and an explicit profiled rebuild. |
+| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
 
 ## Scan profiling
 
@@ -46,10 +46,12 @@ interpretation time, expanded item count, and the scheduler thread that performe
 Processing and statistics belong to the separate processing/summarizing activities and are not
 reported as source-read time.
 
-`Profile full rebuild` clears the cache and runs the complete rebuild under Julia's CPU sampling
-profiler. The workspace keeps only the reduced source-line report, sorted by samples active on the
-line, rather than retaining raw stacks. The report also includes the number of samples in calls below
-each line. Sampling is explicit because it is more expensive than the always-on phase timers.
+Internal engine controls are absent unless the workspace was opened with
+`profile_internal=true`. Its Internal tab starts and stops a bounded structured capture, groups span
+latencies, separates writer wait from service, shows process counters and recent filtered events, and
+exports Perfetto JSON. Starting during active work drains it and starts one clean rebuild. With
+`profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
+raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
 
 ### Selection flow (tree → plot)
 
