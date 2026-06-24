@@ -19,15 +19,29 @@ mutable struct BuildMonitor
     last_scan_done::Int
     last_processed_done::Int
     peak_rss::Int64
+    # When recording, one CSV row is appended per sample tick. The file is the deliverable — load it in
+    # Julia/pandas/a spreadsheet and plot write-time vs. items to *see* the O(N²), instead of reading spew.
+    csv_io::Union{Nothing,IO}
+    csv_path::String
+    event_log::Bool
 end
 
-function BuildMonitor(; io::IO=stderr, interval::Real=3.0)::BuildMonitor
+function BuildMonitor(; io::IO=stderr, interval::Real=1.0)::BuildMonitor
     zero_counter() = Base.Threads.Atomic{Int64}(0)
     return BuildMonitor(
         io, Float64(interval),
         zero_counter(), zero_counter(), zero_counter(),
         zero_counter(), zero_counter(), zero_counter(),
-        false, :idle, 0.0, 0.0, 0, 0, 0)
+        false, :idle, 0.0, 0.0, 0, 0, 0, nothing, "", false)
+end
+
+# Per-build sequence so concurrent/successive builds never write to the same log file.
+const BUILD_LOG_SEQ = Base.Threads.Atomic{Int}(0)
+
+"""Insert `suffix` before a path's extension: `/tmp/build.csv` + `-17…-1` → `/tmp/build-17…-1.csv`."""
+function _with_log_suffix(base::AbstractString, suffix::AbstractString)::String
+    stem, ext = splitext(String(base))
+    return string(stem, suffix, isempty(ext) ? ".csv" : ext)
 end
 
 """Add one timed cache-I/O call to a monitor counter pair (nanoseconds since `t0_ns`)."""
@@ -41,8 +55,19 @@ end
     return nothing
 end
 
-"""Reset the counters and arm the monitor at the start of a scan/build."""
-function begin_build_monitor!(monitor::BuildMonitor, operation::Symbol)::Nothing
+"""
+Reset the counters and arm the monitor at the start of a scan/build.
+
+`build_profile` (a path or `nothing`) records the per-second CSV of scan/analysis/writer metrics;
+`event_log` (a path or `nothing`) records the crash-durable per-operation log. Both come from the
+workspace's open_workspace arguments; when both are `nothing` the build runs silent.
+"""
+function begin_build_monitor!(
+    monitor::BuildMonitor,
+    operation::Symbol;
+    event_log::Union{Nothing,AbstractString}=nothing,
+    build_profile::Union{Nothing,AbstractString}=nothing,
+)::Nothing
     for counter in (
         monitor.interpreted_write_ns, monitor.interpreted_writes,
         monitor.processed_write_ns, monitor.processed_writes,
@@ -51,7 +76,31 @@ function begin_build_monitor!(monitor::BuildMonitor, operation::Symbol)::Nothing
         counter[] = 0
     end
     now = time()
-    monitor.active = true
+    # The first build of a session writes to the exact path you passed; later builds get -2, -3, … so a
+    # rescan never clobbers the run you wanted to keep. Predictable and findable — no random names. The
+    # actual path is printed on finish.
+    seq = Base.Threads.atomic_add!(BUILD_LOG_SEQ, 1) + 1
+    suffix = seq == 1 ? "" : "-$seq"
+    monitor.csv_io === nothing || (try; close(monitor.csv_io); catch; end)
+    monitor.csv_io = nothing
+    monitor.csv_path = ""
+    if build_profile !== nothing
+        path = _with_log_suffix(build_profile, suffix)
+        try
+            io = open(path, "w")
+            println(io,
+                "elapsed_s,operation,scan_done,scan_total,analysis_done,analysis_total," *
+                "interp_write_s,processed_write_s,stats_write_s,writer_busy_s,writer_wait_s,rss_bytes")
+            flush(io)
+            monitor.csv_io = io
+            monitor.csv_path = path
+        catch err
+            @warn "Could not open the build-profile CSV; recording disabled" path exception = err
+        end
+    end
+    monitor.event_log = event_log !== nothing
+    monitor.event_log && start_event_log!(_with_log_suffix(event_log, suffix))
+    monitor.active = monitor.csv_io !== nothing || monitor.event_log
     monitor.operation = operation
     monitor.started_at = now
     monitor.last_report_at = now
@@ -82,88 +131,56 @@ end
 _avg_ms(total_ns::Base.Threads.Atomic{Int64}, calls::Base.Threads.Atomic{Int64})::Float64 =
     calls[] == 0 ? 0.0 : total_ns[] / calls[] / 1e6
 
-"""Print a rolling progress group once per interval. Cheap and silent otherwise; safe every poll."""
+"""Append one CSV sample row: a cheap, lock-light snapshot taken from the poll thread."""
+function _write_build_csv_row!(workspace, now::Float64)::Nothing
+    monitor = workspace.monitor
+    io = monitor.csv_io
+    io === nothing && return nothing
+    progress = workspace.scan.progress
+    completed, queued = lock(workspace.processing.lock) do
+        (workspace.processing.completed, workspace.processing.total)
+    end
+    rss = Int64(Sys.maxrss())
+    monitor.peak_rss = max(monitor.peak_rss, rss)
+    db = workspace.cache.db
+    @printf(io, "%.3f,%s,%d,%d,%d,%d,%.6f,%.6f,%.6f,%.6f,%.6f,%d\n",
+        now - monitor.started_at, String(monitor.operation),
+        progress.processed_source_items, progress.total_source_items,
+        completed, queued,
+        monitor.interpreted_write_ns[] / 1e9, monitor.processed_write_ns[] / 1e9,
+        monitor.stats_write_ns[] / 1e9, db.writer_busy_ns[] / 1e9, db.writer_wait_ns[] / 1e9, rss)
+    flush(io)
+    return nothing
+end
+
+"""Record one CSV sample row once per interval. Cheap and silent otherwise; safe every poll."""
 function maybe_report_build!(workspace)::Nothing
     monitor = workspace.monitor
     monitor.active || return nothing
     now = time()
     (now - monitor.last_report_at) < monitor.interval && return nothing
-
-    progress = workspace.scan.progress
-    total_si = progress.total_source_items
-    done_si = progress.processed_source_items
-    completed, queued = lock(workspace.processing.lock) do
-        (workspace.processing.completed, workspace.processing.total)
-    end
-    elapsed = now - monitor.started_at
-    interval = now - monitor.last_report_at
-    monitor.peak_rss = max(monitor.peak_rss, Int64(Sys.maxrss()))
-
-    # Instantaneous rate shows the current pace (and stalls); the ETA uses the cumulative average so a
-    # momentary stall does not throw it to hours.
-    scan_rate = (done_si - monitor.last_scan_done) / interval
-    process_rate = (completed - monitor.last_processed_done) / interval
-    scan_eta = done_si > 0 ? (total_si - done_si) * elapsed / done_si : Inf
-    process_eta = completed > 0 ? (queued - completed) * elapsed / completed : Inf
-    scan_pct = total_si > 0 ? 100 * done_si / total_si : 0.0
-    process_pct = queued > 0 ? 100 * completed / queued : 0.0
-
-    io = monitor.io
-    println(io, "── build $(_fmt_eta(elapsed)) elapsed  ·  $(monitor.operation)  ·  RSS peak $(_fmt_bytes(monitor.peak_rss)) ──")
-    @printf(io, "   scan     %5d/%-5d (%4.1f%%)  %6.1f src/s  ETA %s%s\n",
-        done_si, total_si, scan_pct, scan_rate, _fmt_eta(scan_eta),
-        isempty(progress.current_source_item) ? "" : "  ← " * basename(progress.current_source_item))
-    @printf(io, "   analysis %5d/%-5d (%4.1f%%)  %6.1f item/s ETA %s\n",
-        completed, queued, process_pct, process_rate, _fmt_eta(process_eta))
-
-    rows = scan_profile_summary(workspace.project)
-    if !isempty(rows)
-        # read/entries run once per source file (scan); process/stats run once per data item (analysis).
-        @printf(io, "   %-13s %6s %8s %9s %9s %8s\n",
-            "kind", "items", "read/f", "entries/f", "process/i", "stats/i")
-        for row in Iterators.take(rows, 6)
-            files = max(row.source_items, 1)
-            items = max(row.items, 1)
-            @printf(io, "   %-13s %6d %6.1fms %7.1fms %7.1fms %6.1fms\n",
-                String(row.kind), row.items,
-                1e3 * row.read_seconds / files, 1e3 * row.entries_seconds / files,
-                1e3 * row.process_seconds / items, 1e3 * row.stats_seconds / items)
-        end
-    end
-
-    # The single writer is shared by the scan (interpreted) and analysis (processed/stats). Busy is the
-    # real serialized write work; wait is how long threads blocked for their turn. Busy near elapsed
-    # with large wait means the one writer is the bottleneck.
-    busy_s = workspace.cache.db.writer_busy_ns[] / 1e9
-    wait_s = workspace.cache.db.writer_wait_ns[] / 1e9
-    @printf(io, "   writer: busy %.1fs (%.0f%% of elapsed) · threads waited %.0fs total · interp %.1fs processed %.1fs stats %.1fs\n",
-        busy_s, elapsed > 0 ? 100 * busy_s / elapsed : 0.0, wait_s,
-        monitor.interpreted_write_ns[] / 1e9, monitor.processed_write_ns[] / 1e9,
-        monitor.stats_write_ns[] / 1e9)
-    flush(io)
-
+    _write_build_csv_row!(workspace, now)
     monitor.last_report_at = now
-    monitor.last_scan_done = done_si
-    monitor.last_processed_done = completed
     return nothing
 end
 
-"""Print a final one-line summary and disarm. Silent for builds too short to have reported."""
+"""Write the final CSV row, close the file, and point at it on the console. Then disarm."""
 function finish_build_monitor!(workspace)::Nothing
     monitor = workspace.monitor
     monitor.active || return nothing
     monitor.active = false
-    elapsed = time() - monitor.started_at
-    elapsed < monitor.interval && return nothing
-    progress = workspace.scan.progress
-    monitor.peak_rss = max(monitor.peak_rss, Int64(Sys.maxrss()))
-    rate = elapsed > 0 ? progress.total_source_items / elapsed : 0.0
-    busy_s = workspace.cache.db.writer_busy_ns[] / 1e9
-    println(monitor.io,
-        "✓ build done in $(_fmt_eta(elapsed))  ·  $(progress.total_source_items) source items, " *
-        "$(progress.loaded_items) data items ($(@sprintf("%.1f", rate)) src/s)  ·  writer busy " *
-        "$(@sprintf("%.1f", busy_s))s ($(elapsed > 0 ? round(Int, 100 * busy_s / elapsed) : 0)% of elapsed) " *
-        "· RSS peak $(_fmt_bytes(monitor.peak_rss))")
+    if monitor.event_log
+        path = current_event_log_path()
+        stop_event_log!()
+        monitor.event_log = false
+        println(monitor.io, "✓ event log written to $path")
+    end
+    _write_build_csv_row!(workspace, time())
+    io = monitor.csv_io
+    monitor.csv_io = nothing
+    io === nothing && (flush(monitor.io); return nothing)
+    try; close(io); catch; end
+    println(monitor.io, "✓ build profile written to $(monitor.csv_path)")
     flush(monitor.io)
     return nothing
 end

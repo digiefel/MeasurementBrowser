@@ -22,6 +22,9 @@ import ..Cache:
     read_cached_item_data,
     reconcile_source_items!,
     set_cache_memory_limit!,
+    start_event_log!,
+    stop_event_log!,
+    current_event_log_path,
     with_reader,
     with_writer_transaction,
     write_cached_item_data!,
@@ -243,6 +246,11 @@ mutable struct Workspace{S<:AbstractDataSource}
     processing::ProcessingQueue
     background_tasks::Vector{Task}
     monitor::BuildMonitor
+    # Debug outputs, opt-in per workspace via open_workspace. `nothing` = off. Each build (re)writes the
+    # file: `event_log_path` is the crash-durable per-operation log; `build_profile_path` is the
+    # per-second CSV of scan/analysis/writer metrics.
+    event_log_path::Union{Nothing,String}
+    build_profile_path::Union{Nothing,String}
     status::WorkspaceStatus
     closed::Bool
 end
@@ -252,7 +260,9 @@ Create the empty state for one project-owned source.
 """
 function Workspace(
     project::Project,
-    source::S,
+    source::S;
+    event_log::Union{Nothing,AbstractString}=nothing,
+    build_profile::Union{Nothing,AbstractString}=nothing,
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_name(project), source)
@@ -279,6 +289,8 @@ function Workspace(
         ProcessingQueue(),
         Task[],
         BuildMonitor(),
+        event_log === nothing ? nothing : String(event_log),
+        build_profile === nothing ? nothing : String(build_profile),
         WorkspaceStatus(),
         false,
     )

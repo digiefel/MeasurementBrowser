@@ -1,8 +1,13 @@
 """
 Start cache loading and source scanning for one new workspace.
 """
-function open_workspace(project::Project, source::AbstractDataSource)::Workspace
-    workspace = Workspace(project, source)
+function open_workspace(
+    project::Project,
+    source::AbstractDataSource;
+    event_log::Union{Nothing,AbstractString}=nothing,
+    build_profile::Union{Nothing,AbstractString}=nothing,
+)::Workspace
+    workspace = Workspace(project, source; event_log, build_profile)
     scan_source!(workspace)
     return workspace
 end
@@ -160,7 +165,8 @@ function scan_source!(
     workspace.cache_state = :loading
     workspace.cache_error = ""
     workspace.cache.operation = rebuild ? :rebuild : :update
-    begin_build_monitor!(workspace.monitor, workspace.cache.operation)
+    begin_build_monitor!(workspace.monitor, workspace.cache.operation;
+        event_log=workspace.event_log_path, build_profile=workspace.build_profile_path)
     cachedb.writer_wait_ns[] = 0
     cachedb.writer_busy_ns[] = 0
     # Detach the previous scan so this one streams into a fresh hierarchy: progressive results update

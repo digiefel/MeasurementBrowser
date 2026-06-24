@@ -251,9 +251,13 @@ function Workspace.open_workspace(
     root_path::AbstractString;
     recursive::Bool=true,
     metadata_file::Union{Nothing,AbstractString}=DEFAULT_DIRECTORY_METADATA_FILE,
+    event_log::Union{Nothing,AbstractString}=nothing,
+    build_profile::Union{Nothing,AbstractString}=nothing,
 )::Workspace.Workspace
     return Workspace.open_workspace(
         project,
-        DirectorySource(root_path; recursive, metadata_file),
+        DirectorySource(root_path; recursive, metadata_file);
+        event_log,
+        build_profile,
     )
 end
