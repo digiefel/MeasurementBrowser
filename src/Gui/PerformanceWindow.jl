@@ -5,6 +5,7 @@ using GLMakie: Axis, Figure, Observable, axislegend, lines!
 import GLMakie.Makie as Makie
 using NativeFileDialog: save_file
 
+import ..Profiling
 using ..Projects: scan_profile_summary, scan_source_profile
 import ..Workspace
 using .MakieImguiIntegration: MakieFigure
@@ -91,22 +92,18 @@ end
 # Tab: Sampling Hotspots
 # ---------------------------------------------------------------------------
 
-"""Render the Sampling Hotspots tab: flat source-line table from the last profiled rebuild."""
+"""Render CPU hotspots from the latest internal capture or explicit plot profile."""
 function _render_hotspots_tab(
     performance::PerformanceState,
     workspace,
 )::Nothing
-    # The whole-rebuild CPU sampler is disabled: it crashes every time on a real build and we have NOT
-    # captured a stacktrace yet, so the cause is unknown — do not guess it. To diagnose, reproduce from
-    # the REPL with `scan_source!(ws; rebuild=true, capture_profile=true)` and capture the crash output.
-    # Working tools: the per-redraw "Profile" button on a plot, and the build-monitor CSV.
-    ig.TextDisabled("Sampling hotspots from the last \"Profile\" press on a plot.")
-
-    profile = (workspace isa Workspace.Workspace) ? workspace.sampling_profile : nothing
+    internal = workspace isa Workspace.Workspace ? workspace.profiler.report : nothing
+    profile = internal isa Profiling.ProfileReport && internal.cpu !== nothing ?
+        internal.cpu : performance.plot_sampling_profile
 
     if profile === nothing
         ig.Spacing()
-        ig.TextDisabled("No profile captured yet — press \"Profile\" on a plot toolbar.")
+        ig.TextDisabled("No CPU profile captured yet.")
         return nothing
     end
 
@@ -387,7 +384,7 @@ writer/RSS are on the right axis (ms or MiB).
 function _make_build_figure(lp::LivePlotsState)::Figure
     fig  = Figure(size=(600, 200))
     ax_l = Axis(fig[1, 1]; xlabel="sample", ylabel="%  /  ms", title="Build progress")
-    ax_r = Axis(fig[1, 1]; ylabel="RSS MiB",
+    ax_r = Axis(fig[1, 1]; ylabel="Peak RSS MiB",
                 yaxisposition=:right, yticklabelcolor=:grey50,
                 ytickcolor=:grey50, rightspinecolor=:grey50)
     # Link x axes so pan/zoom stay in sync
@@ -470,9 +467,9 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
         analysis_pct = total_proc > 0 ?
             Float32(100 * completed / total_proc) : 0.0f0
 
-        monitor = workspace.monitor
-        interp_ms     = Float32(monitor.interpreted_write_ns[] / 1e6)
-        processed_ms  = Float32(monitor.processed_write_ns[]  / 1e6)
+        metrics = workspace.metrics
+        interp_ms     = Float32(metrics.interpreted_write_ns[] / 1e6)
+        processed_ms  = Float32(metrics.processed_write_ns[]  / 1e6)
     end
 
     cap = lp.capacity
@@ -536,7 +533,10 @@ Render the Live tab: two embedded Makie figures (timings + build progress) with 
 Figures are created once per `PerformanceState` lifetime and updated in place each frame via
 Observables. `MakieFigure` polls GLMakie for pending updates and renders only dirty frames.
 """
-function _render_live_plots_tab!(state::BrowserState)::Nothing
+function _render_live_plots_tab!(
+    state::BrowserState;
+    internal::Bool=false,
+)::Nothing
     lp        = state.performance.live_plots
     workspace = state.workspace
 
@@ -554,29 +554,30 @@ function _render_live_plots_tab!(state::BrowserState)::Nothing
     # Sample build progress into ring buffers and push to Observables
     _sample_build_progress!(lp, workspace)
 
-    # ---- Timings figure ----
-    ig.TextUnformatted("Plot redraw phase timings")
-    ig.SameLine()
-    if ig.Button("Export##live_timings_export")
-        series = Pair{String,Vector{Float32}}[
-            "load_ms"  => copy(lp.load_obs[]),
-            "setup_ms" => copy(lp.setup_obs[]),
-            "data_ms"  => copy(lp.data_obs[]),
-            "total_ms" => copy(lp.total_obs[]),
-        ]
-        lp.timings_export_error = _export_live_figure(
-            lp.timings_figure, "perf-timings.png", series)
+    if !internal
+        ig.TextUnformatted("Plot redraw phase timings")
+        ig.SameLine()
+        if ig.Button("Export##live_timings_export")
+            series = Pair{String,Vector{Float32}}[
+                "load_ms"  => copy(lp.load_obs[]),
+                "setup_ms" => copy(lp.setup_obs[]),
+                "data_ms"  => copy(lp.data_obs[]),
+                "total_ms" => copy(lp.total_obs[]),
+            ]
+            lp.timings_export_error = _export_live_figure(
+                lp.timings_figure, "perf-timings.png", series)
+        end
+        isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
+        MakieFigure(
+            "perf_live_timings", lp.timings_figure;
+            auto_resize_x=true,
+            auto_resize_y=false,
+        )
+        return nothing
     end
-    isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
-
-    MakieFigure("perf_live_timings", lp.timings_figure; auto_resize_x=true, auto_resize_y=false)
-
-    ig.Spacing()
-    ig.Separator()
-    ig.Spacing()
 
     # ---- Build progress figure ----
-    ig.TextUnformatted("Build progress (scan %, analysis %, writer ms, RSS MiB)")
+    ig.TextUnformatted("Build progress (scan %, analysis %, writer ms, peak RSS MiB)")
     ig.SameLine()
     if ig.Button("Export##live_build_export")
         series = Pair{String,Vector{Float32}}[
@@ -584,7 +585,7 @@ function _render_live_plots_tab!(state::BrowserState)::Nothing
             "analysis_pct"    => copy(lp.analysis_obs[]),
             "interp_write_ms" => copy(lp.interp_write_obs[]),
             "proc_write_ms"   => copy(lp.processed_write_obs[]),
-            "rss_mib"         => copy(lp.rss_obs[]),
+            "peak_rss_mib"    => copy(lp.rss_obs[]),
         ]
         lp.build_export_error = _export_live_figure(
             lp.build_figure, "perf-build.png", series)
@@ -596,6 +597,189 @@ function _render_live_plots_tab!(state::BrowserState)::Nothing
     return nothing
 end
 
+"""Run one internal profiler UI action and retain an actionable error."""
+function _profile_action!(profiler::Profiling.ProfileSession, action::Function)::Nothing
+    try
+        action()
+        profiler.error = ""
+    catch error
+        profiler.error = sprint(showerror, error)
+        profiler.state = :error
+        @error "Internal profiler action failed" exception=(error, catch_backtrace())
+    end
+    return nothing
+end
+
+"""Choose one exact structured-event dimension or show all values."""
+function _profile_filter_combo!(
+    label::String,
+    current::Symbol,
+    values::Vector{Symbol},
+)::Symbol
+    preview = current === :all ? "All" : String(current)
+    ig.SetNextItemWidth(170.0f0)
+    if ig.BeginCombo(label, preview)
+        ig.Selectable("All", current === :all) && (current = :all)
+        for value in values
+            ig.Selectable(String(value), current === value) && (current = value)
+        end
+        ig.EndCombo()
+    end
+    return current
+end
+
+"""Render opt-in internal capture controls, summaries, events, and process counters."""
+function _render_internal_profile_tab!(
+    state::BrowserState,
+    workspace::Workspace.Workspace,
+)::Nothing
+    profiler = workspace.profiler
+    ig.Text("State: $(profiler.state)  Events: $(Profiling.event_count(profiler))  " *
+            "Dropped: $(profiler.dropped_events[])")
+
+    can_start = profiler.state in (:idle, :complete)
+    can_start || ig.BeginDisabled()
+    if ig.Button("Start capture")
+        _profile_action!(profiler) do
+            Workspace.start_internal_profile!(workspace)
+        end
+    end
+    can_start || ig.EndDisabled()
+    ig.SameLine()
+
+    can_stop = profiler.state in (:preparing, :recording)
+    can_stop || ig.BeginDisabled()
+    if ig.Button("Stop capture")
+        _profile_action!(profiler) do
+            Workspace.stop_internal_profile!(workspace)
+        end
+    end
+    can_stop || ig.EndDisabled()
+    ig.SameLine()
+
+    can_reset = profiler.state in (:complete, :error)
+    can_reset || ig.BeginDisabled()
+    if ig.Button("Reset")
+        _profile_action!(profiler) do
+            Workspace.reset_internal_profile!(workspace)
+        end
+    end
+    can_reset || ig.EndDisabled()
+    ig.SameLine()
+
+    can_export = profiler.report isa Profiling.ProfileReport
+    can_export || ig.BeginDisabled()
+    if ig.Button("Export Perfetto")
+        _profile_action!(profiler) do
+            path = save_file("measurementbrowser-profile.json"; filterlist="json")
+            isempty(path) || Workspace.export_internal_profile!(workspace, path)
+        end
+    end
+    can_export || ig.EndDisabled()
+
+    isempty(profiler.error) || ig.TextWrapped("Profiler error: $(profiler.error)")
+    profiler.state === :preparing && ig.TextDisabled(
+        "Canceling current work before a clean profiled rebuild.",
+    )
+
+    report = profiler.report
+    if report isa Profiling.ProfileReport
+        ig.Spacing()
+        ig.Text(@sprintf(
+            "Duration %.2f s  Counters %d  CPU samples %d",
+            (report.stopped_ns - report.started_ns) / 1e9,
+            length(report.counters),
+            report.cpu === nothing ? 0 : report.cpu.total_samples,
+        ))
+        if _begin_perf_table("internal_summary", 10, 260.0f0)
+            for (name, width) in (
+                ("Operation", 160.0f0), ("n", 45.0f0), ("Total", 65.0f0),
+                ("p50", 58.0f0), ("p90", 58.0f0), ("p99", 58.0f0),
+                ("Max", 58.0f0), ("Wait", 65.0f0), ("Service", 65.0f0),
+                ("Batch p50/90/max", 120.0f0),
+            )
+                ig.TableSetupColumn(name, ig.ImGuiTableColumnFlags_WidthFixed, width)
+            end
+            ig.TableHeadersRow()
+            for row in report.summary
+                ig.TableNextRow()
+                for value in (
+                    "$(row.category)/$(row.operation)", string(row.count),
+                    @sprintf("%.1f", row.total_ms), @sprintf("%.2f", row.median_ms),
+                    @sprintf("%.2f", row.p90_ms), @sprintf("%.2f", row.p99_ms),
+                    @sprintf("%.2f", row.max_ms), @sprintf("%.1f", row.wait_ms),
+                    @sprintf("%.1f", row.service_ms),
+                    @sprintf("%.0f / %.0f / %.0f",
+                        row.median_batch, row.p90_batch, row.max_batch),
+                )
+                    ig.TableNextColumn(); _table_text(value)
+                end
+            end
+            ig.EndTable()
+        end
+    end
+
+    counter = Profiling.latest_counter(profiler)
+    if counter !== nothing
+        ig.Text(@sprintf(
+            "RSS %.1f MiB  GC %.1f ms / %d pauses (max %.1f ms)  Queue %d  Writer %.1f ms wait / %.1f ms service",
+            counter.rss_bytes / 1024^2,
+            counter.gc_total_ns / 1e6,
+            counter.gc_pause_count,
+            counter.gc_max_pause_ns / 1e6,
+            counter.queue_depth,
+            counter.writer_wait_ns / 1e6,
+            counter.writer_busy_ns / 1e6,
+        ))
+    end
+
+    available = report isa Profiling.ProfileReport ?
+        report.events : Profiling.recent_events(profiler; limit=2_000)
+    categories = sort!(unique([event.category for event in available]))
+    operations = sort!(unique([event.operation for event in available]))
+    state.performance.profile_category_filter = _profile_filter_combo!(
+        "Category##profile_category",
+        state.performance.profile_category_filter,
+        categories,
+    )
+    ig.SameLine()
+    state.performance.profile_operation_filter = _profile_filter_combo!(
+        "Operation##profile_operation",
+        state.performance.profile_operation_filter,
+        operations,
+    )
+    category_filter = state.performance.profile_category_filter
+    operation_filter = state.performance.profile_operation_filter
+    filtered = Profiling.ProfileEvent[
+        event for event in available
+        if (category_filter === :all || event.category === category_filter) &&
+           (operation_filter === :all || event.operation === operation_filter)
+    ]
+    recent = length(filtered) <= 200 ? filtered : filtered[end-199:end]
+    if !isempty(recent) && _begin_perf_table("internal_events", 6, 220.0f0)
+        for name in ("Category", "Operation", "ms", "Thread", "Status", "Batch")
+            ig.TableSetupColumn(name)
+        end
+        ig.TableHeadersRow()
+        for event in Iterators.reverse(recent)
+            ig.TableNextRow()
+            for value in (
+                String(event.category), String(event.operation),
+                @sprintf("%.3f", event.duration_ns / 1e6),
+                string(event.start_thread), String(event.status),
+                string(event.attributes.batch_size),
+            )
+                ig.TableNextColumn(); _table_text(value)
+            end
+        end
+        ig.EndTable()
+    end
+
+    ig.Separator()
+    _render_live_plots_tab!(state; internal=true)
+    return nothing
+end
+
 # ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
@@ -604,12 +788,13 @@ end
 Render the Performance debug window with a tab bar.
 
 Tabs:
-- Live         — GLMakie line plots: rolling plot-redraw timings + build progress, each with Export
+- Live         — GLMakie line plots for rolling plot-redraw timings
 - Plot Redraw  — load / setup / draw / total phase timings (table)
 - Hotspots     — sampling profiler results (also the "Profile full rebuild" button)
 - Operations   — all keyed `_append_perf_sample!` timings
 - Scan         — per-kind and per-source-item scan timings
 - Memory & GL  — process RSS, GC, I/O, OpenGL strings, frame counters
+- Internal     — opt-in structured engine spans, counters, CPU samples, and export
 """
 function render_perf_window(state::BrowserState)::Nothing
     state.show_performance_window || return nothing
@@ -651,6 +836,13 @@ function render_perf_window(state::BrowserState)::Nothing
             if ig.BeginTabItem("Memory & GL")
                 ig.Spacing()
                 _render_memory_gl_tab(state)
+                ig.EndTabItem()
+            end
+
+            if workspace isa Workspace.Workspace && workspace.profiler.enabled &&
+               ig.BeginTabItem("Internal")
+                ig.Spacing()
+                _render_internal_profile_tab!(state, workspace)
                 ig.EndTabItem()
             end
 

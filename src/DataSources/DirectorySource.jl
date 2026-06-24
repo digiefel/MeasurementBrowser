@@ -251,13 +251,19 @@ function Workspace.open_workspace(
     root_path::AbstractString;
     recursive::Bool=true,
     metadata_file::Union{Nothing,AbstractString}=DEFAULT_DIRECTORY_METADATA_FILE,
-    event_log::Union{Nothing,AbstractString}=nothing,
-    build_profile::Union{Nothing,AbstractString}=nothing,
+    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
+    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
+    profile_output::Union{Nothing,AbstractString}=
+        Profiling.environment_path("MB_PROFILE_OUTPUT"),
+    crash_trace::Union{Nothing,AbstractString}=
+        Profiling.environment_path("MB_CRASH_TRACE"),
 )::Workspace.Workspace
     return Workspace.open_workspace(
         project,
         DirectorySource(root_path; recursive, metadata_file);
-        event_log,
-        build_profile,
+        profile_internal,
+        profile_cpu,
+        profile_output,
+        crash_trace,
     )
 end

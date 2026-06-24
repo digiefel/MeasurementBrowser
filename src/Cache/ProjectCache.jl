@@ -151,6 +151,7 @@ mutable struct CacheDB
     db::DuckDB.DB
     writer::DuckDB.Connection
     writer_lock::ReentrantLock
+    profiler::Profiling.ProfileSession
     # Time threads spend waiting for a free writer vs. holding one doing work.
     writer_wait_ns::Base.Threads.Atomic{Int64}
     writer_busy_ns::Base.Threads.Atomic{Int64}
@@ -163,10 +164,13 @@ A cache that cannot be opened or whose schema cannot be created — a truncated 
 write-ahead log from a hard kill, or an unreadable older layout — is discarded and rebuilt from
 scratch rather than bricking the workspace. The data it held is recoverable by rescanning.
 """
-function open_cache_db(identity::ProjectCacheIdentity)::CacheDB
+function open_cache_db(
+    identity::ProjectCacheIdentity,
+    profiler::Profiling.ProfileSession,
+)::CacheDB
     mkpath(dirname(identity.cache_path))
     try
-        return _connect_cache_db(identity)
+        return _connect_cache_db(identity, profiler)
     catch err
         err isa InterruptException && rethrow()
         @warn(
@@ -175,12 +179,20 @@ function open_cache_db(identity::ProjectCacheIdentity)::CacheDB
             exception=err,
         )
         _remove_cache_files(identity.cache_path)
-        return _connect_cache_db(identity)
+        return _connect_cache_db(identity, profiler)
     end
 end
 
+"""Open a cache with internal profiling disabled for direct cache operations and tests."""
+function open_cache_db(identity::ProjectCacheIdentity)::CacheDB
+    return open_cache_db(identity, Profiling.ProfileSession(false, false, nothing, nothing))
+end
+
 """Connect to the cache file, ensure its schema, and wrap it in a [`CacheDB`](@ref)."""
-function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
+function _connect_cache_db(
+    identity::ProjectCacheIdentity,
+    profiler::Profiling.ProfileSession,
+)::CacheDB
     db = DBInterface.connect(DuckDB.DB, identity.cache_path)
     try
         DBInterface.execute(db, _memory_limit_sql(CACHE_MEMORY_LIMIT_MIB[]))   # see CACHE_MEMORY_LIMIT_MIB
@@ -200,7 +212,7 @@ function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
            only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
             throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
         end
-        return CacheDB(identity, db, DBInterface.connect(db), ReentrantLock(),
+        return CacheDB(identity, db, DBInterface.connect(db), ReentrantLock(), profiler,
             Base.Threads.Atomic{Int64}(0), Base.Threads.Atomic{Int64}(0))
     catch
         DBInterface.close!(db)
@@ -238,25 +250,50 @@ end
 
 """Run `work` on a fresh read connection that snapshots the latest committed cache state."""
 function with_reader(work::Function, cachedb::CacheDB)::Any
-    connection = DBInterface.connect(cachedb.db)
-    try
-        return work(connection)
-    finally
-        DBInterface.close!(connection)
+    return @profile_span cachedb.profiler :cache :reader ProfileAttributes() begin
+        connection = @profile_span cachedb.profiler :cache :connect_reader ProfileAttributes() begin
+            DBInterface.connect(cachedb.db)
+        end
+        try
+            work(connection)
+        finally
+            DBInterface.close!(connection)
+        end
     end
 end
 
 """Run `work` on the cache's serialized writer connection."""
 function with_writer(work::Function, cachedb::CacheDB)::Any
+    profiler = cachedb.profiler
+    token = Profiling.should_trace(profiler) ?
+        Profiling.start_span!(profiler, :cache, :writer) : nothing
     requested = time_ns()
     lock(cachedb.writer_lock)
     acquired = time_ns()
+    status = :ok
     Base.Threads.atomic_add!(cachedb.writer_wait_ns, Int64(acquired - requested))
     try
-        return work(cachedb.writer)
+        if token === nothing
+            return work(cachedb.writer)
+        end
+        return Base.ScopedValues.with(
+            Profiling.CURRENT_SPAN => token.id,
+            Profiling.CURRENT_SESSION => profiler,
+        ) do
+            work(cachedb.writer)
+        end
+    catch
+        status = :error
+        rethrow()
     finally
-        Base.Threads.atomic_add!(cachedb.writer_busy_ns, Int64(time_ns() - acquired))
+        released = time_ns()
+        service_ns = Int64(released - acquired)
+        Base.Threads.atomic_add!(cachedb.writer_busy_ns, service_ns)
         unlock(cachedb.writer_lock)
+        token === nothing || Profiling.finish_span!(token; status, attributes=ProfileAttributes(
+            wait_ns=Int64(acquired - requested),
+            service_ns=service_ns,
+        ))
     end
 end
 
@@ -267,18 +304,25 @@ Large scans call this once per bounded source-item batch so DuckDB can release t
 write memory between batches.
 """
 function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
-    return with_writer(cachedb) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            result = work(connection)
-            DBInterface.execute(connection, "COMMIT")
-            return result
-        catch
-            try
-                DBInterface.execute(connection, "ROLLBACK")
-            catch
+    return @profile_span cachedb.profiler :cache :transaction ProfileAttributes() begin
+        with_writer(cachedb) do connection
+            @profile_span cachedb.profiler :cache :begin_transaction ProfileAttributes() begin
+                DBInterface.execute(connection, "BEGIN TRANSACTION")
             end
-            rethrow()
+            try
+                result = work(connection)
+                @profile_span cachedb.profiler :cache :commit ProfileAttributes() begin
+                    DBInterface.execute(connection, "COMMIT")
+                end
+                result
+            catch transaction_error
+                try
+                    DBInterface.execute(connection, "ROLLBACK")
+                catch rollback_error
+                    throw(CompositeException(transaction_error, rollback_error))
+                end
+                throw(transaction_error)
+            end
         end
     end
 end
@@ -353,18 +397,16 @@ end
 
 """Serialize any value to a byte vector for a BLOB column."""
 function _serialize_bytes(value)::Vector{UInt8}
-    return @timeit_debug TIMER "cache/serialize" begin
-        io = IOBuffer()
-        serialize(io, value)
-        take!(io)
-    end
+    io = IOBuffer()
+    serialize(io, value)
+    return take!(io)
 end
 
 """Deserialize a BLOB column value (or `nothing` for SQL NULL)."""
 function _deserialize_blob(value)
     value === nothing && return nothing
     ismissing(value) && return nothing
-    return @timeit_debug TIMER "cache/deserialize" deserialize(IOBuffer(Vector{UInt8}(value)))
+    return deserialize(IOBuffer(Vector{UInt8}(value)))
 end
 
 """Map a SQL NULL (`missing`) to `nothing`, passing other values through."""
@@ -689,6 +731,7 @@ same order.
 """
 function reconcile_source_items!(
     connection,
+    profiler::Profiling.ProfileSession,
     record_batches::Vector{Vector{ItemRecord}},
     data_batches::Vector{Vector{Any}};
     stage::Symbol=:interpreted,
@@ -701,10 +744,18 @@ function reconcile_source_items!(
             throw(DimensionMismatch("each records/data batch must have equal lengths"))
     end
 
-    return @timeit_debug TIMER "cache/reconcile" begin
+    item_count = sum(length, record_batches)
+    return @profile_span profiler :cache :reconcile ProfileAttributes(
+        stage=stage,
+        items=Int64(item_count),
+        batch_size=Int64(length(record_batches)),
+    ) begin
         written = String[]
         sizehint!(written, length(record_batches))
-        @timeit_debug TIMER "cache/reconcile_index" begin
+        @profile_span profiler :cache :reconcile_source_rows ProfileAttributes(
+            stage=stage,
+            items=Int64(item_count),
+        ) begin
             for records in record_batches
                 push!(written, _reconcile_source_item!(connection, records))
             end
@@ -719,9 +770,18 @@ function reconcile_source_items!(
         for batch in data_batches
             append!(data, batch)
         end
-        @timeit_debug TIMER "cache/reconcile_index" _append_item_records!(connection, records)
-        @timeit_debug TIMER "cache/reconcile_data" _write_cached_item_data!(
-            connection, records, data, stage)
+        @profile_span profiler :cache :append_item_records ProfileAttributes(
+            stage=stage,
+            items=Int64(length(records)),
+        ) begin
+            _append_item_records!(connection, records)
+        end
+        @profile_span profiler :cache :write_item_payloads ProfileAttributes(
+            stage=stage,
+            items=Int64(length(records)),
+        ) begin
+            _write_cached_item_data!(connection, profiler, records, data, stage)
+        end
         written
     end
 end
@@ -734,7 +794,8 @@ function reconcile_source_items!(
     stage::Symbol=:interpreted,
 )::Vector{String}
     return with_writer_transaction(cachedb) do connection
-        reconcile_source_items!(connection, record_batches, data_batches; stage)
+        reconcile_source_items!(
+            connection, cachedb.profiler, record_batches, data_batches; stage)
     end
 end
 
@@ -756,7 +817,7 @@ function finalize_scan!(
     locations = _source_item_locations(source)
     current_ids = keys(source.source_item_fingerprints)
 
-    @timeit_debug TIMER "cache/finalize" begin
+    begin
         _write_meta_rows!(connection, identity, source)
 
         # Bare rows for source items the scan produced no records for (skipped or failed).
@@ -814,8 +875,13 @@ function finalize_scan!(
     source::SourceScan,
     written_ids::AbstractSet{<:AbstractString},
 )::Nothing
-    return with_writer_transaction(cachedb) do connection
-        finalize_scan!(connection, cachedb.identity, source, written_ids)
+    return @profile_span cachedb.profiler :cache :finalize_scan ProfileAttributes(
+        source_id=cachedb.identity.source_id,
+        items=Int64(length(source.hierarchy.all_items)),
+    ) begin
+        with_writer_transaction(cachedb) do connection
+            finalize_scan!(connection, cachedb.identity, source, written_ids)
+        end
     end
 end
 
@@ -826,18 +892,23 @@ function persist_stats!(
     node_stats::AbstractDict{<:Tuple,<:AbstractDict},
 )::Nothing
     (isempty(item_stats) && isempty(node_stats)) && return nothing
-    @timeit_debug TIMER "cache/persist_stats" with_writer_transaction(cachedb) do connection
-        delete_stmt = DBInterface.prepare(connection,
-            "DELETE FROM metadata WHERE scope = ? AND entity = ?")
-        insert_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
-        for (entity, stats) in item_stats
-            DBInterface.execute(delete_stmt, (Int8(SCOPE_ITEM_STATS), entity))
-            _insert_metadata!(insert_stmt, SCOPE_ITEM_STATS, entity, metadata_dict(stats))
-        end
-        for (path, stats) in node_stats
-            entity = collection_path_key(collect(String, path))
-            DBInterface.execute(delete_stmt, (Int8(SCOPE_NODE_STATS), entity))
-            _insert_metadata!(insert_stmt, SCOPE_NODE_STATS, entity, metadata_dict(stats))
+    @profile_span cachedb.profiler :cache :persist_stats ProfileAttributes(
+        items=Int64(length(item_stats) + length(node_stats)),
+        batch_size=Int64(length(item_stats) + length(node_stats)),
+    ) begin
+        with_writer_transaction(cachedb) do connection
+            delete_stmt = DBInterface.prepare(connection,
+                "DELETE FROM metadata WHERE scope = ? AND entity = ?")
+            insert_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
+            for (entity, stats) in item_stats
+                DBInterface.execute(delete_stmt, (Int8(SCOPE_ITEM_STATS), entity))
+                _insert_metadata!(insert_stmt, SCOPE_ITEM_STATS, entity, metadata_dict(stats))
+            end
+            for (path, stats) in node_stats
+                entity = collection_path_key(collect(String, path))
+                DBInterface.execute(delete_stmt, (Int8(SCOPE_NODE_STATS), entity))
+                _insert_metadata!(insert_stmt, SCOPE_NODE_STATS, entity, metadata_dict(stats))
+            end
         end
     end
     return nothing
@@ -988,8 +1059,12 @@ function load_cache_index(
     on_progress::Union{Nothing,Function}=nothing,
 )::ProjectCacheIndex
     identity = cachedb.identity
-    index = @timeit_debug TIMER "cache/load_index" with_reader(cachedb) do connection
-        ProjectCacheIndex(identity, _load_source_scan(connection, identity))
+    index = @profile_span cachedb.profiler :cache :load_index ProfileAttributes(
+        source_id=identity.source_id,
+    ) begin
+        with_reader(cachedb) do connection
+            ProjectCacheIndex(identity, _load_source_scan(connection, identity))
+        end
     end
     _emit_cache_load_progress(on_progress, index)
     return index

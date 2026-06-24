@@ -3,6 +3,7 @@ using GLMakie: Figure, Observable
 import CImGui as ig
 
 import ..Workspace
+import ..Profiling
 using ..Projects: KindProfileRow, Project, SourceProfileRow
 using ..TableInspector: TablePreview, InspectorTable
 using ..Visualization: PlotKind
@@ -135,9 +136,7 @@ Ring-buffer state and Makie figure handles for the live-plots tab in the Perform
 
 Two figures are created once and updated in place via Observables:
 - `timings_figure`: rolling plot-redraw phase durations (load / setup / draw-data / total).
-- `build_figure`: a six-panel dashboard of the live build — progress, throughput, writer concurrency,
-  per-item write cost, cumulative write time, and RSS — the same quantities `bench/visualize_build.jl`
-  reconstructs from the CSVs, but computed live from the sampled counters.
+- `build_figure`: rolling build progress, cache-write service time, and process RSS.
 
 Each line carries its own `_x`/`_obs` pair so series of different length never collide (the plot-error
 path records only `:plot_draw`, so the phase vectors do diverge). `_buf` fields are bounded ring
@@ -213,6 +212,9 @@ Base.@kwdef mutable struct PerformanceState
     scan_kind_grid::DataGridState = DataGridState()
     scan_source_grid::DataGridState = DataGridState()
     sampling_grid::DataGridState = DataGridState()
+    plot_sampling_profile::Union{Nothing,Profiling.SamplingProfile} = nothing
+    profile_category_filter::Symbol = :all
+    profile_operation_filter::Symbol = :all
     live_plots::LivePlotsState = LivePlotsState()
 end
 

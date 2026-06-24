@@ -23,13 +23,9 @@ import ..Projects:
     source_id,
     source_label
 import ..Profiling
-using ..Profiling: TIMER
-using TimerOutputs: @timeit_debug
+using ..Profiling: @profile_span, ProfileAttributes
 
-include("Cache/EventLog.jl")
 include("Cache/ProjectCache.jl")
 include("Cache/ItemDataCache.jl")
-
-Profiling.register_instrumented!(@__MODULE__)
 
 end

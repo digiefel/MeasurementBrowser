@@ -25,6 +25,48 @@ function stop_processing_workers!(workspace::Workspace)::Nothing
     return nothing
 end
 
+"""Cancel every waiting processing job while allowing currently executing callbacks to finish."""
+function cancel_waiting_processing!(workspace::Workspace)::Nothing
+    queue = workspace.processing
+    canceled = ProcessingJob[]
+    lock(queue.lock) do
+        for (id, job) in collect(queue.jobs)
+            job.state === :waiting || continue
+            delete!(queue.jobs, id)
+            push!(canceled, job)
+        end
+        queue.completed += length(canceled)
+        notify(queue.condition; all=true)
+    end
+    failure = ProcessingResult(
+        nothing,
+        CapturedException(JobCancelled(), Any[]),
+    )
+    for job in canceled, waiter in job.waiters
+        put!(waiter, failure)
+    end
+    return nothing
+end
+
+"""Reset idle processing bookkeeping before a clean profiling rebuild."""
+function reset_processing_queue!(workspace::Workspace)::Nothing
+    queue = workspace.processing
+    lock(queue.lock) do
+        isempty(queue.jobs) || error("Cannot reset processing while jobs are active")
+        isempty(queue.pending_writes) || error(
+            "Cannot reset processing while cache writes are pending",
+        )
+        queue.write_active && error("Cannot reset processing while a cache writer is active")
+        empty!(queue.selected)
+        empty!(queue.background)
+        queue.background_index = 1
+        empty!(queue.source_locks)
+        queue.total = 0
+        queue.completed = 0
+    end
+    return nothing
+end
+
 """Commit one processed value through the processing queue's shared cache writer."""
 function commit_processed_item!(
     workspace::Workspace,
@@ -54,15 +96,21 @@ function commit_processed_item!(
             end
             payload_failure = try
                 write_started = time_ns()
-                write_cached_item_data!(
-                    workspace.cache.db,
-                    ItemRecord[pending.record for pending in batch],
-                    Any[pending.item for pending in batch];
+                Profiling.@profile_span workspace.profiler :processing :commit_batch Profiling.ProfileAttributes(
                     stage=:processed,
-                )
+                    items=Int64(length(batch)),
+                    batch_size=Int64(length(batch)),
+                ) begin
+                    write_cached_item_data!(
+                        workspace.cache.db,
+                        ItemRecord[pending.record for pending in batch],
+                        Any[pending.item for pending in batch];
+                        stage=:processed,
+                    )
+                end
                 record_cache_phase!(
-                    workspace.monitor.processed_write_ns,
-                    workspace.monitor.processed_writes, write_started)
+                    workspace.metrics.processed_write_ns,
+                    workspace.metrics.processed_writes, write_started)
                 nothing
             catch error
                 CapturedException(error, catch_backtrace())
@@ -81,8 +129,8 @@ function commit_processed_item!(
                             Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
                         )
                         record_cache_phase!(
-                            workspace.monitor.stats_write_ns,
-                            workspace.monitor.stats_writes, write_started)
+                            workspace.metrics.stats_write_ns,
+                            workspace.metrics.stats_writes, write_started)
                     end
                     nothing
                 catch error
@@ -157,7 +205,8 @@ function enqueue_processing!(
         queue.closed && error("Cannot queue processing after the workspace has closed")
         job = get(queue.jobs, record.id, nothing)
         if job === nothing
-            job = ProcessingJob(record, :waiting, selected ? 1 : 0, Channel{Any}[])
+            job = ProcessingJob(
+                record, :waiting, selected ? 1 : 0, Channel{Any}[], time_ns())
             queue.jobs[record.id] = job
             queue.total += 1
             push!(selected ? queue.selected : queue.background, record.id)
@@ -196,7 +245,11 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
             "is no longer present in source '$(source_id(workspace.source))'",
         )
         interpretation = interpret_source_item(
-            workspace.project, workspace.source, discovered[position])
+            workspace.project,
+            workspace.source,
+            discovered[position],
+            workspace.profiler,
+        )
         stored = Any[
             cacheable(item) ? item : nothing
             for item in interpretation.interpreted_items
@@ -230,15 +283,27 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
 
     interpreted = interpreted_item(workspace, job)
     process_started = time_ns()
-    processed = process(workspace.project, workspace.source, interpreted)
+    processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
+        kind=job.record.kind,
+        source_id=job.record.source_item_id,
+        item_id=job.record.id,
+    ) begin
+        process(workspace.project, workspace.source, interpreted)
+    end
     record_scan_phase!(workspace.project, job.record.source_item_id, job.record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
     view_item = DataItem(job.record, item_data(processed))
     item_stats = copy(job.record.stats)
     stats_failure = try
         stats_started = time_ns()
-        computed = metadata_dict(compute_item_stats(
-            workspace.project, workspace.source, view_item))
+        computed = Profiling.@profile_span workspace.profiler :project :item_stats Profiling.ProfileAttributes(
+            kind=job.record.kind,
+            source_id=job.record.source_item_id,
+            item_id=job.record.id,
+        ) begin
+            metadata_dict(compute_item_stats(
+                workspace.project, workspace.source, view_item))
+        end
         record_scan_phase!(workspace.project, job.record.source_item_id, job.record.kind,
             :stats, (time_ns() - stats_started) / 1e9, Base.Threads.threadid())
         merge!(item_stats, computed)
@@ -282,7 +347,15 @@ function processing_worker!(workspace::Workspace)::Nothing
         end
         job === nothing && return nothing
         result = try
-            ProcessingResult(process_item(workspace, job), nothing)
+            item = Profiling.@profile_span workspace.profiler :processing :item Profiling.ProfileAttributes(
+                kind=job.record.kind,
+                source_id=job.record.source_item_id,
+                item_id=job.record.id,
+                wait_ns=Int64(time_ns() - job.queued_ns),
+            ) begin
+                process_item(workspace, job)
+            end
+            ProcessingResult(item, nothing)
         catch error
             persist_item_failure!(
                 workspace.cache.db,

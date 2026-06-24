@@ -48,7 +48,7 @@ function request_plot_profile!(state::BrowserState)::Nothing
     return nothing
 end
 
-"""Print a captured plot-redraw profile to the console: phase split, cache timers, and hotspots."""
+"""Print one captured plot-redraw phase and CPU-sampling report."""
 function _print_plot_profile(
     phases::NamedTuple,
     profile::Union{Nothing,Profiling.SamplingProfile},
@@ -63,9 +63,6 @@ function _print_plot_profile(
         phases.data_ms, phases.data_alloc / 1024^2)
     @printf(io, "  TOTAL                                   %9.1f ms\n",
         phases.load_ms + phases.setup_ms + phases.data_ms)
-
-    println(io, "\n  ---- cache timers (@timeit_debug regions hit this redraw) ----")
-    Profiling.report(io; sortby=:time)
 
     if profile !== nothing
         secs_per_sample = profile.delay_seconds
@@ -94,8 +91,7 @@ end
 Draw one plot and keep a short UI error when drawing fails.
 
 The console receives the complete exception together with the source, plot type, and source items.
-When `state.profile_next_plot` is set, this redraw is wrapped in the sampling profiler and the cache
-`@timeit_debug` timers, and a full breakdown is printed to the console (see [`_print_plot_profile`](@ref)).
+When `state.profile_next_plot` is set, this redraw is wrapped in Julia's sampling profiler.
 """
 function draw_plot_view!(
     state::BrowserState,
@@ -109,14 +105,12 @@ function draw_plot_view!(
     started_ns = time_ns()
     draw_alloc = 0
 
-    # Arm the real profiler for this one redraw if requested. Sampling is all-thread and bounded;
-    # enabling the cache debug timers makes the @timeit_debug regions in the read path record.
+    # Arm Julia's bounded all-thread sampler for this one redraw if requested.
     profiling = state.profile_next_plot
     state.profile_next_plot = false
     sampling = false
     if profiling
         try
-            Profiling.enable!()
             Profiling.start_sampling!()
             sampling = true
         catch profile_err
@@ -129,11 +123,23 @@ function draw_plot_view!(
         figure = nothing
         items = nothing
         result = nothing
-        load_alloc = @allocated (items = Workspace.materialize_items(workspace, records))
+        load_alloc = @allocated (items = Profiling.@profile_span workspace.profiler :plot :materialize Profiling.ProfileAttributes(
+            items=Int64(length(records)),
+        ) begin
+            Workspace.materialize_items(workspace, records)
+        end)
         load_ns = time_ns()
-        setup_alloc = @allocated (result = setup_plot(workspace, plot_kind, items))
+        setup_alloc = @allocated (result = Profiling.@profile_span workspace.profiler :plot :setup Profiling.ProfileAttributes(
+            items=Int64(length(records)),
+        ) begin
+            setup_plot(workspace, plot_kind, items)
+        end)
         setup_ns = time_ns()
-        data_alloc = @allocated plot_data!(workspace, plot_kind, items, result)
+        data_alloc = @allocated Profiling.@profile_span workspace.profiler :plot :draw Profiling.ProfileAttributes(
+            items=Int64(length(records)),
+        ) begin
+            plot_data!(workspace, plot_kind, items, result)
+        end
         data_ns = time_ns()
         figure = result
         figure === nothing && error("Plot renderer returned no figure.")
@@ -145,7 +151,7 @@ function draw_plot_view!(
         if profiling
             captured = sampling ? Profiling.stop_sampling!() : nothing
             sampling = false
-            captured === nothing || (workspace.sampling_profile = captured)
+            captured === nothing || (state.performance.plot_sampling_profile = captured)
             _print_plot_profile(
                 (load_ms=(load_ns - started_ns) / 1e6, load_alloc=load_alloc,
                  setup_ms=(setup_ns - load_ns) / 1e6, setup_alloc=setup_alloc,
@@ -184,11 +190,7 @@ function draw_plot_view!(
             exception=(err, bt),
         )
     finally
-        # Never leave the profiler running or the debug timers enabled, even if the redraw threw.
-        if profiling
-            sampling && Profiling.cancel_sampling!()
-            Profiling.disable!()
-        end
+        profiling && sampling && Profiling.cancel_sampling!()
     end
     return nothing
 end

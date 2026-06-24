@@ -373,8 +373,13 @@ function Projects.data_items(
 )::Vector{<:AbstractDataItem}
     recipe = nothing
     started = time_ns()
+    profiler = Profiling.current_session()
     try
-        recipe = _detect_recipe(project, file)
+        recipe = Profiling.@profile_span profiler :project :detect Profiling.ProfileAttributes(
+            source_id=file.filepath,
+        ) begin
+            _detect_recipe(project, file)
+        end
     finally
         record_scan_phase!(
             project, file.filepath,
@@ -384,7 +389,12 @@ function Projects.data_items(
     recipe === nothing && return DataItem[]
     started = time_ns()
     data = try
-        recipe.read(file)
+        Profiling.@profile_span profiler :project :read Profiling.ProfileAttributes(
+            kind=recipe.kind,
+            source_id=file.filepath,
+        ) begin
+            recipe.read(file)
+        end
     finally
         record_scan_phase!(
             project, file.filepath, recipe.kind, :read,
@@ -392,10 +402,15 @@ function Projects.data_items(
     end
     started = time_ns()
     items = try
-        AbstractDataItem[
-            _normalize_entry(recipe, file.filepath, item)
-            for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
-        ]
+        Profiling.@profile_span profiler :project :entries Profiling.ProfileAttributes(
+            kind=recipe.kind,
+            source_id=file.filepath,
+        ) begin
+            AbstractDataItem[
+                _normalize_entry(recipe, file.filepath, item)
+                for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
+            ]
+        end
     finally
         record_scan_phase!(
             project, file.filepath, recipe.kind, :entries,

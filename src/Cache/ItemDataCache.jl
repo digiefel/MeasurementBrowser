@@ -225,6 +225,7 @@ once, bounded to at most one source item per worker, so DuckDB receives one cont
 """
 function _write_dataframe_group!(
     connection,
+    profiler::Profiling.ProfileSession,
     entries::Vector{DataFrameCacheEntry},
     schemas::Dict{String,Vector{String}},
     seqs::Dict{String,Int64},
@@ -257,11 +258,16 @@ function _write_dataframe_group!(
         ]
         if !isempty(old_seqs)
             seq_placeholders = _sql_placeholders(length(old_seqs))
-            @cache_event :delete sum(entry -> nrow(entry.data), entries) DBInterface.execute(
-                DBInterface.prepare(
-                    connection, "DELETE FROM $table WHERE __mb_seq IN ($seq_placeholders)"),
-                Tuple(old_seqs),
-            )
+            @profile_span profiler :cache :delete_payload_rows ProfileAttributes(
+                rows=Int64(sum(entry -> nrow(entry.data), entries)),
+                batch_size=Int64(length(entries)),
+            ) begin
+                DBInterface.execute(
+                    DBInterface.prepare(
+                        connection, "DELETE FROM $table WHERE __mb_seq IN ($seq_placeholders)"),
+                    Tuple(old_seqs),
+                )
+            end
             DBInterface.execute(
                 DBInterface.prepare(connection, """
                     DELETE FROM item_data
@@ -274,7 +280,11 @@ function _write_dataframe_group!(
 
     seq_column = _temporary_column_name(entries, "__mb_seq")
     row_column = _temporary_column_name(entries, "__mb_row")
-    staged = @timeit_debug TIMER "cache/stage_dataframe" begin
+    staged = @profile_span profiler :cache :stage_dataframe ProfileAttributes(
+        items=Int64(length(entries)),
+        rows=Int64(sum(entry -> nrow(entry.data), entries)),
+        batch_size=Int64(length(entries)),
+    ) begin
         if length(entries) == 1
             frame = DataFrame(first_entry.data; copycols=false)
             frame[!, Symbol(row_column)] = Base.OneTo(nrow(frame))
@@ -322,7 +332,11 @@ function _write_dataframe_group!(
     view_name = ITEM_DATA_VIEW
     registered = false
     statement = nothing
-    @timeit_debug TIMER "cache/write_dataframe" begin
+    @profile_span profiler :cache :write_dataframe ProfileAttributes(
+        items=Int64(length(entries)),
+        rows=Int64(sum(entry -> nrow(entry.data), entries)),
+        batch_size=Int64(length(entries)),
+    ) begin
         try
             DuckDB.register_data_frame(connection, staged, view_name)
             registered = true
@@ -335,11 +349,9 @@ function _write_dataframe_group!(
                 FROM $(_quote_identifier(view_name))
             """)
             if length(entries) == 1
-                @cache_event :insert nrow(first_entry.data) DBInterface.execute(
-                    statement, (seqs[first_entry.record.id],))
+                DBInterface.execute(statement, (seqs[first_entry.record.id],))
             else
-                @cache_event :insert sum(entry -> nrow(entry.data), entries) DBInterface.execute(
-                    statement)
+                DBInterface.execute(statement)
             end
         finally
             statement === nothing || DBInterface.close!(statement)
@@ -359,7 +371,6 @@ function _write_dataframe_group!(
         )
         schemas[storage_id] = column_names
     end
-    Base.Threads.atomic_add!(ITEMS_WRITTEN, length(entries))
     return nothing
 end
 
@@ -390,6 +401,7 @@ end
 """Write aligned loaded items on one connection, removing entries that are no longer cacheable."""
 function _write_cached_item_data!(
     connection,
+    profiler::Profiling.ProfileSession,
     items::Vector{ItemRecord},
     data::Vector,
     stage::Symbol,
@@ -398,7 +410,10 @@ function _write_cached_item_data!(
         throw(ArgumentError("unknown item-data cache stage '$stage'"))
     schemas = _load_dataframe_schemas(connection)
     groups = Dict{String,Vector{DataFrameCacheEntry}}()
-    @timeit_debug TIMER "cache/prepare_item_data" begin
+    @profile_span profiler :cache :prepare_item_data ProfileAttributes(
+        stage=stage,
+        items=Int64(length(items)),
+    ) begin
         for (record, value) in zip(items, data)
             check_cancel()
             if !_item_data_cacheable(record) || value === nothing
@@ -417,13 +432,20 @@ function _write_cached_item_data!(
     end
     seqs = _mint_item_seqs!(
         connection, String[entry.record.id for entries in values(groups) for entry in entries])
-    @timeit_debug TIMER "cache/write_dataframes" begin
+    @profile_span profiler :cache :write_dataframes ProfileAttributes(
+        stage=stage,
+        items=Int64(length(items)),
+        batch_size=Int64(length(items)),
+    ) begin
         for entries in values(groups), batch in _dataframe_write_batches(entries)
-            _write_dataframe_group!(connection, batch, schemas, seqs)
+            _write_dataframe_group!(connection, profiler, batch, schemas, seqs)
         end
     end
 
-    @timeit_debug TIMER "cache/index_item_data" begin
+    @profile_span profiler :cache :index_item_data ProfileAttributes(
+        stage=stage,
+        items=Int64(length(items)),
+    ) begin
         appender = DuckDB.Appender(connection, "item_data")
         try
             for entries in values(groups), entry in entries
@@ -497,6 +519,7 @@ end
 """Read valid cached DataFrames with scalar predicates so DuckDB can prune clustered payloads."""
 function _read_cached_item_data(
     connection,
+    profiler::Profiling.ProfileSession,
     items::Vector{ItemRecord},
     stage::Symbol,
 )::Vector{Any}
@@ -565,8 +588,12 @@ function _read_cached_item_data(
             ORDER BY __mb_seq, __mb_row
         """)
         seqs = Tuple(entry[1] for entry in entries)
-        raw = DataFrame(@cache_event :read length(entries) DBInterface.execute(
-            statement, seqs))
+        raw = @profile_span profiler :cache :payload_query ProfileAttributes(
+            stage=stage,
+            items=Int64(length(entries)),
+        ) begin
+            DataFrame(DBInterface.execute(statement, seqs))
+        end
         expected = Dict(entry[1] => (entry[2], entry[3], entry[4]) for entry in entries)
 
         function reconstruct(range)::DataFrame
@@ -626,8 +653,13 @@ function read_cached_item_data(
     stage::Symbol=:processed,
 )::Vector{Any}
     isempty(items) && return Any[]
-    return @timeit_debug TIMER "cache/read_item_data" with_reader(cachedb) do connection
-        _read_cached_item_data(connection, items, stage)
+    return @profile_span cachedb.profiler :cache :read_item_data ProfileAttributes(
+        stage=stage,
+        items=Int64(length(items)),
+    ) begin
+        with_reader(cachedb) do connection
+            _read_cached_item_data(connection, cachedb.profiler, items, stage)
+        end
     end
 end
 
@@ -666,8 +698,14 @@ function write_cached_item_data!(
     length(items) == length(data) ||
         throw(DimensionMismatch("items and data must have equal lengths"))
     isempty(items) && return nothing
-    @timeit_debug TIMER "cache/write_item_data" with_writer_transaction(cachedb) do connection
-        _write_cached_item_data!(connection, items, data, stage)
+    @profile_span cachedb.profiler :cache :write_item_data ProfileAttributes(
+        stage=stage,
+        items=Int64(length(items)),
+        batch_size=Int64(length(items)),
+    ) begin
+        with_writer_transaction(cachedb) do connection
+            _write_cached_item_data!(connection, cachedb.profiler, items, data, stage)
+        end
     end
     return nothing
 end

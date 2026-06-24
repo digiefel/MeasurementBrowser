@@ -22,9 +22,6 @@ import ..Cache:
     read_cached_item_data,
     reconcile_source_items!,
     set_cache_memory_limit!,
-    start_event_log!,
-    stop_event_log!,
-    current_event_log_path,
     with_reader,
     with_writer_transaction,
     write_cached_item_data!,
@@ -34,6 +31,7 @@ import ..ItemIndex:
     Hierarchy,
     ItemFailure,
     ItemRecord,
+    JobCancelled,
     MetadataDict,
     SourceItemInterpretation,
     SourceScan,
@@ -123,6 +121,7 @@ mutable struct ProcessingJob
     state::Symbol
     priority::Int
     waiters::Vector{Channel{Any}}
+    queued_ns::UInt64
 end
 
 """One completed processed value waiting for its small shared cache batch."""
@@ -224,7 +223,7 @@ end
 WorkspaceStatus() =
     WorkspaceStatus(:none, "Opening", "Opening the source…", true, nothing, Pair{String,String}[])
 
-include("Workspace/BuildMonitor.jl")
+include("Workspace/BuildMetrics.jl")
 
 """
 One open project/source pair and all package-managed state belonging to it.
@@ -241,16 +240,11 @@ mutable struct Workspace{S<:AbstractDataSource}
     # only a visible state and last error rather than a full WorkspaceJob.
     cache_state::Symbol
     cache_error::String
-    sampling_profile::Union{Nothing,Profiling.SamplingProfile}
-    sampling_active::Bool
     processing::ProcessingQueue
     background_tasks::Vector{Task}
-    monitor::BuildMonitor
-    # Debug outputs, opt-in per workspace via open_workspace. `nothing` = off. Each build (re)writes the
-    # file: `event_log_path` is the crash-durable per-operation log; `build_profile_path` is the
-    # per-second CSV of scan/analysis/writer metrics.
-    event_log_path::Union{Nothing,String}
-    build_profile_path::Union{Nothing,String}
+    metrics::BuildMetrics
+    profiler::Profiling.ProfileSession
+    profile_restart_pending::Bool
     status::WorkspaceStatus
     closed::Bool
 end
@@ -261,12 +255,23 @@ Create the empty state for one project-owned source.
 function Workspace(
     project::Project,
     source::S;
-    event_log::Union{Nothing,AbstractString}=nothing,
-    build_profile::Union{Nothing,AbstractString}=nothing,
+    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
+    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
+    profile_output::Union{Nothing,AbstractString}=
+        Profiling.environment_path("MB_PROFILE_OUTPUT"),
+    crash_trace::Union{Nothing,AbstractString}=
+        Profiling.environment_path("MB_CRASH_TRACE"),
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_name(project), source)
-    cache_db = open_cache_db(identity)
+    profiler = Profiling.ProfileSession(
+        profile_internal, profile_cpu, profile_output, crash_trace)
+    cache_db = try
+        open_cache_db(identity, profiler)
+    catch
+        Profiling.close!(profiler)
+        rethrow()
+    end
     workspace = Workspace(
         project,
         source,
@@ -284,13 +289,11 @@ function Workspace(
         WorkspaceJob(),
         :idle,
         "",
-        nothing,
-        false,
         ProcessingQueue(),
         Task[],
-        BuildMonitor(),
-        event_log === nothing ? nothing : String(event_log),
-        build_profile === nothing ? nothing : String(build_profile),
+        BuildMetrics(),
+        profiler,
+        false,
         WorkspaceStatus(),
         false,
     )

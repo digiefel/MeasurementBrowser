@@ -65,6 +65,7 @@ function interpret_source_item(
     project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
+    profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
 )::SourceItemInterpretation
     source_item_id_value = source_item_id(source_item)
     source_item_path_value = source_item_path(source_item)
@@ -76,7 +77,11 @@ function interpret_source_item(
     end
     source_started = time_ns()
     handles = try
-        data_items(project, source, source_item)::Vector{<:AbstractDataItem}
+        Profiling.@profile_span profiler :project :interpret_source_item Profiling.ProfileAttributes(
+            source_id=source_item_id_value,
+        ) begin
+            data_items(project, source, source_item)::Vector{<:AbstractDataItem}
+        end
     catch
         finish_source_profile!(
             project, source_item_id_value, source_item_label_value, source_item_path_value,
@@ -121,6 +126,7 @@ function interpret_source_items(
     unchanged_source_item_ids::Set{String}=Set{String}(),
     cached_records_by_source_item::Dict{String,Vector{ItemRecord}}=
         Dict{String,Vector{ItemRecord}}(),
+    profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
 )::NamedTuple
     processed_count::Int = 0
     item_count::Int = 0
@@ -172,7 +178,8 @@ function interpret_source_items(
                     end
                     interpretation = try
                         check_cancel()
-                        interpreted = interpret_source_item(project, source, source_item)
+                        interpreted = interpret_source_item(
+                            project, source, source_item, profiler)
                         check_cancel()
                         interpreted
                     catch error
@@ -328,6 +335,7 @@ function scan_source(
     on_kept_source_item::Union{Nothing,Function}=nothing,
     on_failure::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
+    profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
 )::SourceScan
     reset_scan_profile!(project)
     count_first && emit_progress(
@@ -346,7 +354,11 @@ function scan_source(
         loaded_items=0,
         skipped_source_items=0,
     )
-    discovered = source_items(source)
+    discovered = Profiling.@profile_span profiler :source :discover Profiling.ProfileAttributes(
+        source_id=source_id(source),
+    ) begin
+        source_items(source)
+    end
     fingerprints = fingerprints_by_source_item(discovered)
     check_cancel()
     cached_fingerprints_match = cached_source !== nothing &&
@@ -390,6 +402,7 @@ function scan_source(
         on_failure,
         unchanged_source_item_ids,
         cached_records_by_source_item,
+        profiler,
         on_progress=progress -> emit_progress(
             on_progress;
             phase=:scanning,

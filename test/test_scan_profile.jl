@@ -124,32 +124,6 @@ end
     end
 end
 
-@testset "profiled workspace rebuild" begin
-    mktempdir() do dir
-        for i in 1:4
-            write(joinpath(dir, "m$i.csv"), "x,y\n1,2\n3,4\n")
-        end
-        project = _profile_project()
-        workspace = MB.Workspace.Workspace(project, test_source(project, dir))
-        try
-            MB.Workspace.scan_source!(workspace; rebuild=true, capture_profile=true)
-            deadline = time() + 10
-            while time() < deadline && workspace.scan.state ∉ (:done, :error, :canceled)
-                MB.Workspace.poll_workspace!(workspace)
-                sleep(0.01)
-            end
-            MB.Workspace.poll_workspace!(workspace)
-
-            @test workspace.scan.state == :done
-            @test !workspace.sampling_active
-            @test workspace.sampling_profile isa MB.Profiling.SamplingProfile
-            @test length(MB.scan_source_profile(project)) == 4
-        finally
-            MB.close_workspace!(workspace)
-        end
-    end
-end
-
 @testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.

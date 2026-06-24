@@ -3,6 +3,8 @@ module ItemIndex
 using Dates
 using DataFrames: AbstractDataFrame
 
+import ..Profiling
+
 import ..Projects
 import ..Projects:
     AbstractDataSource,

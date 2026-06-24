@@ -4,10 +4,21 @@ Start cache loading and source scanning for one new workspace.
 function open_workspace(
     project::Project,
     source::AbstractDataSource;
-    event_log::Union{Nothing,AbstractString}=nothing,
-    build_profile::Union{Nothing,AbstractString}=nothing,
+    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
+    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
+    profile_output::Union{Nothing,AbstractString}=
+        Profiling.environment_path("MB_PROFILE_OUTPUT"),
+    crash_trace::Union{Nothing,AbstractString}=
+        Profiling.environment_path("MB_CRASH_TRACE"),
 )::Workspace
-    workspace = Workspace(project, source; event_log, build_profile)
+    workspace = Workspace(
+        project,
+        source;
+        profile_internal,
+        profile_cpu,
+        profile_output,
+        crash_trace,
+    )
     scan_source!(workspace)
     return workspace
 end
@@ -23,9 +34,16 @@ function close_workspace!(workspace::Workspace)::Nothing
         istaskdone(task) || wait(task)
     end
     stop_processing_workers!(workspace)
-    close_cache_db!(workspace.cache.db)
-    close_source!(workspace.source)
-    workspace.closed = true
+    try
+        Profiling.close!(workspace.profiler)
+    finally
+        try
+            close_cache_db!(workspace.cache.db)
+        finally
+            close_source!(workspace.source)
+            workspace.closed = true
+        end
+    end
     return nothing
 end
 
@@ -144,12 +162,10 @@ interpreted source items into the workspace and a bounded cache-write batch. One
 up to one source item per worker at a time, then commits that bounded batch. This avoids both
 whole-tree loaded-data retention and scan-wide DuckDB transaction growth. `rebuild=true` first wipes
 the cache and ignores the prior scan, forcing a full re-interpretation.
-`capture_profile=true` records a bounded all-thread CPU sampling profile for that operation.
 """
 function scan_source!(
     workspace::Workspace;
     rebuild::Bool=false,
-    capture_profile::Bool=false,
 )::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
     workspace.closed && error("The workspace is closed")
@@ -165,8 +181,7 @@ function scan_source!(
     workspace.cache_state = :loading
     workspace.cache_error = ""
     workspace.cache.operation = rebuild ? :rebuild : :update
-    begin_build_monitor!(workspace.monitor, workspace.cache.operation;
-        event_log=workspace.event_log_path, build_profile=workspace.build_profile_path)
+    reset_build_metrics!(workspace.metrics)
     cachedb.writer_wait_ns[] = 0
     cachedb.writer_busy_ns[] = 0
     # Detach the previous scan so this one streams into a fresh hierarchy: progressive results update
@@ -179,16 +194,11 @@ function scan_source!(
     cancel_token = Base.Threads.Atomic{Bool}(false)
     job.events = events
     job.cancel_token = cancel_token
-    workspace.sampling_active = capture_profile
-    capture_profile && (workspace.sampling_profile = nothing)
-
     task = Base.Threads.@spawn begin
-        sampling_running = false
+        Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
+            source_id=source_id(workspace.source),
+        ) begin
         try
-            if capture_profile
-                Profiling.start_sampling!()
-                sampling_running = true
-            end
             rebuild && clear_cache_index!(cachedb)
             cached = if rebuild
                 nothing
@@ -226,8 +236,8 @@ function scan_source!(
                 write_started = time_ns()
                 reconciled = reconcile_source_items!(cachedb, record_batches, data_batches)
                 record_cache_phase!(
-                    workspace.monitor.interpreted_write_ns,
-                    workspace.monitor.interpreted_writes, write_started)
+                    workspace.metrics.interpreted_write_ns,
+                    workspace.metrics.interpreted_writes, write_started)
                 union!(written_ids, reconciled)
                 # Interpreted data is now persisted, so enqueue data-less records and let processing
                 # read it back from the cache. The scan never holds a queue's worth of parsed data and
@@ -273,6 +283,7 @@ function scan_source!(
                         push!(kept_ids, source_item_id),
                     on_failure=(failure::ItemFailure) ->
                         put!(events, (kind=:failure, job_id=scan_id, failure)),
+                    profiler=workspace.profiler,
                 )
             end
             flush_cache_batch!()
@@ -286,23 +297,14 @@ function scan_source!(
             for record in records
                 record.id in processed_ids || enqueue_processing!(workspace, record)
             end
-            sampling_profile = if capture_profile
-                result = Profiling.stop_sampling!()
-                sampling_running = false
-                result
-            else
-                nothing
-            end
             put!(events, (
                 kind=:source,
                 job_id=scan_id,
                 source,
                 cache_hit,
-                sampling_profile,
                 status=_post_write_status(workspace.cache.identity, source, reuse_index),
             ))
         catch error
-            sampling_running && Profiling.cancel_sampling!()
             if is_job_cancelled(error)
                 put!(events, (kind=:canceled, job_id=scan_id))
             else
@@ -316,6 +318,7 @@ function scan_source!(
         finally
             close(events)
         end
+        end
     end
     track_task!(workspace, task)
     return nothing
@@ -327,6 +330,69 @@ rebuild_cache!(workspace::Workspace)::Nothing = scan_source!(workspace; rebuild=
 """Resize this workspace's DuckDB cache buffer-pool limit (MiB) live; suits a GUI control."""
 set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
     set_cache_memory_limit!(workspace.cache.db, mib)
+
+"""Return one lock-consistent counter snapshot for the structured profiler."""
+function profile_counter_snapshot(workspace::Workspace)::NamedTuple
+    completed, total, depth = lock(workspace.processing.lock) do
+        (
+            workspace.processing.completed,
+            workspace.processing.total,
+            length(workspace.processing.jobs),
+        )
+    end
+    return (
+        scan_done=workspace.scan.progress.processed_source_items,
+        scan_total=workspace.scan.progress.total_source_items,
+        processing_done=completed,
+        processing_total=total,
+        queue_depth=depth,
+        writer_busy_ns=workspace.cache.db.writer_busy_ns[],
+        writer_wait_ns=workspace.cache.db.writer_wait_ns[],
+    )
+end
+
+"""Begin recording immediately when idle, or prepare one clean rebuild after active work stops."""
+function start_internal_profile!(workspace::Workspace)::Nothing
+    profiler = workspace.profiler
+    Profiling.validate_start(profiler)
+    busy = source_scan_running(workspace) || processing_work_running(workspace) ||
+        analysis_work_running(workspace) || cache_work_running(workspace)
+    if busy
+        profiler.state = :preparing
+        workspace.profile_restart_pending = true
+        cancel_scan!(workspace)
+        cancel_analysis!(workspace)
+        cancel_waiting_processing!(workspace)
+    else
+        Profiling.start!(profiler, () -> profile_counter_snapshot(workspace))
+    end
+    return nothing
+end
+
+"""Stop an active internal profile without canceling application work."""
+function stop_internal_profile!(
+    workspace::Workspace,
+)::Union{Nothing,Profiling.ProfileReport}
+    profiler = workspace.profiler
+    if profiler.state === :preparing
+        workspace.profile_restart_pending = false
+        profiler.state = :idle
+        return nothing
+    end
+    return Profiling.stop!(profiler)
+end
+
+"""Clear one stopped internal profile report."""
+reset_internal_profile!(workspace::Workspace)::Nothing =
+    Profiling.reset!(workspace.profiler)
+
+"""Export one stopped internal profile as Chrome/Perfetto JSON."""
+function export_internal_profile!(
+    workspace::Workspace,
+    path::AbstractString,
+)::String
+    return Profiling.export!(workspace.profiler, path)
+end
 
 """
 Status of a cache that now mirrors `source` exactly.
@@ -455,12 +521,16 @@ function start_analysis!(workspace::Workspace)::Nothing
                             )
                             for record in node.items
                         ]
-                        computed = collection_stats(
-                            workspace.project,
-                            workspace.source,
-                            collect(path),
-                            items,
-                        )
+                        computed = Profiling.@profile_span workspace.profiler :project :collection_stats Profiling.ProfileAttributes(
+                            items=Int64(length(items)),
+                        ) begin
+                            collection_stats(
+                                workspace.project,
+                                workspace.source,
+                                collect(path),
+                                items,
+                            )
+                        end
                         isempty(computed) || (collection_node_stats[path] = computed)
                     catch error
                         is_job_cancelled(error) && rethrow()
@@ -485,8 +555,8 @@ function start_analysis!(workspace::Workspace)::Nothing
                     write_started = time_ns()
                     persist_stats!(cachedb, no_item_stats, collection_node_stats)
                     record_cache_phase!(
-                        workspace.monitor.stats_write_ns,
-                        workspace.monitor.stats_writes,
+                        workspace.metrics.stats_write_ns,
+                        workspace.metrics.stats_writes,
                         write_started,
                     )
                 end
@@ -659,16 +729,12 @@ function poll_workspace!(workspace::Workspace)::Bool
                 index_changed = true
                 workspace.scan.state = event.cache_hit ? :unchanged : :done
                 workspace.cache_state = :ready
-                event.sampling_profile === nothing ||
-                    (workspace.sampling_profile = event.sampling_profile)
-                workspace.sampling_active = false
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :canceled
                 workspace.scan.state = :canceled
                 workspace.cache_state =
                     workspace.cache_state == :writing ? :canceled : workspace.cache_state
-                workspace.sampling_active = false
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :error
@@ -677,7 +743,6 @@ function poll_workspace!(workspace::Workspace)::Bool
                     "Source scan failed. See the console for full details."
                 workspace.cache_state == :writing &&
                     (workspace.cache_state = :error)
-                workspace.sampling_active = false
                 @error(
                     "Source scan job failed",
                     source=source_id(workspace.source),
@@ -743,7 +808,8 @@ function poll_workspace!(workspace::Workspace)::Bool
         end
     end
 
-    workspace.analysis.state == :pending && !processing_work_running(workspace) &&
+    !workspace.profile_restart_pending && workspace.analysis.state == :pending &&
+        !processing_work_running(workspace) &&
         start_analysis!(workspace)
 
     # Refresh the watcher snapshot while work runs (progress advances without an index change) and for
@@ -751,10 +817,16 @@ function poll_workspace!(workspace::Workspace)::Bool
     busy = source_scan_running(workspace) || processing_work_running(workspace) ||
            analysis_work_running(workspace) ||
            cache_work_running(workspace)
-    if busy
-        maybe_report_build!(workspace)
-    elseif workspace.monitor.active && workspace.analysis.state != :pending
-        finish_build_monitor!(workspace)
+    if workspace.profile_restart_pending && !busy
+        reset_processing_queue!(workspace)
+        workspace.profile_restart_pending = false
+        workspace.profiler.state = :idle
+        Profiling.start!(
+            workspace.profiler,
+            () -> profile_counter_snapshot(workspace),
+        )
+        scan_source!(workspace; rebuild=true)
+        busy = true
     end
     (index_changed || busy || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))
