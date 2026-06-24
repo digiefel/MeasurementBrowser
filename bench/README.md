@@ -40,3 +40,15 @@ and saves each report under `bench/results/`. The harness reports real functions
 
 The `bench/` environment is separate from the package so its dev tools (BenchmarkTools, …) don't
 become runtime dependencies.
+
+## Realistic browsing
+
+```bash
+julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
+```
+
+Builds a deterministic three-kind project with thousands of files and measures real item
+materialization while the cache is being built and after it settles. The default scale models 4,500
+files and about 10,400 items; smaller scales are useful for iteration. `scorecard.csv` records scan,
+processing, and end-to-end throughput; mean write latency and writer occupancy; and aggregate
+during-build and after-build median, p90, p99, and maximum read latency.
