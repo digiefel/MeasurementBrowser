@@ -16,6 +16,7 @@ include("test_project.jl")
     include("test_type_api.jl")
     include("test_project_cache.jl")
     include("test_table_inspector.jl")
+    include("test_performance_window.jl")
     include("test_annotations.jl")
     if Threads.nthreads() >= 4
         include("test_threaded_crash_regressions.jl")

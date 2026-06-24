@@ -350,50 +350,58 @@ end
 # Tab: Live Plots
 # ---------------------------------------------------------------------------
 
-const _LIVE_PHASE_COLORS = (
-    load  = :steelblue,
-    setup = :darkorange,
-    data  = :forestgreen,
-    total = :crimson,
-)
-
 """
-Build the timings figure once, using Observables that are updated in place each frame.
+Build the redraw-timings figure once: one axis, four phase lines.
 
-Returns a `Figure` with one `Axis` showing the four plot-redraw phases as separate lines.
-The Observables in `lp` are mutated directly by [`_update_live_timings!`](@ref).
+Each phase carries its own `(x, y)` Observable pair so a longer series never collides with the
+others on a shared x.
 """
 function _make_timings_figure(lp::LivePlotsState)::Figure
-    fig = Figure(size=(600, 200))
-    ax  = Axis(fig[1, 1]; xlabel="sample", ylabel="ms", title="Plot redraw phases")
-    lines!(ax, lp.timings_x_obs, lp.load_obs;  color=_LIVE_PHASE_COLORS.load,  label="load")
-    lines!(ax, lp.timings_x_obs, lp.setup_obs; color=_LIVE_PHASE_COLORS.setup, label="setup")
-    lines!(ax, lp.timings_x_obs, lp.data_obs;  color=_LIVE_PHASE_COLORS.data,  label="draw data")
-    lines!(ax, lp.timings_x_obs, lp.total_obs; color=_LIVE_PHASE_COLORS.total, label="total")
-    axislegend(ax; position=:lt, labelsize=11)
+    fig = Figure(size=(680, 220))
+    axis = Axis(fig[1, 1]; xlabel="redraw #", ylabel="ms", title="Plot redraw phases")
+    lines!(axis, lp.load_x, lp.load_obs; color=:steelblue, label="load")
+    lines!(axis, lp.setup_x, lp.setup_obs; color=:darkorange, label="setup")
+    lines!(axis, lp.data_x, lp.data_obs; color=:forestgreen, label="draw data")
+    lines!(axis, lp.total_x, lp.total_obs; color=:crimson, label="total")
+    axislegend(axis; position=:lt, labelsize=10)
     return fig
 end
 
 """
-Build the build-progress figure once.
+Build the six-panel live build dashboard once.
 
-Lines show scan %, analysis %, interp-write cumulative ms, processed-write cumulative ms, and RSS.
-Because the scales differ wildly, scan/analysis are on the left axis (0–100 %) and
-writer/RSS are on the right axis (ms or MiB).
+All series share elapsed seconds on x. Separate axes keep percentages, rates, times, and memory from
+distorting each other.
 """
 function _make_build_figure(lp::LivePlotsState)::Figure
-    fig  = Figure(size=(600, 200))
-    ax_l = Axis(fig[1, 1]; xlabel="sample", ylabel="%  /  ms", title="Build progress")
-    ax_r = Axis(fig[1, 1]; ylabel="Peak RSS MiB",
-                yaxisposition=:right, yticklabelcolor=:grey50,
-                ytickcolor=:grey50, rightspinecolor=:grey50)
-    # Link x axes so pan/zoom stay in sync
-    lines!(ax_l, lp.build_x_obs, lp.scan_obs;             color=:royalblue,     label="scan %")
-    lines!(ax_l, lp.build_x_obs, lp.analysis_obs;         color=:darkorange,    label="analysis %")
-    lines!(ax_l, lp.build_x_obs, lp.interp_write_obs;     color=:orchid,        label="interp write ms")
-    lines!(ax_l, lp.build_x_obs, lp.processed_write_obs;  color=:seagreen,      label="proc write ms")
-    lines!(ax_r, lp.build_x_obs, lp.rss_obs;              color=:grey50,        label="RSS MiB")
-    axislegend(ax_l; position=:lt, labelsize=11)
+    fig = Figure(size=(680, 560))
+
+    progress_axis = Axis(fig[1, 1]; ylabel="%", title="Progress")
+    lines!(progress_axis, lp.elapsed_obs, lp.scan_pct_obs; color=:royalblue, label="scan")
+    lines!(progress_axis, lp.elapsed_obs, lp.analysis_pct_obs;
+        color=:darkorange, label="analysis")
+    axislegend(progress_axis; position=:lt, labelsize=10)
+
+    throughput_axis = Axis(fig[1, 2]; ylabel="items / s", title="Analysis throughput")
+    lines!(throughput_axis, lp.elapsed_obs, lp.throughput_obs; color=:purple)
+
+    writers_axis = Axis(fig[2, 1]; ylabel="writers", title="Writers busy concurrently")
+    lines!(writers_axis, lp.elapsed_obs, lp.writers_busy_obs; color=:black)
+
+    item_write_axis = Axis(fig[2, 2]; ylabel="ms / item", title="Processed write cost")
+    lines!(item_write_axis, lp.elapsed_obs, lp.per_item_write_obs; color=:teal)
+
+    cumulative_axis = Axis(
+        fig[3, 1]; xlabel="elapsed (s)", ylabel="s", title="Cumulative write time")
+    lines!(cumulative_axis, lp.elapsed_obs, lp.interp_cum_obs; color=:orchid, label="interp")
+    lines!(cumulative_axis, lp.elapsed_obs, lp.processed_cum_obs;
+        color=:seagreen, label="processed")
+    lines!(cumulative_axis, lp.elapsed_obs, lp.stats_cum_obs;
+        color=:goldenrod, label="stats")
+    axislegend(cumulative_axis; position=:lt, labelsize=10)
+
+    rss_axis = Axis(fig[3, 2]; xlabel="elapsed (s)", ylabel="GiB", title="Peak RSS")
+    lines!(rss_axis, lp.elapsed_obs, lp.rss_obs; color=:darkorange)
     return fig
 end
 
@@ -405,55 +413,54 @@ end
 end
 
 """
-Copy the latest content of `state.performance.timings` into the timings figure Observables.
+Refresh redraw-timing Observables only when a new redraw landed.
 
-Only touches the four canonical plot-redraw phase keys; other keys are ignored.
+Each phase keeps its own x values so error-only total samples cannot cause dimension mismatches.
 """
 function _update_live_timings!(lp::LivePlotsState, timings::Dict{Symbol,Vector{Float64}})::Nothing
-    phases = (
-        (:plot_load,  lp.load_obs),
-        (:plot_setup, lp.setup_obs),
-        (:plot_data,  lp.data_obs),
-        (:plot_draw,  lp.total_obs),
+    draw = get(timings, :plot_draw, Float64[])
+    length(draw) == lp.timings_seen && return nothing
+    lp.timings_seen = length(draw)
+    for (key, x_values, y_values) in (
+        (:plot_load, lp.load_x, lp.load_obs),
+        (:plot_setup, lp.setup_x, lp.setup_obs),
+        (:plot_data, lp.data_x, lp.data_obs),
+        (:plot_draw, lp.total_x, lp.total_obs),
     )
-    # All phase vectors share the same length as plot_load (or 0 when empty)
-    ref_data = get(timings, :plot_load, Float64[])
-    n = length(ref_data)
-    if n == 0
-        for (_, obs) in phases
-            isempty(obs[]) || (obs[] = Float32[])
+        values = get(timings, key, Float64[])
+        sample_count = length(values)
+        retained = min(lp.capacity, sample_count)
+        if retained == 0
+            isempty(y_values[]) || (x_values[] = Float32[]; y_values[] = Float32[])
+            continue
         end
-        isempty(lp.timings_x_obs[]) || (lp.timings_x_obs[] = Float32[])
-        return nothing
-    end
-    lp.timings_x_obs[] = Float32.(1:n)
-    for (key, obs) in phases
-        data = get(timings, key, Float64[])
-        new_vals = isempty(data) ? zeros(Float32, n) : Float32.(data)
-        obs[] = new_vals
+        first_index = sample_count - retained + 1
+        x_values[] = Float32.(first_index:sample_count)
+        y_values[] = Float32.(@view values[first_index:sample_count])
     end
     return nothing
 end
 
 """
-Sample the current workspace's build counters into the ring buffers and update the build
-figure Observables.
-
-Called every frame from `_render_live_plots_tab!`. The ring buffers are the source of truth;
-Observables are updated only when a new sample is appended or the buffers change.
+Sample live build counters into bounded dashboard buffers at most once per 250 ms.
 """
 const _BUILD_SAMPLE_INTERVAL_NS = UInt64(250_000_000)  # 250 ms
 
 function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
     now = time_ns()
-    now - lp.last_build_sample_ns < _BUILD_SAMPLE_INTERVAL_NS && return nothing
-    lp.last_build_sample_ns = now
+    lp.t0_ns == 0 && (lp.t0_ns = now)
+    now - lp.last_sample_ns < _BUILD_SAMPLE_INTERVAL_NS && return nothing
+    lp.last_sample_ns = now
+    elapsed = Float64(now - lp.t0_ns) / 1e9
 
-    scan_pct       = 0.0f0
-    analysis_pct   = 0.0f0
-    interp_ms      = 0.0f0
-    processed_ms   = 0.0f0
-    rss_mib        = Float32(Sys.maxrss()) / (1024.0f0^2)
+    scan_pct = 0.0f0
+    analysis_pct = 0.0f0
+    completed = 0
+    processed_write_ns = Int64(0)
+    writer_busy_ns = Int64(0)
+    interpreted_seconds = 0.0f0
+    processed_seconds = 0.0f0
+    stats_seconds = 0.0f0
 
     if workspace isa Workspace.Workspace
         progress = workspace.scan.progress
@@ -461,31 +468,59 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
         scan_pct = total_si > 0 ?
             Float32(100 * progress.processed_source_items / total_si) : 0.0f0
 
-        completed, total_proc = lock(workspace.processing.lock) do
+        completed, total_processing = lock(workspace.processing.lock) do
             (workspace.processing.completed, workspace.processing.total)
         end
-        analysis_pct = total_proc > 0 ?
-            Float32(100 * completed / total_proc) : 0.0f0
+        analysis_pct = total_processing > 0 ?
+            Float32(100 * completed / total_processing) : 0.0f0
 
         metrics = workspace.metrics
-        interp_ms     = Float32(metrics.interpreted_write_ns[] / 1e6)
-        processed_ms  = Float32(metrics.processed_write_ns[]  / 1e6)
+        processed_write_ns = metrics.processed_write_ns[]
+        interpreted_seconds = Float32(metrics.interpreted_write_ns[] / 1e9)
+        processed_seconds = Float32(metrics.processed_write_ns[] / 1e9)
+        stats_seconds = Float32(metrics.stats_write_ns[] / 1e9)
+        writer_busy_ns = workspace.cache.db.writer_busy_ns[]
     end
 
-    cap = lp.capacity
-    _ring_push!(lp.scan_pct_buf,          scan_pct,      cap)
-    _ring_push!(lp.analysis_pct_buf,      analysis_pct,  cap)
-    _ring_push!(lp.interp_write_ms_buf,   interp_ms,     cap)
-    _ring_push!(lp.processed_write_ms_buf, processed_ms, cap)
-    _ring_push!(lp.rss_mib_buf,           rss_mib,       cap)
+    elapsed_delta = elapsed - lp.last_elapsed_s
+    completed_delta = completed - lp.last_completed
+    busy_delta = writer_busy_ns - lp.last_writer_busy_ns
+    write_delta = processed_write_ns - lp.last_processed_write_ns
+    throughput = elapsed_delta > 0 && completed_delta >= 0 ?
+        Float32(completed_delta / elapsed_delta) : 0.0f0
+    writers_busy = elapsed_delta > 0 && busy_delta >= 0 ?
+        Float32(busy_delta / 1e9 / elapsed_delta) : 0.0f0
+    per_item_write = completed_delta > 0 && write_delta >= 0 ?
+        Float32(write_delta / 1e6 / completed_delta) : 0.0f0
+    peak_rss_gib = Float32(Sys.maxrss() / 1024^3)
 
-    n = length(lp.scan_pct_buf)
-    lp.build_x_obs[]          = Float32.(1:n)
-    lp.scan_obs[]              = copy(lp.scan_pct_buf)
-    lp.analysis_obs[]          = copy(lp.analysis_pct_buf)
-    lp.interp_write_obs[]      = copy(lp.interp_write_ms_buf)
-    lp.processed_write_obs[]   = copy(lp.processed_write_ms_buf)
-    lp.rss_obs[]               = copy(lp.rss_mib_buf)
+    lp.last_elapsed_s = elapsed
+    lp.last_completed = completed
+    lp.last_processed_write_ns = processed_write_ns
+    lp.last_writer_busy_ns = writer_busy_ns
+
+    capacity = lp.capacity
+    _ring_push!(lp.elapsed_buf, Float32(elapsed), capacity)
+    _ring_push!(lp.scan_pct_buf, scan_pct, capacity)
+    _ring_push!(lp.analysis_pct_buf, analysis_pct, capacity)
+    _ring_push!(lp.throughput_buf, throughput, capacity)
+    _ring_push!(lp.writers_busy_buf, writers_busy, capacity)
+    _ring_push!(lp.per_item_write_buf, per_item_write, capacity)
+    _ring_push!(lp.interp_cum_buf, interpreted_seconds, capacity)
+    _ring_push!(lp.processed_cum_buf, processed_seconds, capacity)
+    _ring_push!(lp.stats_cum_buf, stats_seconds, capacity)
+    _ring_push!(lp.rss_buf, peak_rss_gib, capacity)
+
+    lp.elapsed_obs[] = copy(lp.elapsed_buf)
+    lp.scan_pct_obs[] = copy(lp.scan_pct_buf)
+    lp.analysis_pct_obs[] = copy(lp.analysis_pct_buf)
+    lp.throughput_obs[] = copy(lp.throughput_buf)
+    lp.writers_busy_obs[] = copy(lp.writers_busy_buf)
+    lp.per_item_write_obs[] = copy(lp.per_item_write_buf)
+    lp.interp_cum_obs[] = copy(lp.interp_cum_buf)
+    lp.processed_cum_obs[] = copy(lp.processed_cum_buf)
+    lp.stats_cum_obs[] = copy(lp.stats_cum_buf)
+    lp.rss_obs[] = copy(lp.rss_buf)
     return nothing
 end
 
@@ -509,14 +544,13 @@ function _export_live_figure(
         @error("Live-plot export failed\nOutput: $path", exception=(err, bt))
         return "Export failed: $summary. See the console for full details."
     end
-    # Write companion CSV
     if !isempty(series)
         csv_path = splitext(path)[1] * "_data.csv"
         try
             open(csv_path, "w") do io
                 println(io, join(first.(series), ","))
-                n = length(last(first(series)))
-                for i in 1:n
+                rows = minimum(length(last(entry)) for entry in series)
+                for i in 1:rows
                     println(io, join((string(last(s)[i]) for s in series), ","))
                 end
             end
@@ -528,10 +562,10 @@ function _export_live_figure(
 end
 
 """
-Render the Live tab: two embedded Makie figures (timings + build progress) with Export buttons.
+Render the normal redraw plot or the opt-in internal build dashboard.
 
-Figures are created once per `PerformanceState` lifetime and updated in place each frame via
-Observables. `MakieFigure` polls GLMakie for pending updates and renders only dirty frames.
+Each figure is created only when its owning tab is visible. `MakieFigure` polls GLMakie for pending
+updates and renders only dirty frames.
 """
 function _render_live_plots_tab!(
     state::BrowserState;
@@ -540,28 +574,17 @@ function _render_live_plots_tab!(
     lp        = state.performance.live_plots
     workspace = state.workspace
 
-    # Lazily create figures on first render
-    if lp.timings_figure === nothing
-        lp.timings_figure = _make_timings_figure(lp)
-    end
-    if lp.build_figure === nothing
-        lp.build_figure = _make_build_figure(lp)
-    end
-
-    # Update timings Observables from the existing bounded vectors (no extra copy needed)
-    _update_live_timings!(lp, state.performance.timings)
-
-    # Sample build progress into ring buffers and push to Observables
-    _sample_build_progress!(lp, workspace)
-
     if !internal
-        ig.TextUnformatted("Plot redraw phase timings")
+        lp.timings_figure === nothing && (lp.timings_figure = _make_timings_figure(lp))
+        _update_live_timings!(lp, state.performance.timings)
+        ig.TextUnformatted("Plot redraw phase timings (ms per redraw)")
         ig.SameLine()
         if ig.Button("Export##live_timings_export")
             series = Pair{String,Vector{Float32}}[
-                "load_ms"  => copy(lp.load_obs[]),
+                "redraw" => copy(lp.total_x[]),
+                "load_ms" => copy(lp.load_obs[]),
                 "setup_ms" => copy(lp.setup_obs[]),
-                "data_ms"  => copy(lp.data_obs[]),
+                "data_ms" => copy(lp.data_obs[]),
                 "total_ms" => copy(lp.total_obs[]),
             ]
             lp.timings_export_error = _export_live_figure(
@@ -576,16 +599,22 @@ function _render_live_plots_tab!(
         return nothing
     end
 
-    # ---- Build progress figure ----
-    ig.TextUnformatted("Build progress (scan %, analysis %, writer ms, peak RSS MiB)")
+    lp.build_figure === nothing && (lp.build_figure = _make_build_figure(lp))
+    _sample_build_progress!(lp, workspace)
+    ig.TextUnformatted("Live build dashboard")
     ig.SameLine()
     if ig.Button("Export##live_build_export")
         series = Pair{String,Vector{Float32}}[
-            "scan_pct"        => copy(lp.scan_obs[]),
-            "analysis_pct"    => copy(lp.analysis_obs[]),
-            "interp_write_ms" => copy(lp.interp_write_obs[]),
-            "proc_write_ms"   => copy(lp.processed_write_obs[]),
-            "peak_rss_mib"    => copy(lp.rss_obs[]),
+            "elapsed_s" => copy(lp.elapsed_obs[]),
+            "scan_pct" => copy(lp.scan_pct_obs[]),
+            "analysis_pct" => copy(lp.analysis_pct_obs[]),
+            "throughput_per_s" => copy(lp.throughput_obs[]),
+            "writers_busy" => copy(lp.writers_busy_obs[]),
+            "per_item_write_ms" => copy(lp.per_item_write_obs[]),
+            "interp_cum_s" => copy(lp.interp_cum_obs[]),
+            "processed_cum_s" => copy(lp.processed_cum_obs[]),
+            "stats_cum_s" => copy(lp.stats_cum_obs[]),
+            "peak_rss_gib" => copy(lp.rss_obs[]),
         ]
         lp.build_export_error = _export_live_figure(
             lp.build_figure, "perf-build.png", series)

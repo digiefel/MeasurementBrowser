@@ -136,7 +136,8 @@ Ring-buffer state and Makie figure handles for the live-plots tab in the Perform
 
 Two figures are created once and updated in place via Observables:
 - `timings_figure`: rolling plot-redraw phase durations (load / setup / draw-data / total).
-- `build_figure`: rolling build progress, cache-write service time, and process RSS.
+- `build_figure`: build progress, throughput, writer concurrency, per-item write cost,
+  cumulative write time, and peak RSS.
 
 Each line carries its own `_x`/`_obs` pair so series of different length never collide (the plot-error
 path records only `:plot_draw`, so the phase vectors do diverge). `_buf` fields are bounded ring
