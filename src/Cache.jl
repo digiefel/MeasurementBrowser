@@ -26,6 +26,7 @@ import ..Profiling
 using ..Profiling: TIMER
 using TimerOutputs: @timeit_debug
 
+include("Cache/EventLog.jl")
 include("Cache/ProjectCache.jl")
 include("Cache/ItemDataCache.jl")
 

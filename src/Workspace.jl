@@ -31,6 +31,7 @@ import ..ItemIndex:
     Hierarchy,
     ItemFailure,
     ItemRecord,
+    MetadataDict,
     SourceItemInterpretation,
     SourceScan,
     apply_collection_parameters!,
@@ -122,10 +123,16 @@ mutable struct ProcessingJob
 end
 
 """One completed processed value waiting for its small shared cache batch."""
+struct ProcessedWriteResult
+    payload_failure::Union{Nothing,CapturedException}
+    stats_failure::Union{Nothing,CapturedException}
+end
+
 struct ProcessedWriteRequest
     record::ItemRecord
     item::Union{Nothing,AbstractDataItem}
-    completion::Channel{Any}
+    stats::Union{Nothing,MetadataDict}
+    completion::Channel{ProcessedWriteResult}
 end
 
 """Workspace-owned processing work; completed values are not retained after delivery."""
@@ -140,6 +147,7 @@ mutable struct ProcessingQueue
     events::Channel{NamedTuple}
     workers::Vector{Task}
     pending_writes::Vector{ProcessedWriteRequest}
+    write_active::Bool
     total::Int
     completed::Int
     closed::Bool
@@ -158,6 +166,7 @@ function ProcessingQueue()::ProcessingQueue
         Channel{NamedTuple}(Inf),
         Task[],
         ProcessedWriteRequest[],
+        false,
         0,
         0,
         false,

@@ -25,7 +25,9 @@ failures, and two independent item-data stages:
 
 The `item_data` key is `(item_id, stage)`, so the two forms cannot replace each other. Cacheable
 `AbstractDataFrame` values use shared native DuckDB tables grouped by compatible ordered columns and
-types. Other data types remain source-backed.
+types. The catalog assigns each stored item a compact integer `seq`; payload rows use that value rather
+than repeating the potentially long item id. Shared tables preserve the ability to query a complete
+schema globally. Other data types remain source-backed.
 
 `cacheable(item)` is evaluated independently for the interpreted and processed values. The built-in
 `DataItem` DataFrame path is cacheable; the low-level default is false. A false result removes any old
@@ -56,19 +58,22 @@ selection promotes an existing waiting job instead of starting another path. Bef
 background work, one metadata query finds all valid processed entries, so cached items are not checked
 one at a time.
 
-Processing reads interpreted data from DuckDB or source fallback, calls `process`, evaluates
-`cacheable` on the processed item, and writes up to four simultaneously ready results together. Item
-statistics follow processing and are stored separately. Collection statistics run after processing
-settles.
+Processing reads interpreted data from DuckDB or source fallback, calls `process`, and computes item
+statistics. Completed workers coalesce behind one queue leader. Each ready batch commits processed
+payloads first and item statistics in a separate transaction, avoiding one transaction per item
+without mixing payload and metadata index updates. Collection statistics run after processing settles.
 
 DuckDB is the only package-level shared cache. There is no Julia object LRU. An active plot or
 inspector owns the processed items it currently displays; a later selection reads DuckDB or repeats
 the required upstream work. A plot selection is materialized once and the same item objects are
 passed to setup and drawing.
 
-One persistent writer connection serializes mutations. A separate persistent reader serves committed
-item data. DuckDB's buffer pool is limited to 1 GiB by default through
-`CACHE_MEMORY_LIMIT_MIB`; `set_cache_memory_limit!` changes the default or an open workspace.
+One locked writer keeps integer surrogate assignment aligned with physical append order, preserving
+useful payload locality without a later compaction pass. Reads use short-lived connections, so
+background processing cannot serialize interactive selections behind one reader lock. Item reads use
+scalar `seq` predicates, and reconstructed DataFrames view the Julia result columns instead of copying
+them again. DuckDB's buffer pool is limited to 1 GiB by default through `CACHE_MEMORY_LIMIT_MIB`;
+`set_cache_memory_limit!` changes the default or an open workspace.
 
 ## Invalidation And Recovery
 

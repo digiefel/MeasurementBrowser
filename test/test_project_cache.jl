@@ -319,7 +319,7 @@ end
             end
             rebuilt = ProjectCache.open_cache_db(identity)
             try
-                meta_rows = ProjectCache.with_persistent_reader(rebuilt) do reader
+                meta_rows = ProjectCache.with_reader(rebuilt) do reader
                     only(DBInterface.execute(reader, "SELECT count(*) AS count FROM meta")).count
                 end
                 @test meta_rows == 0
@@ -348,20 +348,32 @@ end
                 cached_frame = view(source_frame, 1:3, :)
                 cached_item = MeasurementBrowser.DataItem(cacheable, cached_frame)
                 @test MeasurementBrowser.cacheable(cached_item)
+                empty_record = prec("empty", ("si_empty", 1), ("empty", 1))
+                empty_frame = DataFrame(
+                    voltage=Float64[],
+                    current=Union{Missing,Float64}[],
+                )
+                empty_item = MeasurementBrowser.DataItem(empty_record, empty_frame)
                 ignored_item = MeasurementBrowser.DataItem(uncacheable, DataFrame(x=[1]))
                 ProjectCache.write_cached_item_data!(
-                    cachedb, [cacheable, uncacheable], Any[cached_item, ignored_item])
+                    cachedb,
+                    [cacheable, empty_record, uncacheable],
+                    Any[cached_item, empty_item, ignored_item],
+                )
                 interpreted_item = MeasurementBrowser.DataItem(
                     cacheable, DataFrame(voltage=[1.0], current=[0.05]))
                 ProjectCache.write_cached_item_data!(
                     cachedb, [cacheable], Any[interpreted_item]; stage=:interpreted)
 
                 # The cacheable item round-trips; the fingerprint-less one is never stored.
-                got = ProjectCache.read_cached_item_data(cachedb, [cacheable, uncacheable])
+                got = ProjectCache.read_cached_item_data(
+                    cachedb, [cacheable, empty_record, cacheable, uncacheable])
                 @test got[1] isa MeasurementBrowser.DataItem
                 @test isequal(MeasurementBrowser.item_data(got[1]), DataFrame(cached_frame))
                 @test MeasurementBrowser.item_data(got[1]) isa DataFrame
-                @test got[2] === nothing
+                @test isequal(MeasurementBrowser.item_data(got[2]), empty_frame)
+                @test MeasurementBrowser.item_data(got[1]) === MeasurementBrowser.item_data(got[3])
+                @test got[4] === nothing
                 interpreted = only(ProjectCache.read_cached_item_data(
                     cachedb, [cacheable]; stage=:interpreted))
                 @test isequal(
@@ -369,15 +381,15 @@ end
                     MeasurementBrowser.item_data(interpreted_item),
                 )
 
-                rows = ProjectCache.with_persistent_reader(cachedb) do connection
+                rows = ProjectCache.with_reader(cachedb) do connection
                     collect(DBInterface.execute(connection, """
                         SELECT stage, storage_id, row_count FROM item_data ORDER BY stage
                     """))
                 end
-                @test length(rows) == 2
+                @test length(rows) == 3
                 @test Set(String(row.stage) for row in rows) == Set(["interpreted", "processed"])
-                @test Dict(String(row.stage) => row.row_count for row in rows) ==
-                      Dict("interpreted" => 1, "processed" => 3)
+                @test sort(Int[
+                    row.row_count for row in rows if row.stage == "processed"]) == [0, 3]
                 @test length(unique(String(row.storage_id) for row in rows)) == 2
 
                 # A changed item fingerprint invalidates the stored data.
@@ -389,7 +401,7 @@ end
         end
     end
 
-    @testset "bulk native DataFrame read" begin
+    @testset "unified and concurrent native DataFrame reads" begin
         mktempdir() do dir
             identity = ProjectCache.ProjectCacheIdentity(
                 "bulk", "bulk_src", "BulkSrc", joinpath(dir, "bulk.duckdb"))
@@ -419,6 +431,35 @@ end
                 @test all(
                     isequal(MeasurementBrowser.item_data(item), frame)
                     for (item, frame) in zip(loaded, frames)
+                )
+
+                extra_record = MeasurementBrowser.ItemIndex.ItemRecord(;
+                    id="item_18",
+                    source_item_id="source_18",
+                    source_item_fingerprint=(18, 1),
+                    source_item_path=nothing,
+                    item_label="Item 18",
+                    kind=:table,
+                    collection=["bulk"],
+                )
+                extra_frame = DataFrame(x=[18.0, 18.5])
+                readers = [Threads.@spawn begin
+                    all(
+                        all(!isnothing, ProjectCache.read_cached_item_data(cachedb, records))
+                        for _ in 1:4
+                    )
+                end for _ in 1:4]
+                writer = Threads.@spawn ProjectCache.write_cached_item_data!(
+                    cachedb,
+                    [extra_record],
+                    Any[MeasurementBrowser.DataItem(extra_record, extra_frame)],
+                )
+                @test all(fetch, readers)
+                fetch(writer)
+                @test isequal(
+                    MeasurementBrowser.item_data(
+                        only(ProjectCache.read_cached_item_data(cachedb, [extra_record]))),
+                    extra_frame,
                 )
             finally
                 ProjectCache.close_cache_db!(cachedb)

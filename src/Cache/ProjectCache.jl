@@ -5,11 +5,8 @@ using SHA
 using Serialization
 using Dates
 
-const PROJECT_CACHE_SCHEMA_VERSION = 3
+const PROJECT_CACHE_SCHEMA_VERSION = 4
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
-# register_data_frame creates a catalog view by this name, which is shared across writer connections.
-# A per-registration unique suffix keeps concurrent writers from colliding on one catalog entry.
-const ITEM_DATA_VIEW_COUNTER = Base.Threads.Atomic{Int}(0)
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -145,23 +142,15 @@ end
 """
 One open DuckDB cache file shared by all of a workspace's cache work.
 
-A single [`DuckDB.DB`](@ref) holds the file for the workspace's lifetime. A pool of `writers` lets the
-scan and the analysis workers commit concurrently (DuckDB's MVCC writes disjoint rows in parallel); the
-persistent `reader` (guarded by `reader_lock`) serves interactive item-data reads without per-call
-connection setup. DuckDB's MVCC lets the reader snapshot committed state while writes are in flight, so
-plot reads never block the streaming scan. One-shot bulk reads (index load) still use a fresh connection.
+A single [`DuckDB.DB`](@ref) holds the file for the workspace's lifetime. One locked writer keeps
+surrogate-key order aligned with physical append order. Reads use short-lived connections so
+independent interactive and background reads can run concurrently against committed snapshots.
 """
 mutable struct CacheDB
     identity::ProjectCacheIdentity
     db::DuckDB.DB
-    # A pool of writer connections rather than one. DuckDB writes the same table from multiple
-    # connections concurrently (MVCC; disjoint items never conflict), so the scan and the analysis
-    # workers write in parallel instead of queueing at one serialized writer. `available` hands out a
-    # free connection and blocks only when all are in use.
-    writers::Vector{DuckDB.Connection}
-    available::Channel{DuckDB.Connection}
-    reader::DuckDB.Connection
-    reader_lock::ReentrantLock
+    writer::DuckDB.Connection
+    writer_lock::ReentrantLock
     # Time threads spend waiting for a free writer vs. holding one doing work.
     writer_wait_ns::Base.Threads.Atomic{Int64}
     writer_busy_ns::Base.Threads.Atomic{Int64}
@@ -211,14 +200,7 @@ function _connect_cache_db(identity::ProjectCacheIdentity)::CacheDB
            only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
             throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
         end
-        writer_count = max(2, Base.Threads.nthreads())
-        writers = [DBInterface.connect(db) for _ in 1:writer_count]
-        available = Channel{DuckDB.Connection}(writer_count)
-        for writer in writers
-            put!(available, writer)
-        end
-        reader = DBInterface.connect(db)
-        return CacheDB(identity, db, writers, available, reader, ReentrantLock(),
+        return CacheDB(identity, db, DBInterface.connect(db), ReentrantLock(),
             Base.Threads.Atomic{Int64}(0), Base.Threads.Atomic{Int64}(0))
     catch
         DBInterface.close!(db)
@@ -239,10 +221,9 @@ function close_cache_db!(cachedb::CacheDB)::Nothing
     # Fold the write-ahead log into the database file so the next workspace opened on this path within
     # the same process reads the committed state instead of a pre-commit snapshot.
     try
-        DBInterface.execute(cachedb.writers[1], "CHECKPOINT")
+        DBInterface.execute(cachedb.writer, "CHECKPOINT")
     finally
-        foreach(DBInterface.close!, cachedb.writers)
-        DBInterface.close!(cachedb.reader)
+        DBInterface.close!(cachedb.writer)
         DBInterface.close!(cachedb.db)
     end
     return nothing
@@ -255,13 +236,6 @@ function set_cache_memory_limit!(cachedb::CacheDB, mib::Integer)::Int
     return Int(mib)
 end
 
-"""Run `work` on the persistent reader connection, serialized against other readers."""
-function with_persistent_reader(work::Function, cachedb::CacheDB)::Any
-    return lock(cachedb.reader_lock) do
-        work(cachedb.reader)
-    end
-end
-
 """Run `work` on a fresh read connection that snapshots the latest committed cache state."""
 function with_reader(work::Function, cachedb::CacheDB)::Any
     connection = DBInterface.connect(cachedb.db)
@@ -272,29 +246,18 @@ function with_reader(work::Function, cachedb::CacheDB)::Any
     end
 end
 
-"""Borrow a writer connection from the pool, returning it when `work` finishes."""
+"""Run `work` on the cache's serialized writer connection."""
 function with_writer(work::Function, cachedb::CacheDB)::Any
     requested = time_ns()
-    connection = take!(cachedb.available)
+    lock(cachedb.writer_lock)
     acquired = time_ns()
     Base.Threads.atomic_add!(cachedb.writer_wait_ns, Int64(acquired - requested))
     try
-        return work(connection)
+        return work(cachedb.writer)
     finally
         Base.Threads.atomic_add!(cachedb.writer_busy_ns, Int64(time_ns() - acquired))
-        put!(cachedb.available, connection)
+        unlock(cachedb.writer_lock)
     end
-end
-
-"""
-True for a DuckDB concurrency error that a retry resolves: an optimistic write-write conflict, or two
-connections racing to first-create one shared schema's table (the loser sees "already exists" and on
-retry takes the insert path).
-"""
-function _is_write_conflict(error)::Bool
-    message = sprint(showerror, error)
-    return occursin("onflict", message) || occursin("already exists", message) ||
-        occursin("transaction is aborted", message)
 end
 
 """
@@ -304,36 +267,19 @@ Large scans call this once per bounded source-item batch so DuckDB can release t
 write memory between batches.
 """
 function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
-    requested = time_ns()
-    connection = take!(cachedb.available)
-    acquired = time_ns()
-    Base.Threads.atomic_add!(cachedb.writer_wait_ns, Int64(acquired - requested))
-    try
-        attempt = 0
-        while true
-            DBInterface.execute(connection, "BEGIN TRANSACTION")
+    return with_writer(cachedb) do connection
+        DBInterface.execute(connection, "BEGIN TRANSACTION")
+        try
+            result = work(connection)
+            DBInterface.execute(connection, "COMMIT")
+            return result
+        catch
             try
-                result = work(connection)
-                DBInterface.execute(connection, "COMMIT")
-                return result
-            catch error
-                try
-                    DBInterface.execute(connection, "ROLLBACK")
-                catch
-                end
-                # Two connections that touch the same rows (e.g. both first-creating one schema's
-                # table) conflict under optimistic concurrency; a retry re-reads the now-committed
-                # state and succeeds. Disjoint item writes never reach here.
-                if _is_write_conflict(error) && attempt < 16
-                    attempt += 1
-                    continue
-                end
-                rethrow()
+                DBInterface.execute(connection, "ROLLBACK")
+            catch
             end
+            rethrow()
         end
-    finally
-        Base.Threads.atomic_add!(cachedb.writer_busy_ns, Int64(time_ns() - acquired))
-        put!(cachedb.available, connection)
     end
 end
 
@@ -372,6 +318,9 @@ function ensure_schema!(connection)::Nothing
             lb BOOLEAN[], li BIGINT[], ld DOUBLE[], ls VARCHAR[],
             PRIMARY KEY (scope, entity, key))
     """)
+    # Payload rows use this compact surrogate instead of repeating long item ids. Fresh values on every
+    # write also let replacement deletes distinguish current rows from stale ones.
+    DBInterface.execute(connection, "CREATE SEQUENCE IF NOT EXISTS item_data_seq START 1")
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS item_data(
             item_id TEXT,
@@ -381,6 +330,7 @@ function ensure_schema!(connection)::Nothing
             if_hash TEXT,
             storage_id TEXT,
             row_count BIGINT,
+            seq BIGINT,
             PRIMARY KEY (item_id, stage))
     """)
     DBInterface.execute(connection, """
@@ -869,13 +819,7 @@ function finalize_scan!(
     end
 end
 
-"""
-Persist analysis stats as they complete: item stats (scope 1) and collection-node stats (scope 3).
-
-Each entity's stats rows are replaced wholesale so re-analysis overwrites cleanly. Keys are coerced
-through [`metadata_dict`](@ref) so analysis output that isn't already a [`MetadataValue`](@ref)
-(e.g. an `Int32`) is normalized exactly as the in-memory merge does.
-"""
+"""Persist item and collection statistics in one writer transaction."""
 function persist_stats!(
     cachedb::CacheDB,
     item_stats::AbstractDict{String,<:AbstractDict},
