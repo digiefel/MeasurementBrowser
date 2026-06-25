@@ -39,7 +39,7 @@ stay live without racing any still-finishing analysis.
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance, multi-select, and quick X/Y plot. |
-| Performance | Frame/memory diagnostics, embedded Makie context counters, scan phase/source timings, plot timings, and opt-in internal profiling. |
+| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
 
 ## Scan profiling
 

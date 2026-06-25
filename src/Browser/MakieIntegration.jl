@@ -20,39 +20,12 @@ mutable struct ImMakieFigure
 end
 
 const MAKIE_CONTEXT = Dict{String,ImMakieFigure}()
-const MAKIE_CONTEXT_CREATED = Base.Threads.Atomic{Int64}(0)
-const MAKIE_CONTEXT_REPLACED = Base.Threads.Atomic{Int64}(0)
-const MAKIE_CONTEXT_DESTROYED = Base.Threads.Atomic{Int64}(0)
-const MAKIE_FRAMES_RENDERED = Base.Threads.Atomic{Int64}(0)
-
-"""Snapshot of embedded Makie context ownership counters."""
-struct MakieContextStats
-    contexts::Int64
-    created::Int64
-    replaced::Int64
-    destroyed::Int64
-    rendered::Int64
-    ids::Vector{String}
-end
-
-"""Return embedded Makie context counters for the app diagnostics UI."""
-function makie_context_stats()::MakieContextStats
-    return MakieContextStats(
-        Int64(length(MAKIE_CONTEXT)),
-        MAKIE_CONTEXT_CREATED[],
-        MAKIE_CONTEXT_REPLACED[],
-        MAKIE_CONTEXT_DESTROYED[],
-        MAKIE_FRAMES_RENDERED[],
-        String[key for key in keys(MAKIE_CONTEXT)],
-    )
-end
 
 """Destroy every Makie screen owned by the browser render context."""
 function destroy_context!()::Nothing
     for imfigure in values(MAKIE_CONTEXT)
         empty!(imfigure.figure)
         GLMakie.destroy!(imfigure.screen)
-        Base.Threads.atomic_add!(MAKIE_CONTEXT_DESTROYED, Int64(1))
     end
 
     empty!(MAKIE_CONTEXT)
@@ -65,7 +38,6 @@ function destroy_figure!(title_id::String)::Nothing
     imfigure === nothing && return nothing
     empty!(imfigure.figure)
     GLMakie.destroy!(imfigure.screen)
-    Base.Threads.atomic_add!(MAKIE_CONTEXT_DESTROYED, Int64(1))
     return nothing
 end
 
@@ -181,7 +153,6 @@ function MakieFigure(
             display(imf.screen, figure)
             empty!(old_figure)
             imf.figure = figure
-            Base.Threads.atomic_add!(MAKIE_CONTEXT_REPLACED, Int64(1))
             @debug "replaced figure for " id
         end
     else
@@ -192,7 +163,6 @@ function MakieFigure(
         scene = Makie.get_scene(figure)
         scene.events.window_open[] = true
         display(screen, figure)
-        Base.Threads.atomic_add!(MAKIE_CONTEXT_CREATED, Int64(1))
         @debug "created context for " id
     end
 
@@ -212,10 +182,7 @@ function MakieFigure(
 
     GLMakie.poll_updates(imfigure.screen)
     do_render = GLMakie.requires_update(imfigure.screen)
-    if do_render
-        GLMakie.render_frame(imfigure.screen; resize_buffers=false)
-        Base.Threads.atomic_add!(MAKIE_FRAMES_RENDERED, Int64(1))
-    end
+    do_render && GLMakie.render_frame(imfigure.screen; resize_buffers=false)
 
     # The color texture is what we need to render as an image. We add it to the
     # drawlist and then create an InvisibleButton of the same size to create a

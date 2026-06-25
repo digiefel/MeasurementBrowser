@@ -8,7 +8,7 @@ using NativeFileDialog: save_file
 import ..Profiling
 using ..Projects: scan_profile_summary, scan_source_profile
 import ..Workspace
-using .MakieImguiIntegration: MakieFigure, makie_context_stats
+using .MakieImguiIntegration: MakieFigure
 
 # ---------------------------------------------------------------------------
 # Internal table helpers
@@ -272,29 +272,6 @@ function _render_memory_gl_tab(state::BrowserState)::Nothing
     else
         ig.Spacing()
         ig.TextDisabled("Process memory not available (Linux /proc only).")
-    end
-
-    # ---- Embedded Makie context ownership ----
-    makie_stats = makie_context_stats()
-    ig.Separator()
-    ig.TextUnformatted("Embedded Makie")
-    if _begin_perf_table("makie_contexts", 2, 160.0f0)
-        ig.TableSetupColumn("Field", ig.ImGuiTableColumnFlags_WidthFixed, 110.0f0)
-        ig.TableSetupColumn("Value", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-        ig.TableHeadersRow()
-
-        _makie_row(k, v) = begin
-            ig.TableNextRow()
-            ig.TableNextColumn(); _table_text(k)
-            ig.TableNextColumn(); _table_text(v)
-        end
-        _makie_row("Contexts", string(makie_stats.contexts))
-        _makie_row("Created", string(makie_stats.created))
-        _makie_row("Replaced", string(makie_stats.replaced))
-        _makie_row("Destroyed", string(makie_stats.destroyed))
-        _makie_row("Rendered", string(makie_stats.rendered))
-        _makie_row("IDs", isempty(makie_stats.ids) ? "-" : join(sort(makie_stats.ids), ", "))
-        ig.EndTable()
     end
 
     # ---- GL info ----
