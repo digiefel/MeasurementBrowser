@@ -656,8 +656,10 @@ function _reconcile_source_item!(
 
     previous_hash = _stored_fingerprint_hash(connection, source_item_id)
     fingerprint_changed = previous_hash === missing || previous_hash != new_hash
-    _delete_source_item_rows!(
-        connection, source_item_id; drop_item_data=fingerprint_changed)
+    if previous_hash !== missing
+        _delete_source_item_rows!(
+            connection, source_item_id; drop_item_data=fingerprint_changed)
+    end
 
     DBInterface.execute(
         DBInterface.prepare(connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)"),
