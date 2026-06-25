@@ -775,18 +775,25 @@ function _render_internal_profile_tab!(
     )
     category_filter = state.performance.profile_category_filter
     operation_filter = state.performance.profile_operation_filter
-    filtered = Profiling.ProfileEvent[
-        event for event in available
-        if (category_filter === :all || event.category === category_filter) &&
-           (operation_filter === :all || event.operation === operation_filter)
-    ]
-    recent = length(filtered) <= 200 ? filtered : filtered[end-199:end]
-    if !isempty(recent) && _begin_perf_table("internal_events", 6, 220.0f0)
+    shown = 0
+    for index in length(available):-1:1
+        event = available[index]
+        ((category_filter === :all || event.category === category_filter) &&
+         (operation_filter === :all || event.operation === operation_filter)) &&
+            (shown += 1)
+        shown >= 200 && break
+    end
+    if shown > 0 && _begin_perf_table("internal_events", 6, 220.0f0)
         for name in ("Category", "Operation", "ms", "Thread", "Status", "Batch")
             ig.TableSetupColumn(name)
         end
         ig.TableHeadersRow()
-        for event in Iterators.reverse(recent)
+        rendered = 0
+        for index in length(available):-1:1
+            event = available[index]
+            (category_filter === :all || event.category === category_filter) &&
+                (operation_filter === :all || event.operation === operation_filter) ||
+                continue
             ig.TableNextRow()
             for value in (
                 String(event.category), String(event.operation),
@@ -796,6 +803,8 @@ function _render_internal_profile_tab!(
             )
                 ig.TableNextColumn(); _table_text(value)
             end
+            rendered += 1
+            rendered >= 200 && break
         end
         ig.EndTable()
     end
