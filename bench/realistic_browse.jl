@@ -220,6 +220,42 @@ mutable struct Sample
     ready::Int
 end
 
+mutable struct MemorySample
+    elapsed_s::Float64
+    rss_bytes::Int64
+    gc_live_bytes::Int64
+    gc_allocated_bytes::Int64
+    rss_minus_gc_live_bytes::Int64
+    index_items::Int64
+    index_collections::Int64
+    item_stats::Int64
+    analysis_errors::Int64
+    processing_jobs::Int64
+    pending_writes::Int64
+    pending_write_rows::Int64
+    selected_queue::Int64
+    background_waiting::Int64
+end
+
+function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
+    return MemorySample(
+        elapsed_s,
+        snapshot.rss_bytes,
+        snapshot.gc_live_bytes,
+        snapshot.gc_allocated_bytes,
+        snapshot.rss_minus_gc_live_bytes,
+        snapshot.index_items,
+        snapshot.index_collections,
+        snapshot.item_stats,
+        snapshot.analysis_errors,
+        snapshot.processing_jobs,
+        snapshot.pending_writes,
+        snapshot.pending_write_rows,
+        snapshot.selected_queue,
+        snapshot.background_waiting,
+    )
+end
+
 """Measure one full-table aggregate for every processed payload schema."""
 function global_query_samples(ws)
     return MB.Cache.with_reader(ws.cache.db) do connection
@@ -306,6 +342,8 @@ function run_benchmark()
     try
         last_probe = 0.0
         last_rss_sample = 0.0
+        last_memory_sample = -Inf
+        memory_samples = MemorySample[]
         kind_cursor = 1
         while true
             MB.Workspace.poll_workspace!(ws)
@@ -313,6 +351,12 @@ function run_benchmark()
             if now - last_rss_sample >= 0.1
                 last_rss_sample = now
                 rss_peak_bytes = max(rss_peak_bytes, MB.Profiling.process_rss_bytes())
+            end
+            if now - last_memory_sample >= 0.5
+                last_memory_sample = now
+                snapshot = MB.Workspace.workspace_memory_snapshot(ws)
+                rss_peak_bytes = max(rss_peak_bytes, snapshot.rss_bytes)
+                push!(memory_samples, MemorySample(now, snapshot))
             end
             completed, queued = lock(ws.processing.lock) do
                 (ws.processing.completed, ws.processing.total)
@@ -348,7 +392,9 @@ function run_benchmark()
             sleep(0.004)
         end
         MB.Workspace.poll_workspace!(ws)
-        rss_end_bytes = MB.Profiling.process_rss_bytes()
+        final_memory = MB.Workspace.workspace_memory_snapshot(ws)
+        rss_end_bytes = final_memory.rss_bytes
+        push!(memory_samples, MemorySample(time() - t_start, final_memory))
 
         # Steady-state sweep: many random selections per kind on the finished cache.
         rng = MersenneTwister(1)
@@ -387,6 +433,7 @@ function run_benchmark()
             rss_start_bytes,
             rss_peak_bytes,
             rss_end_bytes,
+            memory_samples,
         )
         START_PROFILE &&
             (profile_report = MB.Workspace.stop_internal_profile!(ws))
@@ -416,6 +463,29 @@ function report(samples, global_queries, stats, profile_report, outdir,
         for s in samples
             @printf(io, "%.3f,%s,%s,%d,%.3f,%d,%d\n",
                 s.elapsed_s, s.phase, s.kind, s.n, s.read_ms, s.allocated_bytes, s.ready)
+        end
+    end
+
+    open(joinpath(outdir, "memory_samples.csv"), "w") do io
+        println(io, "elapsed_s,rss_bytes,gc_live_bytes,gc_allocated_bytes," *
+            "rss_minus_gc_live_bytes,index_items,index_collections,item_stats,analysis_errors," *
+            "processing_jobs,pending_writes,pending_write_rows,selected_queue,background_waiting")
+        for sample in stats.memory_samples
+            @printf(io, "%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
+                sample.elapsed_s,
+                sample.rss_bytes,
+                sample.gc_live_bytes,
+                sample.gc_allocated_bytes,
+                sample.rss_minus_gc_live_bytes,
+                sample.index_items,
+                sample.index_collections,
+                sample.item_stats,
+                sample.analysis_errors,
+                sample.processing_jobs,
+                sample.pending_writes,
+                sample.pending_write_rows,
+                sample.selected_queue,
+                sample.background_waiting)
         end
     end
 
@@ -520,6 +590,24 @@ function report(samples, global_queries, stats, profile_report, outdir,
         stats.rss_start_bytes / 1024^2,
         stats.rss_peak_bytes / 1024^2,
         stats.rss_end_bytes / 1024^2)
+    if !isempty(stats.memory_samples)
+        peak_sample = stats.memory_samples[argmax(
+            [sample.rss_bytes for sample in stats.memory_samples])]
+        @printf("  peak sample: GC live %.1f MiB  RSS-GC-live %.1f MiB\n",
+            peak_sample.gc_live_bytes / 1024^2,
+            peak_sample.rss_minus_gc_live_bytes / 1024^2)
+        @printf("  index counts: items %d  stats %d  collections %d  errors %d\n",
+            peak_sample.index_items,
+            peak_sample.item_stats,
+            peak_sample.index_collections,
+            peak_sample.analysis_errors)
+        @printf("  queue counts: jobs %d  pending writes %d (%d rows)  selected %d  background waiting %d\n",
+            peak_sample.processing_jobs,
+            peak_sample.pending_writes,
+            peak_sample.pending_write_rows,
+            peak_sample.selected_queue,
+            peak_sample.background_waiting)
+    end
 
     println("\nAggregate interactive read latency, ms:")
     @printf("  %-13s %8s %8s %8s %8s %6s\n",

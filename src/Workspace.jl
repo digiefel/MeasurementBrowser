@@ -332,5 +332,6 @@ include("Workspace/Operations.jl")
 include("Workspace/Status.jl")
 include("Workspace/DataAccess.jl")
 include("Workspace/Processing.jl")
+include("Workspace/MemoryDiagnostics.jl")
 
 end
