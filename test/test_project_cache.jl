@@ -403,6 +403,18 @@ end
                 # A changed item fingerprint invalidates the stored data.
                 restamped = prec("a", ("si_a", 1), ("a", 2))
                 @test only(ProjectCache.read_cached_item_data(cachedb, [restamped])) === nothing
+
+                # Selected processing can write item data before the scan writer inserts the source
+                # row. Reconciling that new source item still has to clear the early payload rows.
+                early = prec("early", ("si_early", 1), ("early", 1))
+                ProjectCache.write_cached_item_data!(
+                    cachedb,
+                    [early],
+                    Any[MeasurementBrowser.DataItem(early, DataFrame(x=[1.0, 2.0]))],
+                )
+                @test only(ProjectCache.read_cached_item_data(cachedb, [early])) !== nothing
+                ProjectCache.reconcile_source_items!(cachedb, [[early]], [Any[nothing]])
+                @test only(ProjectCache.read_cached_item_data(cachedb, [early])) === nothing
             finally
                 ProjectCache.close_cache_db!(cachedb)
             end

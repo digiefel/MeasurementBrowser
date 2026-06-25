@@ -616,6 +616,16 @@ function _stored_fingerprint_hash(connection, source_item_id::AbstractString)
     return missing   # row absent (distinct from a present row whose hash is NULL)
 end
 
+"""Whether item payload rows already exist for one source item."""
+function _has_cached_source_item_data(connection, source_item_id::AbstractString)::Bool
+    statement = DBInterface.prepare(
+        connection, "SELECT 1 FROM item_data WHERE source_item_id = ? LIMIT 1")
+    for _ in DBInterface.execute(statement, (String(source_item_id),))
+        return true
+    end
+    return false
+end
+
 """Delete the index rows and, when invalidated, cached data belonging to one source item."""
 function _delete_source_item_rows!(
     connection,
@@ -656,7 +666,7 @@ function _reconcile_source_item!(
 
     previous_hash = _stored_fingerprint_hash(connection, source_item_id)
     fingerprint_changed = previous_hash === missing || previous_hash != new_hash
-    if previous_hash !== missing
+    if previous_hash !== missing || _has_cached_source_item_data(connection, source_item_id)
         _delete_source_item_rows!(
             connection, source_item_id; drop_item_data=fingerprint_changed)
     end
