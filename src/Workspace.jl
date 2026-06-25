@@ -128,6 +128,8 @@ struct ProcessedWriteRequest
     record::ItemRecord
     item::Union{Nothing,AbstractDataItem}
     stats::Union{Nothing,MetadataDict}
+    write_payload::Bool
+    rows::Int
 end
 
 """Workspace-owned processing work; completed values are not retained after delivery."""
@@ -142,7 +144,9 @@ mutable struct ProcessingQueue
     events::Channel{NamedTuple}
     workers::Vector{Task}
     pending_writes::Vector{ProcessedWriteRequest}
+    pending_write_rows::Int
     write_active::Bool
+    active_write_rows::Int
     total::Int
     completed::Int
     closed::Bool
@@ -161,7 +165,9 @@ function ProcessingQueue()::ProcessingQueue
         Channel{NamedTuple}(Inf),
         Task[],
         ProcessedWriteRequest[],
+        0,
         false,
+        0,
         0,
         0,
         false,

@@ -16,18 +16,6 @@ struct WorkspaceMemorySnapshot
     background_waiting::Int64
 end
 
-"""Count DataFrame rows currently retained by queued processed-write payloads."""
-function _pending_write_rows(pending_writes::Vector{ProcessedWriteRequest})::Int64
-    rows = Int64(0)
-    for request in pending_writes
-        item = request.item
-        item === nothing && continue
-        data = item_data(item)
-        data isa AbstractDataFrame && (rows += Int64(nrow(data)))
-    end
-    return rows
-end
-
 """Return an attributed workspace memory sample without walking large object graphs."""
 function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapshot
     rss_bytes = Profiling.process_rss_bytes()
@@ -38,7 +26,10 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
         (
             jobs=Int64(length(workspace.processing.jobs)),
             pending_writes=Int64(length(workspace.processing.pending_writes)),
-            pending_write_rows=_pending_write_rows(workspace.processing.pending_writes),
+            pending_write_rows=Int64(
+                workspace.processing.pending_write_rows +
+                workspace.processing.active_write_rows,
+            ),
             selected_queue=Int64(length(workspace.processing.selected)),
             background_waiting=Int64(max(
                 length(workspace.processing.background) - workspace.processing.background_index + 1,
