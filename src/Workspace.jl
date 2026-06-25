@@ -1,6 +1,6 @@
 module Workspace
 
-using DataFrames: DataFrame
+using DataFrames: AbstractDataFrame, DataFrame, nrow
 using DBInterface
 using Printf
 import ..Profiling

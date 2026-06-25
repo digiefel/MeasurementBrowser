@@ -5,7 +5,7 @@ struct ProcessingResult
 end
 
 const PROCESSED_WRITE_BATCH_ITEMS = 64
-const PROCESSED_WRITE_FLUSH_SECONDS = 0.1
+const PROCESSED_WRITE_FLUSH_SECONDS = 1
 
 """Start the bounded worker set that owns processing for one workspace."""
 function start_processing_workers!(workspace::Workspace)::Nothing

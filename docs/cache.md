@@ -43,9 +43,9 @@ unfingerprinted source items run the one interpretation path:
 data_items → normalize records/data → optional interpreted write → processing queue
 ```
 
-Small groups of up to four ready source results share a transaction. This keeps progress steps small
-without paying for one DuckDB transaction per item. Each committed group is independently reusable
-after cancellation or interruption.
+Small ready source groups share a transaction and flush by source-item count, cached DataFrame row
+count, or elapsed time. This keeps progress saves frequent without paying for one DuckDB transaction
+per source item. Each committed group is independently reusable after cancellation or interruption.
 
 When interpreted data is absent, selection and background work use the same source fallback: find the
 current source item and call `data_items` again. Every logical item returned by that source pass is

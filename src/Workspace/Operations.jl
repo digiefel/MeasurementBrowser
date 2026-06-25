@@ -116,6 +116,10 @@ end
 source_scan_running(workspace::Workspace)::Bool =
     workspace.scan.state in (:counting, :discovering, :scanning, :canceling)
 
+const INTERPRETED_WRITE_BATCH_SOURCE_ITEMS = 16
+const INTERPRETED_WRITE_BATCH_ROWS = 1_000_000
+const INTERPRETED_WRITE_BATCH_NS = UInt64(2_000_000_000)
+
 cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_state in (:loading, :writing, :canceling)
 
@@ -156,14 +160,24 @@ Cache writes are now produced by the source scan itself, so cancelling cache wor
 """
 cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
 
+function _cached_dataframe_rows(data::Vector{Any})::Int64
+    rows = Int64(0)
+    for item in data
+        item === nothing && continue
+        value = item_data(item)
+        value isa AbstractDataFrame && (rows += Int64(nrow(value)))
+    end
+    return rows
+end
+
 """
 Start one source scan that progressively populates the workspace index and cache.
 
 The scan first surfaces any already-cached index for an instant first view, then streams freshly
-interpreted source items into the workspace and a bounded cache-write batch. One cache writer stages
-up to one source item per worker at a time, then commits that bounded batch. This avoids both
-whole-tree loaded-data retention and scan-wide DuckDB transaction growth. `rebuild=true` first wipes
-the cache and ignores the prior scan, forcing a full re-interpretation.
+interpreted source items into the workspace and a bounded cache-write batch. The batch flushes by
+source-item count, cached row count, or age, so progressive saves remain frequent without paying for
+one DuckDB transaction per source item. `rebuild=true` first wipes the cache and ignores the prior
+scan, forcing a full re-interpretation.
 """
 function scan_source!(
     workspace::Workspace;
@@ -233,6 +247,8 @@ function scan_source!(
             kept_ids = Set{String}()
             record_batches = Vector{Vector{ItemRecord}}()
             data_batches = Vector{Vector{Any}}()
+            queued_cache_rows = Ref{Int64}(0)
+            last_cache_flush_ns = Ref{UInt64}(time_ns())
             function flush_cache_batch!()::Nothing
                 isempty(record_batches) && return nothing
                 write_started = time_ns()
@@ -249,6 +265,8 @@ function scan_source!(
                 end
                 empty!(record_batches)
                 empty!(data_batches)
+                queued_cache_rows[] = 0
+                last_cache_flush_ns[] = time_ns()
                 return nothing
             end
 
@@ -279,7 +297,13 @@ function scan_source!(
                         wrote[] = true
                         push!(record_batches, records)
                         push!(data_batches, data)
-                        length(record_batches) >= 4 && flush_cache_batch!()
+                        queued_cache_rows[] += _cached_dataframe_rows(data)
+                        now = time_ns()
+                        if length(record_batches) >= INTERPRETED_WRITE_BATCH_SOURCE_ITEMS ||
+                           queued_cache_rows[] >= INTERPRETED_WRITE_BATCH_ROWS ||
+                           now - last_cache_flush_ns[] >= INTERPRETED_WRITE_BATCH_NS
+                            flush_cache_batch!()
+                        end
                     end,
                     on_kept_source_item=(source_item_id::String) ->
                         push!(kept_ids, source_item_id),
