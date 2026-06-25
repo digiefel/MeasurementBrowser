@@ -284,6 +284,14 @@ end
                 reloaded = ProjectCache.load_cache_index(cachedb)
                 a1 = only(r for r in reloaded.source.hierarchy.all_items if r.id == "a1")
                 @test a1.stats[:vmax] === 3.5
+                ProjectCache.persist_stats!(
+                    cachedb,
+                    Dict("a1" => Dict{Symbol,Any}()),
+                    Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
+                )
+                reloaded = ProjectCache.load_cache_index(cachedb)
+                a1 = only(r for r in reloaded.source.hierarchy.all_items if r.id == "a1")
+                @test !haskey(a1.stats, :vmax)
 
                 # Dropping si_a from the next scan cascades its items out of the cache.
                 reconcile_one!(cachedb, recs_b)

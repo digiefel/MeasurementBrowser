@@ -515,8 +515,8 @@ function _append_metadata!(appender, scope::MetaScope, entity::AbstractString, d
 end
 
 # A positional INSERT covering every metadata column: scope, entity, key, vtype, then the nine value
-# slots in `META_VALUE_COLUMNS` order. Used for stats/node updates; bulk item writes use the faster
-# appender (see `_append_item_records!`).
+# slots in `META_VALUE_COLUMNS` order. Used for collection-parameter updates; bulk item/stat writes
+# use the faster appender (see `_append_item_records!` and `persist_stats!`).
 const _METADATA_INSERT_SQL = "INSERT INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 """Insert every key of one metadata dict as EAV rows under `scope`/`entity` via a prepared insert."""
@@ -897,18 +897,58 @@ function persist_stats!(
         batch_size=Int64(length(item_stats) + length(node_stats)),
     ) begin
         with_writer_transaction(cachedb) do connection
-            delete_stmt = DBInterface.prepare(connection,
-                "DELETE FROM metadata WHERE scope = ? AND entity = ?")
-            insert_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
-            for (entity, stats) in item_stats
-                DBInterface.execute(delete_stmt, (Int8(SCOPE_ITEM_STATS), entity))
-                _insert_metadata!(insert_stmt, SCOPE_ITEM_STATS, entity, metadata_dict(stats))
+            DBInterface.execute(connection, """
+                CREATE TEMP TABLE IF NOT EXISTS pending_stat_entities(
+                    scope TINYINT,
+                    entity TEXT)
+            """)
+            DBInterface.execute(connection, """
+                CREATE TEMP TABLE IF NOT EXISTS pending_stat_metadata AS
+                SELECT * FROM metadata WHERE false
+            """)
+            DBInterface.execute(connection, "DELETE FROM pending_stat_entities")
+            DBInterface.execute(connection, "DELETE FROM pending_stat_metadata")
+
+            entity_appender = DuckDB.Appender(connection, "pending_stat_entities")
+            metadata_appender = DuckDB.Appender(connection, "pending_stat_metadata")
+            try
+                function append_entity!(scope::MetaScope, entity::String)::Nothing
+                    DuckDB.append(entity_appender, Int8(scope))
+                    DuckDB.append(entity_appender, entity)
+                    DuckDB.end_row(entity_appender)
+                    return nothing
+                end
+
+                for (entity, stats) in item_stats
+                    id = String(entity)
+                    append_entity!(SCOPE_ITEM_STATS, id)
+                    _append_metadata!(
+                        metadata_appender, SCOPE_ITEM_STATS, id, metadata_dict(stats))
+                end
+                for (path, stats) in node_stats
+                    entity = collection_path_key(collect(String, path))
+                    append_entity!(SCOPE_NODE_STATS, entity)
+                    _append_metadata!(
+                        metadata_appender, SCOPE_NODE_STATS, entity, metadata_dict(stats))
+                end
+                DuckDB.flush(entity_appender)
+                DuckDB.flush(metadata_appender)
+            finally
+                DuckDB.close(entity_appender)
+                DuckDB.close(metadata_appender)
             end
-            for (path, stats) in node_stats
-                entity = collection_path_key(collect(String, path))
-                DBInterface.execute(delete_stmt, (Int8(SCOPE_NODE_STATS), entity))
-                _insert_metadata!(insert_stmt, SCOPE_NODE_STATS, entity, metadata_dict(stats))
-            end
+
+            DBInterface.execute(connection, """
+                DELETE FROM metadata
+                WHERE EXISTS (
+                    SELECT 1 FROM pending_stat_entities pending
+                    WHERE pending.scope = metadata.scope
+                      AND pending.entity = metadata.entity)
+            """)
+            DBInterface.execute(connection, """
+                INSERT INTO metadata
+                SELECT * FROM pending_stat_metadata
+            """)
         end
     end
     return nothing
