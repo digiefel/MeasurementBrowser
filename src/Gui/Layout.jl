@@ -453,15 +453,41 @@ function _set_browser_window_hints(window_start::Symbol)::Nothing
     return nothing
 end
 
+"""Render a small indeterminate loading spinner next to a short label."""
+function _render_loading_spinner!(label::AbstractString)::Nothing
+    radius = 8.0f0
+    thickness = 2.4f0
+    size = 24.0f0
+    cursor = ig.GetCursorScreenPos()
+    draw_list = ig.GetWindowDrawList()
+    center = ig.ImVec2(cursor.x + size / 2, cursor.y + size / 2)
+    phase = Float32(ig.GetTime() * 8.0)
+    spokes = 12
+    for index in 0:(spokes - 1)
+        angle = phase + Float32(2π * index / spokes)
+        alpha = 0.18f0 + 0.82f0 * Float32(index + 1) / Float32(spokes)
+        inner = radius * 0.45f0
+        outer = radius
+        p1 = ig.ImVec2(center.x + cos(angle) * inner, center.y + sin(angle) * inner)
+        p2 = ig.ImVec2(center.x + cos(angle) * outer, center.y + sin(angle) * outer)
+        ig.AddLine(draw_list, p1, p2, ig.GetColorU32(ig.ImGuiCol_Text, alpha), thickness)
+    end
+    ig.Dummy((size, size))
+    ig.SameLine(0.0f0, 10.0f0)
+    ig.TextDisabled(label)
+    return nothing
+end
+
 """Render the minimal startup surface shown before expensive first-use GUI work finishes."""
-function _render_startup_preparation!(message::AbstractString)::Nothing
+function _render_startup_preparation!()::Nothing
     center = ig.ImVec2(0, 0)
     @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
     flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoMove |
-            ig.ImGuiWindowFlags_NoSavedSettings | ig.ImGuiWindowFlags_AlwaysAutoResize
+            ig.ImGuiWindowFlags_NoSavedSettings | ig.ImGuiWindowFlags_AlwaysAutoResize |
+            ig.ImGuiWindowFlags_NoInputs
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
     if ig.Begin("###browser_startup_preparation", C_NULL, flags)
-        ig.TextUnformatted(message)
+        _render_loading_spinner!("Loading")
     end
     ig.End()
     return nothing
@@ -518,7 +544,7 @@ function _run_browser(
             first_frame[] = false
         end
         if !state.plots.runtime_warmed
-            _render_startup_preparation!("Preparing browser graphics...")
+            _render_startup_preparation!()
             if warmup_started[]
                 _time!(state, :plot_warmup) do
                     ensure_plot_runtime_warmed!(state)
