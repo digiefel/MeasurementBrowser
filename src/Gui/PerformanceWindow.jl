@@ -562,43 +562,38 @@ function _export_live_figure(
 end
 
 """
-Render redraw timings and aggregate build plots, or just the build plots inside the Internal tab.
+Render redraw timings and aggregate build plots.
 
 `MakieFigure` polls GLMakie for pending updates and renders only dirty frames.
 """
-function _render_live_plots_tab!(
-    state::BrowserState;
-    internal::Bool=false,
-)::Nothing
+function _render_live_plots_tab!(state::BrowserState)::Nothing
     lp        = state.performance.live_plots
     workspace = state.workspace
 
-    if !internal
-        lp.timings_figure === nothing && (lp.timings_figure = _make_timings_figure(lp))
-        _update_live_timings!(lp, state.performance.timings)
-        ig.TextUnformatted("Plot redraw phase timings (ms per redraw)")
-        ig.SameLine()
-        if ig.Button("Export##live_timings_export")
-            series = Pair{String,Vector{Float32}}[
-                "redraw" => copy(lp.total_x[]),
-                "load_ms" => copy(lp.load_obs[]),
-                "setup_ms" => copy(lp.setup_obs[]),
-                "data_ms" => copy(lp.data_obs[]),
-                "total_ms" => copy(lp.total_obs[]),
-            ]
-            lp.timings_export_error = _export_live_figure(
-                lp.timings_figure, "perf-timings.png", series)
-        end
-        isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
-        MakieFigure(
-            "perf_live_timings", lp.timings_figure;
-            auto_resize_x=true,
-            auto_resize_y=false,
-        )
-        ig.Spacing()
-        ig.Separator()
-        ig.Spacing()
+    lp.timings_figure === nothing && (lp.timings_figure = _make_timings_figure(lp))
+    _update_live_timings!(lp, state.performance.timings)
+    ig.TextUnformatted("Plot redraw phase timings (ms per redraw)")
+    ig.SameLine()
+    if ig.Button("Export##live_timings_export")
+        series = Pair{String,Vector{Float32}}[
+            "redraw" => copy(lp.total_x[]),
+            "load_ms" => copy(lp.load_obs[]),
+            "setup_ms" => copy(lp.setup_obs[]),
+            "data_ms" => copy(lp.data_obs[]),
+            "total_ms" => copy(lp.total_obs[]),
+        ]
+        lp.timings_export_error = _export_live_figure(
+            lp.timings_figure, "perf-timings.png", series)
     end
+    isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
+    MakieFigure(
+        "perf_live_timings", lp.timings_figure;
+        auto_resize_x=true,
+        auto_resize_y=false,
+    )
+    ig.Spacing()
+    ig.Separator()
+    ig.Spacing()
 
     lp.build_figure === nothing && (lp.build_figure = _make_build_figure(lp))
     _sample_build_progress!(lp, workspace)
@@ -805,8 +800,6 @@ function _render_internal_profile_tab!(
         ig.EndTable()
     end
 
-    ig.Separator()
-    _render_live_plots_tab!(state; internal=true)
     return nothing
 end
 

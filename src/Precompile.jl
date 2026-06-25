@@ -67,6 +67,16 @@ using DataFrames: DataFrame, nrow
         workspace = nothing
         try
             workspace = Workspace.Workspace(project, DirectorySource(fixture_dir))
+            state = Browser.BrowserState(
+                workspace=workspace,
+                project_locked=true,
+                project_preference=project_name(project),
+            )
+            Browser.current_status(state)
+            Browser._project_visible_selection(state)
+            Browser._make_timings_figure(state.performance.live_plots)
+            Browser._make_build_figure(state.performance.live_plots)
+            Browser._sample_build_progress!(state.performance.live_plots, workspace)
             read_item_data(workspace, records)
             plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
             items = Workspace.materialize_items(workspace, records)

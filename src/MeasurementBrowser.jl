@@ -104,9 +104,9 @@ include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
 include("Project.jl")
-include("Precompile.jl")
 include("Browser.jl")
 using .Browser: open_browser
+include("Precompile.jl")
 
 # Public API — exactly the contract. Everything else (engine internals: ItemRecord, the plot
 # dispatch, scan/data-access plumbing, table inspector, project introspection) stays un-exported and

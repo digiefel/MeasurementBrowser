@@ -5,7 +5,9 @@
 ## Entry point and frame loop
 
 `open_browser(workspace)` creates one `BrowserState` and runs the render loop for an already-opened
-workspace. The folder-open UI still uses the high-level callback project path internally:
+workspace. The first visible frames are a small preparation surface while the browser pays one-time
+GLMakie/ImGui figure warmup; the normal docked layout is shown only after that path is ready. The
+folder-open UI still uses the high-level callback project path internally:
 `open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
 navigation and information, right side for plot-oriented work.
 
@@ -49,7 +51,8 @@ reported as source-read time.
 Internal engine controls are absent unless the workspace was opened with
 `profile_internal=true`. Its Internal tab starts and stops a bounded structured capture, groups span
 latencies, separates writer wait from service, shows process counters and recent filtered events, and
-exports Perfetto JSON. Starting during active work drains it and starts one clean rebuild. With
+exports Perfetto JSON. General live plots stay in the normal Live tab so each Makie figure has one
+owning canvas. Starting during active work drains it and starts one clean rebuild. With
 `profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
 raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
 

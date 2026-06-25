@@ -2,6 +2,7 @@ using Printf
 using Statistics: mean
 import GLFW
 import CImGui as ig
+import CImGui.CSyntax: @c
 using NativeFileDialog: pick_folder
 
 # ---------------------------------------------------------------------------
@@ -452,6 +453,20 @@ function _set_browser_window_hints(window_start::Symbol)::Nothing
     return nothing
 end
 
+"""Render the minimal startup surface shown before expensive first-use GUI work finishes."""
+function _render_startup_preparation!(message::AbstractString)::Nothing
+    center = ig.ImVec2(0, 0)
+    @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
+    flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoMove |
+            ig.ImGuiWindowFlags_NoSavedSettings | ig.ImGuiWindowFlags_AlwaysAutoResize
+    ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
+    if ig.Begin("###browser_startup_preparation", C_NULL, flags)
+        ig.TextUnformatted(message)
+    end
+    ig.End()
+    return nothing
+end
+
 """
 Run the browser render loop for a prepared state. With `wait=false` the loop runs as a background
 task pinned to thread 1 (required for GLFW) and the call returns that task, leaving the REPL live.
@@ -470,6 +485,7 @@ function _run_browser(
     _set_browser_window_hints(window_start)
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
+    warmup_started = Ref(false)
     return ig.render(
         ctx;
         engine,
@@ -501,15 +517,21 @@ function _run_browser(
             window_start == :normal && _promote_to_foreground_app()
             first_frame[] = false
         end
+        if !state.plots.runtime_warmed
+            _render_startup_preparation!("Preparing browser graphics...")
+            if warmup_started[]
+                _time!(state, :plot_warmup) do
+                    ensure_plot_runtime_warmed!(state)
+                end
+            else
+                warmup_started[] = true
+            end
+            return nothing
+        end
         dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
         if setup_layout[]
             setup_layout[] = false
             _setup_docking_layout!(dockspace_id)
-        end
-        if !(workspace isa Workspace.Workspace && source_scan_running(workspace))
-            _time!(state, :plot_warmup) do
-                ensure_plot_runtime_warmed!(state)
-            end
         end
         render_selection_window(state)
         render_project_window(state)
