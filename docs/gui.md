@@ -73,6 +73,11 @@ plot type, figure, errors, and Live setting. It resolves those ids from the work
 rendering, so browser state never keeps a second copy of item records. The main and detached
 plots use the same type and the same rendering path.
 
+When a plot view no longer owns a visible figure — closed detached window, empty selection, invalid
+plot kind, or draw failure — the browser destroys its embedded Makie screen instead of only dropping
+the `Figure` reference. This keeps old scene graphs and OpenGL render resources from accumulating
+while browsing.
+
 One render materializes its selection once. The same processed item objects are passed to plot setup
 and drawing; the resulting Makie figure owns the plotted values for that plot state. There is no
 package-level object LRU and no separate debug-plot path.

@@ -17,15 +17,27 @@ using ..Visualization:
     plot_kind_name,
     registered_plot_kinds,
     setup_plot
-using .MakieImguiIntegration: MakieFigure
+using .MakieImguiIntegration: MakieFigure, destroy_figure!
 
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
+
+"""Return the stable embedded-Makie id for one plot view."""
+function _plot_makie_id(plots::PlotState, view::PlotViewState)::String
+    return view === plots.main ? "item_plot" : "item_plot_$(replace(view.id, '/' => '_'))"
+end
+
+"""Release the Makie figure and embedded screen owned by one plot view."""
+function clear_plot_view!(plots::PlotState, view::PlotViewState)::Nothing
+    destroy_figure!(_plot_makie_id(plots, view))
+    view.figure = nothing
+    view.last_key = nothing
+    return nothing
+end
 
 """Discard rendered figures so every open plot is redrawn."""
 function clear_plot_views!(plots::PlotState)::Nothing
     for view in (plots.main, plots.windows...)
-        view.figure = nothing
-        view.last_key = nothing
+        clear_plot_view!(plots, view)
         view.error = ""
         view.export_error = ""
     end
@@ -170,7 +182,7 @@ function draw_plot_view!(
             (time_ns() - started_ns) / 1e6,
             draw_alloc,
         )
-        view.figure = nothing
+        clear_plot_view!(state.plots, view)
         view.last_key = plot_key
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
         view.error = "Plot failed: $summary. See the console for full details."
@@ -316,9 +328,7 @@ function render_plot_body!(
     plots = state.plots
 
     if view.figure !== nothing
-        makie_id = view === plots.main ?
-            "item_plot" :
-            "item_plot_$(replace(view.id, '/' => '_'))"
+        makie_id = _plot_makie_id(plots, view)
         _time!(state, :makie_fig) do
             MakieFigure(
                 makie_id,
@@ -390,8 +400,7 @@ function render_plot_view!(
         view.last_key = nothing
     elseif view.plot_kind !== nothing && !(view.plot_kind in available)
         view.plot_kind = nothing
-        view.figure = nothing
-        view.last_key = nothing
+        clear_plot_view!(plots, view)
     end
 
     status = isempty(records) ?
@@ -412,9 +421,8 @@ function render_plot_view!(
                 records,
                 view.plot_kind,
             )
-    elseif view.live
-        view.figure = nothing
-        view.last_key = nothing
+    else
+        clear_plot_view!(plots, view)
     end
 
     render_plot_toolbar!(state, view, records, selected_records, available)
@@ -445,6 +453,8 @@ function ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
             auto_resize_x=false,
             auto_resize_y=false,
         )
+        destroy_figure!("_plot_runtime_warmup")
+        plots.warmup_figure = nothing
         plots.runtime_warmed = true
     end
     ig.End()
@@ -475,7 +485,11 @@ function render_additional_plot_windows(state::BrowserState)::Nothing
             render_plot_view!(state, view, selected)
         end
         ig.End()
-        open[] && push!(kept, view)
+        if open[]
+            push!(kept, view)
+        else
+            clear_plot_view!(plots, view)
+        end
     end
     plots.windows = kept
     return nothing
