@@ -4,12 +4,26 @@ struct ProcessingResult
     failure::Union{Nothing,CapturedException}
 end
 
+const PROCESSED_WRITE_BATCH_ITEMS = 64
+const PROCESSED_WRITE_FLUSH_SECONDS = 0.1
+
 """Start the bounded worker set that owns processing for one workspace."""
 function start_processing_workers!(workspace::Workspace)::Nothing
     worker_count = max(1, Base.Threads.nthreads() ÷ 2)
     for _ in 1:worker_count
         worker = Base.Threads.@spawn processing_worker!(workspace)
         push!(workspace.processing.workers, worker)
+    end
+    return nothing
+end
+
+"""Wait until all queued processed results have reached the cache writer."""
+function wait_processed_writes!(workspace::Workspace)::Nothing
+    queue = workspace.processing
+    lock(queue.lock) do
+        while !isempty(queue.pending_writes) || queue.write_active
+            wait(queue.condition)
+        end
     end
     return nothing
 end
@@ -22,6 +36,7 @@ function stop_processing_workers!(workspace::Workspace)::Nothing
         notify(queue.condition; all=true)
     end
     foreach(wait, queue.workers)
+    wait_processed_writes!(workspace)
     return nothing
 end
 
@@ -67,17 +82,16 @@ function reset_processing_queue!(workspace::Workspace)::Nothing
     return nothing
 end
 
-"""Commit one processed value through the processing queue's shared cache writer."""
-function commit_processed_item!(
+"""Queue one processed value for the shared cache writer."""
+function enqueue_processed_write!(
     workspace::Workspace,
     record::ItemRecord,
     item::Union{Nothing,AbstractDataItem},
     stats::Union{Nothing,MetadataDict},
-)::Union{Nothing,CapturedException}
+)::Nothing
     queue = workspace.processing
-    request = ProcessedWriteRequest(
-        record, item, stats, Channel{ProcessedWriteResult}(1))
-    leader = lock(queue.lock) do
+    request = ProcessedWriteRequest(record, item, stats)
+    start_writer = lock(queue.lock) do
         push!(queue.pending_writes, request)
         if queue.write_active
             false
@@ -86,77 +100,109 @@ function commit_processed_item!(
             true
         end
     end
-    if leader
-        sleep(0.001)
-        while true
-            batch = lock(queue.lock) do
-                ready = copy(queue.pending_writes)
-                empty!(queue.pending_writes)
-                ready
-            end
-            payload_failure = try
-                write_started = time_ns()
-                Profiling.@profile_span workspace.profiler :processing :commit_batch Profiling.ProfileAttributes(
-                    stage=:processed,
-                    items=Int64(length(batch)),
-                    batch_size=Int64(length(batch)),
-                ) begin
-                    write_cached_item_data!(
-                        workspace.cache.db,
-                        ItemRecord[pending.record for pending in batch],
-                        Any[pending.item for pending in batch];
-                        stage=:processed,
-                    )
-                end
-                record_cache_phase!(
-                    workspace.metrics.processed_write_ns,
-                    workspace.metrics.processed_writes, write_started)
-                nothing
-            catch error
-                CapturedException(error, catch_backtrace())
-            end
-            stats_failure = if payload_failure === nothing
-                batch_stats = Dict{String,MetadataDict}(
-                    pending.record.id => (pending.stats::MetadataDict)
-                    for pending in batch if pending.stats !== nothing
-                )
-                try
-                    if !isempty(batch_stats)
-                        write_started = time_ns()
-                        persist_stats!(
-                            workspace.cache.db,
-                            batch_stats,
-                            Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
-                        )
-                        record_cache_phase!(
-                            workspace.metrics.stats_write_ns,
-                            workspace.metrics.stats_writes, write_started)
-                    end
-                    nothing
-                catch error
-                    CapturedException(error, catch_backtrace())
-                end
-            else
-                nothing
-            end
-            result = ProcessedWriteResult(payload_failure, stats_failure)
-            for pending in batch
-                put!(pending.completion, result)
-            end
-            done = lock(queue.lock) do
-                if isempty(queue.pending_writes)
-                    queue.write_active = false
-                    true
-                else
-                    false
-                end
-            end
-            done && break
+    start_writer && Base.Threads.@spawn processed_write_worker!(workspace)
+    return nothing
+end
+
+function _take_processed_write_batch!(queue::ProcessingQueue)::Vector{ProcessedWriteRequest}
+    return lock(queue.lock) do
+        if isempty(queue.pending_writes)
+            queue.write_active = false
+            notify(queue.condition; all=true)
+            ProcessedWriteRequest[]
+        else
+            count = min(length(queue.pending_writes), PROCESSED_WRITE_BATCH_ITEMS)
+            batch = ProcessedWriteRequest[
+                queue.pending_writes[index]
+                for index in 1:count
+            ]
+            deleteat!(queue.pending_writes, 1:count)
+            batch
         end
     end
-    result = take!(request.completion)
-    result.payload_failure === nothing || throw(result.payload_failure)
-    return result.stats_failure
+end
+
+function _record_processed_write_failure!(
+    workspace::Workspace,
+    batch::Vector{ProcessedWriteRequest},
+    error,
+    backtrace,
+)::Nothing
+    @error(
+        "Processed cache write failed",
+        exception=(error, backtrace),
+        items=length(batch),
+    )
+    message = "cache write: " * sprint(showerror, error)
+    for pending in batch
+        put!(workspace.processing.events, (
+            kind=:failure,
+            item_id=pending.record.id,
+            source_item_id=pending.record.source_item_id,
+            message,
+        ))
+    end
+    return nothing
+end
+
+function _persist_processed_write_batch!(
+    workspace::Workspace,
+    batch::Vector{ProcessedWriteRequest},
+)::Nothing
+    isempty(batch) && return nothing
+    batch_stats = Dict{String,MetadataDict}(
+        pending.record.id => (pending.stats::MetadataDict)
+        for pending in batch if pending.stats !== nothing
+    )
+    write_started = time_ns()
+    Profiling.@profile_span workspace.profiler :processing :commit_batch Profiling.ProfileAttributes(
+        stage=:processed,
+        items=Int64(length(batch)),
+        batch_size=Int64(length(batch)),
+    ) begin
+        write_cached_item_data!(
+            workspace.cache.db,
+            ItemRecord[pending.record for pending in batch],
+            Any[pending.item for pending in batch];
+            stage=:processed,
+        )
+    end
+    record_cache_phase!(
+        workspace.metrics.processed_write_ns,
+        workspace.metrics.processed_writes,
+        write_started,
+    )
+    if !isempty(batch_stats)
+        write_started = time_ns()
+        persist_stats!(
+            workspace.cache.db,
+            batch_stats,
+            Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
+        )
+        record_cache_phase!(
+            workspace.metrics.stats_write_ns,
+            workspace.metrics.stats_writes,
+            write_started,
+        )
+    end
+    return nothing
+end
+
+function processed_write_worker!(workspace::Workspace)::Nothing
+    queue = workspace.processing
+    while true
+        should_coalesce = lock(queue.lock) do
+            0 < length(queue.pending_writes) < PROCESSED_WRITE_BATCH_ITEMS
+        end
+        should_coalesce && sleep(PROCESSED_WRITE_FLUSH_SECONDS)
+        batch = _take_processed_write_batch!(queue)
+        isempty(batch) && return nothing
+        try
+            _persist_processed_write_batch!(workspace, batch)
+        catch error
+            _record_processed_write_failure!(workspace, batch, error, catch_backtrace())
+        end
+    end
 end
 
 """Return the next valid waiting job, preferring selected items."""
@@ -311,13 +357,12 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
     catch error
         CapturedException(error, catch_backtrace())
     end
-    persisted_failure = commit_processed_item!(
+    enqueue_processed_write!(
         workspace,
         job.record,
         cacheable(processed) ? view_item : nothing,
         stats_failure === nothing && !isempty(item_stats) ? item_stats : nothing,
     )
-    stats_failure === nothing && (stats_failure = persisted_failure)
     if stats_failure === nothing
         put!(workspace.processing.events, (
             kind=:stats,

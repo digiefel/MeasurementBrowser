@@ -125,7 +125,9 @@ analysis_work_running(workspace::Workspace)::Bool =
 """Whether any item is waiting for or currently running processing."""
 function processing_work_running(workspace::Workspace)::Bool
     return lock(workspace.processing.lock) do
-        !isempty(workspace.processing.jobs)
+        !isempty(workspace.processing.jobs) ||
+            !isempty(workspace.processing.pending_writes) ||
+            workspace.processing.write_active
     end
 end
 
@@ -337,7 +339,7 @@ function profile_counter_snapshot(workspace::Workspace)::NamedTuple
         (
             workspace.processing.completed,
             workspace.processing.total,
-            length(workspace.processing.jobs),
+            length(workspace.processing.jobs) + length(workspace.processing.pending_writes),
         )
     end
     return (

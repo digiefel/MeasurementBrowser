@@ -59,9 +59,11 @@ background work, one metadata query finds all valid processed entries, so cached
 one at a time.
 
 Processing reads interpreted data from DuckDB or source fallback, calls `process`, and computes item
-statistics. Completed workers coalesce behind one queue leader. Each ready batch commits processed
-payloads first and item statistics in a separate transaction, avoiding one transaction per item
-without mixing payload and metadata index updates. Collection statistics run after processing settles.
+statistics. Completed workers publish their result to the workspace, then enqueue the processed
+payload and item statistics for one short coalescing writer. The writer flushes bounded batches
+progressively, committing processed payloads first and item statistics in a separate transaction to
+avoid mixing payload and metadata index updates. Collection statistics run after processing and its
+queued durable writes settle.
 
 DuckDB is the only package-level shared cache. There is no Julia object LRU. An active plot or
 inspector owns the processed items it currently displays; a later selection reads DuckDB or repeats

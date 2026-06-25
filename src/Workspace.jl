@@ -124,17 +124,10 @@ mutable struct ProcessingJob
     queued_ns::UInt64
 end
 
-"""One completed processed value waiting for its small shared cache batch."""
-struct ProcessedWriteResult
-    payload_failure::Union{Nothing,CapturedException}
-    stats_failure::Union{Nothing,CapturedException}
-end
-
 struct ProcessedWriteRequest
     record::ItemRecord
     item::Union{Nothing,AbstractDataItem}
     stats::Union{Nothing,MetadataDict}
-    completion::Channel{ProcessedWriteResult}
 end
 
 """Workspace-owned processing work; completed values are not retained after delivery."""

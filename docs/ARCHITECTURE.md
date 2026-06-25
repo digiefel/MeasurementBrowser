@@ -48,8 +48,9 @@ remaining source items to a bounded worker pool. Each worker calls
 `data_items(project, source, source_item)` once and normalizes its logical items into stable records
 and interpreted data. Small ready groups commit their records and cacheable interpreted data, then
 enter the shared processing queue. Background and selected work use the same job; selection only
-changes priority. Cacheable processed data and item statistics are committed before publication.
-Collection-node stats run afterward from completed records and item-stat results.
+changes priority. Processing publishes completed item data and item statistics to the workspace first,
+then a short coalescing writer durably stores processed payloads and stats in bounded batches.
+Collection-node stats run afterward from published item-stat results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
 When a view needs item data, it asks the processing queue for the selected records. A valid processed

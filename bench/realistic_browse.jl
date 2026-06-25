@@ -291,6 +291,9 @@ function run_benchmark()
         end
     end
     t_start = time()
+    rss_start_bytes = MB.Profiling.process_rss_bytes()
+    rss_peak_bytes = rss_start_bytes
+    rss_end_bytes = rss_start_bytes
     build_seconds = 0.0
     scan_seconds = 0.0
     processing_started = nothing
@@ -302,10 +305,15 @@ function run_benchmark()
     profile_report = nothing
     try
         last_probe = 0.0
+        last_rss_sample = 0.0
         kind_cursor = 1
         while true
             MB.Workspace.poll_workspace!(ws)
             now = time() - t_start
+            if now - last_rss_sample >= 0.1
+                last_rss_sample = now
+                rss_peak_bytes = max(rss_peak_bytes, MB.Profiling.process_rss_bytes())
+            end
             completed, queued = lock(ws.processing.lock) do
                 (ws.processing.completed, ws.processing.total)
             end
@@ -340,6 +348,7 @@ function run_benchmark()
             sleep(0.004)
         end
         MB.Workspace.poll_workspace!(ws)
+        rss_end_bytes = MB.Profiling.process_rss_bytes()
 
         # Steady-state sweep: many random selections per kind on the finished cache.
         rng = MersenneTwister(1)
@@ -375,6 +384,9 @@ function run_benchmark()
             stats_writes=metrics.stats_writes[],
             writer_busy_ns=db.writer_busy_ns[],
             writer_wait_ns=db.writer_wait_ns[],
+            rss_start_bytes,
+            rss_peak_bytes,
+            rss_end_bytes,
         )
         START_PROFILE &&
             (profile_report = MB.Workspace.stop_internal_profile!(ws))
@@ -449,12 +461,12 @@ function report(samples, global_queries, stats, profile_report, outdir,
             "end_to_end_items_per_s,mean_write_ms,writer_busy_s,writer_wait_s," *
             "during_median_ms,during_p90_ms,during_p99_ms,during_max_ms," *
             "after_median_ms,after_p90_ms,after_p99_ms,after_max_ms," *
-            "profile_events,profile_dropped")
+            "rss_start_mib,rss_peak_mib,rss_end_mib,profile_events,profile_dropped")
         event_count = profile_report isa MB.Profiling.ProfileReport ?
             length(profile_report.events) : 0
         dropped = profile_report isa MB.Profiling.ProfileReport ?
             profile_report.dropped_events : 0
-        @printf(io, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d\n",
+        @printf(io, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%d,%d\n",
             build_seconds, stats.scan_seconds, n_files / stats.scan_seconds,
             stats.processing_seconds, stats.processed_items / stats.processing_seconds,
             stats.analysis_seconds, stats.processed_items / build_seconds, mean_write_ms,
@@ -463,6 +475,9 @@ function report(samples, global_queries, stats, profile_report, outdir,
             read_stat(during, values -> quantile(values, 0.99)), read_stat(during, maximum),
             read_stat(after, median), read_stat(after, values -> quantile(values, 0.9)),
             read_stat(after, values -> quantile(values, 0.99)), read_stat(after, maximum),
+            stats.rss_start_bytes / 1024^2,
+            stats.rss_peak_bytes / 1024^2,
+            stats.rss_end_bytes / 1024^2,
             event_count, dropped)
     end
 
@@ -499,6 +514,12 @@ function report(samples, global_queries, stats, profile_report, outdir,
         stats.stats_write_ns / max(stats.stats_writes, 1) / 1e6)
     @printf("  overall mean %7.2f ms  writer busy %.1f s  queued wait %.1f s\n",
         mean_write_ms, stats.writer_busy_ns / 1e9, stats.writer_wait_ns / 1e9)
+
+    println("\nProcess memory:")
+    @printf("  RSS start %.1f MiB  peak %.1f MiB  end %.1f MiB\n",
+        stats.rss_start_bytes / 1024^2,
+        stats.rss_peak_bytes / 1024^2,
+        stats.rss_end_bytes / 1024^2)
 
     println("\nAggregate interactive read latency, ms:")
     @printf("  %-13s %8s %8s %8s %8s %6s\n",
