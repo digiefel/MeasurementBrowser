@@ -606,24 +606,36 @@ function write_scan_identity!(cachedb::CacheDB)::Nothing
     return nothing
 end
 
-"""Read the current `fingerprint_hash` stored for one source item, or `nothing` if absent."""
-function _stored_fingerprint_hash(connection, source_item_id::AbstractString)
-    statement = DBInterface.prepare(connection,
-        "SELECT fingerprint_hash FROM source_items WHERE source_item_id = ?")
-    for row in DBInterface.execute(statement, (source_item_id,))
-        return _null_to_nothing(row.fingerprint_hash)
-    end
-    return missing   # row absent (distinct from a present row whose hash is NULL)
-end
+"""Read stored source-row hashes and early item-data rows for one reconcile batch."""
+function _source_item_write_state(
+    connection,
+    source_item_ids::Vector{String},
+)::Tuple{Dict{String,Union{Nothing,String}},Set{String}}
+    stored_hashes = Dict{String,Union{Nothing,String}}()
+    cached_data_ids = Set{String}()
+    isempty(source_item_ids) && return stored_hashes, cached_data_ids
 
-"""Whether item payload rows already exist for one source item."""
-function _has_cached_source_item_data(connection, source_item_id::AbstractString)::Bool
-    statement = DBInterface.prepare(
-        connection, "SELECT 1 FROM item_data WHERE source_item_id = ? LIMIT 1")
-    for _ in DBInterface.execute(statement, (String(source_item_id),))
-        return true
+    placeholders = join(fill("?", length(source_item_ids)), ", ")
+    parameters = Tuple(source_item_ids)
+    statement = DBInterface.prepare(connection, """
+        SELECT source_item_id, fingerprint_hash
+        FROM source_items
+        WHERE source_item_id IN ($placeholders)
+    """)
+    for row in DBInterface.execute(statement, parameters)
+        hash = _null_to_nothing(row.fingerprint_hash)
+        stored_hashes[String(row.source_item_id)] = hash === nothing ? nothing : String(hash)
     end
-    return false
+
+    statement = DBInterface.prepare(connection, """
+        SELECT DISTINCT source_item_id
+        FROM item_data
+        WHERE source_item_id IN ($placeholders)
+    """)
+    for row in DBInterface.execute(statement, parameters)
+        push!(cached_data_ids, String(row.source_item_id))
+    end
+    return stored_hashes, cached_data_ids
 end
 
 """Delete the index rows and, when invalidated, cached data belonging to one source item."""
@@ -654,6 +666,8 @@ end
 function _reconcile_source_item!(
     connection,
     records::Vector{ItemRecord},
+    previous_hash::Union{Missing,Nothing,String},
+    has_cached_data::Bool,
 )::String
     isempty(records) && throw(ArgumentError("a source-item batch needs at least one record"))
     source_item_id = first(records).source_item_id
@@ -664,9 +678,8 @@ function _reconcile_source_item!(
     path = first(records).source_item_path
     timestamp = first(records).source_item_timestamp
 
-    previous_hash = _stored_fingerprint_hash(connection, source_item_id)
     fingerprint_changed = previous_hash === missing || previous_hash != new_hash
-    if previous_hash !== missing || _has_cached_source_item_data(connection, source_item_id)
+    if previous_hash !== missing || has_cached_data
         _delete_source_item_rows!(
             connection, source_item_id; drop_item_data=fingerprint_changed)
     end
@@ -768,8 +781,19 @@ function reconcile_source_items!(
             stage=stage,
             items=Int64(item_count),
         ) begin
+            source_item_ids = unique!(
+                String[first(records).source_item_id for records in record_batches])
+            stored_hashes, cached_data_ids =
+                _source_item_write_state(connection, source_item_ids)
             for records in record_batches
-                push!(written, _reconcile_source_item!(connection, records))
+                source_item_id = first(records).source_item_id
+                previous_hash = get(stored_hashes, source_item_id, missing)
+                push!(written, _reconcile_source_item!(
+                    connection,
+                    records,
+                    previous_hash,
+                    source_item_id in cached_data_ids,
+                ))
             end
         end
         records = ItemRecord[]
