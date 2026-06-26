@@ -383,9 +383,12 @@ end
 
 """Process one item, persist eligible data and stats, and return the view item."""
 function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataItem
-    cached = only(read_cached_item_data(
-        workspace.cache.db, [job.record]; stage=:processed))
-    cached === nothing || return cached
+    needs_payload = job.priority > 0 || !isempty(job.waiters)
+    if needs_payload
+        cached = only(read_cached_item_data(
+            workspace.cache.db, [job.record]; stage=:processed))
+        cached === nothing || return cached
+    end
 
     interpreted = interpreted_item(workspace, job)
     process_started = time_ns()
@@ -417,14 +420,14 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
     catch error
         CapturedException(error, catch_backtrace())
     end
-    cache_payload = cacheable(processed) && (job.priority > 0 || !isempty(job.waiters))
-    write_payload = job.priority > 0 || !isempty(job.waiters)
+    needs_payload = job.priority > 0 || !isempty(job.waiters)
+    cache_payload = cacheable(processed) && needs_payload
     enqueue_processed_write!(
         workspace,
         job.record,
         cache_payload ? view_item : nothing,
         stats_failure === nothing && !isempty(item_stats) ? item_stats : nothing,
-        write_payload,
+        needs_payload,
     )
     if stats_failure === nothing
         put!(workspace.processing.events, (
