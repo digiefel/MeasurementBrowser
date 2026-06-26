@@ -8,6 +8,7 @@ const PROCESSED_WRITE_BATCH_ITEMS = 256
 const PROCESSED_WRITE_BATCH_ROWS = 1_000_000
 const PROCESSED_WRITE_BACKPRESSURE_ROWS = 2_000_000
 const PROCESSED_WRITE_FLUSH_SECONDS = 1
+const PROCESSING_BACKGROUND_BATCH_ITEMS = 8
 
 function processed_write_rows(item::Union{Nothing,AbstractDataItem})::Int
     item === nothing && return 0
@@ -287,6 +288,32 @@ function take_processing_job!(queue::ProcessingQueue)::Union{Nothing,ProcessingJ
     end
 end
 
+"""Return the next valid jobs, batching adjacent background work from one source item."""
+function take_processing_jobs!(queue::ProcessingQueue)::Vector{ProcessingJob}
+    job = take_processing_job!(queue)
+    job === nothing && return ProcessingJob[]
+    job.priority > 0 && return ProcessingJob[job]
+    !isempty(job.waiters) && return ProcessingJob[job]
+
+    jobs = ProcessingJob[job]
+    source_item_id_value = job.record.source_item_id
+    while length(jobs) < PROCESSING_BACKGROUND_BATCH_ITEMS &&
+          queue.background_index <= length(queue.background)
+        id = queue.background[queue.background_index]
+        next = get(queue.jobs, id, nothing)
+        if next === nothing || next.state != :waiting
+            queue.background_index += 1
+            continue
+        end
+        next.record.source_item_id == source_item_id_value || break
+        next.priority == 0 || break
+        next.state = :running
+        queue.background_index += 1
+        push!(jobs, next)
+    end
+    return jobs
+end
+
 """
 Queue one item once, optionally promoting it and attaching a selected waiter.
 
@@ -381,16 +408,48 @@ function interpreted_item(workspace::Workspace, job::ProcessingJob)::AbstractDat
     return cached === nothing ? source_fallback(workspace, job.record) : cached
 end
 
+"""Load interpreted data for same-source background jobs with one cache read."""
+function interpreted_items(
+    workspace::Workspace,
+    jobs::Vector{ProcessingJob},
+)::Vector{AbstractDataItem}
+    records = ItemRecord[job.record for job in jobs]
+    cached = read_cached_item_data(workspace.cache.db, records; stage=:interpreted)
+    interpreted = Vector{AbstractDataItem}(undef, length(jobs))
+    for (index, job) in pairs(jobs)
+        item = cached[index]
+        interpreted[index] = item === nothing ? source_fallback(workspace, job.record) :
+            item::AbstractDataItem
+    end
+    return interpreted
+end
+
 """Process one item, persist eligible data and stats, and return the view item."""
-function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataItem
+function process_item(
+    workspace::Workspace,
+    job::ProcessingJob,
+)::AbstractDataItem
     needs_payload = job.priority > 0 || !isempty(job.waiters)
     if needs_payload
         cached = only(read_cached_item_data(
             workspace.cache.db, [job.record]; stage=:processed))
         cached === nothing || return cached
     end
+    return process_item(workspace, job, interpreted_item(workspace, job))
+end
 
-    interpreted = interpreted_item(workspace, job)
+"""Process one item when its interpreted data has already been loaded."""
+function process_item(
+    workspace::Workspace,
+    job::ProcessingJob,
+    interpreted::AbstractDataItem,
+)::AbstractDataItem
+    needs_payload = job.priority > 0 || !isempty(job.waiters)
+    if needs_payload
+        cached = only(read_cached_item_data(
+            workspace.cache.db, [job.record]; stage=:processed))
+        cached === nothing || return cached
+    end
     process_started = time_ns()
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=job.record.kind,
@@ -450,48 +509,77 @@ function process_item(workspace::Workspace, job::ProcessingJob)::AbstractDataIte
 end
 
 """Run queued processing jobs and deliver results without retaining completed item objects."""
+function finish_processing_job!(
+    queue::ProcessingQueue,
+    job::ProcessingJob,
+    result::ProcessingResult,
+)::Nothing
+    if result.failure !== nothing
+        put!(queue.events, (
+            kind=:failure,
+            item_id=job.record.id,
+            source_item_id=job.record.source_item_id,
+            message="process: " * sprint(showerror, result.failure.ex),
+        ))
+    end
+    waiters = lock(queue.lock) do
+        delete!(queue.jobs, job.record.id)
+        queue.completed_items[job.record.id] = job.scan_id
+        queue.completed += 1
+        notify(queue.condition; all=true)
+        copy(job.waiters)
+    end
+    for waiter in waiters
+        put!(waiter, result)
+    end
+    return nothing
+end
+
 function processing_worker!(workspace::Workspace)::Nothing
     queue = workspace.processing
     while true
-        job = lock(queue.lock) do
-            take_processing_job!(queue)
+        jobs = lock(queue.lock) do
+            take_processing_jobs!(queue)
         end
-        job === nothing && return nothing
-        result = try
-            item = Profiling.@profile_span workspace.profiler :processing :item Profiling.ProfileAttributes(
-                kind=job.record.kind,
-                source_id=job.record.source_item_id,
-                item_id=job.record.id,
-                wait_ns=Int64(time_ns() - job.queued_ns),
-            ) begin
-                process_item(workspace, job)
-            end
-            ProcessingResult(item, nothing)
+        isempty(jobs) && return nothing
+        interpreted = try
+            length(jobs) == 1 ? nothing : interpreted_items(workspace, jobs)
         catch error
-            persist_item_failure!(
-                workspace.cache.db,
-                job.record,
-                "process: " * sprint(showerror, error),
-            )
-            ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
+            failure = ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
+            for job in jobs
+                persist_item_failure!(
+                    workspace.cache.db,
+                    job.record,
+                    "process: " * sprint(showerror, error),
+                )
+                finish_processing_job!(queue, job, failure)
+            end
+            continue
         end
-        if result.failure !== nothing
-            put!(queue.events, (
-                kind=:failure,
-                item_id=job.record.id,
-                source_item_id=job.record.source_item_id,
-                message="process: " * sprint(showerror, result.failure.ex),
-            ))
-        end
-        waiters = lock(queue.lock) do
-            delete!(queue.jobs, job.record.id)
-            queue.completed_items[job.record.id] = job.scan_id
-            queue.completed += 1
-            notify(queue.condition; all=true)
-            copy(job.waiters)
-        end
-        for waiter in waiters
-            put!(waiter, result)
+        for (index, job) in pairs(jobs)
+            result = try
+                item = Profiling.@profile_span workspace.profiler :processing :item Profiling.ProfileAttributes(
+                    kind=job.record.kind,
+                    source_id=job.record.source_item_id,
+                    item_id=job.record.id,
+                    wait_ns=Int64(time_ns() - job.queued_ns),
+                ) begin
+                    if interpreted === nothing
+                        process_item(workspace, job)
+                    else
+                        process_item(workspace, job, interpreted[index])
+                    end
+                end
+                ProcessingResult(item, nothing)
+            catch error
+                persist_item_failure!(
+                    workspace.cache.db,
+                    job.record,
+                    "process: " * sprint(showerror, error),
+                )
+                ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
+            end
+            finish_processing_job!(queue, job, result)
         end
     end
 end
