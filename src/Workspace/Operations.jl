@@ -489,7 +489,7 @@ function append_items!(
 )::Bool
     isempty(items) && return false
     hierarchy = workspace.index.hierarchy
-    item_index = copy(workspace.index.items)
+    item_index = workspace.index.items
     changed = false
     for item in items
         haskey(item_index, item.id) && continue
@@ -503,7 +503,6 @@ function append_items!(
     for node in values(hierarchy.index)
         union!(parameter_keys, keys(node.parameters))
     end
-    workspace.index.items = item_index
     workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
     return true
 end

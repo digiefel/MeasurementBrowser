@@ -50,13 +50,17 @@ using Test
             TEST_PROJECT,
             test_source(TEST_PROJECT, dir),
         )
-        old_index = workspace.index.items
+        first_record = only(source.hierarchy.all_items[1:1])
         @test MeasurementBrowser.Workspace.append_items!(
             workspace,
-            source.hierarchy.all_items[1:1],
+            [first_record],
         )
-        @test old_index !== workspace.index.items
-        @test isempty(old_index)
+        @test workspace.index.items[first_record.id] == first_record
+        @test length(workspace.index.items) == 1
+        @test !MeasurementBrowser.Workspace.append_items!(
+            workspace,
+            [first_record],
+        )
         @test length(workspace.index.items) == 1
 
         fired = Ref(false)
