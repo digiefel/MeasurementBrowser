@@ -84,6 +84,7 @@ function reset_processing_queue!(workspace::Workspace)::Nothing
         empty!(queue.background)
         queue.background_index = 1
         empty!(queue.source_locks)
+        empty!(queue.completed_items)
         queue.pending_write_rows = 0
         queue.active_write_rows = 0
         queue.total = 0
@@ -299,22 +300,29 @@ function enqueue_processing!(
 )::Union{Nothing,Channel{Any}}
     queue = workspace.processing
     waiter = selected ? Channel{Any}(1) : nothing
-    lock(queue.lock) do
+    scan_id = workspace.scan.id
+    skipped = lock(queue.lock) do
         queue.closed && error("Cannot queue processing after the workspace has closed")
-        job = get(queue.jobs, record.id, nothing)
-        if job === nothing
-            job = ProcessingJob(
-                record, :waiting, selected ? 1 : 0, Channel{Any}[], time_ns())
-            queue.jobs[record.id] = job
-            queue.total += 1
-            push!(selected ? queue.selected : queue.background, record.id)
-        elseif selected && job.state == :waiting && job.priority == 0
-            job.priority = 1
-            push!(queue.selected, record.id)
+        if !selected && get(queue.completed_items, record.id, 0) == scan_id
+            true
+        else
+            job = get(queue.jobs, record.id, nothing)
+            if job === nothing
+                job = ProcessingJob(
+                    record, :waiting, selected ? 1 : 0, Channel{Any}[], time_ns(), scan_id)
+                queue.jobs[record.id] = job
+                queue.total += 1
+                push!(selected ? queue.selected : queue.background, record.id)
+            elseif selected && job.state == :waiting && job.priority == 0
+                job.priority = 1
+                push!(queue.selected, record.id)
+            end
+            waiter === nothing || push!(job.waiters, waiter)
+            notify(queue.condition)
+            false
         end
-        waiter === nothing || push!(job.waiters, waiter)
-        notify(queue.condition)
     end
+    skipped && return nothing
     return waiter
 end
 
@@ -474,6 +482,7 @@ function processing_worker!(workspace::Workspace)::Nothing
         end
         waiters = lock(queue.lock) do
             delete!(queue.jobs, job.record.id)
+            queue.completed_items[job.record.id] = job.scan_id
             queue.completed += 1
             notify(queue.condition; all=true)
             copy(job.waiters)

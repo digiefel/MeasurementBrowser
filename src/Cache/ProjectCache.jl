@@ -262,6 +262,25 @@ function with_reader(work::Function, cachedb::CacheDB)::Any
     end
 end
 
+"""Run a multi-statement cache read against one committed snapshot."""
+function with_reader_snapshot(work::Function, cachedb::CacheDB)::Any
+    return with_reader(cachedb) do connection
+        DBInterface.execute(connection, "BEGIN TRANSACTION")
+        try
+            result = work(connection)
+            DBInterface.execute(connection, "COMMIT")
+            result
+        catch error
+            try
+                DBInterface.execute(connection, "ROLLBACK")
+            catch rollback_error
+                throw(CompositeException(error, rollback_error))
+            end
+            rethrow()
+        end
+    end
+end
+
 """Run `work` on the cache's serialized writer connection."""
 function with_writer(work::Function, cachedb::CacheDB)::Any
     profiler = cachedb.profiler

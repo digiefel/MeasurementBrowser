@@ -122,6 +122,7 @@ mutable struct ProcessingJob
     priority::Int
     waiters::Vector{Channel{Any}}
     queued_ns::UInt64
+    scan_id::Int
 end
 
 struct ProcessedWriteRequest
@@ -144,6 +145,7 @@ mutable struct ProcessingQueue
     events::Channel{NamedTuple}
     workers::Vector{Task}
     pending_writes::Vector{ProcessedWriteRequest}
+    completed_items::Dict{String,Int}
     pending_write_rows::Int
     write_active::Bool
     active_write_rows::Int
@@ -165,6 +167,7 @@ function ProcessingQueue()::ProcessingQueue
         Channel{NamedTuple}(Inf),
         Task[],
         ProcessedWriteRequest[],
+        Dict{String,Int}(),
         0,
         false,
         0,

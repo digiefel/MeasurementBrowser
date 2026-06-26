@@ -657,7 +657,7 @@ function read_cached_item_data(
         stage=stage,
         items=Int64(length(items)),
     ) begin
-        with_reader(cachedb) do connection
+        with_reader_snapshot(cachedb) do connection
             _read_cached_item_data(connection, cachedb.profiler, items, stage)
         end
     end
