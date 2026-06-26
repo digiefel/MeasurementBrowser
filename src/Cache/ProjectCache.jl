@@ -665,6 +665,7 @@ end
 """Write one source-item batch on an already-open transaction."""
 function _reconcile_source_item!(
     connection,
+    source_insert_statement,
     records::Vector{ItemRecord},
     previous_hash::Union{Missing,Nothing,String},
     has_cached_data::Bool,
@@ -674,7 +675,8 @@ function _reconcile_source_item!(
     all(record -> record.source_item_id == source_item_id, records) ||
         throw(ArgumentError("a source-item batch must share one source item"))
     fingerprint = first(records).source_item_fingerprint
-    new_hash = _fingerprint_hash(fingerprint)
+    fingerprint_bytes = fingerprint === nothing ? nothing : _serialize_bytes(fingerprint)
+    new_hash = fingerprint_bytes === nothing ? nothing : bytes2hex(sha1(fingerprint_bytes))
     path = first(records).source_item_path
     timestamp = first(records).source_item_timestamp
 
@@ -685,10 +687,10 @@ function _reconcile_source_item!(
     end
 
     DBInterface.execute(
-        DBInterface.prepare(connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)"),
+        source_insert_statement,
         (
             source_item_id,
-            fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
+            fingerprint_bytes,
             new_hash,
             path,
             timestamp,
@@ -785,11 +787,14 @@ function reconcile_source_items!(
                 String[first(records).source_item_id for records in record_batches])
             stored_hashes, cached_data_ids =
                 _source_item_write_state(connection, source_item_ids)
+            source_insert_statement = DBInterface.prepare(
+                connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)")
             for records in record_batches
                 source_item_id = first(records).source_item_id
                 previous_hash = get(stored_hashes, source_item_id, missing)
                 push!(written, _reconcile_source_item!(
                     connection,
+                    source_insert_statement,
                     records,
                     previous_hash,
                     source_item_id in cached_data_ids,
