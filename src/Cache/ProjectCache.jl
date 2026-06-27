@@ -5,7 +5,7 @@ using SHA
 using Serialization
 using Dates
 
-const PROJECT_CACHE_SCHEMA_VERSION = 4
+const PROJECT_CACHE_SCHEMA_VERSION = 5
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
 
 """
@@ -356,7 +356,7 @@ function ensure_schema!(connection)::Nothing
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS source_items(
             source_item_id TEXT PRIMARY KEY,
-            fingerprint BLOB,
+            fingerprint TEXT,
             fingerprint_hash TEXT,
             path TEXT,
             timestamp TIMESTAMP,
@@ -369,7 +369,7 @@ function ensure_schema!(connection)::Nothing
             item_label TEXT,
             kind TEXT,
             collection VARCHAR[],
-            item_fingerprint BLOB)
+            item_fingerprint TEXT)
     """)
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS metadata(
@@ -414,18 +414,20 @@ end
 # Encoding helpers
 # --------------------------------------------------------------------------------------------------
 
-"""Serialize any value to a byte vector for a BLOB column."""
+"""Serialize any value to bytes — the basis for both content hashing and hex-text storage."""
 function _serialize_bytes(value)::Vector{UInt8}
     io = IOBuffer()
     serialize(io, value)
     return take!(io)
 end
 
-"""Deserialize a BLOB column value (or `nothing` for SQL NULL)."""
-function _deserialize_blob(value)
-    value === nothing && return nothing
-    ismissing(value) && return nothing
-    return deserialize(IOBuffer(Vector{UInt8}(value)))
+"""Hex-encode any value for a TEXT column, or `nothing` (SQL NULL) when absent."""
+_serialize_hex(value) = value === nothing ? nothing : bytes2hex(_serialize_bytes(value))
+
+"""Deserialize a hex-text cell back to its value (or `nothing` for SQL NULL)."""
+function _deserialize_hex(value)
+    (value === nothing || ismissing(value)) && return nothing
+    return deserialize(IOBuffer(hex2bytes(String(value))))
 end
 
 """Map a SQL NULL (`missing`) to `nothing`, passing other values through."""
@@ -434,6 +436,31 @@ _null_to_nothing(value) = ismissing(value) ? nothing : value
 """Content hash of a fingerprint, or `nothing` when the fingerprint is absent."""
 _fingerprint_hash(fingerprint) =
     fingerprint === nothing ? nothing : bytes2hex(sha1(_serialize_bytes(fingerprint)))
+
+"""Hex-text storage and content hash for one fingerprint, as `(hex, hash)` (`nothing` when absent)."""
+function _encode_fingerprint(fingerprint)::Tuple{Union{Nothing,String},Union{Nothing,String}}
+    fingerprint === nothing && return (nothing, nothing)
+    bytes = _serialize_bytes(fingerprint)
+    return (bytes2hex(bytes), bytes2hex(sha1(bytes)))
+end
+
+"""Bulk-append positional value tuples to `table` through one appender."""
+function _append_rows!(connection, table::AbstractString, rows)::Nothing
+    isempty(rows) && return nothing
+    appender = DuckDB.Appender(connection, table)
+    try
+        for row in rows
+            for value in row
+                DuckDB.append(appender, value)
+            end
+            DuckDB.end_row(appender)
+        end
+        DuckDB.flush(appender)
+    finally
+        DuckDB.close(appender)
+    end
+    return nothing
+end
 
 """
 How one [`MetadataValue`](@ref) variant maps to the EAV `metadata` table: its discriminator, the
@@ -529,24 +556,6 @@ function _append_metadata!(appender, scope::MetaScope, entity::AbstractString, d
             DuckDB.append(appender, column === codec.column ? stored : missing)
         end
         DuckDB.end_row(appender)
-    end
-    return nothing
-end
-
-# A positional INSERT covering every metadata column: scope, entity, key, vtype, then the nine value
-# slots in `META_VALUE_COLUMNS` order. Used for collection-parameter updates; bulk item/stat writes
-# use the faster appender (see `_append_item_records!` and `persist_stats!`).
-const _METADATA_INSERT_SQL = "INSERT INTO metadata VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-
-"""Insert every key of one metadata dict as EAV rows under `scope`/`entity` via a prepared insert."""
-function _insert_metadata!(stmt, scope::MetaScope, entity::AbstractString, dict)::Nothing
-    for (key, value) in dict
-        codec = _meta_codec(value)
-        stored = codec.to_db(value)
-        DBInterface.execute(stmt, (
-            Int8(scope), String(entity), String(key), Int8(codec.vtype),
-            (column === codec.column ? stored : nothing for column in META_VALUE_COLUMNS)...,
-        ))
     end
     return nothing
 end
@@ -681,50 +690,35 @@ function _delete_source_item_rows!(
     return nothing
 end
 
-"""Write one source-item batch on an already-open transaction."""
+"""
+Delete a source item's stale rows (when needed) and return its `source_items` row values.
+
+The caller appends the returned rows in bulk *after* every delete has run, so no appender is ever open
+on `source_items` while that table is being deleted from.
+"""
 function _reconcile_source_item!(
     connection,
-    source_insert_statement,
     records::Vector{ItemRecord},
     previous_hash::Union{Missing,Nothing,String},
     has_cached_data::Bool,
-)::String
-    isempty(records) && throw(ArgumentError("a source-item batch needs at least one record"))
-    source_item_id = first(records).source_item_id
-    all(record -> record.source_item_id == source_item_id, records) ||
-        throw(ArgumentError("a source-item batch must share one source item"))
-    fingerprint = first(records).source_item_fingerprint
-    fingerprint_bytes = fingerprint === nothing ? nothing : _serialize_bytes(fingerprint)
-    new_hash = fingerprint_bytes === nothing ? nothing : bytes2hex(sha1(fingerprint_bytes))
-    path = first(records).source_item_path
-    timestamp = first(records).source_item_timestamp
-
+)::NTuple{6,Any}
+    first_record = first(records)
+    source_item_id = first_record.source_item_id
+    hex, new_hash = _encode_fingerprint(first_record.source_item_fingerprint)
     fingerprint_changed = previous_hash === missing || previous_hash != new_hash
     if previous_hash !== missing || has_cached_data
         _delete_source_item_rows!(
             connection, source_item_id; drop_item_data=fingerprint_changed)
     end
-
-    DBInterface.execute(
-        source_insert_statement,
-        (
-            source_item_id,
-            fingerprint_bytes,
-            new_hash,
-            path,
-            timestamp,
-            nothing,
-        ))
-
-    return source_item_id
+    return (source_item_id, hex, new_hash,
+        first_record.source_item_path, first_record.source_item_timestamp, nothing)
 end
 
 """
 Append item records and their metadata in bulk.
 
-DuckDB.jl's Appender cannot currently append a non-null BLOB, so item fingerprints are filled by
-prepared updates only for the minority of records that have one. Everything else stays on the fast
-column/list appender path.
+Fingerprints are hex-encoded TEXT, so they ride the same column appender as every other field — there
+is no separate update pass.
 """
 function _append_item_records!(
     connection,
@@ -740,7 +734,7 @@ function _append_item_records!(
                 record.item_label,
                 String(record.kind),
                 record.collection,
-                nothing,
+                _serialize_hex(record.item_fingerprint),
             )
                 DuckDB.append(item_appender, value)
             end
@@ -755,16 +749,6 @@ function _append_item_records!(
     finally
         DuckDB.close(item_appender)
         DuckDB.close(metadata_appender)
-    end
-
-    fingerprint_stmt = DBInterface.prepare(
-        connection, "UPDATE items SET item_fingerprint = ? WHERE id = ?")
-    for record in records
-        record.item_fingerprint === nothing && continue
-        DBInterface.execute(
-            fingerprint_stmt,
-            (_serialize_bytes(record.item_fingerprint), record.id),
-        )
     end
     return nothing
 end
@@ -806,19 +790,17 @@ function reconcile_source_items!(
                 String[first(records).source_item_id for records in record_batches])
             stored_hashes, cached_data_ids =
                 _source_item_write_state(connection, source_item_ids)
-            source_insert_statement = DBInterface.prepare(
-                connection, "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)")
-            for records in record_batches
+            # Pass 1: run every delete (no appender open on source_items yet), collecting the rows.
+            rows = Vector{NTuple{6,Any}}(undef, length(record_batches))
+            for (index, records) in pairs(record_batches)
                 source_item_id = first(records).source_item_id
-                previous_hash = get(stored_hashes, source_item_id, missing)
-                push!(written, _reconcile_source_item!(
-                    connection,
-                    source_insert_statement,
-                    records,
-                    previous_hash,
-                    source_item_id in cached_data_ids,
-                ))
+                rows[index] = _reconcile_source_item!(
+                    connection, records, get(stored_hashes, source_item_id, missing),
+                    source_item_id in cached_data_ids)
+                push!(written, source_item_id)
             end
+            # Pass 2: bulk-append the fresh source rows.
+            _append_rows!(connection, "source_items", rows)
         end
         records = ItemRecord[]
         data = Any[]
@@ -881,20 +863,15 @@ function finalize_scan!(
         _write_meta_rows!(connection, identity, source)
 
         # Bare rows for source items the scan produced no records for (skipped or failed).
-        bare_stmt = DBInterface.prepare(connection,
-            "INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?)")
+        bare_rows = NTuple{6,Any}[]
         for (id, fingerprint) in source.source_item_fingerprints
             id in written_ids && continue
             path, timestamp = get(locations, id, (nothing, nothing))
-            DBInterface.execute(bare_stmt, (
-                id,
-                fingerprint === nothing ? nothing : _serialize_bytes(fingerprint),
-                _fingerprint_hash(fingerprint),
-                path,
-                timestamp,
-                get(new_index.analysis_errors, id, nothing),
-            ))
+            hex, hash = _encode_fingerprint(fingerprint)
+            push!(bare_rows,
+                (id, hex, hash, path, timestamp, get(new_index.analysis_errors, id, nothing)))
         end
+        _append_rows!(connection, "source_items", bare_rows)
 
         # Stamp errors onto source items that were written but later failed analysis interpretation.
         error_stmt = DBInterface.prepare(connection,
@@ -904,16 +881,27 @@ function finalize_scan!(
             DBInterface.execute(error_stmt, (message, id))
         end
 
-        # Collection-node parameters (node stats arrive later from analysis).
-        node_stmt = DBInterface.prepare(connection, _METADATA_INSERT_SQL)
-        for (path, node) in source.hierarchy.index
-            entity = collection_path_key(collect(String, path))
+        # Collection-node parameters (node stats arrive later from analysis): one delete, then a
+        # single appender pass over every node's metadata.
+        node_entities = String[
+            collection_path_key(collect(String, path)) for path in keys(source.hierarchy.index)]
+        if !isempty(node_entities)
+            placeholders = join(fill("?", length(node_entities)), ", ")
             DBInterface.execute(
                 DBInterface.prepare(connection,
-                    "DELETE FROM metadata WHERE scope = ? AND entity = ?"),
-                (Int8(SCOPE_NODE_PARAMETERS), entity))
-            isempty(node.parameters) ||
-                _insert_metadata!(node_stmt, SCOPE_NODE_PARAMETERS, entity, node.parameters)
+                    "DELETE FROM metadata WHERE scope = ? AND entity IN ($placeholders)"),
+                (Int8(SCOPE_NODE_PARAMETERS), node_entities...))
+        end
+        node_appender = DuckDB.Appender(connection, "metadata")
+        try
+            for (path, node) in source.hierarchy.index
+                isempty(node.parameters) && continue
+                _append_metadata!(node_appender, SCOPE_NODE_PARAMETERS,
+                    collection_path_key(collect(String, path)), node.parameters)
+            end
+            DuckDB.flush(node_appender)
+        finally
+            DuckDB.close(node_appender)
         end
 
         # Drop source items (and everything they own) that the scan no longer contains.
@@ -1092,7 +1080,7 @@ function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceSc
         SELECT source_item_id, fingerprint, path, timestamp, error FROM source_items
     """)
         id = row.source_item_id
-        fingerprints[id] = _deserialize_blob(row.fingerprint)
+        fingerprints[id] = _deserialize_hex(row.fingerprint)
         locations[id] = (_null_to_nothing(row.path), _null_to_nothing(row.timestamp))
         error_message = _null_to_nothing(row.error)
         error_message === nothing ||
@@ -1122,7 +1110,7 @@ function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceSc
             collection=Vector{String}(row.collection),
             parameters=get(metadata, (SCOPE_ITEM_PARAMETERS, row.id), MetadataDict()),
             stats=get(metadata, (SCOPE_ITEM_STATS, row.id), MetadataDict()),
-            item_fingerprint=_deserialize_blob(row.item_fingerprint),
+            item_fingerprint=_deserialize_hex(row.item_fingerprint),
         ))
     end
 
