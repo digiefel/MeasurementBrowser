@@ -258,18 +258,18 @@ function process_item(
     return process_item(workspace, job, interpreted_item(workspace, job))
 end
 
-"""Process one item when its interpreted data has already been loaded."""
+"""
+Process one item when its interpreted data has already been loaded.
+
+The processed-cache short-circuit lives in the one-arg method (and only single, non-batched jobs ever
+need a payload — [`take_processing_jobs!`](@ref) never batches selected or waited-on work), so by the
+time we reach here the payload must be computed.
+"""
 function process_item(
     workspace::Workspace,
     job::ProcessingJob,
     interpreted::AbstractDataItem,
 )::AbstractDataItem
-    needs_payload = job.priority > 0 || !isempty(job.waiters)
-    if needs_payload
-        cached = only(buffer_read_item_data(
-            workspace.buffer, [job.record]; stage=:processed))
-        cached === nothing || return cached
-    end
     process_started = time_ns()
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=job.record.kind,

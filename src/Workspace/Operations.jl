@@ -284,10 +284,16 @@ function scan_source!(
             union!(written_ids, kept_ids)
             cache_hit = reuse_index !== nothing && source === reuse_index.source
             cache_hit || finalize_scan!(cachedb, source, written_ids)
-            records = source.hierarchy.all_items
-            processed_ids = cached_item_data_ids(cachedb, records; stage=:processed)
-            for record in records
-                record.id in processed_ids || enqueue_processing!(workspace, record)
+            # A fresh build already enqueued every record from `on_source_item`, so the readiness
+            # probe below would query DuckDB for thousands of rows only to learn nothing is cached.
+            # It earns its keep only on an incremental reopen, where unchanged source items were kept
+            # (never enqueued during the scan) and may still need processing.
+            if reuse_index !== nothing
+                records = source.hierarchy.all_items
+                processed_ids = cached_item_data_ids(cachedb, records; stage=:processed)
+                for record in records
+                    record.id in processed_ids || enqueue_processing!(workspace, record)
+                end
             end
             put!(events, (
                 kind=:source,
