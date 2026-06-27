@@ -207,6 +207,13 @@ end
                 idle && workspace.profiler.state === :recording && break
                 sleep(0.005)
             end
+            # Deterministically exercise a cache read so the profile captures :read_item_data. During
+            # the build the read-through buffer serves interpreted data from memory, so a fall-through
+            # to DuckDB is timing-dependent; once the build is idle that data is flushed and evicted,
+            # so materializing here forces a real cache fetch.
+            sample = collect(values(workspace.index.items))
+            MeasurementBrowser.Workspace.materialize_items(
+                workspace, sample[1:min(3, length(sample))])
             report = MeasurementBrowser.Workspace.stop_internal_profile!(workspace)
             @test report isa PROFILE.ProfileReport
             @test report.dropped_events == 0

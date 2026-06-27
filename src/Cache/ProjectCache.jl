@@ -933,6 +933,71 @@ function finalize_scan!(
     end
 end
 
+"""
+Persist item and collection statistics on an open writer connection.
+
+Runs no transaction of its own, so it composes into a larger writer transaction (the cache buffer
+flushes stats alongside interpreted/processed writes in a single commit).
+"""
+function _persist_stats!(
+    connection,
+    item_stats::AbstractDict{String,<:AbstractDict},
+    node_stats::AbstractDict{<:Tuple,<:AbstractDict},
+)::Nothing
+    (isempty(item_stats) && isempty(node_stats)) && return nothing
+    DBInterface.execute(connection, """
+        CREATE TEMP TABLE IF NOT EXISTS pending_stat_entities(
+            scope TINYINT,
+            entity TEXT)
+    """)
+    DBInterface.execute(connection, """
+        CREATE TEMP TABLE IF NOT EXISTS pending_stat_metadata AS
+        SELECT * FROM metadata WHERE false
+    """)
+    DBInterface.execute(connection, "DELETE FROM pending_stat_entities")
+    DBInterface.execute(connection, "DELETE FROM pending_stat_metadata")
+
+    entity_appender = DuckDB.Appender(connection, "pending_stat_entities")
+    metadata_appender = DuckDB.Appender(connection, "pending_stat_metadata")
+    try
+        function append_entity!(scope::MetaScope, entity::String)::Nothing
+            DuckDB.append(entity_appender, Int8(scope))
+            DuckDB.append(entity_appender, entity)
+            DuckDB.end_row(entity_appender)
+            return nothing
+        end
+
+        for (entity, stats) in item_stats
+            id = String(entity)
+            append_entity!(SCOPE_ITEM_STATS, id)
+            _append_metadata!(metadata_appender, SCOPE_ITEM_STATS, id, metadata_dict(stats))
+        end
+        for (path, stats) in node_stats
+            entity = collection_path_key(collect(String, path))
+            append_entity!(SCOPE_NODE_STATS, entity)
+            _append_metadata!(metadata_appender, SCOPE_NODE_STATS, entity, metadata_dict(stats))
+        end
+        DuckDB.flush(entity_appender)
+        DuckDB.flush(metadata_appender)
+    finally
+        DuckDB.close(entity_appender)
+        DuckDB.close(metadata_appender)
+    end
+
+    DBInterface.execute(connection, """
+        DELETE FROM metadata
+        WHERE EXISTS (
+            SELECT 1 FROM pending_stat_entities pending
+            WHERE pending.scope = metadata.scope
+              AND pending.entity = metadata.entity)
+    """)
+    DBInterface.execute(connection, """
+        INSERT INTO metadata
+        SELECT * FROM pending_stat_metadata
+    """)
+    return nothing
+end
+
 """Persist item and collection statistics in one writer transaction."""
 function persist_stats!(
     cachedb::CacheDB,
@@ -945,86 +1010,34 @@ function persist_stats!(
         batch_size=Int64(length(item_stats) + length(node_stats)),
     ) begin
         with_writer_transaction(cachedb) do connection
-            DBInterface.execute(connection, """
-                CREATE TEMP TABLE IF NOT EXISTS pending_stat_entities(
-                    scope TINYINT,
-                    entity TEXT)
-            """)
-            DBInterface.execute(connection, """
-                CREATE TEMP TABLE IF NOT EXISTS pending_stat_metadata AS
-                SELECT * FROM metadata WHERE false
-            """)
-            DBInterface.execute(connection, "DELETE FROM pending_stat_entities")
-            DBInterface.execute(connection, "DELETE FROM pending_stat_metadata")
-
-            entity_appender = DuckDB.Appender(connection, "pending_stat_entities")
-            metadata_appender = DuckDB.Appender(connection, "pending_stat_metadata")
-            try
-                function append_entity!(scope::MetaScope, entity::String)::Nothing
-                    DuckDB.append(entity_appender, Int8(scope))
-                    DuckDB.append(entity_appender, entity)
-                    DuckDB.end_row(entity_appender)
-                    return nothing
-                end
-
-                for (entity, stats) in item_stats
-                    id = String(entity)
-                    append_entity!(SCOPE_ITEM_STATS, id)
-                    _append_metadata!(
-                        metadata_appender, SCOPE_ITEM_STATS, id, metadata_dict(stats))
-                end
-                for (path, stats) in node_stats
-                    entity = collection_path_key(collect(String, path))
-                    append_entity!(SCOPE_NODE_STATS, entity)
-                    _append_metadata!(
-                        metadata_appender, SCOPE_NODE_STATS, entity, metadata_dict(stats))
-                end
-                DuckDB.flush(entity_appender)
-                DuckDB.flush(metadata_appender)
-            finally
-                DuckDB.close(entity_appender)
-                DuckDB.close(metadata_appender)
-            end
-
-            DBInterface.execute(connection, """
-                DELETE FROM metadata
-                WHERE EXISTS (
-                    SELECT 1 FROM pending_stat_entities pending
-                    WHERE pending.scope = metadata.scope
-                      AND pending.entity = metadata.entity)
-            """)
-            DBInterface.execute(connection, """
-                INSERT INTO metadata
-                SELECT * FROM pending_stat_metadata
-            """)
+            _persist_stats!(connection, item_stats, node_stats)
         end
     end
     return nothing
 end
 
-"""Replace or clear one processing/statistics failure for an item."""
-function persist_item_failure!(
-    cachedb::CacheDB,
+"""Replace or clear one processing/statistics failure on an open writer connection."""
+function _persist_item_failure!(
+    connection,
     record::ItemRecord,
     message::Union{Nothing,String},
 )::Nothing
-    with_writer(cachedb) do connection
-        statement = if message === nothing
-            DBInterface.prepare(connection, "DELETE FROM item_failures WHERE item_id = ?")
-        else
-            DBInterface.prepare(connection, """
-                INSERT INTO item_failures VALUES (?, ?, ?)
-                ON CONFLICT (item_id) DO UPDATE SET
-                    source_item_id = excluded.source_item_id,
-                    message = excluded.message
-            """)
-        end
-        values = message === nothing ? (record.id,) :
-            (record.id, record.source_item_id, message)
-        DBInterface.execute(statement, values)
+    statement = if message === nothing
+        DBInterface.prepare(connection, "DELETE FROM item_failures WHERE item_id = ?")
+    else
+        DBInterface.prepare(connection, """
+            INSERT INTO item_failures VALUES (?, ?, ?)
+            ON CONFLICT (item_id) DO UPDATE SET
+                source_item_id = excluded.source_item_id,
+                message = excluded.message
+        """)
     end
+    values = message === nothing ? (record.id,) :
+        (record.id, record.source_item_id, message)
+    DBInterface.execute(statement, values)
     return nothing
 end
+
 
 # --------------------------------------------------------------------------------------------------
 # Loading the index

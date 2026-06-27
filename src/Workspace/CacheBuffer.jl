@@ -357,7 +357,15 @@ function cache_buffer_flusher!(buffer::CacheBuffer)::Nothing
     return nothing
 end
 
-"""Drain all currently pending deposits in one writer pass, then evict the durable entries."""
+"""
+Drain all currently pending deposits in one writer transaction, then evict the durable entries.
+
+Interpreted rows, processed payloads, item statistics, and failures from one cycle commit together —
+one `BEGIN`/`COMMIT` instead of one per write kind — so the cache never lands a partial cycle and the
+writer pays a single commit per flush. A write error rolls the whole cycle back; the data is simply
+recomputed from source on the next read, and the error is logged and swallowed so the flusher can
+never die and deadlock the backpressured producers behind it.
+"""
 function _flush_once!(buffer::CacheBuffer)::Nothing
     interpreted, processed, failures, rows = lock(buffer.lock) do
         snapshot = (
@@ -375,11 +383,20 @@ function _flush_once!(buffer::CacheBuffer)::Nothing
         snapshot
     end
     try
-        # Each write is isolated so one failing group neither aborts the others nor — critically —
-        # kills the flusher task and deadlocks every backpressured producer behind it.
-        _try_write(() -> _write_interpreted!(buffer, interpreted), :interpreted, length(interpreted))
-        _try_write(() -> _write_processed!(buffer, processed), :processed, length(processed))
-        _try_write(() -> _write_failures!(buffer, failures), :failures, length(failures))
+        with_writer_transaction(buffer.cache) do connection
+            _commit_interpreted!(connection, buffer, interpreted)
+            _commit_processed!(connection, buffer, processed)
+            _commit_failures!(connection, failures)
+        end
+    catch error
+        error isa InterruptException && rethrow()
+        @error(
+            "Cache buffer flush failed; dropping a staged write cycle",
+            interpreted=length(interpreted),
+            processed=length(processed),
+            failures=length(failures),
+            exception=(error, catch_backtrace()),
+        )
     finally
         lock(buffer.lock) do
             # Evict regardless of success: on failure the data is simply not durable, and a later read
@@ -394,24 +411,12 @@ function _flush_once!(buffer::CacheBuffer)::Nothing
     return nothing
 end
 
-"""Run one flush write, logging and swallowing failures so the flusher can never die."""
-function _try_write(work::Function, stage::Symbol, count::Int)::Nothing
-    try
-        work()
-    catch error
-        error isa InterruptException && rethrow()
-        @error(
-            "Cache buffer flush failed; dropping a staged write batch",
-            stage,
-            items=count,
-            exception=(error, catch_backtrace()),
-        )
-    end
-    return nothing
-end
-
-"""Commit staged interpreted batches through the existing source-reconcile transaction."""
-function _write_interpreted!(buffer::CacheBuffer, deposits::Vector{InterpretedDeposit})::Nothing
+"""Commit staged interpreted batches into the open transaction via source reconciliation."""
+function _commit_interpreted!(
+    connection,
+    buffer::CacheBuffer,
+    deposits::Vector{InterpretedDeposit},
+)::Nothing
     isempty(deposits) && return nothing
     record_batches = Vector{Vector{ItemRecord}}(undef, length(deposits))
     data_batches = Vector{Vector{Any}}(undef, length(deposits))
@@ -420,14 +425,19 @@ function _write_interpreted!(buffer::CacheBuffer, deposits::Vector{InterpretedDe
         data_batches[index] = deposit.data
     end
     started = time_ns()
-    reconcile_source_items!(buffer.cache, record_batches, data_batches; stage=:interpreted)
+    reconcile_source_items!(
+        connection, buffer.profiler, record_batches, data_batches; stage=:interpreted)
     record_cache_phase!(
         buffer.metrics.interpreted_write_ns, buffer.metrics.interpreted_writes, started)
     return nothing
 end
 
-"""Commit staged processed payloads and item statistics through the existing writers."""
-function _write_processed!(buffer::CacheBuffer, batch::Vector{ProcessedWriteRequest})::Nothing
+"""Commit staged processed payloads and item statistics into the open transaction."""
+function _commit_processed!(
+    connection,
+    buffer::CacheBuffer,
+    batch::Vector{ProcessedWriteRequest},
+)::Nothing
     isempty(batch) && return nothing
     payload = ProcessedWriteRequest[request for request in batch if request.write_payload]
     item_stats = Dict{String,MetadataDict}(
@@ -436,31 +446,31 @@ function _write_processed!(buffer::CacheBuffer, batch::Vector{ProcessedWriteRequ
     )
     if !isempty(payload)
         started = time_ns()
-        write_cached_item_data!(
-            buffer.cache,
+        _write_cached_item_data!(
+            connection,
+            buffer.profiler,
             ItemRecord[request.record for request in payload],
-            Any[request.item for request in payload];
-            stage=:processed,
+            Any[request.item for request in payload],
+            :processed,
         )
         record_cache_phase!(
             buffer.metrics.processed_write_ns, buffer.metrics.processed_writes, started)
     end
     if !isempty(item_stats)
         started = time_ns()
-        persist_stats!(
-            buffer.cache, item_stats, Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}())
+        _persist_stats!(connection, item_stats, Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}())
         record_cache_phase!(buffer.metrics.stats_write_ns, buffer.metrics.stats_writes, started)
     end
     return nothing
 end
 
-"""Commit staged item failures."""
-function _write_failures!(
-    buffer::CacheBuffer,
+"""Commit staged item failures into the open transaction."""
+function _commit_failures!(
+    connection,
     failures::Vector{Pair{ItemRecord,Union{Nothing,String}}},
 )::Nothing
     for (record, message) in failures
-        persist_item_failure!(buffer.cache, record, message)
+        _persist_item_failure!(connection, record, message)
     end
     return nothing
 end
