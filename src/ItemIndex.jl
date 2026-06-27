@@ -309,6 +309,7 @@ function ItemRecord(
     item::AbstractDataItem;
     source_item::AbstractDataSourceItem,
     kind::Symbol=Projects.kind(item),
+    parameters=Projects.parameters(item),
 )::ItemRecord
     label = Projects.item_label(item)
     title = isempty(label) ?
@@ -323,7 +324,7 @@ function ItemRecord(
         item_label=title,
         kind,
         collection=Projects.collection(item),
-        parameters=Projects.parameters(item),
+        parameters,
         stats=Projects.stats(item),
         item_fingerprint=fingerprint(item),
     )

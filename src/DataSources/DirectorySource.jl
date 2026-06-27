@@ -81,8 +81,8 @@ function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     end
 end
 
-function file_fingerprint(path::AbstractString)::FileFingerprint
-    normalized = normpath(abspath(expanduser(String(path))))
+"""Fingerprint an already-normalized absolute path (no redundant re-normalization)."""
+function _file_fingerprint(normalized::String)::FileFingerprint
     stat_info = stat(normalized)
     return FileFingerprint(
         normalized,
@@ -91,6 +91,9 @@ function file_fingerprint(path::AbstractString)::FileFingerprint
     )
 end
 
+file_fingerprint(path::AbstractString)::FileFingerprint =
+    _file_fingerprint(normpath(abspath(expanduser(String(path)))))
+
 function index_source_file(path::AbstractString)::SourceFile
     normalized = normpath(abspath(expanduser(String(path))))
     filename = basename(normalized)
@@ -98,7 +101,7 @@ function index_source_file(path::AbstractString)::SourceFile
         normalized,
         filename,
         parse_timestamp(filename),
-        file_fingerprint(normalized),
+        _file_fingerprint(normalized),
     )
 end
 

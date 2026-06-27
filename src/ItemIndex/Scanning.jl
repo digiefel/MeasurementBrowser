@@ -97,10 +97,8 @@ function interpret_source_item(
     interpreted_items = Vector{AbstractDataItem}(undef, item_count)
     for (index, handle) in pairs(handles)
         check_cancel()
-        record = ItemRecord(
-            ItemRecord(handle; source_item);
-            parameters=_effective_parameters(source, collection(handle), parameters(handle)),
-        )
+        record = ItemRecord(handle; source_item,
+            parameters=_effective_parameters(source, collection(handle), parameters(handle)))
         records[index] = record
         interpreted_items[index] = DataItem(record, item_data(handle))
     end
