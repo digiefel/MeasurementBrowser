@@ -25,11 +25,6 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
     processing = lock(workspace.processing.lock) do
         (
             jobs=Int64(length(workspace.processing.jobs)),
-            pending_writes=Int64(length(workspace.processing.pending_writes)),
-            pending_write_rows=Int64(
-                workspace.processing.pending_write_rows +
-                workspace.processing.active_write_rows,
-            ),
             selected_queue=Int64(length(workspace.processing.selected)),
             background_waiting=Int64(max(
                 length(workspace.processing.background) - workspace.processing.background_index + 1,
@@ -37,6 +32,8 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
             )),
         )
     end
+    # Writes now live in the cache buffer, not the processing queue.
+    staged = buffer_pending_counts(workspace.buffer)
     return WorkspaceMemorySnapshot(
         time_ns(),
         rss_bytes,
@@ -48,8 +45,8 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
         Int64(length(workspace.index.item_stats)),
         Int64(length(workspace.index.analysis_errors)),
         processing.jobs,
-        processing.pending_writes,
-        processing.pending_write_rows,
+        Int64(staged.items),
+        Int64(staged.rows),
         processing.selected_queue,
         processing.background_waiting,
     )

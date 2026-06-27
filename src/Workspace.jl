@@ -144,11 +144,7 @@ mutable struct ProcessingQueue
     source_locks::Dict{String,ReentrantLock}
     events::Channel{NamedTuple}
     workers::Vector{Task}
-    pending_writes::Vector{ProcessedWriteRequest}
     completed_items::Dict{String,Int}
-    pending_write_rows::Int
-    write_active::Bool
-    active_write_rows::Int
     total::Int
     completed::Int
     closed::Bool
@@ -166,11 +162,7 @@ function ProcessingQueue()::ProcessingQueue
         Dict{String,ReentrantLock}(),
         Channel{NamedTuple}(Inf),
         Task[],
-        ProcessedWriteRequest[],
         Dict{String,Int}(),
-        0,
-        false,
-        0,
         0,
         0,
         false,
@@ -226,6 +218,7 @@ WorkspaceStatus() =
     WorkspaceStatus(:none, "Opening", "Opening the source…", true, nothing, Pair{String,String}[])
 
 include("Workspace/BuildMetrics.jl")
+include("Workspace/CacheBuffer.jl")
 
 """
 One open project/source pair and all package-managed state belonging to it.
@@ -243,6 +236,9 @@ mutable struct Workspace{S<:AbstractDataSource}
     cache_state::Symbol
     cache_error::String
     processing::ProcessingQueue
+    # The write-back, read-through staging layer in front of the cache. Every per-item write and
+    # read goes through this buffer, never the cache directly (see CacheBuffer.jl).
+    buffer::CacheBuffer
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
@@ -274,6 +270,8 @@ function Workspace(
         Profiling.close!(profiler)
         rethrow()
     end
+    metrics = BuildMetrics()
+    buffer = CacheBuffer(cache_db, profiler, metrics)
     workspace = Workspace(
         project,
         source,
@@ -292,13 +290,15 @@ function Workspace(
         :idle,
         "",
         ProcessingQueue(),
+        buffer,
         Task[],
-        BuildMetrics(),
+        metrics,
         profiler,
         false,
         WorkspaceStatus(),
         false,
     )
+    start_cache_buffer!(buffer)
     start_processing_workers!(workspace)
     return workspace
 end

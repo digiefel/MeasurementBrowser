@@ -34,6 +34,9 @@ function close_workspace!(workspace::Workspace)::Nothing
         istaskdone(task) || wait(task)
     end
     stop_processing_workers!(workspace)
+    # Workers are gone, so no more deposits can arrive; drain everything still staged and stop the
+    # flusher before the database handle closes.
+    stop_cache_buffer!(workspace.buffer)
     try
         Profiling.close!(workspace.profiler)
     finally
@@ -116,23 +119,18 @@ end
 source_scan_running(workspace::Workspace)::Bool =
     workspace.scan.state in (:counting, :discovering, :scanning, :canceling)
 
-const INTERPRETED_WRITE_BATCH_SOURCE_ITEMS = 16
-const INTERPRETED_WRITE_BATCH_ROWS = 1_000_000
-const INTERPRETED_WRITE_BATCH_NS = UInt64(2_000_000_000)
-
 cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_state in (:loading, :writing, :canceling)
 
 analysis_work_running(workspace::Workspace)::Bool =
     workspace.analysis.state in (:analyzing, :canceling)
 
-"""Whether any item is waiting for or currently running processing."""
+"""Whether any item is waiting for or running processing, or its result is still being written."""
 function processing_work_running(workspace::Workspace)::Bool
-    return lock(workspace.processing.lock) do
-        !isempty(workspace.processing.jobs) ||
-            !isempty(workspace.processing.pending_writes) ||
-            workspace.processing.write_active
+    jobs_active = lock(workspace.processing.lock) do
+        !isempty(workspace.processing.jobs)
     end
+    return jobs_active || buffer_has_pending_writes(workspace.buffer)
 end
 
 """Keep a background task alive until workspace shutdown."""
@@ -159,16 +157,6 @@ Cancel in-flight cache work.
 Cache writes are now produced by the source scan itself, so cancelling cache work cancels the scan.
 """
 cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
-
-function _cached_dataframe_rows(data::Vector{Any})::Int64
-    rows = Int64(0)
-    for item in data
-        item === nothing && continue
-        value = item_data(item)
-        value isa AbstractDataFrame && (rows += Int64(nrow(value)))
-    end
-    return rows
-end
 
 """
 Start one source scan that progressively populates the workspace index and cache.
@@ -245,30 +233,6 @@ function scan_source!(
             wrote = Ref(false)
             written_ids = Set{String}()
             kept_ids = Set{String}()
-            record_batches = Vector{Vector{ItemRecord}}()
-            data_batches = Vector{Vector{Any}}()
-            queued_cache_rows = Ref{Int64}(0)
-            last_cache_flush_ns = Ref{UInt64}(time_ns())
-            function flush_cache_batch!()::Nothing
-                isempty(record_batches) && return nothing
-                write_started = time_ns()
-                reconciled = reconcile_source_items!(cachedb, record_batches, data_batches)
-                record_cache_phase!(
-                    workspace.metrics.interpreted_write_ns,
-                    workspace.metrics.interpreted_writes, write_started)
-                union!(written_ids, reconciled)
-                # Interpreted data is now persisted, so enqueue data-less records and let processing
-                # read it back from the cache. The scan never holds a queue's worth of parsed data and
-                # never blocks on the processing queue draining.
-                for records in record_batches, record in records
-                    enqueue_processing!(workspace, record)
-                end
-                empty!(record_batches)
-                empty!(data_batches)
-                queued_cache_rows[] = 0
-                last_cache_flush_ns[] = time_ns()
-                return nothing
-            end
 
             source = with_cancel(() -> cancel_token[]) do
                 scan_source(
@@ -286,23 +250,22 @@ function scan_source!(
                     end,
                     on_source_item=(interpretation::SourceItemInterpretation) -> begin
                         records = interpretation.records
-                        data = Any[
-                            item !== nothing && cacheable(item) ? item : nothing
-                            for item in interpretation.interpreted_items
-                        ]
+                        # Hand the buffer every interpreted item, cacheable or not — it serves them
+                        # from memory and the flush persists only the cacheable ones. Discarding the
+                        # non-cacheable items here was what forced a redundant whole-file re-read.
+                        data = Any[item for item in interpretation.interpreted_items]
                         wrote[] || put!(events, (
                             kind=:cache_writing,
                             job_id=scan_id,
                         ))
                         wrote[] = true
-                        push!(record_batches, records)
-                        push!(data_batches, data)
-                        queued_cache_rows[] += _cached_dataframe_rows(data)
-                        now = time_ns()
-                        if length(record_batches) >= INTERPRETED_WRITE_BATCH_SOURCE_ITEMS ||
-                           queued_cache_rows[] >= INTERPRETED_WRITE_BATCH_ROWS ||
-                           now - last_cache_flush_ns[] >= INTERPRETED_WRITE_BATCH_NS
-                            flush_cache_batch!()
+                        # Deposit into the buffer (never blocks on the database) and enqueue the
+                        # data-less records. Processing reads the interpreted data straight back from
+                        # the buffer's staged store, before it is even durable.
+                        stage_interpreted!(workspace.buffer, records, data)
+                        for record in records
+                            push!(written_ids, record.source_item_id)
+                            enqueue_processing!(workspace, record)
                         end
                     end,
                     on_kept_source_item=(source_item_id::String) ->
@@ -312,7 +275,10 @@ function scan_source!(
                     profiler=workspace.profiler,
                 )
             end
-            flush_cache_batch!()
+            # Every interpreted deposit must be durable before finalize_scan! rewrites source-item
+            # bookkeeping in its own transaction (and before the readiness probe below queries the
+            # cache for already-processed items).
+            wait_cache_flushed!(workspace.buffer)
             # Unchanged source items keep their existing rows: treat them as already written so
             # finalize_scan! neither re-inserts a bare row nor deletes them.
             union!(written_ids, kept_ids)
@@ -359,13 +325,14 @@ set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
 
 """Return one lock-consistent counter snapshot for the structured profiler."""
 function profile_counter_snapshot(workspace::Workspace)::NamedTuple
-    completed, total, depth = lock(workspace.processing.lock) do
+    completed, total, jobs = lock(workspace.processing.lock) do
         (
             workspace.processing.completed,
             workspace.processing.total,
-            length(workspace.processing.jobs) + length(workspace.processing.pending_writes),
+            length(workspace.processing.jobs),
         )
     end
+    depth = jobs + buffer_pending_counts(workspace.buffer).items
     return (
         scan_done=workspace.scan.progress.processed_source_items,
         scan_total=workspace.scan.progress.total_source_items,
