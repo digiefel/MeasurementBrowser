@@ -69,8 +69,8 @@ end
 """
 Hand one processed value to the cache buffer's single write path.
 
-Selected work (`write_payload`) is a priority deposit that bypasses backpressure so interaction never
-stalls; background work only stages statistics and yields to the ceiling like any other producer.
+Processing is the consumer that drains the buffer, so this deposit never blocks on the row ceiling
+(see [`stage_processed!`](@ref)); only the scan producer is gated by it.
 """
 function enqueue_processed_write!(
     workspace::Workspace,
@@ -79,8 +79,7 @@ function enqueue_processed_write!(
     stats::Union{Nothing,MetadataDict},
     write_payload::Bool,
 )::Nothing
-    stage_processed!(
-        workspace.buffer, record, item, stats, write_payload; priority=write_payload)
+    stage_processed!(workspace.buffer, record, item, stats, write_payload)
     return nothing
 end
 

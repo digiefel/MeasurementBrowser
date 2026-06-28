@@ -22,9 +22,10 @@ const CACHE_FLUSH_INTERVAL_NS = UInt64(2_000_000_000)
 """
 Backpressure ceiling on staged-but-undurable payload rows.
 
-Background producers block once the buffer holds this many rows, bounding memory if processing
-outruns the flusher. Priority (user-selected) deposits bypass the ceiling so interaction never
-stalls.
+Gates only the *producer* — the scan's interpreted deposits ([`stage_interpreted!`](@ref)) — once the
+buffer holds this many rows, bounding memory if the scan outruns the flusher. Processing deposits
+never block on it: processing is the *consumer* that drains the work, so parking it here would throttle
+the very stage that relieves the pressure (and stall interactive results behind a slow flush).
 """
 const CACHE_BUFFER_ROW_CEILING = 2_000_000
 
@@ -187,7 +188,7 @@ end
 # Depositing (the single write path)
 # --------------------------------------------------------------------------------------------------
 
-"""Block a background producer while the buffer is over its row ceiling."""
+"""Block the scan producer while the buffer is over its row ceiling (consumers never call this)."""
 function _await_capacity!(buffer::CacheBuffer)::Nothing
     while buffer.staged_rows >= buffer.row_ceiling && !buffer.closed
         wait(buffer.condition)
@@ -226,21 +227,21 @@ end
 """
 Stage one processed result: an optional payload to cache plus optional statistics.
 
-`priority` deposits (user-selected work) bypass backpressure. A cached payload is also placed in the
-read-through store so the next view of that item is served from memory.
+Processing is the consumer, so this never blocks on the row ceiling — parking it would throttle the
+stage that drains the buffer. A cached payload is still counted in `staged_rows` (it is real staged
+memory the scan's gate must see) and placed in the read-through store so the next view is served from
+memory.
 """
 function stage_processed!(
     buffer::CacheBuffer,
     record::ItemRecord,
     item::Union{Nothing,AbstractDataItem},
     stats::Union{Nothing,MetadataDict},
-    write_payload::Bool;
-    priority::Bool=false,
+    write_payload::Bool,
 )::Nothing
     rows = write_payload ? _payload_rows(item) : 0
     request = ProcessedWriteRequest(record, item, stats, write_payload, rows)
     lock(buffer.lock) do
-        priority || _await_capacity!(buffer)
         push!(buffer.pending_processed, request)
         if write_payload && item !== nothing
             buffer.staged[(:processed, record.id)] = item
