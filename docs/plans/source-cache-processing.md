@@ -278,15 +278,15 @@ Automatic computation identity is a future goal and is not part of the current c
 Background work follows a small set of ownership rules:
 
 - A source worker owns raw source data while `read` and `entries` use it.
-- Small ready groups cross the cache boundary together; the persistent writer connection serializes
-  every mutation.
+- Small ready groups cross the cache boundary together through per-table cache buffers; each table has
+  a single owning buffer, so writes to different tables never serialize against one another.
 - A processing worker owns one processing result until the processed-data cache accepts it.
 - Published `ItemRecord`s and hierarchy snapshots remain stable for readers.
 - Background refresh builds replacement state privately and publishes completed snapshots.
 - Queue entries carry stable item identities, so promotion changes priority without copying work.
 - Cancellation stops unpublished work and leaves committed cache entries available for reuse.
 
-These rules let the GUI, source workers, cache writer, processing workers, and statistics workers run
+These rules let the GUI, source workers, cache buffers, processing workers, and statistics workers run
 concurrently while sharing completed values through clear boundaries.
 
 ## User-Visible Behavior

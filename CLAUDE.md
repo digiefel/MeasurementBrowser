@@ -39,7 +39,7 @@ work and the TASE project are projects built on top, not part of the package.
 | `Projects` | `Projects.jl` | The low-level source contract (`AbstractDataSource`/`AbstractDataSourceItem`/`AbstractDataItem` + interface stubs), the `Project` recipe struct, and recipe types. Methods live in `Project.jl`. |
 | `ItemIndex` | `ItemIndex.jl` (+ `Scanning.jl`) | The internal `ItemRecord`, the concrete `DataItem`, the hierarchy, and source-neutral scanning. |
 | `DirectorySource` | `DataSources/DirectorySource.jl` | Directory traversal, `SourceFile`, file fingerprints, sidecar exclusion, timestamps, `metadata.txt`, and `open_workspace(project, root_path)`. |
-| `Cache` | `Cache.jl`, `Cache/ProjectCache.jl` | Source-identity-keyed HDF5 cache of the scan + item data. |
+| `Cache` | `Cache.jl`, `Cache/ProjectCache.jl` | Source-identity-keyed DuckDB cache of the scan + item data. |
 | `Workspace` | `Workspace.jl` (+ `DataAccess.jl`, `Operations.jl`) | One open source: index, selection, loaded/cached data access, background jobs. |
 | `Visualization` | `Visualization.jl` | Plot engine; `RegistryPlot{Kind}` adapter bridging registered plots to source plot dispatch. |
 | `TableInspector` | `TableInspector.jl` | Tabular preview of a delimited file. |
@@ -98,7 +98,7 @@ the recipe in place, so editing and re-running a line updates a live project.
    `read → entries → process`, computes per-item `stats(item)`, then runs
    `collection_stats(project, source, collection, items)` (the callback form is
    `register_collection_stat!`) for collection nodes.
-3. **Cache:** the whole `SourceScan` is serialized into a source-id-keyed HDF5 cache; a fresh cache
+3. **Cache:** the `SourceScan` is stored in a source-id-keyed DuckDB cache; a fresh cache
    restores the hierarchy quickly while scanning continues.
 4. **View:** for the selection, the engine reloads items via
    `load_data_item(project, source, source_item_id, id)` (memory → cache → origin); each carries `item.data`.

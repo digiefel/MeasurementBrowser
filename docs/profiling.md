@@ -26,13 +26,13 @@ idleness, and then starts one clean profiled rebuild. Stopping ends capture with
 application work.
 
 The structured trace records completed spans for source discovery and callbacks, interpretation,
-processing and statistics, queueing, cache reads and reconstruction, writer acquisition,
+processing and statistics, queueing, cache reads and reconstruction, cache-buffer stores and flush
 transactions, collection analysis, and plot materialization/setup/drawing. Fixed attributes may
-include stage, kind, source/item identity, row/item/byte counts, batch size, cache size, and writer
-wait/service time. Measurement values and metadata payload contents are never recorded.
+include stage, kind, source/item identity, row/item/byte counts, batch size, cache size, and
+buffer backpressure-wait and flush-service time. Measurement values and metadata payload contents are never recorded.
 
-Process-wide RSS, GC totals and pauses, queue progress, and writer counters are sampled every 100 ms
-on counter tracks. They are not attributed to overlapping spans. A capture retains at most 500,000
+Process-wide RSS, GC totals and pauses, queue progress, and per-table cache-buffer counters (pending
+rows, flush counts, backpressure waits) are sampled every 100 ms on counter tracks. They are not attributed to overlapping spans. A capture retains at most 500,000
 events and reports any dropped events explicitly. When internal profiling is disabled or idle, span
 attributes are not evaluated.
 

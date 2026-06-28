@@ -173,7 +173,7 @@ useful split is:
 | State | Owner | Persistence |
 |---|---|---|
 | Project state | Opened-project object | Recomputed from source, cache, and source-root metadata. |
-| Data cache | Package cache layer | Generated HDF5 cache outside the source root. |
+| Data cache | Package cache layer | Generated DuckDB cache outside the source root. |
 | GUI state | Browser window | Mostly transient; small preferences can live in app prefs. |
 | Annotations | Source root | Hand-editable tags, notes, coordinates, and spatial positions. |
 | Workflow state | Workflow model | Saved workflow file, replayable from GUI or API. |

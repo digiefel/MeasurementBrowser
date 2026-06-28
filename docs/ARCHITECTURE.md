@@ -49,7 +49,8 @@ remaining source items to a bounded worker pool. Each worker calls
 and interpreted data. Small ready groups commit their records and cacheable interpreted data, then
 enter the shared processing queue. Background and selected work use the same job; selection only
 changes priority. Processing publishes completed item data and item statistics to the workspace first,
-then a short coalescing writer durably stores processed payloads and stats in bounded batches.
+then per-table cache buffers durably store processed payloads and stats, each flushing to DuckDB on its
+own cadence.
 Collection-node stats run afterward from published item-stat results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 

@@ -92,5 +92,5 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 ## Cache layer (separate from source-root metadata)
 
-The HDF5 cache is generated data, not hand-edited source-root metadata. It lives outside the source
+The DuckDB cache is generated data, not hand-edited source-root metadata. It lives outside the source
 and is documented in [cache.md](cache.md).
