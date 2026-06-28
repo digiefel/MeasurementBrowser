@@ -5,6 +5,7 @@ using InteractiveUtils: subtypes
 
 import ..ItemIndex: ItemRecord
 import ..Projects: AbstractDataItem
+import ..Profiling
 import ..Workspace
 
 """
@@ -70,7 +71,12 @@ function setup_plot(
     items::Vector{<:AbstractDataItem},
 )::Figure where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    return recipe.setup(workspace, items)::Figure
+    return Profiling.@profile_span workspace.profiler :visualization :setup_plot Profiling.ProfileAttributes(
+        kind=Kind,
+        items=Int64(length(items)),
+    ) begin
+        recipe.setup(workspace, items)::Figure
+    end
 end
 
 """
@@ -86,7 +92,12 @@ function plot_data!(
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    recipe.draw(workspace, items, figure)
+    Profiling.@profile_span workspace.profiler :visualization :draw_plot Profiling.ProfileAttributes(
+        kind=Kind,
+        items=Int64(length(items)),
+    ) begin
+        recipe.draw(workspace, items, figure)
+    end
     return nothing
 end
 

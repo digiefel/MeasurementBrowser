@@ -19,35 +19,32 @@ CPU-sampled workload. The third measures enabled-but-idle overhead without recor
 `scorecard.csv` records event and drop counts. See [profiling.md](../docs/profiling.md) for runtime
 flags and data policy.
 
-## Benchmark harness
-
-```bash
-julia --project=bench --threads=auto bench/cache_pipeline.jl [n_files] [rows_per_file]
-```
-
-Creates a deterministic synthetic CSV dataset once under `bench/data/`, reuses it on later runs,
-and saves each report under `bench/results/`. The harness reports real functions on real data:
-
-1. **per-item micro-benchmarks** — CSV parse vs serialize vs deserialize vs DuckDB blob round-trip
-   vs DuckDB columnar round-trip (this settles the fastest way to cache item data);
-2. **whole-dataset macro timings** — the real parallel source scan;
-3. **source-item expansion** — copied child tables versus views;
-4. **workspace cold builds** — full scan, item stats, native DuckDB writes, and cache-only reads;
-5. **incremental reopen** — no-change and one-changed-source read counts and elapsed time;
-6. **item-analysis throughput** — one source item expanded into many independently processed items;
-
-The `bench/` environment is separate from the package so its dev tools (BenchmarkTools, …) don't
-become runtime dependencies.
-
 ## Realistic browsing
 
 ```bash
 julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
 ```
 
-Builds a deterministic three-kind project with thousands of files and measures real item
-materialization while the cache is being built and after it settles. The default scale models 4,500
-files and about 10,400 items; smaller scales are useful for iteration. `scorecard.csv` records scan,
-processing, and end-to-end throughput; mean write latency and writer occupancy; and aggregate
-during-build and after-build median, p90, p99, and maximum read latency. Diagnostics that add locks or
+The single end-to-end harness. It builds a deterministic three-kind project with thousands of files
+and does what a user does — selects items and **renders real plots** (GLMakie figures built from the
+cached data) while the cache is still being built, and again after it settles. The default scale
+models 4,500 files and about 10,400 items; smaller scales are useful for iteration. The `bench/`
+environment is separate from the package so its dev tools (BenchmarkTools, CairoMakie, …) don't
+become runtime dependencies.
+
+It measures, on real functions and real data:
+
+1. **build throughput** — parallel scan, item processing, and collection analysis (items/s each);
+2. **interactive plot latency** — the full select → materialize → setup → draw round trip, split into
+   data-load vs render time, sampled during the build and after it settles, per item kind;
+3. **cache writes** — interpreted/processed/stats call counts, mean latency, and writer occupancy
+   (busy vs queued-wait);
+4. **process memory** — RSS, GC-live, and index/queue counts sampled across the build;
+5. **warm reopen** — closing and reopening on the same cache, timing the incremental rescan and the
+   first plot, with the allocation it costs (the cached-index handling path);
+6. **whole-table aggregates** — one `sum/avg` per processed payload schema, the analysis-query shape.
+
+Outputs land under `bench/results/<timestamp>/`: `scorecard.csv` (the one-line summary),
+`responsiveness.csv` (every interactive sample), `memory_samples.csv`, `global_queries.csv`,
+`reopen.csv`, and — when CairoMakie is present — `responsiveness.png`. Diagnostics that add locks or
 flushes are disabled in the normal run.

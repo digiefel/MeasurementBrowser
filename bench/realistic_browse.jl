@@ -26,6 +26,9 @@ using DataFrames
 using Random
 using Printf
 using Statistics: mean, median, quantile
+# GLMakie ships with the engine; the plot recipes below build real figures from the cached data, the
+# same scene-graph work the GUI does on a selection (no window is shown, so no GPU is touched).
+import GLMakie: Figure, Axis, lines!, contents
 
 # Optional: render a PNG when CairoMakie is in the bench env. Imported at top level so the plotting
 # call below runs in a new-enough world age (importing inside the function fails with "method too new").
@@ -175,10 +178,27 @@ function build_project()
         stats   = item -> Dict{Symbol,Any}(:pmax => maximum(abs, item.data.current)),
         label   = item -> "K3 $(item.label)")
 
-    for k in (:kind1, :kind2, :kind3)
-        MB.register_plot!(project, k; label="$k", setup=(ws, items) -> nothing,
-            draw=(ws, items, fig) -> nothing)
-    end
+    # Real plot recipes: one axis, one line per selected item, reading the processed columns — the
+    # same scene-graph work the GUI does when a user selects items and the plot panel renders.
+    _axis(fig, xlabel, ylabel) = Axis(fig[1, 1]; xlabel, ylabel)
+    MB.register_plot!(project, :kind1; label="IV",
+        setup=(ws, items) -> (fig = Figure(); _axis(fig, "voltage", "conductance"); fig),
+        draw=(ws, items, fig) -> for item in items
+            d = MB.item_data(item)
+            lines!(contents(fig[1, 1])[1], d.voltage, d.conductance)
+        end)
+    MB.register_plot!(project, :kind2; label="CV",
+        setup=(ws, items) -> (fig = Figure(); _axis(fig, "voltage", "cap"); fig),
+        draw=(ws, items, fig) -> for item in items
+            d = MB.item_data(item)
+            lines!(contents(fig[1, 1])[1], d.voltage, d.cap)
+        end)
+    MB.register_plot!(project, :kind3; label="power",
+        setup=(ws, items) -> (fig = Figure(); _axis(fig, "time", "power"); fig),
+        draw=(ws, items, fig) -> for item in items
+            d = MB.item_data(item)
+            lines!(contents(fig[1, 1])[1], d.time, d.power)
+        end)
     return project
 end
 
@@ -193,8 +213,8 @@ build_idle(ws) =
     ws.analysis.state != :pending &&
     ws.scan.state in (:done, :unchanged, :error, :canceled)
 
-"""Time one interactive read of `k` already-processed items of `kind`."""
-function timed_read!(ws, kind::Symbol, k::Int)
+"""Collect up to 64 already-processed item ids of `kind`."""
+function _ready_ids(ws, kind::Symbol)
     ready = String[]
     for id in keys(ws.index.item_stats)
         rec = get(ws.index.items, id, nothing)
@@ -202,12 +222,34 @@ function timed_read!(ws, kind::Symbol, k::Int)
         rec.kind === kind && push!(ready, id)
         length(ready) >= 64 && break
     end
-    length(ready) < k && return (nothing, 0, 0, length(ready))
-    pick = ready[1:k]
-    records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in pick]
+    return ready
+end
+
+"""
+Time one full interactive plot action on `k` items of `kind`: select → materialize → setup → draw.
+
+This is the real GUI round trip, decomposed into the cache *load* (materialize) and the *render*
+(building the figure scene from the loaded columns). `records` may be supplied to plot a fixed
+selection (used for reopen probes); otherwise the first `k` ready items are used.
+"""
+function timed_plot!(ws, plot_kinds, kind::Symbol, k::Int; records=nothing)
+    if records === nothing
+        ready = _ready_ids(ws, kind)
+        length(ready) < k && return nothing
+        records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in ready[1:k]]
+    end
+    n_ready = records === nothing ? 0 : length(records)
     MB.select_items!(ws, records)                 # mirror the GUI selecting them
-    timed = @timed MB.Workspace.materialize_items(ws, records)
-    return (timed.time * 1e3, timed.bytes, k, length(ready))
+    load = @timed MB.Workspace.materialize_items(ws, records)
+    items = load.value
+    plot_kind = plot_kinds[kind]
+    render = @timed begin
+        figure = MB.setup_plot(ws, plot_kind, items)
+        MB.plot_data!(ws, plot_kind, items, figure)
+    end
+    return (load_ms=load.time * 1e3, render_ms=render.time * 1e3,
+        total_ms=(load.time + render.time) * 1e3,
+        bytes=load.bytes + render.bytes, n=length(records), ready=n_ready)
 end
 
 mutable struct Sample
@@ -215,7 +257,9 @@ mutable struct Sample
     phase::Symbol
     kind::Symbol
     n::Int
-    read_ms::Float64
+    load_ms::Float64       # cache read (materialize the processed payload)
+    render_ms::Float64     # build + draw the figure scene from the loaded columns
+    total_ms::Float64      # load + render — the full interactive action
     allocated_bytes::Int
     ready::Int
 end
@@ -301,6 +345,7 @@ function run_benchmark()
 
     project = build_project()
     kinds = (:kind1, :kind2, :kind3)
+    plot_kinds = Dict(k => first(MB.registered_plot_kinds(project, k)) for k in kinds)
     samples = Sample[]
 
     println("Building cache + browsing during the scan …")
@@ -375,13 +420,14 @@ function run_benchmark()
             analysis_started !== nothing && analysis_seconds == 0 &&
                 ws.analysis.state in (:done, :error, :canceled) &&
                 (analysis_seconds = now - analysis_started)
-            # Probe responsiveness ~6×/s, rotating across kinds, once items exist.
+            # Probe responsiveness ~6×/s, rotating across kinds, once items exist. Each probe is the
+            # full select → load → plot action a user performs while the build is still running.
             if now - last_probe >= 0.16
                 last_probe = now
                 kind = kinds[kind_cursor]; kind_cursor = mod1(kind_cursor + 1, length(kinds))
-                ms, bytes, n, ready = timed_read!(ws, kind, 3)
-                ms === nothing || push!(samples,
-                    Sample(now, :during_build, kind, n, ms, bytes, ready))
+                probe = timed_plot!(ws, plot_kinds, kind, 3)
+                probe === nothing || push!(samples, Sample(now, :during_build, kind, probe.n,
+                    probe.load_ms, probe.render_ms, probe.total_ms, probe.bytes, probe.ready))
             end
             if build_idle(ws)
                 build_seconds = now
@@ -396,7 +442,7 @@ function run_benchmark()
         rss_end_bytes = final_memory.rss_bytes
         push!(memory_samples, MemorySample(time() - t_start, final_memory))
 
-        # Steady-state sweep: many random selections per kind on the finished cache.
+        # Steady-state sweep: many random plot actions per kind on the finished cache.
         rng = MersenneTwister(1)
         for kind in kinds, _ in 1:40
             ids = [id for id in keys(ws.index.item_stats)
@@ -404,9 +450,9 @@ function run_benchmark()
             isempty(ids) && continue
             k = rand(rng, 1:min(4, length(ids)))
             records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in rand(rng, ids, k)]
-            timed = @timed MB.Workspace.materialize_items(ws, records)
-            push!(samples, Sample(time() - t_start, :after_build, kind, k,
-                timed.time * 1e3, timed.bytes, length(ids)))
+            probe = timed_plot!(ws, plot_kinds, kind, k; records=records)
+            probe === nothing || push!(samples, Sample(time() - t_start, :after_build, kind, probe.n,
+                probe.load_ms, probe.render_ms, probe.total_ms, probe.bytes, probe.ready))
         end
         global_queries = global_query_samples(ws)
         completed, queued = lock(ws.processing.lock) do
@@ -441,7 +487,12 @@ function run_benchmark()
         MB.close_workspace!(ws)
     end
 
-    report(samples, global_queries, build_stats, profile_report, outdir,
+    # Warm reopen on the same cache: the incremental rescan finds every fingerprint unchanged and
+    # reuses the cached index. Surfaces the true warm-reopen cost (rescan + cached-index handling +
+    # any re-processing the post-scan readiness probe triggers).
+    reopen_stats = measure_reopen(project, data_root, plot_kinds, kinds)
+
+    report(samples, global_queries, build_stats, reopen_stats, profile_report, outdir,
         n_files, n_items, data_bytes, build_seconds)
 
     rm(tmp; force=true, recursive=true)   # synthetic data + cache gone; results kept
@@ -450,19 +501,74 @@ function run_benchmark()
 end
 
 # --------------------------------------------------------------------------------------------------
+# Warm reopen
+# --------------------------------------------------------------------------------------------------
+
+"""One close-and-reopen on the warm cache: time to first view and idle, allocation, first plots."""
+function _reopen_once(project, data_root, plot_kinds, kinds)
+    GC.gc()
+    t0 = time()
+    bytes0 = Base.gc_bytes()
+    ws = MB.open_workspace(project, data_root)
+    first_view_s = 0.0
+    idle_s = 0.0
+    deadline = time() + MAX_BUILD_SECONDS
+    try
+        while true
+            MB.Workspace.poll_workspace!(ws)
+            now = time() - t0
+            first_view_s == 0 && !isempty(ws.index.items) && (first_view_s = now)
+            if build_idle(ws)
+                idle_s = now
+                break
+            end
+            time() > deadline && (idle_s = now; @warn("reopen hit MAX_BUILD_SECONDS"); break)
+            sleep(0.002)
+        end
+        alloc_bytes = Base.gc_bytes() - bytes0
+        first_plots = NamedTuple[]
+        for kind in kinds
+            probe = timed_plot!(ws, plot_kinds, kind, 1)
+            probe === nothing || push!(first_plots,
+                (kind=kind, load_ms=probe.load_ms, total_ms=probe.total_ms))
+        end
+        return (first_view_s=first_view_s, idle_s=idle_s, alloc_bytes=alloc_bytes,
+            items=length(ws.index.items), unchanged=ws.scan.state === :unchanged,
+            first_plots=first_plots)
+    finally
+        MB.close_workspace!(ws)
+    end
+end
+
+"""
+Close-and-reopen on the same warm cache and time the incremental rescan and first plot.
+
+A first discarded pass warms the reopen-specific code paths (cache-index load, incremental reuse,
+cached-index handling) so the reported allocation reflects work, not first-call compilation. Reports
+the wall time to first cached view and to idle, the total bytes allocated getting to idle (the whole
+warm-reopen cost — rescan, cached-index handling, and any re-processing the readiness probe triggers),
+and the first warm plot per kind (its data is read from disk, never the staged buffer).
+"""
+function measure_reopen(project, data_root, plot_kinds, kinds)
+    _reopen_once(project, data_root, plot_kinds, kinds)   # warm up JIT, discard
+    return _reopen_once(project, data_root, plot_kinds, kinds)
+end
+
+# --------------------------------------------------------------------------------------------------
 # Reporting
 # --------------------------------------------------------------------------------------------------
 
 _stat(v, f) = isempty(v) ? NaN : f(v)
 
-function report(samples, global_queries, stats, profile_report, outdir,
+function report(samples, global_queries, stats, reopen, profile_report, outdir,
     n_files, n_items, data_bytes, build_seconds)
     # responsiveness CSV
     open(joinpath(outdir, "responsiveness.csv"), "w") do io
-        println(io, "elapsed_s,phase,kind,n_items,read_ms,allocated_bytes,ready_items")
+        println(io, "elapsed_s,phase,kind,n_items,load_ms,render_ms,total_ms,allocated_bytes,ready_items")
         for s in samples
-            @printf(io, "%.3f,%s,%s,%d,%.3f,%d,%d\n",
-                s.elapsed_s, s.phase, s.kind, s.n, s.read_ms, s.allocated_bytes, s.ready)
+            @printf(io, "%.3f,%s,%s,%d,%.3f,%.3f,%.3f,%d,%d\n",
+                s.elapsed_s, s.phase, s.kind, s.n, s.load_ms, s.render_ms, s.total_ms,
+                s.allocated_bytes, s.ready)
         end
     end
 
@@ -496,6 +602,16 @@ function report(samples, global_queries, stats, profile_report, outdir,
         end
     end
 
+    open(joinpath(outdir, "reopen.csv"), "w") do io
+        println(io, "first_view_s,idle_s,alloc_mib,items,unchanged")
+        @printf(io, "%.3f,%.3f,%.1f,%d,%s\n", reopen.first_view_s, reopen.idle_s,
+            reopen.alloc_bytes / 1024^2, reopen.items, reopen.unchanged)
+        println(io, "kind,first_load_ms,first_total_ms")
+        for p in reopen.first_plots
+            @printf(io, "%s,%.3f,%.3f\n", p.kind, p.load_ms, p.total_ms)
+        end
+    end
+
     if profile_report isa MB.Profiling.ProfileReport
         open(joinpath(outdir, "profile_summary.csv"), "w") do io
             println(io, "category,operation,count,total_ms,p50_ms,p90_ms,p99_ms,max_ms," *
@@ -523,8 +639,8 @@ function report(samples, global_queries, stats, profile_report, outdir,
     write_calls = stats.interpreted_writes + stats.processed_writes + stats.stats_writes
     write_ns = stats.interpreted_write_ns + stats.processed_write_ns + stats.stats_write_ns
     mean_write_ms = write_calls == 0 ? 0.0 : write_ns / write_calls / 1e6
-    during = [s.read_ms for s in samples if s.phase === :during_build]
-    after = [s.read_ms for s in samples if s.phase === :after_build]
+    during = [s.total_ms for s in samples if s.phase === :during_build]
+    after = [s.total_ms for s in samples if s.phase === :after_build]
     read_stat(values, statistic) = isempty(values) ? NaN : statistic(values)
     open(joinpath(outdir, "scorecard.csv"), "w") do io
         println(io, "build_s,scan_s,scan_per_s,processing_s,items_per_s,analysis_s," *
@@ -609,29 +725,39 @@ function report(samples, global_queries, stats, profile_report, outdir,
             peak_sample.background_waiting)
     end
 
-    println("\nAggregate interactive read latency, ms:")
+    println("\nAggregate interactive plot latency (load + render), ms:")
     @printf("  %-13s %8s %8s %8s %8s %6s\n",
         "phase", "median", "p90", "p99", "max", "n")
     for phase in (:during_build, :after_build)
-        values = [s.read_ms for s in samples if s.phase === phase]
+        values = [s.total_ms for s in samples if s.phase === phase]
         isempty(values) && continue
         @printf("  %-13s %8.1f %8.1f %8.1f %8.1f %6d\n",
             phase, median(values), quantile(values, 0.9), quantile(values, 0.99),
             maximum(values), length(values))
     end
 
-    println("\nRead latency by data shape, ms:")
+    println("\nLoad vs render split (median ms):")
+    @printf("  %-13s %-8s %8s %8s %8s %6s\n", "phase", "kind", "load", "render", "total", "n")
+    for phase in (:during_build, :after_build), kind in (:kind1, :kind2, :kind3)
+        rows = [s for s in samples if s.phase === phase && s.kind === kind]
+        isempty(rows) && continue
+        @printf("  %-13s %-8s %8.1f %8.1f %8.1f %6d\n",
+            phase, kind, median([s.load_ms for s in rows]), median([s.render_ms for s in rows]),
+            median([s.total_ms for s in rows]), length(rows))
+    end
+
+    println("\nPlot latency by data shape (total ms):")
     @printf("  %-13s %-8s %8s %8s %8s %8s %6s\n",
         "phase", "kind", "median", "p90", "p99", "max", "n")
     for phase in (:during_build, :after_build), kind in (:kind1, :kind2, :kind3)
-        v = [s.read_ms for s in samples if s.phase === phase && s.kind === kind]
+        v = [s.total_ms for s in samples if s.phase === phase && s.kind === kind]
         isempty(v) && continue
         @printf("  %-13s %-8s %8.1f %8.1f %8.1f %8.1f %6d\n",
             phase, kind, median(v), quantile(v, 0.9), quantile(v, 0.99),
             maximum(v), length(v))
     end
 
-    println("\nAllocated per materialization, MiB:")
+    println("\nAllocated per plot action, MiB:")
     for phase in (:during_build, :after_build), kind in (:kind1, :kind2, :kind3)
         bytes = [s.allocated_bytes for s in samples if s.phase === phase && s.kind === kind]
         isempty(bytes) || @printf("  %-13s %-8s median %6.2f  p90 %6.2f\n",
@@ -643,6 +769,14 @@ function report(samples, global_queries, stats, profile_report, outdir,
         @printf("  %-8s %8.1f\n", sample.kind, sample.median_ms)
     end
 
+    println("\nWarm reopen (same cache, every fingerprint unchanged):")
+    @printf("  first cached view %.0f ms  ·  idle %.2f s  ·  allocated %.1f MiB  ·  %d items%s\n",
+        reopen.first_view_s * 1e3, reopen.idle_s, reopen.alloc_bytes / 1024^2, reopen.items,
+        reopen.unchanged ? "  (reused)" : "  (re-scanned!)")
+    for p in reopen.first_plots
+        @printf("  first %-6s plot  load %6.1f ms  total %6.1f ms\n", p.kind, p.load_ms, p.total_ms)
+    end
+
     if profile_report isa MB.Profiling.ProfileReport
         @printf("\nStructured profile: %d events, %d counters, %d dropped, %d CPU samples\n",
             length(profile_report.events), length(profile_report.counters),
@@ -650,10 +784,10 @@ function report(samples, global_queries, stats, profile_report, outdir,
             profile_report.cpu === nothing ? 0 : profile_report.cpu.total_samples)
     end
 
-    allduring = [s.read_ms for s in samples if s.phase === :during_build]
+    allduring = [s.total_ms for s in samples if s.phase === :during_build]
     if !isempty(allduring)
         slow = count(>(200), allduring)
-        @printf("\n  during-build reads over 200 ms: %d / %d (%.1f%%)  ·  worst %.0f ms\n",
+        @printf("\n  during-build plot actions over 200 ms: %d / %d (%.1f%%)  ·  worst %.0f ms\n",
             slow, length(allduring), 100 * slow / length(allduring), maximum(allduring))
     end
 
@@ -672,23 +806,23 @@ function _maybe_plot(samples, outdir)
     CM.Label(fig[0, 1:2], "Browse-while-build responsiveness", fontsize=19, font=:bold)
     colors = Dict(:kind1 => :steelblue, :kind2 => :darkorange, :kind3 => :crimson)
 
-    ax1 = CM.Axis(fig[1, 1:2]; xlabel="build elapsed (s)", ylabel="read latency (ms)",
-        title="Interactive read latency over the build (each point = one selection)")
+    ax1 = CM.Axis(fig[1, 1:2]; xlabel="build elapsed (s)", ylabel="plot latency (ms)",
+        title="Interactive plot latency over the build (each point = one select+load+render)")
     for kind in (:kind1, :kind2, :kind3)
-        pts = [(s.elapsed_s, s.read_ms) for s in samples
+        pts = [(s.elapsed_s, s.total_ms) for s in samples
                if s.phase === :during_build && s.kind === kind]
         isempty(pts) && continue
         CM.scatter!(ax1, first.(pts), last.(pts); color=colors[kind], markersize=7, label=string(kind))
     end
     CM.axislegend(ax1; position=:lt)
 
-    ax2 = CM.Axis(fig[2, 1]; xlabel="read latency (ms)", ylabel="count",
+    ax2 = CM.Axis(fig[2, 1]; xlabel="plot latency (ms)", ylabel="count",
         title="During build")
-    ax3 = CM.Axis(fig[2, 2]; xlabel="read latency (ms)", ylabel="count",
+    ax3 = CM.Axis(fig[2, 2]; xlabel="plot latency (ms)", ylabel="count",
         title="After build")
     for kind in (:kind1, :kind2, :kind3)
-        d = [s.read_ms for s in samples if s.phase === :during_build && s.kind === kind]
-        a = [s.read_ms for s in samples if s.phase === :after_build && s.kind === kind]
+        d = [s.total_ms for s in samples if s.phase === :during_build && s.kind === kind]
+        a = [s.total_ms for s in samples if s.phase === :after_build && s.kind === kind]
         isempty(d) || CM.hist!(ax2, d; bins=20, color=(colors[kind], 0.5), label=string(kind))
         isempty(a) || CM.hist!(ax3, a; bins=20, color=(colors[kind], 0.5), label=string(kind))
     end
