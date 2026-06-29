@@ -551,7 +551,7 @@ function start_analysis!(workspace::Workspace)::Nothing
                 end
                 if !isempty(collection_node_stats)
                     write_started = time_ns()
-                    persist_stats!(cachedb, no_item_stats, collection_node_stats)
+                    store_stats!(cachedb, no_item_stats, collection_node_stats)
                     record_cache_phase!(
                         workspace.metrics.stats_write_ns,
                         workspace.metrics.stats_writes,

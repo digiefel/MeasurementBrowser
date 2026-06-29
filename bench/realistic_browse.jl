@@ -487,7 +487,6 @@ function pipeline_event_time_rows(report)::Vector{NamedTuple}
         ("cache_transaction_ms", :cache, :transaction),
         ("cache_begin_transaction_ms", :cache, :begin_transaction),
         ("cache_commit_ms", :cache, :commit),
-        ("cache_persist_stats_ms", :cache, :persist_stats),
     )
         value = metric == "cache_writer_wait_ms" ? _event_wait_ms : _event_ms
         _push_event_times!(rows, metric, _matching_events(report, category, operation), value)

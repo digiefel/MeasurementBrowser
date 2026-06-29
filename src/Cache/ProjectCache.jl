@@ -318,6 +318,38 @@ function store_failure!(cache::CacheDB, record::ItemRecord, message::String)::No
 end
 
 """
+Store item and collection statistics through the metadata buffer.
+
+Item statistics are scoped `SCOPE_ITEM_STATS` keyed by item id; collection statistics are
+`SCOPE_NODE_STATS` keyed by the node's collection path. Like every other write this is a pure append
+that coalesces per `(scope, entity, key)`; re-running analysis is picked up by a full Rebuild, not an
+in-place replace (docs/cache.md "Mutations, deferred").
+"""
+function store_stats!(
+    cache::CacheDB,
+    item_stats::AbstractDict{String,<:AbstractDict},
+    node_stats::AbstractDict{<:Tuple,<:AbstractDict},
+)::Nothing
+    (isempty(item_stats) && isempty(node_stats)) && return nothing
+    metadata = cache.buffer.metadata
+    for (entity, stats) in item_stats
+        id = String(entity)
+        for (key, value) in metadata_dict(stats)
+            _store!(metadata, (Int8(SCOPE_ITEM_STATS), id, String(key)),
+                MetaRow(Int8(SCOPE_ITEM_STATS), id, String(key), value))
+        end
+    end
+    for (path, stats) in node_stats
+        entity = collection_path_key(collect(String, path))
+        for (key, value) in metadata_dict(stats)
+            _store!(metadata, (Int8(SCOPE_NODE_STATS), entity, String(key)),
+                MetaRow(Int8(SCOPE_NODE_STATS), entity, String(key), value))
+        end
+    end
+    return nothing
+end
+
+"""
 Read item data back through the buffer: memory first, then (for processed) the database.
 
 Returns a vector aligned to `records`, each element a loaded item or `nothing` on a miss; the caller
@@ -901,89 +933,6 @@ function finalize_scan!(
             finalize_scan!(connection, cachedb.identity, source, written_ids)
         end
     end
-end
-
-"""
-Persist item and collection statistics on an open writer connection.
-
-Runs no transaction of its own, so it composes into a larger writer transaction (the cache buffer
-flushes stats alongside interpreted/processed writes in a single commit).
-"""
-function _persist_stats!(
-    connection,
-    item_stats::AbstractDict{String,<:AbstractDict},
-    node_stats::AbstractDict{<:Tuple,<:AbstractDict},
-)::Nothing
-    (isempty(item_stats) && isempty(node_stats)) && return nothing
-    DBInterface.execute(connection, """
-        CREATE TEMP TABLE IF NOT EXISTS pending_stat_entities(
-            scope TINYINT,
-            entity TEXT)
-    """)
-    DBInterface.execute(connection, """
-        CREATE TEMP TABLE IF NOT EXISTS pending_stat_metadata AS
-        SELECT * FROM metadata WHERE false
-    """)
-    DBInterface.execute(connection, "DELETE FROM pending_stat_entities")
-    DBInterface.execute(connection, "DELETE FROM pending_stat_metadata")
-
-    entity_appender = DuckDB.Appender(connection, "pending_stat_entities")
-    metadata_appender = DuckDB.Appender(connection, "pending_stat_metadata")
-    try
-        function append_entity!(scope::MetaScope, entity::String)::Nothing
-            DuckDB.append(entity_appender, Int8(scope))
-            DuckDB.append(entity_appender, entity)
-            DuckDB.end_row(entity_appender)
-            return nothing
-        end
-
-        for (entity, stats) in item_stats
-            id = String(entity)
-            append_entity!(SCOPE_ITEM_STATS, id)
-            _append_metadata!(metadata_appender, SCOPE_ITEM_STATS, id, metadata_dict(stats))
-        end
-        for (path, stats) in node_stats
-            entity = collection_path_key(collect(String, path))
-            append_entity!(SCOPE_NODE_STATS, entity)
-            _append_metadata!(metadata_appender, SCOPE_NODE_STATS, entity, metadata_dict(stats))
-        end
-        DuckDB.flush(entity_appender)
-        DuckDB.flush(metadata_appender)
-    finally
-        DuckDB.close(entity_appender)
-        DuckDB.close(metadata_appender)
-    end
-
-    DBInterface.execute(connection, """
-        DELETE FROM metadata
-        WHERE EXISTS (
-            SELECT 1 FROM pending_stat_entities pending
-            WHERE pending.scope = metadata.scope
-              AND pending.entity = metadata.entity)
-    """)
-    DBInterface.execute(connection, """
-        INSERT INTO metadata
-        SELECT * FROM pending_stat_metadata
-    """)
-    return nothing
-end
-
-"""Persist item and collection statistics in one writer transaction."""
-function persist_stats!(
-    cachedb::CacheDB,
-    item_stats::AbstractDict{String,<:AbstractDict},
-    node_stats::AbstractDict{<:Tuple,<:AbstractDict},
-)::Nothing
-    (isempty(item_stats) && isempty(node_stats)) && return nothing
-    @profile_span cachedb.profiler :cache :persist_stats ProfileAttributes(
-        items=Int64(length(item_stats) + length(node_stats)),
-        batch_size=Int64(length(item_stats) + length(node_stats)),
-    ) begin
-        with_writer_transaction(cachedb) do connection
-            _persist_stats!(connection, item_stats, node_stats)
-        end
-    end
-    return nothing
 end
 
 """Replace or clear one processing/statistics failure on an open writer connection."""
