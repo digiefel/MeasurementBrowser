@@ -1001,10 +1001,9 @@ end
 
 """Reconstruct the full `SourceScan` stored in one DuckDB cache."""
 function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceScan
-    meta = _load_meta(connection, identity)
-    skipped_count = parse(Int, get(meta, "skipped_count", "0"))
-    has_collection_parameters = get(meta, "has_collection_parameters", "false") == "true"
+    _load_meta(connection, identity)   # validates identity; scan-wide summaries are derived below
 
+    all_source_ids = String[]
     fingerprints = Dict{String,Any}()
     locations = Dict{String,Tuple{Union{Nothing,String},Union{Nothing,DateTime}}}()
     failures = ItemFailure[]
@@ -1012,6 +1011,7 @@ function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceSc
         SELECT source_item_id, fingerprint, path, timestamp, error FROM source_items
     """)
         id = row.source_item_id
+        push!(all_source_ids, id)
         fingerprints[id] = _deserialize_hex(row.fingerprint)
         locations[id] = (_null_to_nothing(row.path), _null_to_nothing(row.timestamp))
         error_message = _null_to_nothing(row.error)
@@ -1047,6 +1047,11 @@ function _load_source_scan(connection, identity::ProjectCacheIdentity)::SourceSc
     end
 
     sort!(records; by=record -> (record.source_item_id, record.id))
+    # Scan-wide summaries are derived, not stored: a source item with no items was skipped or failed
+    # (both produce zero records), and collection parameters exist iff any node carries them.
+    source_ids_with_items = Set(record.source_item_id for record in records)
+    skipped_count = count(id -> !(id in source_ids_with_items), all_source_ids)
+    has_collection_parameters = any(key -> key[1] == SCOPE_NODE_PARAMETERS, keys(metadata))
     hierarchy = Hierarchy(identity.source_id, has_collection_parameters, skipped_count)
     for record in records
         insert_item!(hierarchy, record)
