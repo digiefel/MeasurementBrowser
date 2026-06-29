@@ -5,7 +5,7 @@ using SHA
 using Serialization
 using Dates
 
-const PROJECT_CACHE_SCHEMA_VERSION = 5
+const PROJECT_CACHE_SCHEMA_VERSION = 6
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
 
 """
@@ -634,38 +634,6 @@ function write_scan_identity!(cachedb::CacheDB)::Nothing
     return nothing
 end
 
-"""Read stored source-row hashes and early item-data rows for one reconcile batch."""
-function _source_item_write_state(
-    connection,
-    source_item_ids::Vector{String},
-)::Tuple{Dict{String,Union{Nothing,String}},Set{String}}
-    stored_hashes = Dict{String,Union{Nothing,String}}()
-    cached_data_ids = Set{String}()
-    isempty(source_item_ids) && return stored_hashes, cached_data_ids
-
-    placeholders = join(fill("?", length(source_item_ids)), ", ")
-    parameters = Tuple(source_item_ids)
-    statement = DBInterface.prepare(connection, """
-        SELECT source_item_id, fingerprint_hash
-        FROM source_items
-        WHERE source_item_id IN ($placeholders)
-    """)
-    for row in DBInterface.execute(statement, parameters)
-        hash = _null_to_nothing(row.fingerprint_hash)
-        stored_hashes[String(row.source_item_id)] = hash === nothing ? nothing : String(hash)
-    end
-
-    statement = DBInterface.prepare(connection, """
-        SELECT DISTINCT source_item_id
-        FROM item_data
-        WHERE source_item_id IN ($placeholders)
-    """)
-    for row in DBInterface.execute(statement, parameters)
-        push!(cached_data_ids, String(row.source_item_id))
-    end
-    return stored_hashes, cached_data_ids
-end
-
 """Delete the index rows and, when invalidated, cached data belonging to one source item."""
 function _delete_source_item_rows!(
     connection,
@@ -691,163 +659,12 @@ function _delete_source_item_rows!(
 end
 
 """
-Delete a source item's stale rows (when needed) and return its `source_items` row values.
-
-The caller appends the returned rows in bulk *after* every delete has run, so no appender is ever open
-on `source_items` while that table is being deleted from.
-"""
-function _reconcile_source_item!(
-    connection,
-    records::Vector{ItemRecord},
-    previous_hash::Union{Missing,Nothing,String},
-    has_cached_data::Bool,
-)::NTuple{6,Any}
-    first_record = first(records)
-    source_item_id = first_record.source_item_id
-    hex, new_hash = _encode_fingerprint(first_record.source_item_fingerprint)
-    fingerprint_changed = previous_hash === missing || previous_hash != new_hash
-    if previous_hash !== missing || has_cached_data
-        _delete_source_item_rows!(
-            connection, source_item_id; drop_item_data=fingerprint_changed)
-    end
-    return (source_item_id, hex, new_hash,
-        first_record.source_item_path, first_record.source_item_timestamp, nothing)
-end
-
-"""
-Append item records and their metadata in bulk.
-
-Fingerprints are hex-encoded TEXT, so they ride the same column appender as every other field — there
-is no separate update pass.
-"""
-function _append_item_records!(
-    connection,
-    records::Vector{ItemRecord},
-)::Nothing
-    item_appender = DuckDB.Appender(connection, "items")
-    metadata_appender = DuckDB.Appender(connection, "metadata")
-    try
-        for record in records
-            for value in (
-                record.id,
-                record.source_item_id,
-                record.item_label,
-                String(record.kind),
-                record.collection,
-                _serialize_hex(record.item_fingerprint),
-            )
-                DuckDB.append(item_appender, value)
-            end
-            DuckDB.end_row(item_appender)
-            _append_metadata!(
-                metadata_appender, SCOPE_ITEM_PARAMETERS, record.id, record.parameters)
-            _append_metadata!(
-                metadata_appender, SCOPE_ITEM_STATS, record.id, record.stats)
-        end
-        DuckDB.flush(item_appender)
-        DuckDB.flush(metadata_appender)
-    finally
-        DuckDB.close(item_appender)
-        DuckDB.close(metadata_appender)
-    end
-    return nothing
-end
-
-"""
-Durably write several completed source-item batches in one transaction.
-
-The outer vectors and every records/data pair must align. Returns the source-item ids written in the
-same order.
-"""
-function reconcile_source_items!(
-    connection,
-    profiler::Profiling.ProfileSession,
-    record_batches::Vector{Vector{ItemRecord}},
-    data_batches::Vector{Vector{Any}};
-    stage::Symbol=:interpreted,
-)::Vector{String}
-    length(record_batches) == length(data_batches) ||
-        throw(DimensionMismatch("record_batches and data_batches must have equal lengths"))
-    isempty(record_batches) && return String[]
-    for (records, data) in zip(record_batches, data_batches)
-        length(records) == length(data) ||
-            throw(DimensionMismatch("each records/data batch must have equal lengths"))
-    end
-
-    item_count = sum(length, record_batches)
-    return @profile_span profiler :cache :reconcile ProfileAttributes(
-        stage=stage,
-        items=Int64(item_count),
-        batch_size=Int64(length(record_batches)),
-    ) begin
-        written = String[]
-        sizehint!(written, length(record_batches))
-        @profile_span profiler :cache :reconcile_source_rows ProfileAttributes(
-            stage=stage,
-            items=Int64(item_count),
-        ) begin
-            source_item_ids = unique!(
-                String[first(records).source_item_id for records in record_batches])
-            stored_hashes, cached_data_ids =
-                _source_item_write_state(connection, source_item_ids)
-            # Pass 1: run every delete (no appender open on source_items yet), collecting the rows.
-            rows = Vector{NTuple{6,Any}}(undef, length(record_batches))
-            for (index, records) in pairs(record_batches)
-                source_item_id = first(records).source_item_id
-                rows[index] = _reconcile_source_item!(
-                    connection, records, get(stored_hashes, source_item_id, missing),
-                    source_item_id in cached_data_ids)
-                push!(written, source_item_id)
-            end
-            # Pass 2: bulk-append the fresh source rows.
-            _append_rows!(connection, "source_items", rows)
-        end
-        records = ItemRecord[]
-        data = Any[]
-        sizehint!(records, sum(length, record_batches))
-        sizehint!(data, sum(length, data_batches))
-        for batch in record_batches
-            append!(records, batch)
-        end
-        for batch in data_batches
-            append!(data, batch)
-        end
-        @profile_span profiler :cache :append_item_records ProfileAttributes(
-            stage=stage,
-            items=Int64(length(records)),
-        ) begin
-            _append_item_records!(connection, records)
-        end
-        @profile_span profiler :cache :write_item_payloads ProfileAttributes(
-            stage=stage,
-            items=Int64(length(records)),
-        ) begin
-            _write_cached_item_data!(connection, profiler, records, data, stage)
-        end
-        written
-    end
-end
-
-"""Write completed source-item batches in one standalone writer transaction."""
-function reconcile_source_items!(
-    cachedb::CacheDB,
-    record_batches::Vector{Vector{ItemRecord}},
-    data_batches::Vector{Vector{Any}};
-    stage::Symbol=:interpreted,
-)::Vector{String}
-    return with_writer_transaction(cachedb) do connection
-        reconcile_source_items!(
-            connection, cachedb.profiler, record_batches, data_batches; stage)
-    end
-end
-
-"""
 Finish an incremental scan: record bookkeeping the per-item writes can't carry.
 
-`written_ids` are the source items already persisted by [`reconcile_source_items!`](@ref). This writes
-the `meta` rows and collection-node parameters, records bare rows for skipped/failed source items,
-stamps per-source-item analysis errors, and deletes source items (cascading their items, metadata,
-and cached item data) that the current scan no longer contains.
+`written_ids` are the source items already persisted by the per-table buffers. This writes the `meta`
+rows and collection-node parameters, records bare rows for skipped/failed source items, stamps
+per-source-item analysis errors, and deletes source items (cascading their items, metadata, and cached
+item data) that the current scan no longer contains.
 """
 function finalize_scan!(
     connection,

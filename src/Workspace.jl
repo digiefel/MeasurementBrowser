@@ -1,7 +1,9 @@
 module Workspace
 
-using DataFrames: AbstractDataFrame, DataFrame, nrow
+using DataFrames: AbstractDataFrame, DataFrame, names, nrow
 using DBInterface
+using DuckDB
+using Dates: Date, DateTime
 using Printf
 import ..Profiling
 
@@ -10,9 +12,17 @@ import ..Cache:
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
-    _persist_item_failure!,
-    _persist_stats!,
-    _write_cached_item_data!,
+    META_VALUE_COLUMNS,
+    SCOPE_ITEM_PARAMETERS,
+    SCOPE_ITEM_STATS,
+    _dataframe_storage_id,
+    _dataframe_table_name,
+    _encode_fingerprint,
+    _fingerprint_hash,
+    _meta_codec,
+    _null_to_nothing,
+    _quote_identifier,
+    _serialize_hex,
     cached_item_data_ids,
     clear_cache_index!,
     close_cache_db!,
@@ -21,11 +31,8 @@ import ..Cache:
     open_cache_db,
     persist_stats!,
     project_cache_identity,
-    read_cached_item_data,
-    reconcile_source_items!,
     set_cache_memory_limit!,
     with_reader,
-    with_writer_transaction,
     write_scan_identity!
 import ..ItemIndex:
     DataItem,
@@ -34,6 +41,7 @@ import ..ItemIndex:
     ItemRecord,
     JobCancelled,
     MetadataDict,
+    MetadataValue,
     SourceItemInterpretation,
     SourceScan,
     apply_collection_parameters!,
@@ -124,14 +132,6 @@ mutable struct ProcessingJob
     waiters::Vector{Channel{Any}}
     queued_ns::UInt64
     scan_id::Int
-end
-
-struct ProcessedWriteRequest
-    record::ItemRecord
-    item::Union{Nothing,AbstractDataItem}
-    stats::Union{Nothing,MetadataDict}
-    write_payload::Bool
-    rows::Int
 end
 
 """Workspace-owned processing work; completed values are not retained after delivery."""

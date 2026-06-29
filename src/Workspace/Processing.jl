@@ -69,17 +69,17 @@ end
 """
 Hand one processed value to the cache buffer's single write path.
 
-Processing is the consumer that drains the buffer, so this deposit never blocks on the row ceiling
-(see [`stage_processed!`](@ref)); only the scan producer is gated by it.
+Statistics go to the disk-backed metadata buffer; a cacheable payload a view needs goes to the
+read-through payload buffer (see [`stage_processed!`](@ref)).
 """
 function enqueue_processed_write!(
     workspace::Workspace,
     record::ItemRecord,
     item::Union{Nothing,AbstractDataItem},
     stats::Union{Nothing,MetadataDict},
-    write_payload::Bool,
+    cacheable::Bool,
 )::Nothing
-    stage_processed!(workspace.buffer, record, item, stats, write_payload)
+    stage_processed!(workspace.buffer, record, item, stats, cacheable)
     return nothing
 end
 
@@ -298,14 +298,16 @@ function process_item(
     catch error
         CapturedException(error, catch_backtrace())
     end
-    needs_payload = job.priority > 0 || !isempty(job.waiters)
-    cache_payload = cacheable(processed) && needs_payload
+    # Hand every processed payload to the buffer, not just the selected ones: a cacheable one is
+    # persisted so a reopen reads it back instead of reprocessing, and a non-cacheable one transits the
+    # memory-only buffer so a re-selection skips reprocessing while it stays resident. The buffer routes
+    # on `cacheable`; `view_item` is always a DataItem, so the policy is decided here on `processed`.
     enqueue_processed_write!(
         workspace,
         job.record,
-        cache_payload ? view_item : nothing,
+        view_item,
         stats_failure === nothing && !isempty(item_stats) ? item_stats : nothing,
-        needs_payload,
+        cacheable(processed),
     )
     if stats_failure === nothing
         put!(workspace.processing.events, (

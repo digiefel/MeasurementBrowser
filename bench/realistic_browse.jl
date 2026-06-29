@@ -1,28 +1,30 @@
 # Realistic browse-while-building benchmark.
 #
-# Models the shape of a real project (the RuO2 v2 project): a few thousand source items across three
-# kinds, with the same diversity — many tiny files, some medium files, and a handful of big files that
-# each expand into many items (the fatigue-style one-file-many-cycles case that builds the big payload
-# tables). It then does what a user does: while the scan/analysis is still running it *selects and
-# reads* items (the expensive half of plotting), timing each read. That is the number that has to stay
-# small for the app to feel responsive — the whole point of the cache.
+# Models the pressure profile of a real project (the RuO2 v2 project): fewer source files than the
+# full data set, but realistic fatigue-style row volume. The important scale is staged DataFrame rows:
+# the real run crosses the cache buffer row ceiling and forces the writer/backpressure path. The
+# default workload exceeds the real per-source/item burst shape and adds a processed-payload stress
+# pass, while staying small enough for routine engine checks.
 #
 #   julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
 #
-# `scale` (default 1.0) multiplies all file/item counts; use it to hit ~1 min per build on your
-# machine. Synthetic data and the cache live in a temp dir that is deleted on exit, so the drive is
-# not filled; only the small result files (CSVs + PNG) are kept under bench/results/.
+# `scale` (default 1.0) multiplies file/item counts, not rows per item. Synthetic data and the cache
+# live in a temp dir that is deleted on exit, so the drive is not filled; only the small result files
+# (CSVs + PNG) are kept under bench/results/.
 #
 # Tunables via ENV (counts are per the documented diversity; see DEFAULTS below):
 #   MB_BENCH_KIND1_FILES, MB_BENCH_KIND2_FILES, MB_BENCH_KIND3_FILES, MB_BENCH_KIND3_CYCLES
-# Set MB_PROFILE_INTERNAL=1 for a full structured capture; add MB_PROFILE_CPU=1 for Julia sampling.
-# Set MB_BENCH_START_PROFILE=0 to measure enabled-but-idle overhead.
+#   MB_BENCH_KIND3_ROWS, MB_BENCH_AFTER_BUILD_PLOTS, MB_BENCH_PROCESSED_STRESS_ROWS
+#   MB_BENCH_REQUIRE_SATURATION
+# The benchmark records a structured engine profile by default. Set MB_PROFILE_INTERNAL=0 to disable
+# it; add MB_PROFILE_CPU=1 for Julia sampling. Set MB_BENCH_START_PROFILE=0 to measure
+# enabled-but-idle overhead.
 
 using MeasurementBrowser
 const MB = MeasurementBrowser
 using CSV
-using DBInterface
 using DataFrames
+using Dates
 using Random
 using Printf
 using Statistics: mean, median, quantile
@@ -40,13 +42,13 @@ catch
 end
 
 # --------------------------------------------------------------------------------------------------
-# Sizing (downscaled from the real 3034-file / 20 GB project, same diversity)
+# Sizing (downscaled from the real RuO2 project, preserving row-pressure shape)
 # --------------------------------------------------------------------------------------------------
 
 scale = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0
 _env_int(key, default) = parse(Int, get(ENV, key, string(default)))
 _scaled(n) = max(1, round(Int, n * scale))
-const PROFILE_INTERNAL = MB.Profiling.environment_flag("MB_PROFILE_INTERNAL")
+const PROFILE_INTERNAL = MB.Profiling.environment_flag("MB_PROFILE_INTERNAL", true)
 const PROFILE_CPU = MB.Profiling.environment_flag("MB_PROFILE_CPU")
 const START_PROFILE = MB.Profiling.environment_flag(
     "MB_BENCH_START_PROFILE", PROFILE_INTERNAL)
@@ -54,20 +56,99 @@ START_PROFILE && !PROFILE_INTERNAL && error(
     "MB_BENCH_START_PROFILE=1 requires MB_PROFILE_INTERNAL=1",
 )
 
-# kind1: tiny files, one item each (IV-style, ~120 rows).      many → the long tail of small files
-# kind2: medium files, one item each (CV-style, ~5000 rows).   some → the mid bucket
-# kind3: big files, one item PER CYCLE (fatigue-style).        few files, many items, big payload
-# Defaults tuned for ~1 min per build on an 8-thread laptop (~10k items, the fatigue-style kind3
-# dominating the payload). Pass a scale arg or set the ENV counts to retune for your machine.
-const KIND1_FILES  = _scaled(_env_int("MB_BENCH_KIND1_FILES", 3800))
-const KIND2_FILES  = _scaled(_env_int("MB_BENCH_KIND2_FILES", 600))
-const KIND3_FILES  = _scaled(_env_int("MB_BENCH_KIND3_FILES", 100))
-const KIND3_CYCLES = _env_int("MB_BENCH_KIND3_CYCLES", 60)   # items per big file
+# kind1: tiny files, one item each (IV-style, ~120 rows).      many small records
+# kind2: medium files, one item each (CV-style, ~5000 rows).   mid-size table writes
+# kind3: big files, one item PER CYCLE (fatigue-style).        few files, many rows/items
+# Defaults target a short run while exceeding the real fatigue burst: one synthetic big file expands
+# into more cycles and rows per cycle than the typical RuO2 fatigue file, but there are far fewer
+# physical files.
+const KIND1_FILES  = _scaled(_env_int("MB_BENCH_KIND1_FILES", 500))
+const KIND2_FILES  = _scaled(_env_int("MB_BENCH_KIND2_FILES", 120))
+const KIND3_FILES  = _scaled(_env_int("MB_BENCH_KIND3_FILES", 16))
+const KIND3_CYCLES = _env_int("MB_BENCH_KIND3_CYCLES", 96)   # items per big file
 const KIND1_ROWS   = 120
 const KIND2_ROWS   = 5_000
-const KIND3_ROWS   = 280     # rows per cycle
+const KIND3_ROWS   = _env_int("MB_BENCH_KIND3_ROWS", 6_000) # rows per cycle
 
+const CACHE_ROW_CEILING = MB.Workspace.CACHE_BUFFER_ROW_CEILING
+const PROCESSED_STRESS_ROWS = _env_int(
+    "MB_BENCH_PROCESSED_STRESS_ROWS",
+    2 * CACHE_ROW_CEILING,
+)
+const AFTER_BUILD_PLOTS = _env_int("MB_BENCH_AFTER_BUILD_PLOTS", 40)
 const MAX_BUILD_SECONDS = 600   # safety cap
+const REQUIRE_SATURATION = MB.Profiling.environment_flag(
+    "MB_BENCH_REQUIRE_SATURATION",
+    scale >= 1.0,
+)
+const ESTIMATED_PAYLOAD_ROWS = Int64(KIND1_FILES) * KIND1_ROWS +
+                               Int64(KIND2_FILES) * KIND2_ROWS +
+                               Int64(KIND3_FILES) * KIND3_CYCLES * KIND3_ROWS
+
+const RUN_LOG = Ref{Union{Nothing,IO}}(nothing)
+const BENCH_ENV_KEYS = (
+    "MB_BENCH_KIND1_FILES",
+    "MB_BENCH_KIND2_FILES",
+    "MB_BENCH_KIND3_FILES",
+    "MB_BENCH_KIND3_CYCLES",
+    "MB_BENCH_KIND3_ROWS",
+    "MB_BENCH_AFTER_BUILD_PLOTS",
+    "MB_BENCH_PROCESSED_STRESS_ROWS",
+    "MB_BENCH_REQUIRE_SATURATION",
+    "MB_BENCH_START_PROFILE",
+    "MB_PROFILE_INTERNAL",
+    "MB_PROFILE_CPU",
+    "MB_PROFILE_OUTPUT",
+)
+
+function tee_println(args...)::Nothing
+    println(stdout, args...)
+    io = RUN_LOG[]
+    io === nothing || println(io, args...)
+    return nothing
+end
+
+function tee_printf(format::AbstractString, args...)::Nothing
+    Printf.format(stdout, Printf.Format(format), args...)
+    io = RUN_LOG[]
+    io === nothing || Printf.format(io, Printf.Format(format), args...)
+    return nothing
+end
+
+function _repo_command(args::Vector{String})::String
+    try
+        return strip(read(Cmd(Cmd(args); dir=joinpath(@__DIR__, "..")), String))
+    catch error
+        return "unavailable ($(typeof(error)))"
+    end
+end
+
+function _print_run_header(log_path::String, outdir::String)::Nothing
+    tee_println("MeasurementBrowser realistic benchmark")
+    tee_println("started_at: ", Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"))
+    tee_println("output_dir: ", outdir)
+    tee_println("log_file:   ", log_path)
+    tee_println("branch:     ", _repo_command(["git", "rev-parse", "--abbrev-ref", "HEAD"]))
+    tee_println("commit:     ", _repo_command(["git", "rev-parse", "HEAD"]))
+    status = _repo_command(["git", "status", "--short", "--", "bench/realistic_browse.jl", "bench/README.md"])
+    tee_println("benchmark_file_status:")
+    if isempty(status)
+        tee_println("  <clean>")
+    else
+        for line in split(status, '\n')
+            tee_println("  ", line)
+        end
+    end
+    tee_println("julia:      ", string(VERSION))
+    tee_println("threads:    ", string(Base.Threads.nthreads()))
+    tee_println("args:       ", isempty(ARGS) ? "<none>" : join(ARGS, " "))
+    tee_println("environment:")
+    for key in BENCH_ENV_KEYS
+        tee_println("  ", key, "=", get(ENV, key, "<unset>"))
+    end
+    tee_println()
+    return nothing
+end
 
 # --------------------------------------------------------------------------------------------------
 # Synthetic data generation (deterministic; written as raw CSV for speed)
@@ -171,7 +252,7 @@ function build_project()
         entries = (file, data) -> [
             MB.DataItem(; kind=:kind3, collection=_collection(file),
                 label=string(file.filename, " cycle ", c), parameters=Dict{Symbol,Any}(:cycle => c),
-                data=data[data.cycle .== c, :], id=string(file.filepath, "#kind3,cycle=", c))
+                data=(@view data[data.cycle .== c, :]), id=string(file.filepath, "#kind3,cycle=", c))
             for c in sort(unique(data.cycle))],
         process = item -> MB.DataItem(item, transform(item.data, [:voltage, :current] =>
             ByRow((v, i) -> v * i) => :power)),
@@ -226,11 +307,9 @@ function _ready_ids(ws, kind::Symbol)
 end
 
 """
-Time one full interactive plot action on `k` items of `kind`: select → materialize → setup → draw.
-
-This is the real GUI round trip, decomposed into the cache *load* (materialize) and the *render*
-(building the figure scene from the loaded columns). `records` may be supplied to plot a fixed
-selection (used for reopen probes); otherwise the first `k` ready items are used.
+Time one plot probe on `k` items of `kind`: select, materialize, setup, and draw.
+`records` may be supplied to plot a fixed selection (used for reopen probes); otherwise the first
+`k` ready items are used.
 """
 function timed_plot!(ws, plot_kinds, kind::Symbol, k::Int; records=nothing)
     if records === nothing
@@ -239,17 +318,14 @@ function timed_plot!(ws, plot_kinds, kind::Symbol, k::Int; records=nothing)
         records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in ready[1:k]]
     end
     n_ready = records === nothing ? 0 : length(records)
-    MB.select_items!(ws, records)                 # mirror the GUI selecting them
-    load = @timed MB.Workspace.materialize_items(ws, records)
-    items = load.value
-    plot_kind = plot_kinds[kind]
-    render = @timed begin
+    result = @timed begin
+        MB.select_items!(ws, records)             # mirror the GUI selecting them
+        items = MB.Workspace.materialize_items(ws, records)
+        plot_kind = plot_kinds[kind]
         figure = MB.setup_plot(ws, plot_kind, items)
         MB.plot_data!(ws, plot_kind, items, figure)
     end
-    return (load_ms=load.time * 1e3, render_ms=render.time * 1e3,
-        total_ms=(load.time + render.time) * 1e3,
-        bytes=load.bytes + render.bytes, n=length(records), ready=n_ready)
+    return (plot_ms=result.time * 1e3, bytes=result.bytes, n=length(records), ready=n_ready)
 end
 
 mutable struct Sample
@@ -257,9 +333,7 @@ mutable struct Sample
     phase::Symbol
     kind::Symbol
     n::Int
-    load_ms::Float64       # cache read (materialize the processed payload)
-    render_ms::Float64     # build + draw the figure scene from the loaded columns
-    total_ms::Float64      # load + render — the full interactive action
+    plot_ms::Float64       # secondary plot probe
     allocated_bytes::Int
     ready::Int
 end
@@ -281,6 +355,16 @@ mutable struct MemorySample
     background_waiting::Int64
 end
 
+struct SaturationSample
+    kind::Symbol
+    requested_items::Int
+    materialized_items::Int
+    estimated_rows::Int64
+    load_ms::Float64
+    flush_ms::Float64
+    peak_pending_rows::Int64
+end
+
 function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
     return MemorySample(
         elapsed_s,
@@ -300,31 +384,149 @@ function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
     )
 end
 
-"""Measure one full-table aggregate for every processed payload schema."""
-function global_query_samples(ws)
-    return MB.Cache.with_reader(ws.cache.db) do connection
-        tables = collect(DBInterface.execute(connection, """
-            SELECT min(i.kind) AS kind, d.storage_id
-            FROM item_data d
-            JOIN items i ON i.id = d.item_id
-            WHERE d.stage = 'processed'
-            GROUP BY d.storage_id
-            ORDER BY kind
-        """))
-        results = NamedTuple[]
-        for row in tables
-            kind = Symbol(String(row.kind))
-            table = "\"dataframe_$(String(row.storage_id))\""
-            times = Float64[]
-            for _ in 1:6
-                timed = @timed only(DBInterface.execute(
-                    connection, "SELECT sum(c1), avg(c2) FROM $table"))
-                push!(times, timed.time * 1e3)
-            end
-            push!(results, (kind=kind, median_ms=median(times[2:end])))
-        end
-        return results
+function _records_of_kind(ws, kind::Symbol)::Vector{MB.ItemIndex.ItemRecord}
+    records = MB.ItemIndex.ItemRecord[
+        record for record in values(ws.index.items)
+        if record.kind === kind && haskey(ws.index.item_stats, record.id)
+    ]
+    sort!(records; by=record -> record.id)
+    return records
+end
+
+"""
+Force one large selected materialization so processed payloads and stats flush together.
+
+Background work normally writes only stats; selected work writes processed payloads too. This pass
+therefore exercises the processed-data writer under row pressure instead of relying on incidental GUI
+probes to pick enough large items.
+"""
+function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
+    records = _records_of_kind(ws, kind)
+    stress_items = ceil(Int, PROCESSED_STRESS_ROWS / KIND3_ROWS)
+    stress_items = min(length(records), stress_items)
+    stress_items > 0 || error("Cannot saturate processed writes: no completed $kind items exist")
+    selected = records[end-stress_items+1:end]
+    estimated_rows = Int64(stress_items) * Int64(KIND3_ROWS)
+    if REQUIRE_SATURATION && estimated_rows < CACHE_ROW_CEILING
+        error(
+            "Processed-writer stress is too small: selected $stress_items $kind item(s) " *
+            "for about $estimated_rows rows, below the cache row ceiling $CACHE_ROW_CEILING. " *
+            "Increase MB_BENCH_KIND3_FILES, MB_BENCH_KIND3_CYCLES, or MB_BENCH_KIND3_ROWS.",
+        )
     end
+
+    MB.select_items!(ws, selected)
+    load = @timed MB.Workspace.materialize_items(ws, selected)
+    peak_pending_rows = Int64(0)
+    flush_started = time()
+    while MB.Workspace.buffer_has_pending_writes(ws.buffer)
+        counts = MB.Workspace.buffer_pending_counts(ws.buffer)
+        peak_pending_rows = max(peak_pending_rows, Int64(counts.rows))
+        MB.Workspace.poll_workspace!(ws)
+        sleep(0.004)
+    end
+    flush_ms = (time() - flush_started) * 1e3
+    return SaturationSample(
+        kind,
+        stress_items,
+        length(load.value),
+        estimated_rows,
+        load.time * 1e3,
+        flush_ms,
+        peak_pending_rows,
+    )
+end
+
+_event_ms(event)::Float64 = event.duration_ns / 1e6
+_event_wait_ms(event)::Float64 = event.attributes.wait_ns / 1e6
+
+function _push_event_times!(
+    rows::Vector{NamedTuple},
+    metric::String,
+    events::Vector,
+    value::Function,
+)::Nothing
+    for event in events
+        ms = value(event)
+        isfinite(ms) || continue
+        push!(rows, (metric=metric, ms=Float64(max(ms, 0.0))))
+    end
+    return nothing
+end
+
+function _matching_events(report, category::Symbol, operation::Symbol)::Vector
+    return [event for event in report.events
+            if event.category === category && event.operation === operation]
+end
+
+function _child_duration_ms(report)::Dict{UInt64,Float64}
+    by_parent = Dict{UInt64,Float64}()
+    for event in report.events
+        event.parent_id == 0 && continue
+        by_parent[event.parent_id] = get(by_parent, event.parent_id, 0.0) + _event_ms(event)
+    end
+    return by_parent
+end
+
+function pipeline_event_time_rows(report)::Vector{NamedTuple}
+    child_ms = _child_duration_ms(report)
+    rows = NamedTuple[]
+    _push_event_times!(rows, "processing_queue_wait_ms",
+        _matching_events(report, :processing, :item), _event_wait_ms)
+    _push_event_times!(rows, "processing_engine_overhead_ms",
+        _matching_events(report, :processing, :item), event -> begin
+            _event_ms(event) - get(child_ms, event.id, 0.0)
+        end)
+    _push_event_times!(rows, "interpret_engine_overhead_ms",
+        _matching_events(report, :project, :interpret_source_item), event -> begin
+            _event_ms(event) - get(child_ms, event.id, 0.0)
+        end)
+    for (metric, category, operation) in (
+        ("cache_writer_ms", :cache, :writer),
+        ("cache_writer_wait_ms", :cache, :writer),
+        ("cache_transaction_ms", :cache, :transaction),
+        ("cache_begin_transaction_ms", :cache, :begin_transaction),
+        ("cache_commit_ms", :cache, :commit),
+        ("cache_persist_stats_ms", :cache, :persist_stats),
+    )
+        value = metric == "cache_writer_wait_ms" ? _event_wait_ms : _event_ms
+        _push_event_times!(rows, metric, _matching_events(report, category, operation), value)
+    end
+    return rows
+end
+
+function _write_pipeline_event_summary!(rows::Vector{NamedTuple}, outdir::String)::Nothing
+    groups = Dict{String,Vector{Float64}}()
+    for row in rows
+        push!(get!(() -> Float64[], groups, row.metric), row.ms)
+    end
+    open(joinpath(outdir, "pipeline_event_summary.csv"), "w") do io
+        println(io, "metric,count,p50_ms,p90_ms,p99_ms,max_ms")
+        for metric in sort!(collect(keys(groups)))
+            values = groups[metric]
+            @printf(io, "%s,%d,%.3f,%.3f,%.3f,%.3f\n",
+                metric,
+                length(values),
+                median(values),
+                quantile(values, 0.9),
+                quantile(values, 0.99),
+                maximum(values))
+        end
+    end
+    return nothing
+end
+
+function _write_pipeline_event_times!(report, outdir::String)::Vector{NamedTuple}
+    rows = pipeline_event_time_rows(report)
+    table = isempty(rows) ? DataFrame(metric=String[], ms=Float64[]) : DataFrame(rows)
+    CSV.write(joinpath(outdir, "pipeline_event_times.csv"), table)
+    _write_pipeline_event_summary!(rows, outdir)
+    return rows
+end
+
+function _write_pipeline_timeseries!(memory_samples::Vector{MemorySample}, outdir::String)::Nothing
+    CSV.write(joinpath(outdir, "pipeline_timeseries.csv"), DataFrame(memory_samples))
+    return nothing
 end
 
 function run_benchmark()
@@ -335,20 +537,26 @@ function run_benchmark()
     outdir = joinpath(@__DIR__, "results",
         "realistic-" * replace(string(round(Int, time())), r"\D" => ""))
     mkpath(outdir)
+    log_path = joinpath(outdir, "benchmark.log")
+    log_io = open(log_path, "w")
+    RUN_LOG[] = log_io
 
-    println("Generating synthetic data … (scale=$scale)")
-    gen_t = @elapsed (n_files, n_items) = generate_data(data_root)
-    data_bytes = sum(filesize(joinpath(r, f))
-                     for (r, _, fs) in walkdir(data_root) for f in fs)
-    @printf("  %d files, ~%d items, %.1f MB on disk, generated in %.1fs\n",
-        n_files, n_items, data_bytes / 1024^2, gen_t)
+    try
+        _print_run_header(log_path, outdir)
+
+        tee_println("Generating synthetic data ... (scale=$scale)")
+        gen_t = @elapsed (n_files, n_items) = generate_data(data_root)
+        data_bytes = sum(filesize(joinpath(r, f))
+                         for (r, _, fs) in walkdir(data_root) for f in fs)
+        tee_printf("  %d files, ~%d items, %.1f MB on disk, generated in %.1fs\n",
+            n_files, n_items, data_bytes / 1024^2, gen_t)
 
     project = build_project()
     kinds = (:kind1, :kind2, :kind3)
     plot_kinds = Dict(k => first(MB.registered_plot_kinds(project, k)) for k in kinds)
     samples = Sample[]
 
-    println("Building cache + browsing during the scan …")
+    tee_println("Building cache + browsing during the scan ...")
     profile_output = PROFILE_INTERNAL ? something(
         MB.Profiling.environment_path("MB_PROFILE_OUTPUT"),
         joinpath(outdir, "profile.json"),
@@ -381,8 +589,8 @@ function run_benchmark()
     processing_seconds = 0.0
     analysis_started = nothing
     analysis_seconds = 0.0
-    global_queries = NamedTuple[]
     build_stats = nothing
+    saturation_stats = nothing
     profile_report = nothing
     try
         last_probe = 0.0
@@ -421,13 +629,13 @@ function run_benchmark()
                 ws.analysis.state in (:done, :error, :canceled) &&
                 (analysis_seconds = now - analysis_started)
             # Probe responsiveness ~6×/s, rotating across kinds, once items exist. Each probe is the
-            # full select → load → plot action a user performs while the build is still running.
+            # full select → load → plot probe a user performs while the build is still running.
             if now - last_probe >= 0.16
                 last_probe = now
                 kind = kinds[kind_cursor]; kind_cursor = mod1(kind_cursor + 1, length(kinds))
                 probe = timed_plot!(ws, plot_kinds, kind, 3)
                 probe === nothing || push!(samples, Sample(now, :during_build, kind, probe.n,
-                    probe.load_ms, probe.render_ms, probe.total_ms, probe.bytes, probe.ready))
+                    probe.plot_ms, probe.bytes, probe.ready))
             end
             if build_idle(ws)
                 build_seconds = now
@@ -442,9 +650,12 @@ function run_benchmark()
         rss_end_bytes = final_memory.rss_bytes
         push!(memory_samples, MemorySample(time() - t_start, final_memory))
 
-        # Steady-state sweep: many random plot actions per kind on the finished cache.
+        tee_println("Saturating processed-payload writer ...")
+        saturation_stats = saturate_processed_writes!(ws, :kind3)
+
+        # Steady-state sweep: random plot probes per kind on the finished cache.
         rng = MersenneTwister(1)
-        for kind in kinds, _ in 1:40
+        for kind in kinds, _ in 1:AFTER_BUILD_PLOTS
             ids = [id for id in keys(ws.index.item_stats)
                    if (r = get(ws.index.items, id, nothing); r !== nothing && r.kind === kind)]
             isempty(ids) && continue
@@ -452,9 +663,8 @@ function run_benchmark()
             records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in rand(rng, ids, k)]
             probe = timed_plot!(ws, plot_kinds, kind, k; records=records)
             probe === nothing || push!(samples, Sample(time() - t_start, :after_build, kind, probe.n,
-                probe.load_ms, probe.render_ms, probe.total_ms, probe.bytes, probe.ready))
+                probe.plot_ms, probe.bytes, probe.ready))
         end
-        global_queries = global_query_samples(ws)
         completed, queued = lock(ws.processing.lock) do
             (ws.processing.completed, ws.processing.total)
         end
@@ -492,12 +702,17 @@ function run_benchmark()
     # any re-processing the post-scan readiness probe triggers).
     reopen_stats = measure_reopen(project, data_root, plot_kinds, kinds)
 
-    report(samples, global_queries, build_stats, reopen_stats, profile_report, outdir,
+    report(samples, build_stats, saturation_stats, reopen_stats, profile_report, outdir,
         n_files, n_items, data_bytes, build_seconds)
 
     rm(tmp; force=true, recursive=true)   # synthetic data + cache gone; results kept
-    println("\nResults kept in: $outdir")
+    tee_println("\nResults kept in: $outdir")
+    tee_println("Log kept in: $log_path")
     return outdir
+    finally
+        RUN_LOG[] = nothing
+        close(log_io)
+    end
 end
 
 # --------------------------------------------------------------------------------------------------
@@ -530,7 +745,7 @@ function _reopen_once(project, data_root, plot_kinds, kinds)
         for kind in kinds
             probe = timed_plot!(ws, plot_kinds, kind, 1)
             probe === nothing || push!(first_plots,
-                (kind=kind, load_ms=probe.load_ms, total_ms=probe.total_ms))
+                (kind=kind, plot_ms=probe.plot_ms))
         end
         return (first_view_s=first_view_s, idle_s=idle_s, alloc_bytes=alloc_bytes,
             items=length(ws.index.items), unchanged=ws.scan.state === :unchanged,
@@ -560,14 +775,15 @@ end
 
 _stat(v, f) = isempty(v) ? NaN : f(v)
 
-function report(samples, global_queries, stats, reopen, profile_report, outdir,
+function report(samples, stats, saturation, reopen, profile_report, outdir,
     n_files, n_items, data_bytes, build_seconds)
+    saturation === nothing && error("Missing processed-writer saturation sample")
     # responsiveness CSV
     open(joinpath(outdir, "responsiveness.csv"), "w") do io
-        println(io, "elapsed_s,phase,kind,n_items,load_ms,render_ms,total_ms,allocated_bytes,ready_items")
+        println(io, "elapsed_s,phase,kind,n_items,plot_ms,allocated_bytes,ready_items")
         for s in samples
-            @printf(io, "%.3f,%s,%s,%d,%.3f,%.3f,%.3f,%d,%d\n",
-                s.elapsed_s, s.phase, s.kind, s.n, s.load_ms, s.render_ms, s.total_ms,
+            @printf(io, "%.3f,%s,%s,%d,%.3f,%d,%d\n",
+                s.elapsed_s, s.phase, s.kind, s.n, s.plot_ms,
                 s.allocated_bytes, s.ready)
         end
     end
@@ -595,20 +811,26 @@ function report(samples, global_queries, stats, reopen, profile_report, outdir,
         end
     end
 
-    open(joinpath(outdir, "global_queries.csv"), "w") do io
-        println(io, "kind,median_ms")
-        for sample in global_queries
-            @printf(io, "%s,%.3f\n", sample.kind, sample.median_ms)
-        end
+    open(joinpath(outdir, "saturation.csv"), "w") do io
+        println(io, "kind,requested_items,materialized_items,estimated_rows,load_ms,flush_ms,peak_pending_rows,row_ceiling")
+        @printf(io, "%s,%d,%d,%d,%.3f,%.3f,%d,%d\n",
+            saturation.kind,
+            saturation.requested_items,
+            saturation.materialized_items,
+            saturation.estimated_rows,
+            saturation.load_ms,
+            saturation.flush_ms,
+            saturation.peak_pending_rows,
+            CACHE_ROW_CEILING)
     end
 
     open(joinpath(outdir, "reopen.csv"), "w") do io
         println(io, "first_view_s,idle_s,alloc_mib,items,unchanged")
         @printf(io, "%.3f,%.3f,%.1f,%d,%s\n", reopen.first_view_s, reopen.idle_s,
             reopen.alloc_bytes / 1024^2, reopen.items, reopen.unchanged)
-        println(io, "kind,first_load_ms,first_total_ms")
+        println(io, "kind,first_plot_ms")
         for p in reopen.first_plots
-            @printf(io, "%s,%.3f,%.3f\n", p.kind, p.load_ms, p.total_ms)
+            @printf(io, "%s,%.3f\n", p.kind, p.plot_ms)
         end
     end
 
@@ -639,24 +861,80 @@ function report(samples, global_queries, stats, reopen, profile_report, outdir,
     write_calls = stats.interpreted_writes + stats.processed_writes + stats.stats_writes
     write_ns = stats.interpreted_write_ns + stats.processed_write_ns + stats.stats_write_ns
     mean_write_ms = write_calls == 0 ? 0.0 : write_ns / write_calls / 1e6
-    during = [s.total_ms for s in samples if s.phase === :during_build]
-    after = [s.total_ms for s in samples if s.phase === :after_build]
+    if REQUIRE_SATURATION
+        stats.interpreted_writes > 0 || error("Benchmark did not exercise interpreted writes")
+        stats.processed_writes > 0 || error("Benchmark did not exercise processed writes")
+        stats.stats_writes > 0 || error("Benchmark did not exercise stats writes")
+        saturation.estimated_rows >= CACHE_ROW_CEILING || error(
+            "Processed-writer saturation selected only $(saturation.estimated_rows) rows, " *
+            "below the cache row ceiling $CACHE_ROW_CEILING",
+        )
+    end
+    during = [s.plot_ms for s in samples if s.phase === :during_build]
+    after = [s.plot_ms for s in samples if s.phase === :after_build]
     read_stat(values, statistic) = isempty(values) ? NaN : statistic(values)
+    source_files = max(n_files, 1)
+    indexed_items = max(stats.processed_items, 1)
+    payload_rows = max(ESTIMATED_PAYLOAD_ROWS, 1)
+    rows_per_file = ESTIMATED_PAYLOAD_ROWS / source_files
+    rows_per_item = ESTIMATED_PAYLOAD_ROWS / max(n_items, 1)
+    build_ms_per_file = build_seconds * 1e3 / source_files
+    build_ms_per_item = build_seconds * 1e3 / indexed_items
+    scan_ms_per_file = stats.scan_seconds * 1e3 / source_files
+    processing_ms_per_item = stats.processing_seconds * 1e3 / indexed_items
+    write_ms_per_file = write_ns / 1e6 / source_files
+    write_ms_per_item = write_ns / 1e6 / indexed_items
+    write_ns_per_payload_row = write_ns / payload_rows
+    writer_busy_ns_per_payload_row = stats.writer_busy_ns / payload_rows
+    peak_rss_kib_per_item = stats.rss_peak_bytes / 1024 / indexed_items
+    peak_gc_live_kib_per_item = maximum(
+        (sample.gc_live_bytes for sample in stats.memory_samples);
+        init=0,
+    ) / 1024 / indexed_items
     open(joinpath(outdir, "scorecard.csv"), "w") do io
-        println(io, "build_s,scan_s,scan_per_s,processing_s,items_per_s,analysis_s," *
-            "end_to_end_items_per_s,mean_write_ms,writer_busy_s,writer_wait_s," *
-            "during_median_ms,during_p90_ms,during_p99_ms,during_max_ms," *
-            "after_median_ms,after_p90_ms,after_p99_ms,after_max_ms," *
-            "rss_start_mib,rss_peak_mib,rss_end_mib,profile_events,profile_dropped")
+        println(io, "source_files,items,estimated_payload_rows,data_mib," *
+            "rows_per_file,rows_per_item,build_s,scan_s,processing_s,analysis_s," *
+            "scan_files_per_s,processing_items_per_s,build_items_per_s," *
+            "build_ms_per_file,build_ms_per_item,scan_ms_per_file,processing_ms_per_item," *
+            "write_ms_per_call,write_ms_per_file,write_ms_per_item,write_ns_per_payload_row," *
+            "writer_busy_s,writer_wait_s,writer_busy_ns_per_payload_row," *
+            "saturation_items,saturation_rows,saturation_load_ms,saturation_flush_ms," *
+            "saturation_peak_pending_rows," *
+            "during_plot_median_ms,during_plot_p90_ms,during_plot_p99_ms,during_plot_max_ms," *
+            "after_plot_median_ms,after_plot_p90_ms,after_plot_p99_ms,after_plot_max_ms," *
+            "rss_start_mib,rss_peak_mib,rss_end_mib,peak_rss_kib_per_item," *
+            "peak_gc_live_kib_per_item,profile_events,profile_dropped")
         event_count = profile_report isa MB.Profiling.ProfileReport ?
             length(profile_report.events) : 0
         dropped = profile_report isa MB.Profiling.ProfileReport ?
             profile_report.dropped_events : 0
-        @printf(io, "%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%d,%d\n",
-            build_seconds, stats.scan_seconds, n_files / stats.scan_seconds,
-            stats.processing_seconds, stats.processed_items / stats.processing_seconds,
-            stats.analysis_seconds, stats.processed_items / build_seconds, mean_write_ms,
-            stats.writer_busy_ns / 1e9, stats.writer_wait_ns / 1e9,
+        @printf(io, "%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.3f,%.3f,%d,%d\n",
+            n_files,
+            stats.processed_items,
+            ESTIMATED_PAYLOAD_ROWS,
+            data_bytes / 1024^2,
+            rows_per_file,
+            rows_per_item,
+            build_seconds,
+            stats.scan_seconds,
+            stats.processing_seconds,
+            stats.analysis_seconds,
+            n_files / stats.scan_seconds,
+            stats.processed_items / stats.processing_seconds,
+            stats.processed_items / build_seconds,
+            build_ms_per_file,
+            build_ms_per_item,
+            scan_ms_per_file,
+            processing_ms_per_item,
+            mean_write_ms,
+            write_ms_per_file,
+            write_ms_per_item,
+            write_ns_per_payload_row,
+            stats.writer_busy_ns / 1e9,
+            stats.writer_wait_ns / 1e9,
+            writer_busy_ns_per_payload_row,
+            saturation.requested_items, saturation.estimated_rows, saturation.load_ms,
+            saturation.flush_ms, saturation.peak_pending_rows,
             read_stat(during, median), read_stat(during, values -> quantile(values, 0.9)),
             read_stat(during, values -> quantile(values, 0.99)), read_stat(during, maximum),
             read_stat(after, median), read_stat(after, values -> quantile(values, 0.9)),
@@ -664,60 +942,82 @@ function report(samples, global_queries, stats, reopen, profile_report, outdir,
             stats.rss_start_bytes / 1024^2,
             stats.rss_peak_bytes / 1024^2,
             stats.rss_end_bytes / 1024^2,
+            peak_rss_kib_per_item,
+            peak_gc_live_kib_per_item,
             event_count, dropped)
     end
 
-    println("\n==================== REALISTIC BROWSE BENCHMARK ====================")
-    @printf("dataset:  %d files · ~%d items · %.1f MB\n", n_files, n_items, data_bytes / 1024^2)
-    @printf("build:    %.1f s wall (scan + processing + collection analysis)\n", build_seconds)
+    tee_println("\n==================== REALISTIC BROWSE BENCHMARK ====================")
+    tee_printf("dataset:  %d files · ~%d items · %d estimated rows · %.1f MB\n",
+        n_files, n_items, ESTIMATED_PAYLOAD_ROWS, data_bytes / 1024^2)
+    tee_printf("build:    %.1f s wall (scan + processing + collection analysis)\n", build_seconds)
     n_during = count(s -> s.phase === :during_build, samples)
-    @printf("probes:   %d during build · %d after\n", n_during,
+    tee_printf("plot probes: %d during build · %d after (secondary CSV only)\n", n_during,
         count(s -> s.phase === :after_build, samples))
 
-    println("\nThroughput:")
-    @printf("  scan                %8.1f source items/s  (%6.1f s)\n",
+    tee_println("\nThroughput:")
+    tee_printf("  scan                %8.1f source items/s  (%6.1f s)\n",
         n_files / stats.scan_seconds, stats.scan_seconds)
-    @printf("  item processing     %8.1f items/s         (%6.1f s, %d unique items)\n",
+    tee_printf("  item processing     %8.1f items/s         (%6.1f s, %d unique items)\n",
         stats.processed_items / stats.processing_seconds,
         stats.processing_seconds, stats.processed_items)
-    stats.completed_jobs == stats.processed_items || @printf(
+    stats.completed_jobs == stats.processed_items || tee_printf(
         "  duplicate queue work %8d cache-hit jobs\n",
         stats.completed_jobs - stats.processed_items,
     )
-    @printf("  collection analysis %8.1f nodes/s         (%6.1f s, %d nodes)\n",
+    tee_printf("  collection analysis %8.1f nodes/s         (%6.1f s, %d nodes)\n",
         stats.collection_nodes / stats.analysis_seconds,
         stats.analysis_seconds, stats.collection_nodes)
-    @printf("  end to end          %8.1f items/s\n", stats.processed_items / build_seconds)
+    tee_printf("  build average       %8.1f items/s\n", stats.processed_items / build_seconds)
 
-    println("\nWrites:")
-    @printf("  interpreted %6d calls  mean %7.2f ms\n", stats.interpreted_writes,
+    tee_println("\nNormalized averages:")
+    tee_printf("  payload shape       %8.0f rows/file  %8.0f rows/item\n",
+        rows_per_file, rows_per_item)
+    tee_printf("  build               %8.2f ms/file    %8.2f ms/item\n",
+        build_ms_per_file, build_ms_per_item)
+    tee_printf("  scan/process        %8.2f ms/file    %8.2f ms/item\n",
+        scan_ms_per_file, processing_ms_per_item)
+    tee_printf("  writes              %8.2f ms/file    %8.2f ms/item  %8.1f ns/row\n",
+        write_ms_per_file, write_ms_per_item, write_ns_per_payload_row)
+    tee_printf("  memory              %8.1f KiB RSS/item  %8.1f KiB GC-live/item\n",
+        peak_rss_kib_per_item, peak_gc_live_kib_per_item)
+
+    tee_println("\nWrites:")
+    tee_printf("  interpreted %6d calls  mean %7.2f ms\n", stats.interpreted_writes,
         stats.interpreted_write_ns / max(stats.interpreted_writes, 1) / 1e6)
-    @printf("  processed   %6d calls  mean %7.2f ms  mean batch %5.1f items\n",
+    tee_printf("  processed   %6d calls  mean %7.2f ms  mean batch %5.1f items\n",
         stats.processed_writes,
         stats.processed_write_ns / max(stats.processed_writes, 1) / 1e6,
         stats.processed_items / max(stats.processed_writes, 1))
-    @printf("  stats       %6d calls  mean %7.2f ms\n", stats.stats_writes,
+    tee_printf("  stats       %6d calls  mean %7.2f ms\n", stats.stats_writes,
         stats.stats_write_ns / max(stats.stats_writes, 1) / 1e6)
-    @printf("  overall mean %7.2f ms  writer busy %.1f s  queued wait %.1f s\n",
+    tee_printf("  combined mean %7.2f ms  writer busy %.1f s  queued wait %.1f s\n",
         mean_write_ms, stats.writer_busy_ns / 1e9, stats.writer_wait_ns / 1e9)
 
-    println("\nProcess memory:")
-    @printf("  RSS start %.1f MiB  peak %.1f MiB  end %.1f MiB\n",
+    tee_println("\nProcessed-writer saturation:")
+    tee_printf("  selected %d %s items  estimated rows %d  row ceiling %d\n",
+        saturation.requested_items, saturation.kind, saturation.estimated_rows,
+        CACHE_ROW_CEILING)
+    tee_printf("  materialize %.1f ms  flush %.1f ms  peak pending rows %d\n",
+        saturation.load_ms, saturation.flush_ms, saturation.peak_pending_rows)
+
+    tee_println("\nProcess memory:")
+    tee_printf("  RSS start %.1f MiB  peak %.1f MiB  end %.1f MiB\n",
         stats.rss_start_bytes / 1024^2,
         stats.rss_peak_bytes / 1024^2,
         stats.rss_end_bytes / 1024^2)
     if !isempty(stats.memory_samples)
         peak_sample = stats.memory_samples[argmax(
             [sample.rss_bytes for sample in stats.memory_samples])]
-        @printf("  peak sample: GC live %.1f MiB  RSS-GC-live %.1f MiB\n",
+        tee_printf("  peak sample: GC live %.1f MiB  RSS-GC-live %.1f MiB\n",
             peak_sample.gc_live_bytes / 1024^2,
             peak_sample.rss_minus_gc_live_bytes / 1024^2)
-        @printf("  index counts: items %d  stats %d  collections %d  errors %d\n",
+        tee_printf("  index counts: items %d  stats %d  collections %d  errors %d\n",
             peak_sample.index_items,
             peak_sample.item_stats,
             peak_sample.index_collections,
             peak_sample.analysis_errors)
-        @printf("  queue counts: jobs %d  pending writes %d (%d rows)  selected %d  background waiting %d\n",
+        tee_printf("  queue counts: jobs %d  pending writes %d (%d rows)  selected %d  background waiting %d\n",
             peak_sample.processing_jobs,
             peak_sample.pending_writes,
             peak_sample.pending_write_rows,
@@ -725,112 +1025,98 @@ function report(samples, global_queries, stats, reopen, profile_report, outdir,
             peak_sample.background_waiting)
     end
 
-    println("\nAggregate interactive plot latency (load + render), ms:")
-    @printf("  %-13s %8s %8s %8s %8s %6s\n",
-        "phase", "median", "p90", "p99", "max", "n")
-    for phase in (:during_build, :after_build)
-        values = [s.total_ms for s in samples if s.phase === phase]
-        isempty(values) && continue
-        @printf("  %-13s %8.1f %8.1f %8.1f %8.1f %6d\n",
-            phase, median(values), quantile(values, 0.9), quantile(values, 0.99),
-            maximum(values), length(values))
-    end
-
-    println("\nLoad vs render split (median ms):")
-    @printf("  %-13s %-8s %8s %8s %8s %6s\n", "phase", "kind", "load", "render", "total", "n")
-    for phase in (:during_build, :after_build), kind in (:kind1, :kind2, :kind3)
-        rows = [s for s in samples if s.phase === phase && s.kind === kind]
-        isempty(rows) && continue
-        @printf("  %-13s %-8s %8.1f %8.1f %8.1f %6d\n",
-            phase, kind, median([s.load_ms for s in rows]), median([s.render_ms for s in rows]),
-            median([s.total_ms for s in rows]), length(rows))
-    end
-
-    println("\nPlot latency by data shape (total ms):")
-    @printf("  %-13s %-8s %8s %8s %8s %8s %6s\n",
-        "phase", "kind", "median", "p90", "p99", "max", "n")
-    for phase in (:during_build, :after_build), kind in (:kind1, :kind2, :kind3)
-        v = [s.total_ms for s in samples if s.phase === phase && s.kind === kind]
-        isempty(v) && continue
-        @printf("  %-13s %-8s %8.1f %8.1f %8.1f %8.1f %6d\n",
-            phase, kind, median(v), quantile(v, 0.9), quantile(v, 0.99),
-            maximum(v), length(v))
-    end
-
-    println("\nAllocated per plot action, MiB:")
-    for phase in (:during_build, :after_build), kind in (:kind1, :kind2, :kind3)
-        bytes = [s.allocated_bytes for s in samples if s.phase === phase && s.kind === kind]
-        isempty(bytes) || @printf("  %-13s %-8s median %6.2f  p90 %6.2f\n",
-            phase, kind, median(bytes) / 1024^2, quantile(bytes, 0.9) / 1024^2)
-    end
-
-    println("\nGlobal aggregate latency, ms:")
-    for sample in global_queries
-        @printf("  %-8s %8.1f\n", sample.kind, sample.median_ms)
-    end
-
-    println("\nWarm reopen (same cache, every fingerprint unchanged):")
-    @printf("  first cached view %.0f ms  ·  idle %.2f s  ·  allocated %.1f MiB  ·  %d items%s\n",
+    tee_println("\nWarm reopen (same cache, every fingerprint unchanged):")
+    tee_printf("  first cached view %.0f ms  ·  idle %.2f s  ·  allocated %.1f MiB  ·  %d items%s\n",
         reopen.first_view_s * 1e3, reopen.idle_s, reopen.alloc_bytes / 1024^2, reopen.items,
         reopen.unchanged ? "  (reused)" : "  (re-scanned!)")
     for p in reopen.first_plots
-        @printf("  first %-6s plot  load %6.1f ms  total %6.1f ms\n", p.kind, p.load_ms, p.total_ms)
+        tee_printf("  first %-6s plot  %6.1f ms\n", p.kind, p.plot_ms)
     end
 
     if profile_report isa MB.Profiling.ProfileReport
-        @printf("\nStructured profile: %d events, %d counters, %d dropped, %d CPU samples\n",
+        tee_printf("\nStructured profile: %d events, %d counters, %d dropped, %d CPU samples\n",
             length(profile_report.events), length(profile_report.counters),
             profile_report.dropped_events,
             profile_report.cpu === nothing ? 0 : profile_report.cpu.total_samples)
     end
-
-    allduring = [s.total_ms for s in samples if s.phase === :during_build]
-    if !isempty(allduring)
-        slow = count(>(200), allduring)
-        @printf("\n  during-build plot actions over 200 ms: %d / %d (%.1f%%)  ·  worst %.0f ms\n",
-            slow, length(allduring), 100 * slow / length(allduring), maximum(allduring))
-    end
-
-    _maybe_plot(samples, outdir)
+    _maybe_plot_pipeline(profile_report, stats.memory_samples, outdir)
     return nothing
 end
 
-"""Render a PNG if CairoMakie is available in the bench env; otherwise point at the CSVs."""
-function _maybe_plot(samples, outdir)
-    if !HAS_CAIRO
-        println("\n(No CairoMakie in the bench env — skipping PNG.)")
+function _metric_values(rows::Vector{NamedTuple}, metric::String)::Vector{Float64}
+    return [row.ms for row in rows if row.metric == metric]
+end
+
+function _plot_time_hist!(CM, fig, position, rows, metric::String, title::String)::Nothing
+    values = _metric_values(rows, metric)
+    ax = CM.Axis(fig[position...]; xlabel="milliseconds", ylabel="events",
+        title="$title (n=$(length(values)))")
+    isempty(values) || CM.hist!(ax, values; bins=min(80, max(10, ceil(Int, sqrt(length(values))))))
+    return nothing
+end
+
+"""Render pipeline timing plots and write the plotted timing tables."""
+function _maybe_plot_pipeline(profile_report, memory_samples::Vector{MemorySample}, outdir::String)::Nothing
+    if !(profile_report isa MB.Profiling.ProfileReport)
+        tee_println("\nNo structured profile captured; skipping pipeline event plots.")
+        _write_pipeline_timeseries!(memory_samples, outdir)
         return nothing
     end
+    event_rows = _write_pipeline_event_times!(profile_report, outdir)
+    _write_pipeline_timeseries!(memory_samples, outdir)
+
+    tee_println("\nPipeline event datapoints:")
+    if isempty(event_rows)
+        tee_println("  no event timing rows captured")
+    else
+        summary = combine(groupby(DataFrame(event_rows), :metric), nrow => :count)
+        sort!(summary, :metric)
+        for row in eachrow(summary)
+            tee_printf("  %-34s %6d\n", row.metric, row.count)
+        end
+    end
+
+    if !HAS_CAIRO
+        tee_println("\n(No CairoMakie in the bench env; wrote pipeline CSVs only.)")
+        return nothing
+    end
+
     CM = CairoMakie
-    fig = CM.Figure(size=(1100, 750), fontsize=14)
-    CM.Label(fig[0, 1:2], "Browse-while-build responsiveness", fontsize=19, font=:bold)
-    colors = Dict(:kind1 => :steelblue, :kind2 => :darkorange, :kind3 => :crimson)
+    fig = CM.Figure(size=(1500, 1200), fontsize=13)
+    CM.Label(fig[0, 1:3], "Data Pipeline Timing", fontsize=20, font=:bold)
+    _plot_time_hist!(CM, fig, (1, 1), event_rows,
+        "processing_queue_wait_ms", "Processing queue wait")
+    _plot_time_hist!(CM, fig, (1, 2), event_rows,
+        "processing_engine_overhead_ms", "Processing engine overhead")
+    _plot_time_hist!(CM, fig, (1, 3), event_rows,
+        "interpret_engine_overhead_ms", "Interpretation engine overhead")
+    _plot_time_hist!(CM, fig, (2, 1), event_rows,
+        "cache_writer_ms", "Cache writer")
+    _plot_time_hist!(CM, fig, (2, 2), event_rows,
+        "cache_write_dataframe_ms", "DataFrame cache writes")
+    _plot_time_hist!(CM, fig, (2, 3), event_rows,
+        "cache_read_item_data_ms", "Cache item reads")
 
-    ax1 = CM.Axis(fig[1, 1:2]; xlabel="build elapsed (s)", ylabel="plot latency (ms)",
-        title="Interactive plot latency over the build (each point = one select+load+render)")
-    for kind in (:kind1, :kind2, :kind3)
-        pts = [(s.elapsed_s, s.total_ms) for s in samples
-               if s.phase === :during_build && s.kind === kind]
-        isempty(pts) && continue
-        CM.scatter!(ax1, first.(pts), last.(pts); color=colors[kind], markersize=7, label=string(kind))
+    elapsed = [sample.elapsed_s for sample in memory_samples]
+    pending_rows = [sample.pending_write_rows for sample in memory_samples]
+    rss_mib = [sample.rss_bytes / 1024^2 for sample in memory_samples]
+    gc_live_mib = [sample.gc_live_bytes / 1024^2 for sample in memory_samples]
+
+    ax_rows = CM.Axis(fig[3, 1:3]; xlabel="elapsed seconds", ylabel="rows",
+        title="Pending write rows over time")
+    isempty(elapsed) || CM.lines!(ax_rows, elapsed, pending_rows)
+
+    ax_mem = CM.Axis(fig[4, 1:3]; xlabel="elapsed seconds", ylabel="MiB",
+        title="RSS and GC-live memory over time")
+    if !isempty(elapsed)
+        CM.lines!(ax_mem, elapsed, rss_mib; label="RSS")
+        CM.lines!(ax_mem, elapsed, gc_live_mib; label="GC live")
+        CM.axislegend(ax_mem; position=:lt)
     end
-    CM.axislegend(ax1; position=:lt)
 
-    ax2 = CM.Axis(fig[2, 1]; xlabel="plot latency (ms)", ylabel="count",
-        title="During build")
-    ax3 = CM.Axis(fig[2, 2]; xlabel="plot latency (ms)", ylabel="count",
-        title="After build")
-    for kind in (:kind1, :kind2, :kind3)
-        d = [s.total_ms for s in samples if s.phase === :during_build && s.kind === kind]
-        a = [s.total_ms for s in samples if s.phase === :after_build && s.kind === kind]
-        isempty(d) || CM.hist!(ax2, d; bins=20, color=(colors[kind], 0.5), label=string(kind))
-        isempty(a) || CM.hist!(ax3, a; bins=20, color=(colors[kind], 0.5), label=string(kind))
-    end
-    CM.axislegend(ax2; position=:rt)
-
-    path = joinpath(outdir, "responsiveness.png")
+    path = joinpath(outdir, "pipeline.png")
     CM.save(path, fig)
-    println("\nplot: $path")
+    tee_println("\npipeline plot: $path")
     return nothing
 end
 
