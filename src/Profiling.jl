@@ -69,8 +69,6 @@ struct ProfileCounter
     processing_done::Int64
     processing_total::Int64
     queue_depth::Int64
-    writer_busy_ns::Int64
-    writer_wait_ns::Int64
 end
 
 """One source line in a completed Julia CPU sampling profile."""
@@ -502,8 +500,6 @@ function _capture_counter(session::ProfileSession, snapshot::Function)::Nothing
         Int64(values.processing_done),
         Int64(values.processing_total),
         Int64(values.queue_depth),
-        Int64(values.writer_busy_ns),
-        Int64(values.writer_wait_ns),
     )
     lock(session.counter_lock) do
         push!(session.counters, sample)
@@ -735,8 +731,6 @@ function _perfetto_trace(report::ProfileReport)::Dict{String,Any}
                 "processing_done" => counter.processing_done,
                 "processing_total" => counter.processing_total,
                 "queue_depth" => counter.queue_depth,
-                "writer_busy_ns" => counter.writer_busy_ns,
-                "writer_wait_ns" => counter.writer_wait_ns,
             ),
         ))
     end

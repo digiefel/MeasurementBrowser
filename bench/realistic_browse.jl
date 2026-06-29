@@ -481,16 +481,6 @@ function pipeline_event_time_rows(report)::Vector{NamedTuple}
         _matching_events(report, :project, :interpret_source_item), event -> begin
             _event_ms(event) - get(child_ms, event.id, 0.0)
         end)
-    for (metric, category, operation) in (
-        ("cache_writer_ms", :cache, :writer),
-        ("cache_writer_wait_ms", :cache, :writer),
-        ("cache_transaction_ms", :cache, :transaction),
-        ("cache_begin_transaction_ms", :cache, :begin_transaction),
-        ("cache_commit_ms", :cache, :commit),
-    )
-        value = metric == "cache_writer_wait_ms" ? _event_wait_ms : _event_ms
-        _push_event_times!(rows, metric, _matching_events(report, category, operation), value)
-    end
     return rows
 end
 
@@ -668,7 +658,6 @@ function run_benchmark()
             (ws.processing.completed, ws.processing.total)
         end
         metrics = ws.metrics
-        db = ws.cache.db
         build_stats = (
             scan_seconds,
             processing_seconds,
@@ -683,8 +672,6 @@ function run_benchmark()
             processed_writes=metrics.processed_writes[],
             stats_write_ns=metrics.stats_write_ns[],
             stats_writes=metrics.stats_writes[],
-            writer_busy_ns=db.writer_busy_ns[],
-            writer_wait_ns=db.writer_wait_ns[],
             rss_start_bytes,
             rss_peak_bytes,
             rss_end_bytes,
@@ -884,7 +871,6 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
     write_ms_per_file = write_ns / 1e6 / source_files
     write_ms_per_item = write_ns / 1e6 / indexed_items
     write_ns_per_payload_row = write_ns / payload_rows
-    writer_busy_ns_per_payload_row = stats.writer_busy_ns / payload_rows
     peak_rss_kib_per_item = stats.rss_peak_bytes / 1024 / indexed_items
     peak_gc_live_kib_per_item = maximum(
         (sample.gc_live_bytes for sample in stats.memory_samples);
@@ -896,7 +882,6 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
             "scan_files_per_s,processing_items_per_s,build_items_per_s," *
             "build_ms_per_file,build_ms_per_item,scan_ms_per_file,processing_ms_per_item," *
             "write_ms_per_call,write_ms_per_file,write_ms_per_item,write_ns_per_payload_row," *
-            "writer_busy_s,writer_wait_s,writer_busy_ns_per_payload_row," *
             "saturation_items,saturation_rows,saturation_load_ms,saturation_flush_ms," *
             "saturation_peak_pending_rows," *
             "during_plot_median_ms,during_plot_p90_ms,during_plot_p99_ms,during_plot_max_ms," *
@@ -907,7 +892,7 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
             length(profile_report.events) : 0
         dropped = profile_report isa MB.Profiling.ProfileReport ?
             profile_report.dropped_events : 0
-        @printf(io, "%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.3f,%.3f,%d,%d\n",
+        @printf(io, "%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.3f,%.3f,%d,%d\n",
             n_files,
             stats.processed_items,
             ESTIMATED_PAYLOAD_ROWS,
@@ -929,9 +914,6 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
             write_ms_per_file,
             write_ms_per_item,
             write_ns_per_payload_row,
-            stats.writer_busy_ns / 1e9,
-            stats.writer_wait_ns / 1e9,
-            writer_busy_ns_per_payload_row,
             saturation.requested_items, saturation.estimated_rows, saturation.load_ms,
             saturation.flush_ms, saturation.peak_pending_rows,
             read_stat(during, median), read_stat(during, values -> quantile(values, 0.9)),
@@ -990,8 +972,7 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
         stats.processed_items / max(stats.processed_writes, 1))
     tee_printf("  stats       %6d calls  mean %7.2f ms\n", stats.stats_writes,
         stats.stats_write_ns / max(stats.stats_writes, 1) / 1e6)
-    tee_printf("  combined mean %7.2f ms  writer busy %.1f s  queued wait %.1f s\n",
-        mean_write_ms, stats.writer_busy_ns / 1e9, stats.writer_wait_ns / 1e9)
+    tee_printf("  combined mean %7.2f ms\n", mean_write_ms)
 
     tee_println("\nProcessed-writer saturation:")
     tee_printf("  selected %d %s items  estimated rows %d  row ceiling %d\n",

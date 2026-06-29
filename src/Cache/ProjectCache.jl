@@ -135,21 +135,18 @@ end
 """
 One open DuckDB cache file shared by all of a workspace's cache work.
 
-A single [`DuckDB.DB`](@ref) holds the file for the workspace's lifetime. One locked writer keeps
-surrogate-key order aligned with physical append order. Reads use short-lived connections so
-independent interactive and background reads can run concurrently against committed snapshots.
+A single [`DuckDB.DB`](@ref) holds the file for the workspace's lifetime. The [`CacheBuffer`](@ref) is
+the single write/read door: per-table streaming goes through its per-table buffers, and the rare
+bulk/DDL mutations go through its `with_maintenance` connection. There is no second long-lived writer.
+Reads use short-lived connections so independent interactive and background reads can run concurrently
+against committed snapshots.
 """
 mutable struct CacheDB
     identity::ProjectCacheIdentity
     db::DuckDB.DB
     # The per-table buffer is the single write/read door; ProjectCache owns and drives it.
     buffer::CacheBuffer
-    writer::DuckDB.Connection
-    writer_lock::ReentrantLock
     profiler::Profiling.ProfileSession
-    # Time threads spend waiting for a free writer vs. holding one doing work.
-    writer_wait_ns::Base.Threads.Atomic{Int64}
-    writer_busy_ns::Base.Threads.Atomic{Int64}
 end
 
 """
@@ -209,9 +206,7 @@ function _connect_cache_db(
            only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
             throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
         end
-        return CacheDB(identity, db, CacheBuffer(db, metrics), DBInterface.connect(db),
-            ReentrantLock(), profiler,
-            Base.Threads.Atomic{Int64}(0), Base.Threads.Atomic{Int64}(0))
+        return CacheDB(identity, db, CacheBuffer(db, metrics), profiler)
     catch
         DBInterface.close!(db)
         rethrow()
@@ -334,9 +329,16 @@ function retain_source_items!(cache::CacheDB, present_ids)::Nothing
         ]
     end
     isempty(removed) && return nothing
-    with_writer_transaction(cache) do connection
-        for id in removed
-            _delete_source_item_rows!(connection, id; drop_item_data=true)
+    with_maintenance(cache.buffer) do connection
+        DBInterface.execute(connection, "BEGIN TRANSACTION")
+        try
+            for id in removed
+                _delete_source_item_rows!(connection, id; drop_item_data=true)
+            end
+            DBInterface.execute(connection, "COMMIT")
+        catch
+            DBInterface.execute(connection, "ROLLBACK")
+            rethrow()
         end
     end
     return nothing
@@ -473,14 +475,17 @@ function read_item_data(
     return loaded
 end
 
-"""Close a workspace cache's connections and the underlying database file."""
+"""Close a workspace cache's database file, checkpointing first."""
 function close_cache_db!(cachedb::CacheDB)::Nothing
     # Fold the write-ahead log into the database file so the next workspace opened on this path within
-    # the same process reads the committed state instead of a pre-commit snapshot.
+    # the same process reads the committed state instead of a pre-commit snapshot. The per-table buffers
+    # have already drained and closed (stop_cache_buffer!), so this transient connection is the only one
+    # touching the file.
     try
-        DBInterface.execute(cachedb.writer, "CHECKPOINT")
+        with_maintenance(cachedb.buffer) do connection
+            DBInterface.execute(connection, "CHECKPOINT")
+        end
     finally
-        DBInterface.close!(cachedb.writer)
         DBInterface.close!(cachedb.db)
     end
     return nothing
@@ -522,71 +527,6 @@ function with_reader_snapshot(work::Function, cachedb::CacheDB)::Any
                 throw(CompositeException(error, rollback_error))
             end
             rethrow()
-        end
-    end
-end
-
-"""Run `work` on the cache's serialized writer connection."""
-function with_writer(work::Function, cachedb::CacheDB)::Any
-    profiler = cachedb.profiler
-    token = Profiling.should_trace(profiler) ?
-        Profiling.start_span!(profiler, :cache, :writer) : nothing
-    requested = time_ns()
-    lock(cachedb.writer_lock)
-    acquired = time_ns()
-    status = :ok
-    Base.Threads.atomic_add!(cachedb.writer_wait_ns, Int64(acquired - requested))
-    try
-        if token === nothing
-            return work(cachedb.writer)
-        end
-        return Base.ScopedValues.with(
-            Profiling.CURRENT_SPAN => token.id,
-            Profiling.CURRENT_SESSION => profiler,
-        ) do
-            work(cachedb.writer)
-        end
-    catch
-        status = :error
-        rethrow()
-    finally
-        released = time_ns()
-        service_ns = Int64(released - acquired)
-        Base.Threads.atomic_add!(cachedb.writer_busy_ns, service_ns)
-        unlock(cachedb.writer_lock)
-        token === nothing || Profiling.finish_span!(token; status, attributes=ProfileAttributes(
-            wait_ns=Int64(acquired - requested),
-            service_ns=service_ns,
-        ))
-    end
-end
-
-"""
-Run one cache mutation as a writer transaction.
-
-Large scans call this once per bounded source-item batch so DuckDB can release transaction-owned
-write memory between batches.
-"""
-function with_writer_transaction(work::Function, cachedb::CacheDB)::Any
-    return @profile_span cachedb.profiler :cache :transaction ProfileAttributes() begin
-        with_writer(cachedb) do connection
-            @profile_span cachedb.profiler :cache :begin_transaction ProfileAttributes() begin
-                DBInterface.execute(connection, "BEGIN TRANSACTION")
-            end
-            try
-                result = work(connection)
-                @profile_span cachedb.profiler :cache :commit ProfileAttributes() begin
-                    DBInterface.execute(connection, "COMMIT")
-                end
-                result
-            catch transaction_error
-                try
-                    DBInterface.execute(connection, "ROLLBACK")
-                catch rollback_error
-                    throw(CompositeException(transaction_error, rollback_error))
-                end
-                throw(transaction_error)
-            end
         end
     end
 end
@@ -804,7 +744,7 @@ end
 
 """Delete every index and item-data row, leaving an empty (but schema-valid) cache for a rebuild."""
 function clear_cache_index!(cachedb::CacheDB)::Nothing
-    with_writer(cachedb) do connection
+    with_maintenance(cachedb.buffer) do connection
         DBInterface.execute(connection, "BEGIN TRANSACTION")
         try
             _delete_all_cached_item_data!(connection)
@@ -829,7 +769,7 @@ would discard the per-item progress already written. The scan-wide `skipped_coun
 """
 function write_scan_identity!(cachedb::CacheDB)::Nothing
     identity = cachedb.identity
-    with_writer(cachedb) do connection
+    with_maintenance(cachedb.buffer) do connection
         statement = DBInterface.prepare(connection,
             "INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
         for (key, value) in (

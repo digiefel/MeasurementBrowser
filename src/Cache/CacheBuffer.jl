@@ -721,6 +721,26 @@ function buffer_has_pending_writes(buffer::CacheBuffer)::Bool
     end
 end
 
+"""
+Run a one-shot maintenance mutation on a transient write connection the buffer opens and closes.
+
+The buffer is the single owner of every connection to the cache file. Per-table streaming writes go
+through the per-table buffers above; the rare bulk/DDL mutations that span tables — stamping identity,
+wiping for a rebuild, deleting the source items a scan dropped, the closing checkpoint — run here
+instead of on a second long-lived writer. Each only ever runs while the per-table buffers are quiescent
+(identity and the deletes are opening moves before any append; the checkpoint runs after the buffers
+stop), so a fresh connection sees committed state and can never race a flush. No connection outlives the
+call, so there is no persistent second write door.
+"""
+function with_maintenance(work::Function, buffer::CacheBuffer)::Any
+    connection = DBInterface.connect(buffer.db)
+    try
+        return work(connection)
+    finally
+        DBInterface.close!(connection)
+    end
+end
+
 """Aggregate pending counts: `items` staged durable rows, `rows` staged payload data rows."""
 function buffer_pending_counts(buffer::CacheBuffer)
     items = 0

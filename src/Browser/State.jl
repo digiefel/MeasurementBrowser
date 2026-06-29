@@ -136,13 +136,12 @@ Ring-buffer state and Makie figure handles for the live-plots tab in the Perform
 
 Two figures are created once and updated in place via Observables:
 - `timings_figure`: rolling plot-redraw phase durations (load / setup / draw-data / total).
-- `build_figure`: build progress, throughput, writer concurrency, per-item write cost,
-  cumulative write time, and peak RSS.
+- `build_figure`: build progress, throughput, per-item write cost, cumulative write time, and peak RSS.
 
 Each line carries its own `_x`/`_obs` pair so series of different length never collide (the plot-error
 path records only `:plot_draw`, so the phase vectors do diverge). `_buf` fields are bounded ring
-buffers sampled once per poll tick. Derived rates (throughput, writers-busy, per-item write) are
-finite differences of the cumulative counters between ticks, so `last_*` hold the previous snapshot.
+buffers sampled once per poll tick. Derived rates (throughput, per-item write) are finite differences
+of the cumulative counters between ticks, so `last_*` hold the previous snapshot.
 """
 Base.@kwdef mutable struct LivePlotsState
     capacity::Int = 600
@@ -166,7 +165,6 @@ Base.@kwdef mutable struct LivePlotsState
     scan_pct_buf::Vector{Float32}       = Float32[]
     analysis_pct_buf::Vector{Float32}   = Float32[]
     throughput_buf::Vector{Float32}     = Float32[]   # analysed items / s
-    writers_busy_buf::Vector{Float32}   = Float32[]   # avg writers busy concurrently
     per_item_write_buf::Vector{Float32} = Float32[]   # processed write ms / item
     interp_cum_buf::Vector{Float32}     = Float32[]   # cumulative interp-write s
     processed_cum_buf::Vector{Float32}  = Float32[]   # cumulative processed-write s
@@ -177,7 +175,6 @@ Base.@kwdef mutable struct LivePlotsState
     scan_pct_obs::Observable{Vector{Float32}}     = Observable(Float32[])
     analysis_pct_obs::Observable{Vector{Float32}} = Observable(Float32[])
     throughput_obs::Observable{Vector{Float32}}   = Observable(Float32[])
-    writers_busy_obs::Observable{Vector{Float32}} = Observable(Float32[])
     per_item_write_obs::Observable{Vector{Float32}} = Observable(Float32[])
     interp_cum_obs::Observable{Vector{Float32}}   = Observable(Float32[])
     processed_cum_obs::Observable{Vector{Float32}} = Observable(Float32[])
@@ -191,7 +188,6 @@ Base.@kwdef mutable struct LivePlotsState
     last_elapsed_s::Float64 = 0.0
     last_completed::Int = 0
     last_processed_write_ns::Int64 = 0
-    last_writer_busy_ns::Int64 = 0
 end
 
 """Counters and samples shown by the performance window."""

@@ -185,20 +185,23 @@ operations that genuinely change existing rows are:
 - **Reprocess** an item that already had processed data (replace its processed payload and statistics).
 - **Rescan** a source item whose fingerprint changed (replace its records and dependent results).
 - **Clear a failure** when an item that previously failed later succeeds.
-- **Finalize** a scan: stamp per-source-item errors, write collection-node parameters, and drop source
-  items the current scan no longer contains.
 
-These need `edit`/`delete`, which the first implementation does not provide. Until they exist:
+These need per-key `edit`/`delete` on the streaming path, which the first implementation does not
+provide. Until they exist, **reprocess**, **rescan-of-changed-source**, and **clear-a-failure** are not
+incremental yet. They are surfaced as an explicit *work-in-progress* limitation (a quick, honest "not
+implemented" marker rather than a silent half-update). The supported way to pick up such a change is a
+full **Rebuild Cache** — a wipe-and-append, which is pure append and needs no per-key `edit`/`delete`.
 
-- **Reprocess**, **rescan-of-changed-source**, and **clear-a-failure** are not incremental yet. They are
-  surfaced as an explicit *work-in-progress* limitation (a quick, honest "not implemented" marker rather
-  than a silent half-update). The supported way to pick up such a change is a full **Rebuild Cache** — a
-  wipe-and-append, which is pure append and needs no `edit`/`delete`.
-- **Finalize** runs as a one-shot barrier while the buffers are drained and idle, applying its few edits
-  and deletes directly. It is not part of the append-only streaming path.
+The few bulk/DDL mutations that the cache *does* perform — stamping the identity rows, wiping for a
+Rebuild, deleting the source items a scan no longer contains, and the closing checkpoint — still go
+through the buffer, never a second writer. Each runs while the per-table buffers are quiescent (the
+identity stamp and the deletes are opening moves before any append; the checkpoint runs after the
+buffers stop), so the buffer performs them on a transient maintenance connection it opens and closes
+for the operation. The single-door guarantee holds: there is no long-lived writer parallel to the
+buffers.
 
-Designing these into the buffer's `edit`/`delete` verbs — so reprocess and rescan become incremental yet
-fast and batched — is the next piece of work after this buffer lands.
+Designing per-key reprocess and rescan into the buffer's `edit`/`delete` verbs — so they become
+incremental yet fast and batched — is the next piece of work after this buffer lands.
 
 ## Location and identity
 

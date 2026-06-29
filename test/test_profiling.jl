@@ -8,8 +8,6 @@ profile_snapshot() = (
     processing_done=0,
     processing_total=0,
     queue_depth=0,
-    writer_busy_ns=0,
-    writer_wait_ns=0,
 )
 
 @testset "structured profiler" begin

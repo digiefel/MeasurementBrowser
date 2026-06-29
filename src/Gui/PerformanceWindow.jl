@@ -385,14 +385,11 @@ function _make_build_figure(lp::LivePlotsState)::Figure
     throughput_axis = Axis(fig[1, 2]; ylabel="items / s", title="Analysis throughput")
     lines!(throughput_axis, lp.elapsed_obs, lp.throughput_obs; color=:purple)
 
-    writers_axis = Axis(fig[2, 1]; ylabel="writers", title="Writers busy concurrently")
-    lines!(writers_axis, lp.elapsed_obs, lp.writers_busy_obs; color=:black)
-
-    item_write_axis = Axis(fig[2, 2]; ylabel="ms / item", title="Processed write cost")
+    item_write_axis = Axis(fig[2, 1]; ylabel="ms / item", title="Processed write cost")
     lines!(item_write_axis, lp.elapsed_obs, lp.per_item_write_obs; color=:teal)
 
     cumulative_axis = Axis(
-        fig[3, 1]; xlabel="elapsed (s)", ylabel="s", title="Cumulative write time")
+        fig[2, 2]; xlabel="elapsed (s)", ylabel="s", title="Cumulative write time")
     lines!(cumulative_axis, lp.elapsed_obs, lp.interp_cum_obs; color=:orchid, label="interp")
     lines!(cumulative_axis, lp.elapsed_obs, lp.processed_cum_obs;
         color=:seagreen, label="processed")
@@ -400,7 +397,7 @@ function _make_build_figure(lp::LivePlotsState)::Figure
         color=:goldenrod, label="stats")
     axislegend(cumulative_axis; position=:lt, labelsize=10)
 
-    rss_axis = Axis(fig[3, 2]; xlabel="elapsed (s)", ylabel="GiB", title="Peak RSS")
+    rss_axis = Axis(fig[3, 1]; xlabel="elapsed (s)", ylabel="GiB", title="Peak RSS")
     lines!(rss_axis, lp.elapsed_obs, lp.rss_obs; color=:darkorange)
     return fig
 end
@@ -457,7 +454,6 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
     analysis_pct = 0.0f0
     completed = 0
     processed_write_ns = Int64(0)
-    writer_busy_ns = Int64(0)
     interpreted_seconds = 0.0f0
     processed_seconds = 0.0f0
     stats_seconds = 0.0f0
@@ -479,17 +475,13 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
         interpreted_seconds = Float32(metrics.interpreted_write_ns[] / 1e9)
         processed_seconds = Float32(metrics.processed_write_ns[] / 1e9)
         stats_seconds = Float32(metrics.stats_write_ns[] / 1e9)
-        writer_busy_ns = workspace.cache.db.writer_busy_ns[]
     end
 
     elapsed_delta = elapsed - lp.last_elapsed_s
     completed_delta = completed - lp.last_completed
-    busy_delta = writer_busy_ns - lp.last_writer_busy_ns
     write_delta = processed_write_ns - lp.last_processed_write_ns
     throughput = elapsed_delta > 0 && completed_delta >= 0 ?
         Float32(completed_delta / elapsed_delta) : 0.0f0
-    writers_busy = elapsed_delta > 0 && busy_delta >= 0 ?
-        Float32(busy_delta / 1e9 / elapsed_delta) : 0.0f0
     per_item_write = completed_delta > 0 && write_delta >= 0 ?
         Float32(write_delta / 1e6 / completed_delta) : 0.0f0
     peak_rss_gib = Float32(Sys.maxrss() / 1024^3)
@@ -497,14 +489,12 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
     lp.last_elapsed_s = elapsed
     lp.last_completed = completed
     lp.last_processed_write_ns = processed_write_ns
-    lp.last_writer_busy_ns = writer_busy_ns
 
     capacity = lp.capacity
     _ring_push!(lp.elapsed_buf, Float32(elapsed), capacity)
     _ring_push!(lp.scan_pct_buf, scan_pct, capacity)
     _ring_push!(lp.analysis_pct_buf, analysis_pct, capacity)
     _ring_push!(lp.throughput_buf, throughput, capacity)
-    _ring_push!(lp.writers_busy_buf, writers_busy, capacity)
     _ring_push!(lp.per_item_write_buf, per_item_write, capacity)
     _ring_push!(lp.interp_cum_buf, interpreted_seconds, capacity)
     _ring_push!(lp.processed_cum_buf, processed_seconds, capacity)
@@ -515,7 +505,6 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
     lp.scan_pct_obs[] = copy(lp.scan_pct_buf)
     lp.analysis_pct_obs[] = copy(lp.analysis_pct_buf)
     lp.throughput_obs[] = copy(lp.throughput_buf)
-    lp.writers_busy_obs[] = copy(lp.writers_busy_buf)
     lp.per_item_write_obs[] = copy(lp.per_item_write_buf)
     lp.interp_cum_obs[] = copy(lp.interp_cum_buf)
     lp.processed_cum_obs[] = copy(lp.processed_cum_buf)
@@ -605,7 +594,6 @@ function _render_live_plots_tab!(state::BrowserState)::Nothing
             "scan_pct" => copy(lp.scan_pct_obs[]),
             "analysis_pct" => copy(lp.analysis_pct_obs[]),
             "throughput_per_s" => copy(lp.throughput_obs[]),
-            "writers_busy" => copy(lp.writers_busy_obs[]),
             "per_item_write_ms" => copy(lp.per_item_write_obs[]),
             "interp_cum_s" => copy(lp.interp_cum_obs[]),
             "processed_cum_s" => copy(lp.processed_cum_obs[]),
@@ -747,14 +735,12 @@ function _render_internal_profile_tab!(
     counter = Profiling.latest_counter(profiler)
     if counter !== nothing
         ig.Text(@sprintf(
-            "RSS %.1f MiB  GC %.1f ms / %d pauses (max %.1f ms)  Queue %d  Writer %.1f ms wait / %.1f ms service",
+            "RSS %.1f MiB  GC %.1f ms / %d pauses (max %.1f ms)  Queue %d",
             counter.rss_bytes / 1024^2,
             counter.gc_total_ns / 1e6,
             counter.gc_pause_count,
             counter.gc_max_pause_ns / 1e6,
             counter.queue_depth,
-            counter.writer_wait_ns / 1e6,
-            counter.writer_busy_ns / 1e6,
         ))
     end
 
