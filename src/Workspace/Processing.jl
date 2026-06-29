@@ -79,7 +79,7 @@ function enqueue_processed_write!(
     stats::Union{Nothing,MetadataDict},
     cacheable::Bool,
 )::Nothing
-    stage_processed!(workspace.buffer, record, item, stats, cacheable)
+    stage_processed!(workspace.cache.db.buffer, record, item, stats, cacheable)
     return nothing
 end
 
@@ -189,7 +189,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     fallback_lock = source_fallback_lock(workspace.processing, record.source_item_id)
     return lock(fallback_lock) do
         cached = only(buffer_read_item_data(
-            workspace.buffer, [record]; stage=:interpreted))
+            workspace.cache.db.buffer, [record]; stage=:interpreted))
         cached === nothing || return cached
 
         discovered = source_items(workspace.source)
@@ -208,7 +208,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
             workspace.profiler,
         )
         stage_interpreted!(
-            workspace.buffer,
+            workspace.cache.db.buffer,
             interpretation.records,
             Any[item for item in interpretation.interpreted_items],
         )
@@ -223,7 +223,7 @@ end
 """Load interpreted data from DuckDB, or the shared source fallback."""
 function interpreted_item(workspace::Workspace, job::ProcessingJob)::AbstractDataItem
     cached = only(buffer_read_item_data(
-        workspace.buffer, [job.record]; stage=:interpreted))
+        workspace.cache.db.buffer, [job.record]; stage=:interpreted))
     return cached === nothing ? source_fallback(workspace, job.record) : cached
 end
 
@@ -233,7 +233,7 @@ function interpreted_items(
     jobs::Vector{ProcessingJob},
 )::Vector{AbstractDataItem}
     records = ItemRecord[job.record for job in jobs]
-    cached = buffer_read_item_data(workspace.buffer, records; stage=:interpreted)
+    cached = buffer_read_item_data(workspace.cache.db.buffer, records; stage=:interpreted)
     interpreted = Vector{AbstractDataItem}(undef, length(jobs))
     for (index, job) in pairs(jobs)
         item = cached[index]
@@ -251,7 +251,7 @@ function process_item(
     needs_payload = job.priority > 0 || !isempty(job.waiters)
     if needs_payload
         cached = only(buffer_read_item_data(
-            workspace.buffer, [job.record]; stage=:processed))
+            workspace.cache.db.buffer, [job.record]; stage=:processed))
         cached === nothing || return cached
     end
     return process_item(workspace, job, interpreted_item(workspace, job))
@@ -318,7 +318,7 @@ function process_item(
     else
         failure = stats_failure::CapturedException
         message = "stats: " * sprint(showerror, failure.ex)
-        stage_failure!(workspace.buffer, job.record, message)
+        stage_failure!(workspace.cache.db.buffer, job.record, message)
         put!(workspace.processing.events, (
             kind=:failure,
             item_id=job.record.id,
@@ -369,7 +369,7 @@ function processing_worker!(workspace::Workspace)::Nothing
             failure = ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
             for job in jobs
                 stage_failure!(
-                    workspace.buffer,
+                    workspace.cache.db.buffer,
                     job.record,
                     "process: " * sprint(showerror, error),
                 )
@@ -394,7 +394,7 @@ function processing_worker!(workspace::Workspace)::Nothing
                 ProcessingResult(item, nothing)
             catch error
                 stage_failure!(
-                    workspace.buffer,
+                    workspace.cache.db.buffer,
                     job.record,
                     "process: " * sprint(showerror, error),
                 )
@@ -410,7 +410,7 @@ function request_processed_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
 )::Vector{AbstractDataItem}
-    cached = buffer_read_item_data(workspace.buffer, records; stage=:processed)
+    cached = buffer_read_item_data(workspace.cache.db.buffer, records; stage=:processed)
     loaded = Vector{AbstractDataItem}(undef, length(records))
     waiters = Tuple{Int,Channel{Any}}[]
     for (position, record) in pairs(records)

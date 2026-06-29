@@ -1,10 +1,3 @@
-using DuckDB
-using DBInterface
-using DataFrames: AbstractDataFrame, DataFrame, names, nrow
-using SHA
-using Serialization
-using Dates
-
 const PROJECT_CACHE_SCHEMA_VERSION = 6
 const ITEM_DATA_VIEW = "__measurementbrowser_item_data"
 
@@ -149,6 +142,8 @@ independent interactive and background reads can run concurrently against commit
 mutable struct CacheDB
     identity::ProjectCacheIdentity
     db::DuckDB.DB
+    # The per-table buffer is the single write/read door; ProjectCache owns and drives it.
+    buffer::CacheBuffer
     writer::DuckDB.Connection
     writer_lock::ReentrantLock
     profiler::Profiling.ProfileSession
@@ -167,10 +162,11 @@ scratch rather than bricking the workspace. The data it held is recoverable by r
 function open_cache_db(
     identity::ProjectCacheIdentity,
     profiler::Profiling.ProfileSession,
+    metrics::BuildMetrics=BuildMetrics(),
 )::CacheDB
     mkpath(dirname(identity.cache_path))
     try
-        return _connect_cache_db(identity, profiler)
+        return _connect_cache_db(identity, profiler, metrics)
     catch err
         err isa InterruptException && rethrow()
         @warn(
@@ -179,7 +175,7 @@ function open_cache_db(
             exception=err,
         )
         _remove_cache_files(identity.cache_path)
-        return _connect_cache_db(identity, profiler)
+        return _connect_cache_db(identity, profiler, metrics)
     end
 end
 
@@ -192,6 +188,7 @@ end
 function _connect_cache_db(
     identity::ProjectCacheIdentity,
     profiler::Profiling.ProfileSession,
+    metrics::BuildMetrics,
 )::CacheDB
     db = DBInterface.connect(DuckDB.DB, identity.cache_path)
     try
@@ -212,7 +209,8 @@ function _connect_cache_db(
            only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
             throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
         end
-        return CacheDB(identity, db, DBInterface.connect(db), ReentrantLock(), profiler,
+        return CacheDB(identity, db, CacheBuffer(db, metrics), DBInterface.connect(db),
+            ReentrantLock(), profiler,
             Base.Threads.Atomic{Int64}(0), Base.Threads.Atomic{Int64}(0))
     catch
         DBInterface.close!(db)

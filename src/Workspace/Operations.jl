@@ -36,7 +36,7 @@ function close_workspace!(workspace::Workspace)::Nothing
     stop_processing_workers!(workspace)
     # Workers are gone, so no more deposits can arrive; drain everything still staged and stop the
     # flusher before the database handle closes.
-    stop_cache_buffer!(workspace.buffer)
+    stop_cache_buffer!(workspace.cache.db.buffer)
     try
         Profiling.close!(workspace.profiler)
     finally
@@ -130,7 +130,7 @@ function processing_work_running(workspace::Workspace)::Bool
     jobs_active = lock(workspace.processing.lock) do
         !isempty(workspace.processing.jobs)
     end
-    return jobs_active || buffer_has_pending_writes(workspace.buffer)
+    return jobs_active || buffer_has_pending_writes(workspace.cache.db.buffer)
 end
 
 """Keep a background task alive until workspace shutdown."""
@@ -262,7 +262,7 @@ function scan_source!(
                         # Deposit into the buffer (never blocks on the database) and enqueue the
                         # data-less records. Processing reads the interpreted data straight back from
                         # the buffer's staged store, before it is even durable.
-                        stage_interpreted!(workspace.buffer, records, data)
+                        stage_interpreted!(workspace.cache.db.buffer, records, data)
                         for record in records
                             push!(written_ids, record.source_item_id)
                             enqueue_processing!(workspace, record)
@@ -278,7 +278,7 @@ function scan_source!(
             # Every interpreted deposit must be durable before finalize_scan! rewrites source-item
             # bookkeeping in its own transaction (and before the readiness probe below queries the
             # cache for already-processed items).
-            wait_cache_flushed!(workspace.buffer)
+            wait_cache_flushed!(workspace.cache.db.buffer)
             # Unchanged source items keep their existing rows: treat them as already written so
             # finalize_scan! neither re-inserts a bare row nor deletes them.
             union!(written_ids, kept_ids)
@@ -338,7 +338,7 @@ function profile_counter_snapshot(workspace::Workspace)::NamedTuple
             length(workspace.processing.jobs),
         )
     end
-    depth = jobs + buffer_pending_counts(workspace.buffer).items
+    depth = jobs + buffer_pending_counts(workspace.cache.db.buffer).items
     return (
         scan_done=workspace.scan.progress.processed_source_items,
         scan_total=workspace.scan.progress.total_source_items,

@@ -6,7 +6,6 @@ import ..Profiling
 
 import ..Cache:
     BuildMetrics,
-    CacheBuffer,
     CacheDB,
     ProjectCacheIdentity,
     ProjectCacheIndex,
@@ -233,9 +232,6 @@ mutable struct Workspace{S<:AbstractDataSource}
     cache_state::Symbol
     cache_error::String
     processing::ProcessingQueue
-    # The write-back, read-through staging layer in front of the cache. Every per-item write and
-    # read goes through this buffer, never the cache directly (see CacheBuffer.jl).
-    buffer::CacheBuffer
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
@@ -261,14 +257,13 @@ function Workspace(
     identity = project_cache_identity(project_name(project), source)
     profiler = Profiling.ProfileSession(
         profile_internal, profile_cpu, profile_output, crash_trace)
+    metrics = BuildMetrics()
     cache_db = try
-        open_cache_db(identity, profiler)
+        open_cache_db(identity, profiler, metrics)
     catch
         Profiling.close!(profiler)
         rethrow()
     end
-    metrics = BuildMetrics()
-    buffer = CacheBuffer(cache_db, profiler, metrics)
     workspace = Workspace(
         project,
         source,
@@ -287,7 +282,6 @@ function Workspace(
         :idle,
         "",
         ProcessingQueue(),
-        buffer,
         Task[],
         metrics,
         profiler,
@@ -295,7 +289,7 @@ function Workspace(
         WorkspaceStatus(),
         false,
     )
-    start_cache_buffer!(buffer)
+    start_cache_buffer!(cache_db.buffer)
     start_processing_workers!(workspace)
     return workspace
 end

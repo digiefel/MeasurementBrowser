@@ -531,11 +531,11 @@ end
 The single door to the cache: a buffer per table plus the memory-only interpreted buffer.
 
 Every per-item write and read in the workspace goes through this owner; nothing else opens a
-connection or runs SQL against the cache during a build.
+connection or runs SQL against the cache during a build. Holds only the raw `DuckDB.DB` handle — it
+knows nothing of `CacheDB` or the pipeline stages; `ProjectCache` owns and drives it.
 """
 mutable struct CacheBuffer
-    cache::CacheDB
-    profiler::Profiling.ProfileSession
+    db::DuckDB.DB
     metrics::BuildMetrics
     source_items::CacheTableBuffer{SourceItemRow}
     items::CacheTableBuffer{ItemRow}
@@ -550,12 +550,11 @@ mutable struct CacheBuffer
 end
 
 function CacheBuffer(
-    cache::CacheDB,
-    profiler::Profiling.ProfileSession,
+    db::DuckDB.DB,
     metrics::BuildMetrics,
 )::CacheBuffer
     return CacheBuffer(
-        cache, profiler, metrics,
+        db, metrics,
         CacheTableBuffer{SourceItemRow}(:source_items),
         CacheTableBuffer{ItemRow}(:items),
         CacheTableBuffer{MetaRow}(:metadata),
@@ -573,7 +572,7 @@ _disk_buffers(buffer::CacheBuffer) =
 
 """Open each disk-backed buffer's connections and start its flush task."""
 function start_cache_buffer!(buffer::CacheBuffer)::Nothing
-    database = buffer.cache.db
+    database = buffer.db
     for table in _disk_buffers(buffer)
         table.write_conn = DBInterface.connect(database)
         table.last_flush = time()

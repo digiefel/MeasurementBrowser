@@ -33,7 +33,7 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
         )
     end
     # Writes now live in the cache buffer, not the processing queue.
-    staged = buffer_pending_counts(workspace.buffer)
+    staged = buffer_pending_counts(workspace.cache.db.buffer)
     return WorkspaceMemorySnapshot(
         time_ns(),
         rss_bytes,
