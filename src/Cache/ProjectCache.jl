@@ -870,6 +870,71 @@ end
 
 
 # --------------------------------------------------------------------------------------------------
+# Item-data readiness (domain: which items already have a valid cached stage)
+# --------------------------------------------------------------------------------------------------
+
+# Cached data is keyed by item id and validated against both fingerprints. The source-item
+# fingerprint is required; an absent item fingerprint intentionally means source-level invalidation.
+_item_data_cacheable(item::ItemRecord)::Bool = item.source_item_fingerprint !== nothing
+
+"""Fill the temporary request table used by the large metadata-only readiness query."""
+function _fill_item_data_request!(connection, items::Vector{ItemRecord})::Nothing
+    DBInterface.execute(connection, """
+        CREATE TEMP TABLE IF NOT EXISTS requested_item_data(
+            position BIGINT,
+            item_id TEXT,
+            sif_hash TEXT,
+            if_hash TEXT)
+    """)
+    DBInterface.execute(connection, "DELETE FROM requested_item_data")
+    appender = DuckDB.Appender(connection, "requested_item_data")
+    try
+        for (position, item) in pairs(items)
+            check_cancel()
+            _item_data_cacheable(item) || continue
+            for value in (
+                Int64(position),
+                item.id,
+                _fingerprint_hash(item.source_item_fingerprint),
+                _fingerprint_hash(item.item_fingerprint),
+            )
+                DuckDB.append(appender, value)
+            end
+            DuckDB.end_row(appender)
+        end
+        DuckDB.flush(appender)
+    finally
+        DuckDB.close(appender)
+    end
+    return nothing
+end
+
+"""Return item ids whose requested cache stage exists with matching fingerprints."""
+function cached_item_data_ids(
+    cachedb::CacheDB,
+    items::Vector{ItemRecord};
+    stage::Symbol=:processed,
+)::Set{String}
+    isempty(items) && return Set{String}()
+    stage in (:interpreted, :processed) ||
+        throw(ArgumentError("unknown item-data cache stage '$stage'"))
+    return with_reader(cachedb) do connection
+        _fill_item_data_request!(connection, items)
+        Set(String(row.item_id) for row in DBInterface.execute(connection, """
+            SELECT r.item_id
+            FROM requested_item_data r
+            JOIN item_data d ON d.item_id = r.item_id
+            WHERE d.stage = ?
+              AND d.sif_hash = r.sif_hash
+              AND (
+                  (d.if_hash IS NULL AND r.if_hash IS NULL)
+                  OR d.if_hash = r.if_hash
+              )
+        """, (String(stage),)))
+    end
+end
+
+# --------------------------------------------------------------------------------------------------
 # Loading the index
 # --------------------------------------------------------------------------------------------------
 
