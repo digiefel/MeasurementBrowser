@@ -312,8 +312,68 @@ end
 
 """Store one item's processing/statistics failure."""
 function store_failure!(cache::CacheDB, record::ItemRecord, message::String)::Nothing
-    _store!(cache.buffer.failures, record.id,
+    _store!(cache.buffer.failures, (record.id, record.source_item_id),
         FailureRow(record.id, record.source_item_id, message))
+    return nothing
+end
+
+"""
+Drop the cached rows of source items the source no longer contains.
+
+Called the moment discovery knows the present set — the opening move of an update, not a closing pass.
+Removed source items are not re-streamed, so deleting their stale rows here (while the buffers are
+still empty) can never race a fresh append. This is the one mutation that is genuinely a delete; the
+future buffer `delete` verb will absorb it.
+"""
+function retain_source_items!(cache::CacheDB, present_ids)::Nothing
+    removed = with_reader(cache) do connection
+        String[
+            String(row.source_item_id)
+            for row in DBInterface.execute(connection, "SELECT source_item_id FROM source_items")
+            if !(String(row.source_item_id) in present_ids)
+        ]
+    end
+    isempty(removed) && return nothing
+    with_writer_transaction(cache) do connection
+        for id in removed
+            _delete_source_item_rows!(connection, id; drop_item_data=true)
+        end
+    end
+    return nothing
+end
+
+"""
+Append the collection-level results a completed scan carries: bare rows for source items that produced
+no items, per-source-item analysis errors as source-level failures, and collection-node parameters.
+
+Every write goes through the buffer like the per-item ones — there is no separate writer pass. The
+node parameters coalesce per `(scope, entity, key)`, so re-seeing a node is harmless.
+"""
+function store_scan_collection_data!(
+    cache::CacheDB,
+    source::SourceScan,
+    written_ids::AbstractSet{<:AbstractString},
+)::Nothing
+    buffer = cache.buffer
+    new_index = ProjectCacheIndex(cache.identity, source)
+    locations = _source_item_locations(source)
+    for (id, fingerprint) in source.source_item_fingerprints
+        id in written_ids && continue
+        path, timestamp = get(locations, id, (nothing, nothing))
+        hex, hash = _encode_fingerprint(fingerprint)
+        _store!(buffer.source_items, id, SourceItemRow(id, hex, hash, path, timestamp))
+    end
+    for (id, message) in new_index.analysis_errors
+        _store!(buffer.failures, ("", id), FailureRow("", id, message))
+    end
+    for (path, node) in source.hierarchy.index
+        isempty(node.parameters) && continue
+        entity = collection_path_key(collect(String, path))
+        for (key, value) in node.parameters
+            _store!(buffer.metadata, (Int8(SCOPE_NODE_PARAMETERS), entity, String(key)),
+                MetaRow(Int8(SCOPE_NODE_PARAMETERS), entity, String(key), value))
+        end
+    end
     return nothing
 end
 
@@ -629,24 +689,6 @@ function _encode_fingerprint(fingerprint)::Tuple{Union{Nothing,String},Union{Not
     return (bytes2hex(bytes), bytes2hex(sha1(bytes)))
 end
 
-"""Bulk-append positional value tuples to `table` through one appender."""
-function _append_rows!(connection, table::AbstractString, rows)::Nothing
-    isempty(rows) && return nothing
-    appender = DuckDB.Appender(connection, table)
-    try
-        for row in rows
-            for value in row
-                DuckDB.append(appender, value)
-            end
-            DuckDB.end_row(appender)
-        end
-        DuckDB.flush(appender)
-    finally
-        DuckDB.close(appender)
-    end
-    return nothing
-end
-
 """
 How one [`MetadataValue`](@ref) variant maps to the EAV `metadata` table: its discriminator, the
 value column that stores it, and the converters between the Julia value and that column's storage.
@@ -745,23 +787,6 @@ function _append_metadata!(appender, scope::MetaScope, entity::AbstractString, d
     return nothing
 end
 
-"""Write the identity/version `meta` rows describing one source scan."""
-function _write_meta_rows!(connection, identity::ProjectCacheIdentity, source::SourceScan)::Nothing
-    statement = DBInterface.prepare(connection,
-        "INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
-    for (key, value) in (
-        "schema_version" => string(PROJECT_CACHE_SCHEMA_VERSION),
-        "project_name" => identity.project_name,
-        "source_id" => identity.source_id,
-        "source_label" => identity.source_label,
-        "skipped_count" => string(source.hierarchy.skipped_count),
-        "has_collection_parameters" => string(source.hierarchy.has_collection_parameters),
-    )
-        DBInterface.execute(statement, (key, value))
-    end
-    return nothing
-end
-
 """Map each source-item id to one representative `(path, timestamp)` taken from its records."""
 function _source_item_locations(source::SourceScan)::Dict{String,Tuple{Union{Nothing,String},Union{Nothing,DateTime}}}
     locations = Dict{String,Tuple{Union{Nothing,String},Union{Nothing,DateTime}}}()
@@ -800,7 +825,7 @@ Stamp the identity `meta` rows so a scan's incremental writes are loadable befor
 
 Without these rows [`load_cache_index`](@ref) treats the cache as unbuilt, so an interrupted scan
 would discard the per-item progress already written. The scan-wide `skipped_count` and
-`has_collection_parameters` are filled in later by [`finalize_scan!`](@ref).
+`has_collection_parameters` are derived on load, not stored.
 """
 function write_scan_identity!(cachedb::CacheDB)::Nothing
     identity = cachedb.identity
@@ -840,120 +865,6 @@ function _delete_source_item_rows!(
     DBInterface.execute(
         DBInterface.prepare(connection, "DELETE FROM source_items WHERE source_item_id = ?"),
         (source_item_id,))
-    return nothing
-end
-
-"""
-Finish an incremental scan: record bookkeeping the per-item writes can't carry.
-
-`written_ids` are the source items already persisted by the per-table buffers. This writes the `meta`
-rows and collection-node parameters, records bare rows for skipped/failed source items, stamps
-per-source-item analysis errors, and deletes source items (cascading their items, metadata, and cached
-item data) that the current scan no longer contains.
-"""
-function finalize_scan!(
-    connection,
-    identity::ProjectCacheIdentity,
-    source::SourceScan,
-    written_ids::AbstractSet{<:AbstractString},
-)::Nothing
-    new_index = ProjectCacheIndex(identity, source)
-    locations = _source_item_locations(source)
-    current_ids = keys(source.source_item_fingerprints)
-
-    begin
-        _write_meta_rows!(connection, identity, source)
-
-        # Bare rows for source items the scan produced no records for (skipped or failed).
-        bare_rows = NTuple{6,Any}[]
-        for (id, fingerprint) in source.source_item_fingerprints
-            id in written_ids && continue
-            path, timestamp = get(locations, id, (nothing, nothing))
-            hex, hash = _encode_fingerprint(fingerprint)
-            push!(bare_rows,
-                (id, hex, hash, path, timestamp, get(new_index.analysis_errors, id, nothing)))
-        end
-        _append_rows!(connection, "source_items", bare_rows)
-
-        # Stamp errors onto source items that were written but later failed analysis interpretation.
-        error_stmt = DBInterface.prepare(connection,
-            "UPDATE source_items SET error = ? WHERE source_item_id = ?")
-        for (id, message) in new_index.analysis_errors
-            id in written_ids || continue
-            DBInterface.execute(error_stmt, (message, id))
-        end
-
-        # Collection-node parameters (node stats arrive later from analysis): one delete, then a
-        # single appender pass over every node's metadata.
-        node_entities = String[
-            collection_path_key(collect(String, path)) for path in keys(source.hierarchy.index)]
-        if !isempty(node_entities)
-            placeholders = join(fill("?", length(node_entities)), ", ")
-            DBInterface.execute(
-                DBInterface.prepare(connection,
-                    "DELETE FROM metadata WHERE scope = ? AND entity IN ($placeholders)"),
-                (Int8(SCOPE_NODE_PARAMETERS), node_entities...))
-        end
-        node_appender = DuckDB.Appender(connection, "metadata")
-        try
-            for (path, node) in source.hierarchy.index
-                isempty(node.parameters) && continue
-                _append_metadata!(node_appender, SCOPE_NODE_PARAMETERS,
-                    collection_path_key(collect(String, path)), node.parameters)
-            end
-            DuckDB.flush(node_appender)
-        finally
-            DuckDB.close(node_appender)
-        end
-
-        # Drop source items (and everything they own) that the scan no longer contains.
-        stored_ids = String[
-            row.source_item_id
-            for row in DBInterface.execute(connection, "SELECT source_item_id FROM source_items")
-        ]
-        for id in stored_ids
-            id in current_ids && continue
-            _delete_source_item_rows!(connection, id; drop_item_data=true)
-        end
-    end
-    return nothing
-end
-
-"""Finish one scan in its own writer transaction."""
-function finalize_scan!(
-    cachedb::CacheDB,
-    source::SourceScan,
-    written_ids::AbstractSet{<:AbstractString},
-)::Nothing
-    return @profile_span cachedb.profiler :cache :finalize_scan ProfileAttributes(
-        source_id=cachedb.identity.source_id,
-        items=Int64(length(source.hierarchy.all_items)),
-    ) begin
-        with_writer_transaction(cachedb) do connection
-            finalize_scan!(connection, cachedb.identity, source, written_ids)
-        end
-    end
-end
-
-"""Replace or clear one processing/statistics failure on an open writer connection."""
-function _persist_item_failure!(
-    connection,
-    record::ItemRecord,
-    message::Union{Nothing,String},
-)::Nothing
-    statement = if message === nothing
-        DBInterface.prepare(connection, "DELETE FROM item_failures WHERE item_id = ?")
-    else
-        DBInterface.prepare(connection, """
-            INSERT INTO item_failures VALUES (?, ?, ?)
-            ON CONFLICT (item_id) DO UPDATE SET
-                source_item_id = excluded.source_item_id,
-                message = excluded.message
-        """)
-    end
-    values = message === nothing ? (record.id,) :
-        (record.id, record.source_item_id, message)
-    DBInterface.execute(statement, values)
     return nothing
 end
 

@@ -216,7 +216,6 @@ end
             @test :discover in operations
             @test :interpret_source_item in operations
             @test :process in operations
-            @test :transaction in operations
             @test :collection_stats in operations
             @test reads[] >= 20
         finally

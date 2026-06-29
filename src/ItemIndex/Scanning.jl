@@ -331,6 +331,7 @@ function scan_source(
     on_items::Union{Nothing,Function}=nothing,
     on_source_item::Union{Nothing,Function}=nothing,
     on_kept_source_item::Union{Nothing,Function}=nothing,
+    on_discovered::Union{Nothing,Function}=nothing,
     on_failure::Union{Nothing,Function}=nothing,
     count_first::Bool=false,
     profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
@@ -358,6 +359,9 @@ function scan_source(
         source_items(source)
     end
     fingerprints = fingerprints_by_source_item(discovered)
+    # The present set is known the moment discovery finishes — before any row streams. Surfacing it
+    # here lets the cache drop source items that vanished as the opening move of the update.
+    on_discovered === nothing || on_discovered(keys(fingerprints))
     check_cancel()
     cached_fingerprints_match = cached_source !== nothing &&
         source_unchanged(source, fingerprints, cached_source)

@@ -270,20 +270,23 @@ function scan_source!(
                     end,
                     on_kept_source_item=(source_item_id::String) ->
                         push!(kept_ids, source_item_id),
+                    # The opening move of an update: drop source items the source no longer contains,
+                    # while the buffers are still empty so no append can race the delete.
+                    on_discovered=(present_ids) ->
+                        retain_source_items!(cachedb, present_ids),
                     on_failure=(failure::ItemFailure) ->
                         put!(events, (kind=:failure, job_id=scan_id, failure)),
                     profiler=workspace.profiler,
                 )
             end
-            # Every interpreted deposit must be durable before finalize_scan! rewrites source-item
-            # bookkeeping in its own transaction (and before the readiness probe below queries the
-            # cache for already-processed items).
+            # Drain the per-item deposits before the readiness probe below queries the cache for
+            # already-processed items.
             wait_cache_flushed!(workspace.cache.db.buffer)
-            # Unchanged source items keep their existing rows: treat them as already written so
-            # finalize_scan! neither re-inserts a bare row nor deletes them.
+            # Unchanged source items keep their existing rows: treat them as already written so the
+            # collection-level append below records no redundant bare row for them.
             union!(written_ids, kept_ids)
             cache_hit = reuse_index !== nothing && source === reuse_index.source
-            cache_hit || finalize_scan!(cachedb, source, written_ids)
+            cache_hit || store_scan_collection_data!(cachedb, source, written_ids)
             # A fresh build already enqueued every record from `on_source_item`, so the readiness
             # probe below would query DuckDB for thousands of rows only to learn nothing is cached.
             # It earns its keep only on an incremental reopen, where unchanged source items were kept
