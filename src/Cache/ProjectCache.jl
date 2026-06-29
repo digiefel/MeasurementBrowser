@@ -226,6 +226,161 @@ function _remove_cache_files(cache_path::AbstractString)::Nothing
     return nothing
 end
 
+# --------------------------------------------------------------------------------------------------
+# The domain write/read surface over the per-table buffer.
+#
+# These map the pipeline stages (interpreted/processed/failure) and `ItemRecord`s onto the buffer's
+# generic rows. The CacheBuffer below knows none of this; it just buffers typed rows per table.
+# --------------------------------------------------------------------------------------------------
+
+"""
+Store one source item's interpreted result: data-less records to their disk-backed buffers, and the
+interpreted payloads to the memory-only buffer.
+
+Item statistics are not written here — they are computed during processing and stored by
+[`store_processed!`](@ref), so each metadata key is written exactly once per build (pure append).
+"""
+function store_interpreted!(
+    cache::CacheDB,
+    records::Vector{ItemRecord},
+    data::Vector{Any},
+)::Nothing
+    buffer = cache.buffer
+    started = time_ns()
+    for record in records
+        hex, hash = _encode_fingerprint(record.source_item_fingerprint)
+        _store!(buffer.source_items, record.source_item_id,
+            SourceItemRow(record.source_item_id, hex, hash,
+                record.source_item_path, record.source_item_timestamp))
+        _store!(buffer.items, record.id,
+            ItemRow(record.id, record.source_item_id, record.item_label, String(record.kind),
+                record.collection, _serialize_hex(record.item_fingerprint)))
+        for (key, value) in record.parameters
+            _store!(buffer.metadata, (Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key)),
+                MetaRow(Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key), value))
+        end
+    end
+    for (record, item) in zip(records, data)
+        item isa AbstractDataItem || continue
+        _store!(buffer.interpreted, record.id, item)
+    end
+    record_cache_phase!(buffer.metrics.interpreted_write_ns, buffer.metrics.interpreted_writes, started)
+    return nothing
+end
+
+"""
+Store one processed result: its statistics to the metadata buffer, and the processed item itself to
+either the disk-backed read-through payload buffer (when `cacheable` and the payload is a non-empty
+DataFrame) or the memory-only `processed_memory` buffer otherwise.
+
+A non-cacheable (or non-tabular) processed item is therefore held exactly like an interpreted one —
+bounded, never written, recomputed from source on a later miss — so a re-selection still skips
+reprocessing while the item is resident (docs/cache.md "Two backing modes").
+"""
+function store_processed!(
+    cache::CacheDB,
+    record::ItemRecord,
+    item::Union{Nothing,AbstractDataItem},
+    stats::Union{Nothing,MetadataDict},
+    cacheable::Bool,
+)::Nothing
+    buffer = cache.buffer
+    if stats !== nothing
+        started = time_ns()
+        for (key, value) in stats
+            _store!(buffer.metadata, (Int8(SCOPE_ITEM_STATS), record.id, String(key)),
+                MetaRow(Int8(SCOPE_ITEM_STATS), record.id, String(key), value))
+        end
+        record_cache_phase!(buffer.metrics.stats_write_ns, buffer.metrics.stats_writes, started)
+    end
+    item === nothing && return nothing
+    payload = item_data(item)
+    disk = cacheable && record.source_item_fingerprint !== nothing &&
+        payload isa AbstractDataFrame && !isempty(names(payload))
+    if disk
+        started = time_ns()
+        _store!(buffer.payload, record.id,
+            PayloadEntry(record, payload, _dataframe_storage_id(payload, :processed),
+                names(payload)))
+        record_cache_phase!(
+            buffer.metrics.processed_write_ns, buffer.metrics.processed_writes, started)
+    else
+        _store!(buffer.processed_memory, record.id, item)
+    end
+    return nothing
+end
+
+"""Store one item's processing/statistics failure."""
+function store_failure!(cache::CacheDB, record::ItemRecord, message::String)::Nothing
+    _store!(cache.buffer.failures, record.id,
+        FailureRow(record.id, record.source_item_id, message))
+    return nothing
+end
+
+"""
+Read item data back through the buffer: memory first, then (for processed) the database.
+
+Returns a vector aligned to `records`, each element a loaded item or `nothing` on a miss; the caller
+falls back to the source. Interpreted payloads are memory-only, so a memory miss is a final miss.
+"""
+function read_item_data(
+    cache::CacheDB,
+    records::Vector{ItemRecord};
+    stage::Symbol,
+)::Vector{Any}
+    stage in (:interpreted, :processed) ||
+        throw(ArgumentError("unknown item-data cache stage '$stage'"))
+    isempty(records) && return Any[]
+    buffer = cache.buffer
+
+    if stage === :interpreted
+        return lock(buffer.interpreted.cond) do
+            Any[get(buffer.interpreted.entries, record.id, nothing) for record in records]
+        end
+    end
+
+    loaded = Vector{Any}(undef, length(records))
+    misses = ItemRecord[]
+    miss_positions = Int[]
+    lock(buffer.payload.cond) do
+        for (position, record) in pairs(records)
+            entry = get(buffer.payload.entries, record.id, nothing)
+            if entry !== nothing && entry.record.item_fingerprint == record.item_fingerprint
+                loaded[position] = DataItem(record, entry.data)
+            else
+                loaded[position] = nothing
+                push!(misses, record)
+                push!(miss_positions, position)
+            end
+        end
+    end
+    # Non-cacheable processed items never reach disk; serve any still resident from memory before the
+    # disk read narrows to the records that could actually have a pointer.
+    if !isempty(misses)
+        disk_misses = ItemRecord[]
+        disk_positions = Int[]
+        lock(buffer.processed_memory.cond) do
+            for (record, position) in zip(misses, miss_positions)
+                held = get(buffer.processed_memory.entries, record.id, nothing)
+                if held !== nothing
+                    loaded[position] = held
+                else
+                    push!(disk_misses, record)
+                    push!(disk_positions, position)
+                end
+            end
+        end
+        misses, miss_positions = disk_misses, disk_positions
+    end
+    if !isempty(misses)
+        fetched = _read_payloads_from_disk(buffer.payload, misses)
+        for (index, position) in pairs(miss_positions)
+            loaded[position] = fetched[index]
+        end
+    end
+    return loaded
+end
+
 """Close a workspace cache's connections and the underlying database file."""
 function close_cache_db!(cachedb::CacheDB)::Nothing
     # Fold the write-ahead log into the database file so the next workspace opened on this path within

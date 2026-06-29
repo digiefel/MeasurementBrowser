@@ -262,7 +262,7 @@ function scan_source!(
                         # Deposit into the buffer (never blocks on the database) and enqueue the
                         # data-less records. Processing reads the interpreted data straight back from
                         # the buffer's staged store, before it is even durable.
-                        stage_interpreted!(workspace.cache.db.buffer, records, data)
+                        store_interpreted!(workspace.cache.db, records, data)
                         for record in records
                             push!(written_ids, record.source_item_id)
                             enqueue_processing!(workspace, record)
