@@ -25,7 +25,11 @@ import ..Projects:
 import ..Profiling
 using ..Profiling: @profile_span, ProfileAttributes
 
+include("Cache/BuildMetrics.jl")
 include("Cache/ProjectCache.jl")
 include("Cache/ItemDataCache.jl")
+# CacheBuffer is the lowest level (raw per-table DuckDB access); ProjectCache (above) wraps it. It is
+# included after ProjectCache only because its owner struct still names CacheDB — step 2 inverts that.
+include("Cache/CacheBuffer.jl")
 
 end

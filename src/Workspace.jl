@@ -1,28 +1,19 @@
 module Workspace
 
-using DataFrames: AbstractDataFrame, DataFrame, names, nrow
 using DBInterface
-using DuckDB
-using Dates: Date, DateTime
 using Printf
 import ..Profiling
 
 import ..Cache:
+    BuildMetrics,
+    CacheBuffer,
     CacheDB,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
-    META_VALUE_COLUMNS,
-    SCOPE_ITEM_PARAMETERS,
-    SCOPE_ITEM_STATS,
-    _dataframe_storage_id,
-    _dataframe_table_name,
-    _encode_fingerprint,
-    _fingerprint_hash,
-    _meta_codec,
-    _null_to_nothing,
-    _quote_identifier,
-    _serialize_hex,
+    buffer_has_pending_writes,
+    buffer_pending_counts,
+    buffer_read_item_data,
     cached_item_data_ids,
     clear_cache_index!,
     close_cache_db!,
@@ -31,7 +22,15 @@ import ..Cache:
     open_cache_db,
     persist_stats!,
     project_cache_identity,
+    record_cache_phase!,
+    reset_build_metrics!,
     set_cache_memory_limit!,
+    stage_failure!,
+    stage_interpreted!,
+    stage_processed!,
+    start_cache_buffer!,
+    stop_cache_buffer!,
+    wait_cache_flushed!,
     with_reader,
     write_scan_identity!
 import ..ItemIndex:
@@ -41,7 +40,6 @@ import ..ItemIndex:
     ItemRecord,
     JobCancelled,
     MetadataDict,
-    MetadataValue,
     SourceItemInterpretation,
     SourceScan,
     apply_collection_parameters!,
@@ -218,8 +216,6 @@ end
 WorkspaceStatus() =
     WorkspaceStatus(:none, "Opening", "Opening the source…", true, nothing, Pair{String,String}[])
 
-include("Workspace/BuildMetrics.jl")
-include("Workspace/CacheBuffer.jl")
 
 """
 One open project/source pair and all package-managed state belonging to it.
