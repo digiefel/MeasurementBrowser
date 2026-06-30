@@ -741,6 +741,51 @@ function with_maintenance(work::Function, buffer::CacheBuffer)::Any
     end
 end
 
+"""
+Empty one buffer: drop every staged in-memory row and, for a disk-backed buffer, truncate its table.
+
+The whole point is that a caller never has to reach past the buffer to wipe a table: `clear!` owns both
+halves (memory + disk). The caller guarantees the buffer is quiescent — a Rebuild clears before the
+first append — so no flush is in flight on the write connection. A memory-only buffer has no table and
+just drops its rows.
+"""
+function clear!(buffer::CacheTableBuffer)::Nothing
+    lock(buffer.cond) do
+        empty!(buffer.entries)
+        buffer.pending_items = 0
+        buffer.pending_rows = 0
+        buffer.write_conn === nothing ||
+            DBInterface.execute(buffer.write_conn, "DELETE FROM $(buffer.name)")
+        notify(buffer.cond)
+    end
+    return nothing
+end
+
+"""
+Wipe every table behind the buffer, leaving the cache empty but schema-valid.
+
+Each bookkeeping buffer drops its rows and truncates its one table; the payload buffer fronts several
+tables (the `item_data` pointer, the per-shape measurement tables, and the shape registry), so it
+clears through the cascade helper and forgets the shapes it had created.
+"""
+function clear!(buffer::CacheBuffer)::Nothing
+    lock(buffer.payload.cond) do
+        empty!(buffer.payload.entries)
+        buffer.payload.pending_items = 0
+        buffer.payload.pending_rows = 0
+        if buffer.payload.write_conn !== nothing
+            _delete_all_cached_item_data!(buffer.payload.write_conn)
+            empty!(buffer.payload.known_schemas)
+        end
+        notify(buffer.payload.cond)
+    end
+    for table in (buffer.source_items, buffer.items, buffer.metadata, buffer.failures,
+                  buffer.interpreted, buffer.processed_memory)
+        clear!(table)
+    end
+    return nothing
+end
+
 """Aggregate pending counts: `items` staged durable rows, `rows` staged payload data rows."""
 function buffer_pending_counts(buffer::CacheBuffer)
     items = 0

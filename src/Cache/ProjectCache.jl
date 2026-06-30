@@ -512,25 +512,6 @@ function with_reader(work::Function, cachedb::CacheDB)::Any
     end
 end
 
-"""Run a multi-statement cache read against one committed snapshot."""
-function with_reader_snapshot(work::Function, cachedb::CacheDB)::Any
-    return with_reader(cachedb) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            result = work(connection)
-            DBInterface.execute(connection, "COMMIT")
-            result
-        catch error
-            try
-                DBInterface.execute(connection, "ROLLBACK")
-            catch rollback_error
-                throw(CompositeException(error, rollback_error))
-            end
-            rethrow()
-        end
-    end
-end
-
 """Create the cache tables if they do not already exist."""
 function ensure_schema!(connection)::Nothing
     DBInterface.execute(connection, """
@@ -744,18 +725,11 @@ end
 
 """Delete every index and item-data row, leaving an empty (but schema-valid) cache for a rebuild."""
 function clear_cache_index!(cachedb::CacheDB)::Nothing
+    clear!(cachedb.buffer)
+    # `meta` is the cache header (identity + schema version), not buffered table content, so it has no
+    # buffer to clear; the rebuild re-stamps it next via write_scan_identity!.
     with_maintenance(cachedb.buffer) do connection
-        DBInterface.execute(connection, "BEGIN TRANSACTION")
-        try
-            _delete_all_cached_item_data!(connection)
-            for table in ("item_failures", "metadata", "items", "source_items", "meta")
-                DBInterface.execute(connection, "DELETE FROM $table")
-            end
-            DBInterface.execute(connection, "COMMIT")
-        catch
-            DBInterface.execute(connection, "ROLLBACK")
-            rethrow()
-        end
+        DBInterface.execute(connection, "DELETE FROM meta")
     end
     return nothing
 end
