@@ -1,212 +1,190 @@
-"""Result delivered to one selected caller waiting for shared processing work."""
+"""Result delivered to one caller waiting for processed item data."""
 struct ProcessingResult
     item::Union{Nothing,AbstractDataItem}
     failure::Union{Nothing,CapturedException}
 end
 
-const PROCESSING_BACKGROUND_BATCH_ITEMS = 8
+"""Return the revision of work derived from one indexed item."""
+function item_revision(record::ItemRecord)::UInt64
+    return UInt64(hash((
+        record.source_item_id,
+        record.source_item_fingerprint,
+        record.id,
+        record.item_fingerprint,
+    )))
+end
 
-"""Start the bounded worker set that owns processing for one workspace."""
-function start_processing_workers!(workspace::Workspace)::Nothing
-    worker_count = max(1, Base.Threads.nthreads() ÷ 2)
-    for _ in 1:worker_count
-        worker = Base.Threads.@spawn processing_worker!(workspace)
-        push!(workspace.processing.workers, worker)
+"""Return the revision of collection statistics derived from current member statistics."""
+function collection_revision(workspace::Workspace, path::Tuple{Vararg{String}})::UInt64
+    node = workspace.index.hierarchy.index[path]
+    members = sort!(Tuple{String,UInt64}[
+        (record.id, UInt64(hash(get(workspace.index.item_stats, record.id, record.stats))))
+        for record in node.items
+    ])
+    return UInt64(hash((path, members)))
+end
+
+"""Start the bounded worker set shared by every work kind."""
+function start_work_workers!(workspace::Workspace)::Nothing
+    for _ in 1:max(1, Base.Threads.nthreads() ÷ 2)
+        push!(workspace.work.workers, Base.Threads.@spawn work_worker!(workspace))
     end
     return nothing
 end
 
-"""Stop accepting processing work and wait for all workers to release workspace state."""
-function stop_processing_workers!(workspace::Workspace)::Nothing
-    queue = workspace.processing
-    lock(queue.lock) do
-        queue.closed = true
-        notify(queue.condition; all=true)
+"""Stop accepting work and wait for all running callbacks."""
+function stop_work_workers!(workspace::Workspace)::Nothing
+    graph = workspace.work
+    lock(graph.lock) do
+        graph.closed = true
+        notify(graph.condition; all=true)
     end
-    foreach(wait, queue.workers)
+    foreach(wait, graph.workers)
     return nothing
 end
 
-"""Cancel every waiting processing job while allowing currently executing callbacks to finish."""
-function cancel_waiting_processing!(workspace::Workspace)::Nothing
-    queue = workspace.processing
-    canceled = ProcessingJob[]
-    lock(queue.lock) do
-        for (id, job) in collect(queue.jobs)
-            job.state === :waiting || continue
-            delete!(queue.jobs, id)
-            push!(canceled, job)
+"""Cancel queued work while allowing callbacks already running to finish."""
+function cancel_waiting_work!(workspace::Workspace)::Nothing
+    graph = workspace.work
+    canceled = WorkNode[]
+    lock(graph.lock) do
+        for node in values(graph.nodes)
+            node.state === :queued || continue
+            node.state = :missing
+            append!(canceled, [node])
         end
-        queue.completed += length(canceled)
-        notify(queue.condition; all=true)
+        empty!(graph.queue)
+        notify(graph.condition; all=true)
     end
-    failure = ProcessingResult(
-        nothing,
-        CapturedException(JobCancelled(), Any[]),
-    )
-    for job in canceled, waiter in job.waiters
-        put!(waiter, failure)
+    result = ProcessingResult(nothing, CapturedException(JobCancelled(), Any[]))
+    for node in canceled, waiter in node.waiters
+        put!(waiter, result)
     end
     return nothing
 end
 
-"""Reset idle processing bookkeeping before a clean profiling rebuild."""
-function reset_processing_queue!(workspace::Workspace)::Nothing
-    queue = workspace.processing
-    lock(queue.lock) do
-        isempty(queue.jobs) || error("Cannot reset processing while jobs are active")
-        empty!(queue.selected)
-        empty!(queue.background)
-        queue.background_index = 1
-        empty!(queue.source_locks)
-        empty!(queue.completed_items)
-        queue.total = 0
-        queue.completed = 0
+"""Reset idle work counters before a clean profiling rebuild."""
+function reset_work_graph!(workspace::Workspace)::Nothing
+    graph = workspace.work
+    lock(graph.lock) do
+        any(node -> node.state in (:queued, :running), values(graph.nodes)) &&
+            error("Cannot reset the work graph while work is active")
+        empty!(graph.nodes)
+        empty!(graph.queue)
+        empty!(graph.source_items)
+        empty!(graph.source_locks)
+        graph.total = 0
+        graph.completed = 0
+        graph.source_batch = 0
+        graph.source_batch_open = false
     end
     return nothing
 end
 
-"""
-Hand one processed value to the cache buffer's single write path.
-
-Statistics go to the disk-backed metadata buffer; a cacheable payload a view needs goes to the
-read-through payload buffer (see [`store_processed!`](@ref)).
-"""
-function enqueue_processed_write!(
+"""Queue one work revision once, promoting it when its requested priority increases."""
+function enqueue_work!(
     workspace::Workspace,
-    record::ItemRecord,
-    item::Union{Nothing,AbstractDataItem},
-    stats::Union{Nothing,MetadataDict},
-    cacheable::Bool,
-)::Nothing
-    store_processed!(workspace.cache.db, record, item, stats, cacheable)
-    return nothing
+    key::WorkKey,
+    revision::UInt64;
+    priority::Int,
+    dependencies::Vector{WorkKey}=WorkKey[],
+    waiter::Union{Nothing,Channel{Any}}=nothing,
+)::WorkNode
+    graph = workspace.work
+    return lock(graph.lock) do
+        graph.closed && error("Cannot queue work after the workspace has closed")
+        node = get(graph.nodes, key, nothing)
+        if node === nothing || node.revision != revision
+            node = WorkNode(
+                key,
+                revision,
+                :queued,
+                priority,
+                dependencies,
+                Channel{Any}[],
+                time_ns(),
+            )
+            graph.nodes[key] = node
+            push!(graph.queue, (key, revision))
+            graph.total += 1
+        elseif node.state === :missing
+            node.state = :queued
+            node.priority = priority
+            node.dependencies = dependencies
+            node.queued_ns = time_ns()
+            push!(graph.queue, (key, revision))
+            graph.total += 1
+        elseif node.state === :queued && priority > node.priority
+            node.priority = priority
+        end
+        waiter === nothing || push!(node.waiters, waiter)
+        notify(graph.condition)
+        node
+    end
 end
 
-"""Return the next valid waiting job, preferring selected items."""
-function take_processing_job!(queue::ProcessingQueue)::Union{Nothing,ProcessingJob}
+"""Take the highest-priority current work revision."""
+function take_work!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
     while true
-        # Closing abandons queued work at once: a worker finishes only its current item, never the rest
-        # of the queue. Without this, close_workspace! drains the whole backlog before workers exit, so
-        # the app cannot be shut down during a build.
-        queue.closed && return nothing
-        while !isempty(queue.selected)
-            id = pop!(queue.selected)
-            job = get(queue.jobs, id, nothing)
-            if job !== nothing && job.state == :waiting
-                job.state = :running
-                return job
+        graph.closed && return nothing
+        best_position = 0
+        best_priority = typemin(Int)
+        for (position, (key, revision)) in pairs(graph.queue)
+            node = get(graph.nodes, key, nothing)
+            node === nothing && continue
+            node.revision == revision && node.state === :queued || continue
+            if node.priority > best_priority
+                best_position = position
+                best_priority = node.priority
             end
         end
-        while queue.background_index <= length(queue.background)
-            id = queue.background[queue.background_index]
-            queue.background_index += 1
-            job = get(queue.jobs, id, nothing)
-            if job !== nothing && job.state == :waiting
-                job.state = :running
-                return job
-            end
+        if best_position > 0
+            key, revision = splice!(graph.queue, best_position)
+            node = get(graph.nodes, key, nothing)
+            node === nothing && continue
+            node.revision == revision && node.state === :queued || continue
+            node.state = :running
+            return node
         end
-        queue.closed && return nothing
-        wait(queue.condition)
+        empty!(graph.queue) || empty!(graph.queue)
+        wait(graph.condition)
     end
 end
 
-"""Return the next valid jobs, batching adjacent background work from one source item."""
-function take_processing_jobs!(queue::ProcessingQueue)::Vector{ProcessingJob}
-    job = take_processing_job!(queue)
-    job === nothing && return ProcessingJob[]
-    job.priority > 0 && return ProcessingJob[job]
-    !isempty(job.waiters) && return ProcessingJob[job]
-
-    jobs = ProcessingJob[job]
-    source_item_id_value = job.record.source_item_id
-    while length(jobs) < PROCESSING_BACKGROUND_BATCH_ITEMS &&
-          queue.background_index <= length(queue.background)
-        id = queue.background[queue.background_index]
-        next = get(queue.jobs, id, nothing)
-        if next === nothing || next.state != :waiting
-            queue.background_index += 1
-            continue
-        end
-        next.record.source_item_id == source_item_id_value || break
-        next.priority == 0 || break
-        next.state = :running
-        queue.background_index += 1
-        push!(jobs, next)
-    end
-    return jobs
-end
-
-"""
-Queue one item once, optionally promoting it and attaching a selected waiter.
-
-The queue is unbounded and this never blocks: it holds only data-less records, so producing work
-cannot stall the upstream scan. Processing reads each item's interpreted data back from the cache.
-"""
-function enqueue_processing!(
-    workspace::Workspace,
-    record::ItemRecord;
-    selected::Bool=false,
-)::Union{Nothing,Channel{Any}}
-    queue = workspace.processing
-    waiter = selected ? Channel{Any}(1) : nothing
-    scan_id = workspace.scan.id
-    skipped = lock(queue.lock) do
-        queue.closed && error("Cannot queue processing after the workspace has closed")
-        if !selected && get(queue.completed_items, record.id, 0) == scan_id
-            true
-        else
-            job = get(queue.jobs, record.id, nothing)
-            if job === nothing
-                job = ProcessingJob(
-                    record, :waiting, selected ? 1 : 0, Channel{Any}[], time_ns(), scan_id)
-                queue.jobs[record.id] = job
-                queue.total += 1
-                push!(selected ? queue.selected : queue.background, record.id)
-            elseif selected && job.state == :waiting && job.priority == 0
-                job.priority = 1
-                push!(queue.selected, record.id)
-            end
-            waiter === nothing || push!(job.waiters, waiter)
-            notify(queue.condition)
-            false
-        end
-    end
-    skipped && return nothing
-    return waiter
-end
-
-"""Return the lock that deduplicates source fallback for one source item."""
-function source_fallback_lock(queue::ProcessingQueue, source_item_id_value::String)::ReentrantLock
-    return lock(queue.lock) do
-        get!(() -> ReentrantLock(), queue.source_locks, source_item_id_value)
+"""Return the source fallback lock shared by items from one source item."""
+function source_fallback_lock(
+    graph::WorkDependencyGraph,
+    source_item_id_value::String,
+)::ReentrantLock
+    return lock(graph.lock) do
+        get!(() -> ReentrantLock(), graph.source_locks, source_item_id_value)
     end
 end
 
-"""Interpret one source item through the normal path and return the requested logical item."""
+"""Interpret one source item and return the requested logical item."""
 function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractDataItem
-    fallback_lock = source_fallback_lock(workspace.processing, record.source_item_id)
+    fallback_lock = source_fallback_lock(workspace.work, record.source_item_id)
     return lock(fallback_lock) do
-        cached = only(read_item_data(
-            workspace.cache.db, [record]; stage=:interpreted))
+        cached = only(read_item_data(workspace.cache.db, [record]; stage=:interpreted))
         cached === nothing || return cached
 
-        discovered = source_items(workspace.source)
-        position = findfirst(
-            item -> source_item_id(item) == record.source_item_id,
-            discovered,
-        )
-        position === nothing && error(
-            "Cannot load item '$(record.id)': source item '$(record.source_item_id)' " *
-            "is no longer present in source '$(source_id(workspace.source))'",
-        )
+        source_item = lock(workspace.work.lock) do
+            get(workspace.work.source_items, record.source_item_id, nothing)
+        end
+        if source_item === nothing
+            discovered = source_items(workspace.source)
+            position = findfirst(
+                item -> source_item_id(item) == record.source_item_id,
+                discovered,
+            )
+            position === nothing && error(
+                "Cannot load item '$(record.id)': source item '$(record.source_item_id)' " *
+                "is no longer present in source '$(source_id(workspace.source))'",
+            )
+            source_item = discovered[position]
+        end
         interpretation = interpret_source_item(
-            workspace.project,
-            workspace.source,
-            discovered[position],
-            workspace.profiler,
-        )
+            workspace.project, workspace.source, source_item, workspace.profiler)
         store_interpreted!(
             workspace.cache.db,
             interpretation.records,
@@ -220,192 +198,137 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     end
 end
 
-"""Load interpreted data from DuckDB, or the shared source fallback."""
-function interpreted_item(workspace::Workspace, job::ProcessingJob)::AbstractDataItem
-    cached = only(read_item_data(
-        workspace.cache.db, [job.record]; stage=:interpreted))
-    return cached === nothing ? source_fallback(workspace, job.record) : cached
-end
-
-"""Load interpreted data for same-source background jobs with one cache read."""
-function interpreted_items(
-    workspace::Workspace,
-    jobs::Vector{ProcessingJob},
-)::Vector{AbstractDataItem}
-    records = ItemRecord[job.record for job in jobs]
-    cached = read_item_data(workspace.cache.db, records; stage=:interpreted)
-    interpreted = Vector{AbstractDataItem}(undef, length(jobs))
-    for (index, job) in pairs(jobs)
-        item = cached[index]
-        interpreted[index] = item === nothing ? source_fallback(workspace, job.record) :
-            item::AbstractDataItem
-    end
-    return interpreted
-end
-
-"""Process one item, persist eligible data and stats, and return the view item."""
-function process_item(
-    workspace::Workspace,
-    job::ProcessingJob,
-)::AbstractDataItem
-    needs_payload = job.priority > 0 || !isempty(job.waiters)
-    if needs_payload
-        cached = only(read_item_data(
-            workspace.cache.db, [job.record]; stage=:processed))
-        cached === nothing || return cached
-    end
-    return process_item(workspace, job, interpreted_item(workspace, job))
-end
-
-"""
-Process one item when its interpreted data has already been loaded.
-
-The processed-cache short-circuit lives in the one-arg method (and only single, non-batched jobs ever
-need a payload — [`take_processing_jobs!`](@ref) never batches selected or waited-on work), so by the
-time we reach here the payload must be computed.
-"""
-function process_item(
-    workspace::Workspace,
-    job::ProcessingJob,
-    interpreted::AbstractDataItem,
-)::AbstractDataItem
+"""Run processing without computing or publishing statistics."""
+function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
+    interpreted = only(read_item_data(
+        workspace.cache.db, [record]; stage=:interpreted))
+    interpreted === nothing && (interpreted = source_fallback(workspace, record))
     process_started = time_ns()
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
-        kind=job.record.kind,
-        source_id=job.record.source_item_id,
-        item_id=job.record.id,
+        kind=record.kind,
+        source_id=record.source_item_id,
+        item_id=record.id,
     ) begin
         process(workspace.project, workspace.source, interpreted)
     end
-    record_scan_phase!(workspace.project, job.record.source_item_id, job.record.kind,
+    record_scan_phase!(workspace.project, record.source_item_id, record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
-    view_item = DataItem(job.record, item_data(processed))
-    item_stats = copy(job.record.stats)
-    stats_failure = try
-        stats_started = time_ns()
-        computed = Profiling.@profile_span workspace.profiler :project :item_stats Profiling.ProfileAttributes(
-            kind=job.record.kind,
-            source_id=job.record.source_item_id,
-            item_id=job.record.id,
-        ) begin
-            metadata_dict(compute_item_stats(
-                workspace.project, workspace.source, view_item))
+    return (item=DataItem(record, item_data(processed)), cacheable=cacheable(processed))
+end
+
+"""Run item statistics from the already-published processed result."""
+function run_item_stats(workspace::Workspace, record::ItemRecord)::MetadataDict
+    processed = only(read_item_data(workspace.cache.db, [record]; stage=:processed))
+    processed === nothing && error(
+        "Cannot compute statistics for item '$(record.id)': processed data is missing",
+    )
+    stats_started = time_ns()
+    computed = Profiling.@profile_span workspace.profiler :project :item_stats Profiling.ProfileAttributes(
+        kind=record.kind,
+        source_id=record.source_item_id,
+        item_id=record.id,
+    ) begin
+        metadata_dict(compute_item_stats(
+            workspace.project,
+            workspace.source,
+            DataItem(record, item_data(processed)),
+        ))
+    end
+    record_scan_phase!(workspace.project, record.source_item_id, record.kind,
+        :stats, (time_ns() - stats_started) / 1e9, Base.Threads.threadid())
+    return merge(copy(record.stats), computed)
+end
+
+"""Run one collection-stat callback against a stable snapshot of published item statistics."""
+function run_collection_stats(workspace::Workspace, key::String)::MetadataDict
+    path = collection_path_tuple(key)
+    records, stats = lock(workspace.work.lock) do
+        node = get(workspace.index.hierarchy.index, path, nothing)
+        node === nothing && error("Cannot summarize missing collection '$key'")
+        (copy(node.items), deepcopy(workspace.index.item_stats))
+    end
+    items = AbstractDataItem[
+        DataItem(ItemRecord(record; stats=get(stats, record.id, record.stats)), nothing)
+        for record in records
+    ]
+    return metadata_dict(collection_stats(
+        workspace.project,
+        workspace.source,
+        collect(path),
+        items,
+    ))
+end
+
+"""Execute one work node and emit a typed completion event."""
+function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
+    key = node.key
+    result = try
+        if key.kind === INTERPRET_SOURCE
+            source_item = lock(workspace.work.lock) do
+                get(workspace.work.source_items, key.entity, nothing)
+            end
+            source_item === nothing &&
+                error("Cannot interpret removed source item '$(key.entity)'")
+            interpret_source_item(
+                workspace.project, workspace.source, source_item, workspace.profiler)
+        elseif key.kind === PROCESS_ITEM
+            record = lock(workspace.work.lock) do
+                get(workspace.index.items, key.entity, nothing)
+            end
+            record === nothing && error("Cannot process removed item '$(key.entity)'")
+            run_processing(workspace, record)
+        elseif key.kind === ITEM_STATS
+            record = lock(workspace.work.lock) do
+                get(workspace.index.items, key.entity, nothing)
+            end
+            record === nothing && error("Cannot summarize removed item '$(key.entity)'")
+            run_item_stats(workspace, record)
+        else
+            run_collection_stats(workspace, key.entity)
         end
-        record_scan_phase!(workspace.project, job.record.source_item_id, job.record.kind,
-            :stats, (time_ns() - stats_started) / 1e9, Base.Threads.threadid())
-        merge!(item_stats, computed)
-        nothing
     catch error
         CapturedException(error, catch_backtrace())
     end
-    # Hand every processed payload to the buffer, not just the selected ones: a cacheable one is
-    # persisted so a reopen reads it back instead of reprocessing, and a non-cacheable one transits the
-    # memory-only buffer so a re-selection skips reprocessing while it stays resident. The buffer routes
-    # on `cacheable`; `view_item` is always a DataItem, so the policy is decided here on `processed`.
-    enqueue_processed_write!(
-        workspace,
-        job.record,
-        view_item,
-        stats_failure === nothing && !isempty(item_stats) ? item_stats : nothing,
-        cacheable(processed),
-    )
-    if stats_failure === nothing
-        put!(workspace.processing.events, (
-            kind=:stats,
-            item_id=job.record.id,
-            stats=item_stats,
-        ))
-    else
-        failure = stats_failure::CapturedException
-        message = "stats: " * sprint(showerror, failure.ex)
-        store_failure!(workspace.cache.db, job.record, message)
-        put!(workspace.processing.events, (
-            kind=:failure,
-            item_id=job.record.id,
-            source_item_id=job.record.source_item_id,
-            message,
-        ))
-    end
-    return DataItem(ItemRecord(job.record; stats=item_stats), item_data(processed))
-end
-
-"""Run queued processing jobs and deliver results without retaining completed item objects."""
-function finish_processing_job!(
-    queue::ProcessingQueue,
-    job::ProcessingJob,
-    result::ProcessingResult,
-)::Nothing
-    if result.failure !== nothing
-        put!(queue.events, (
-            kind=:failure,
-            item_id=job.record.id,
-            source_item_id=job.record.source_item_id,
-            message="process: " * sprint(showerror, result.failure.ex),
-        ))
-    end
-    waiters = lock(queue.lock) do
-        delete!(queue.jobs, job.record.id)
-        queue.completed_items[job.record.id] = job.scan_id
-        queue.completed += 1
-        notify(queue.condition; all=true)
-        copy(job.waiters)
-    end
-    for waiter in waiters
-        put!(waiter, result)
-    end
+    put!(workspace.work.events, (
+        kind=:work_complete,
+        key,
+        revision=node.revision,
+        result,
+    ))
     return nothing
 end
 
-function processing_worker!(workspace::Workspace)::Nothing
-    queue = workspace.processing
+"""Run work until workspace shutdown."""
+function work_worker!(workspace::Workspace)::Nothing
+    graph = workspace.work
     while true
-        jobs = lock(queue.lock) do
-            take_processing_jobs!(queue)
+        node = lock(graph.lock) do
+            take_work!(graph)
         end
-        isempty(jobs) && return nothing
-        interpreted = try
-            length(jobs) == 1 ? nothing : interpreted_items(workspace, jobs)
-        catch error
-            failure = ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
-            for job in jobs
-                store_failure!(
-                    workspace.cache.db,
-                    job.record,
-                    "process: " * sprint(showerror, error),
-                )
-                finish_processing_job!(queue, job, failure)
-            end
-            continue
-        end
-        for (index, job) in pairs(jobs)
-            result = try
-                item = Profiling.@profile_span workspace.profiler :processing :item Profiling.ProfileAttributes(
-                    kind=job.record.kind,
-                    source_id=job.record.source_item_id,
-                    item_id=job.record.id,
-                    wait_ns=Int64(time_ns() - job.queued_ns),
-                ) begin
-                    if interpreted === nothing
-                        process_item(workspace, job)
-                    else
-                        process_item(workspace, job, interpreted[index])
-                    end
-                end
-                ProcessingResult(item, nothing)
-            catch error
-                store_failure!(
-                    workspace.cache.db,
-                    job.record,
-                    "process: " * sprint(showerror, error),
-                )
-                ProcessingResult(nothing, CapturedException(error, catch_backtrace()))
-            end
-            finish_processing_job!(queue, job, result)
-        end
+        node === nothing && return nothing
+        execute_work!(workspace, node)
     end
 end
 
-"""Return processed items, sharing and promoting any work not already committed."""
+"""Queue one item-processing revision and optionally attach a selected waiter."""
+function enqueue_processing!(
+    workspace::Workspace,
+    record::ItemRecord;
+    selected::Bool=false,
+)::Union{Nothing,Channel{Any}}
+    waiter = selected ? Channel{Any}(1) : nothing
+    enqueue_work!(
+        workspace,
+        WorkKey(PROCESS_ITEM, record.id),
+        item_revision(record);
+        priority=selected ? 4 : 2,
+        dependencies=WorkKey[WorkKey(INTERPRET_SOURCE, record.source_item_id)],
+        waiter,
+    )
+    return waiter
+end
+
+"""Return processed items, joining and promoting shared work when required."""
 function request_processed_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
@@ -419,17 +342,18 @@ function request_processed_items(
             waiter = enqueue_processing!(workspace, record; selected=true)
             push!(waiters, (position, waiter::Channel{Any}))
         else
-            item isa AbstractDataItem || error(
-                "Processed cache returned $(typeof(item)) for item '$(record.id)'",
-            )
-            stats = get(workspace.index.item_stats, record.id, record.stats)
             loaded[position] = DataItem(
-                ItemRecord(record; stats=stats),
+                ItemRecord(record; stats=get(
+                    workspace.index.item_stats, record.id, record.stats)),
                 item_data(item),
             )
         end
     end
     for (position, waiter) in waiters
+        while !isready(waiter)
+            poll_workspace!(workspace)
+            yield()
+        end
         result = take!(waiter)::ProcessingResult
         result.failure === nothing || throw(result.failure)
         loaded[position] = result.item::AbstractDataItem

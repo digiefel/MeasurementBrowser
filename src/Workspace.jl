@@ -1,38 +1,45 @@
 module Workspace
 
-using DBInterface
 using Printf
 import ..Profiling
 
 import ..Cache:
     BuildMetrics,
+    CacheResultKey,
+    CacheResultKind,
+    CacheResultStatus,
     CacheDB,
+    COLLECTION_STATS_RESULT,
+    ITEM_STATS_RESULT,
+    PROCESSING_RESULT,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
-    buffer_has_pending_writes,
-    buffer_pending_counts,
-    cached_item_data_ids,
+    RESULT_FAILED,
+    RESULT_READY,
+    cache_built,
+    cache_has_pending_writes,
+    cache_pending_counts,
     clear_cache_index!,
     close_cache_db!,
+    delete_collection_stats!,
+    delete_source_item!,
     load_cache_index,
     open_cache_db,
     project_cache_identity,
     read_item_data,
     record_cache_phase!,
     reset_build_metrics!,
-    retain_source_items!,
     set_cache_memory_limit!,
-    start_cache_buffer!,
-    store_failure!,
+    start_cache!,
+    stop_cache!,
     store_interpreted!,
+    store_item_stats!,
+    store_collection_stats!,
     store_processed!,
+    store_result_failure!,
     store_scan_collection_data!,
-    store_stats!,
-    stop_cache_buffer!,
-    wait_cache_flushed!,
-    with_reader,
-    write_scan_identity!
+    write_meta_header!
 import ..ItemIndex:
     DataItem,
     Hierarchy,
@@ -44,6 +51,8 @@ import ..ItemIndex:
     SourceScan,
     apply_collection_parameters!,
     check_cancel,
+    collection_path_key,
+    collection_path_tuple,
     insert_item!,
     is_job_cancelled,
     metadata_dict,
@@ -52,12 +61,15 @@ import ..ItemIndex:
     with_cancel
 import ..Projects:
     AbstractDataSource,
+    AbstractDataSourceItem,
     AbstractDataItem,
     Project,
     close_source!,
     collection_stats,
     compute_item_stats,
     cacheable,
+    fingerprint,
+    has_collection_parameters,
     id,
     item_data,
     process,
@@ -122,48 +134,62 @@ mutable struct WorkspaceIndex
     analysis_errors::Dict{String,String}
 end
 
-"""One deduplicated processing request and the selected callers waiting for its result."""
-mutable struct ProcessingJob
-    record::ItemRecord
-    state::Symbol
-    priority::Int
-    waiters::Vector{Channel{Any}}
-    queued_ns::UInt64
-    scan_id::Int
+@enum WorkKind begin
+    INTERPRET_SOURCE
+    PROCESS_ITEM
+    ITEM_STATS
+    COLLECTION_STATS
 end
 
-"""Workspace-owned processing work; completed values are not retained after delivery."""
-mutable struct ProcessingQueue
+"""Stable identity of one result-producing operation."""
+struct WorkKey
+    kind::WorkKind
+    entity::String
+end
+
+"""One revision of a result-producing operation."""
+mutable struct WorkNode
+    key::WorkKey
+    revision::UInt64
+    state::Symbol
+    priority::Int
+    dependencies::Vector{WorkKey}
+    waiters::Vector{Channel{Any}}
+    queued_ns::UInt64
+end
+
+"""Workspace-owned dependency state and scheduling queue."""
+mutable struct WorkDependencyGraph
     lock::ReentrantLock
     condition::Base.Threads.Condition
-    jobs::Dict{String,ProcessingJob}
-    selected::Vector{String}
-    background::Vector{String}
-    background_index::Int
+    nodes::Dict{WorkKey,WorkNode}
+    queue::Vector{Tuple{WorkKey,UInt64}}
+    source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
     events::Channel{NamedTuple}
     workers::Vector{Task}
-    completed_items::Dict{String,Int}
     total::Int
     completed::Int
+    source_batch::Int
+    source_batch_open::Bool
     closed::Bool
 end
 
-function ProcessingQueue()::ProcessingQueue
-    queue_lock = ReentrantLock()
-    return ProcessingQueue(
-        queue_lock,
-        Base.Threads.Condition(queue_lock),
-        Dict{String,ProcessingJob}(),
-        String[],
-        String[],
-        1,
+function WorkDependencyGraph()::WorkDependencyGraph
+    work_lock = ReentrantLock()
+    return WorkDependencyGraph(
+        work_lock,
+        Base.Threads.Condition(work_lock),
+        Dict{WorkKey,WorkNode}(),
+        Tuple{WorkKey,UInt64}[],
+        Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),
         Channel{NamedTuple}(Inf),
         Task[],
-        Dict{String,Int}(),
         0,
         0,
+        0,
+        false,
         false,
     )
 end
@@ -227,12 +253,11 @@ mutable struct Workspace{S<:AbstractDataSource}
     selection::WorkspaceSelection
     cache::WorkspaceCache
     scan::WorkspaceJob
-    analysis::WorkspaceJob
     # The cache is the persistence side of the scan, not a separately cancellable job, so it needs
     # only a visible state and last error rather than a full WorkspaceJob.
     cache_state::Symbol
     cache_error::String
-    processing::ProcessingQueue
+    work::WorkDependencyGraph
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
@@ -279,10 +304,9 @@ function Workspace(
         WorkspaceSelection(),
         WorkspaceCache(identity, cache_db, nothing, nothing, :load),
         WorkspaceJob(),
-        WorkspaceJob(),
         :idle,
         "",
-        ProcessingQueue(),
+        WorkDependencyGraph(),
         Task[],
         metrics,
         profiler,
@@ -290,8 +314,8 @@ function Workspace(
         WorkspaceStatus(),
         false,
     )
-    start_cache_buffer!(cache_db.buffer)
-    start_processing_workers!(workspace)
+    start_cache!(cache_db)
+    start_work_workers!(workspace)
     return workspace
 end
 

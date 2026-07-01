@@ -1,262 +1,327 @@
 # Source Cache
 
-Scanning a source is inherently slow: the engine must enumerate every source item, interpret each one
-into data items, and then compute analysis values. The tree is known before analysis finishes. The
-**cache** stores the result of that work so the previous tree can appear immediately while a new scan
-checks the source.
-The cache is generated package data, fully rebuildable from the source files. Project code supplies
-source interpretation, processing, and statistics; the package decides where and when their reusable
-results are stored. Nothing in the cache is a source of truth: its only jobs are to let a reopened
-workspace show results quickly and to let processing skip recomputation. Because it is disposable, its
-on-disk shape is an implementation detail we are free to change.
+Scanning a source is inherently slow. The package must discover source items, interpret each one into
+logical items, process their data, and compute statistics. The source cache stores reusable results
+from that work so a reopened workspace can publish its previous index immediately and avoid repeating
+work whose inputs have not changed.
+
+The cache is generated package data. Source files and project code remain the source of truth.
+Project code supplies interpretation, processing, and statistics; the package decides where and when
+their reusable outputs are stored. The cache may always be rebuilt, and its on-disk layout is an
+internal implementation detail.
+
+The cache does not schedule work and does not own the published workspace index. It reports which
+persisted results already exist. The work dependency graph decides what remains to be computed, and
+`WorkspaceIndex` owns the records, hierarchy, parameters, statistics, and failures shown by the
+application.
 
 ## Vocabulary
 
-These words have one meaning each. The rest of this document and the code use them precisely.
+These terms have one meaning throughout the cache code:
 
-- **Buffer** — the high-level API to the database. Code never runs SQL or opens a database connection
-  directly; it talks to the buffer. The buffer holds recently touched rows in memory, decides how to
-  apply them to the database, serves reads, and writes to disk on its own schedule.
-- **Store into the buffer** — hand an object to the buffer (`append`, `edit`, or `delete`). This is the
-  only way data enters the cache.
-- **Flush** (also **write**) — the buffer draining its held rows to the database. This is the actual
-  disk write, and it happens in the background.
-- **Backpressure** — a disk-backed buffer making a *store* wait until a flush frees room. The only
-  thing that ever blocks. (Memory-only buffers never backpressure — they drop instead.)
+- **Result store** — one independently buffered set of keyed values, such as source-item rows,
+  logical-item rows, metadata, result states, or processed payloads. Most result stores map to one
+  table; processed payloads span their pointer table, schema registry, and physical DataFrame tables.
+- **Buffer** — bounded memory in front of one result store. It owns pending mutation intent, reads,
+  capacity, its connections when disk-backed, and background flushing.
+- **Append, edit, or delete** — a mutation submitted to a buffer. Submission changes memory only and
+  normally returns without touching DuckDB.
+- **Flush** — one buffer snapshot being applied to its result store in one DuckDB transaction.
+- **Backpressure** — a disk-backed payload store waiting because its configured row limit is full.
+  Bookkeeping stores are unlimited, and memory-only stores drop an incoming value instead of waiting.
+- **Published data** — completed data in `WorkspaceIndex`. Buffered or persisted cache rows are not
+  themselves the published workspace.
 
-There is no "producer" and no "consumer". There is code that sends things to the buffer, and there is
-the buffer.
+There is no separate producer/consumer framework. Package code submits semantic cache operations;
+`CacheDB` translates them into typed buffer mutations.
 
-## The buffer model
+## Ownership
 
-One buffer sits in front of **each** database table. Each buffer owns its own persistent write
-connection and its own persistent read connection, and runs its own background flush task. Because no
-two buffers (and no two tasks) ever write the same table, the database can never hit a write–write
-conflict — this is a structural guarantee, not something we police at runtime.
+`ProjectCache.jl` owns everything specific to MeasurementBrowser's project cache:
 
-The buffer is the single door to the cache. Every read and every change in the rest of the codebase
-goes through it.
+- `CacheDB` and the set of result stores it contains;
+- row types, keys, and cache result kinds;
+- the DuckDB schema, table names, columns, and SQL;
+- typed metadata encoding;
+- processed-payload schema detection and physical table storage;
+- source-item deletion cascades;
+- cache identity and reconstruction of `ProjectCacheIndex`;
+- semantic operations used by Workspace.
 
-### Two backing modes (disk-backed and memory-only)
+`CacheBuffer.jl` owns only the generic `CacheBuffer{R}` mechanism:
 
-A buffer is *bounded memory in front of something*. That something is one of two things:
+- keyed pending append, edit, and delete intent;
+- reset intent;
+- coalescing repeated mutations;
+- payload-row accounting and backpressure;
+- persistent read and write connections for a disk-backed buffer;
+- one background flush loop;
+- memory-first reads;
+- permanent closure.
 
-- **Disk-backed.** The common case: the buffer sits in front of a DuckDB table, flushes its held rows
-  to it on a schedule, and serves reads from memory or that table. This is everything described below
-  unless noted.
-- **Memory-only.** Some data has **no disk backing at all** — most importantly the
-  interpreted-but-unprocessed payloads. There is no point writing them: they are a short-lived
-  intermediate that processing consumes to produce the processed data we actually cache, and writing
-  them was historically the dominant cache-write cost. A memory-only buffer is a bounded in-memory store
-  with **no connection, no table, and no flush task**. It is drained not by a flush but by
-  **consumption** (processing taking an item) and by eviction under the memory ceiling. Everything else
-  is the same machinery — the memory ceiling, the single read door — but it is **best-effort** and
-  **never throttles its producer**: on overflow it simply drops a payload (the item's record is written
-  to its own disk-backed buffer regardless), and a later read that misses recomputes from source. So the
-  tree fills at interpretation speed no matter how slow processing is. Dropping is safe at any cost ratio
-  because the buffer only overflows when interpretation is outrunning processing — exactly when
-  re-interpreting is the cheap stage.
+The generic buffer names no concrete row type, table, column, cache stage, or ProjectCache type.
+`CacheDB` owns the buffers and the DuckDB database handle, but it does not own a general-purpose
+connection.
 
-This is one mechanism in two configurations. It also unifies the awkward case: a **non-cacheable**
-processed item behaves exactly like an interpreted payload — memory-only, never written, recomputed from
-source when asked for again. The memory ceiling bounds both, so a stream of either can never leak.
+Workspace code uses semantic Cache operations. It never runs SQL, opens a DuckDB connection, names
+cache storage, accesses an individual buffer, or decides how a result is written.
 
-### Storing (potentially blocking)
+## One mechanism, two backing modes
 
-Storing an object normally returns immediately: it goes into the buffer's in-memory rows and is instantly
-visible to reads. A store into a **disk-backed** buffer blocks in exactly one situation — the buffer is
-over its memory ceiling — and only until a background flush drains it below the ceiling. The flush never
-blocks anything; backpressure is just the buffer holding the store back to keep memory bounded. A store
-into a **memory-only** buffer never blocks: on overflow it drops instead (see "Two backing modes").
-Reads are never blocked by either, and a flush in progress never blocks a store.
+### Disk-backed buffers
 
-The memory ceiling counts the rows that actually cost memory — the payload data rows. The bookkeeping
-buffers (records, metadata, failures) hold tiny rows and in practice never reach their ceiling, so they
-effectively never backpressure; the ceiling exists to bound the payload buffers.
+A disk-backed buffer opens one persistent read connection and one persistent write connection when it
+is constructed, then immediately launches its background flush loop. Reads and flushes may proceed
+concurrently because they never share a connection across tasks. There is no connection exposed to
+ProjectCache callers and no maintenance connection hidden behind a callback.
 
-### Flushing (background, periodic, non-blocking)
+Source items, logical items, metadata, failures, result states, and cacheable processed payloads are
+disk-backed.
 
-Each disk-backed buffer flushes its held rows to its table when a short interval has elapsed (a couple
-of seconds) or when its memory ceiling is hit, whichever comes first — one database transaction per flush, using
-DuckDB's bulk Appender. A flush that fails is logged and dropped; the affected data is simply
-recomputed from source on the next read, and the flush task keeps running (a dead flush task would
-leave a blocked sender stuck forever).
+### Memory-only buffers
 
-### Reading (memory first, then disk)
+Some item data is useful only as a short-lived input to downstream work:
 
-A read asks the buffer. If the buffer still holds the rows in memory, it answers from memory with no
-disk trip. Otherwise it reads them from the database over its persistent read connection. The caller
-cannot tell which happened — that is the point of a single door.
+- interpreted item data waiting to be processed;
+- processed data that the project declares non-cacheable.
 
-If the buffer has neither the rows in memory nor on disk, the read is a miss. The layer above the
-buffer then falls back to the source (re-reading and re-interpreting the original file). So the full
-lookup order for a disk-backed item is: **buffer memory → database → source**. For a memory-only buffer
-there is no database step, so the order is just **buffer memory → source**. The buffer owns the
-in-memory (and, when disk-backed, the database) step; the workspace owns the source fallback.
+These values use the same keyed buffer mechanism without a connection or flush task. They are never
+written to DuckDB. If an incoming value would exceed the configured row limit, it is not retained.
+A later miss causes the required upstream work to be performed again.
 
-### The buffer API (append / edit / delete / read)
+This prevents interpretation from being throttled by processing and prevents non-cacheable processed
+data from becoming an unbounded Julia object cache.
 
-The buffer exposes the smallest possible verb set (illustrative signatures; the verb names are what
-matter):
+## Capacity and backpressure
 
-- `append(buffer, key, object)` — add new rows.
-- `edit(buffer, key, object)` — update existing rows.
-- `delete(buffer, key)` — remove rows.
-- `read(buffer, key)` — read rows back (memory hit, otherwise disk).
+Capacity is counted directly in retained payload rows. ProjectCache supplies the row limit when it
+constructs each payload buffer and defines how that payload type reports its DataFrame row count.
+There is no estimated byte weight.
 
-Multiple dispatch on the object's type selects the right table and the right way to append/edit/delete
-it. The generic buffer machinery never names a table or a column; each table is described by a small
-row type plus the dispatch methods for it. Adding a table later is a struct plus a couple of methods.
+Bookkeeping buffers have no row limit. They still report the number of pending keys for workspace
+status, but they never call the payload row-count operation and never backpressure.
 
-> **Scope limitation (first implementation).** Only `append` is implemented. The streaming write path
-> is **append-only**: during a build we only ever add rows. `edit` and `delete` are the intended API
-> but are not built yet, and the operations that genuinely need them are out of scope for now (see
-> "Mutations, deferred" below). This is a deliberate scope cut to get a correct, simple buffer landed;
-> the code and the API carry comments marking it.
+A disk-backed payload submission waits only when accepting it would exceed the row limit and another
+pending value can be flushed to make room. One oversized value is accepted when the buffer is
+otherwise empty and is made immediately eligible for flushing, so it cannot deadlock.
+
+A memory-only payload submission never waits. If replacing or adding the value would exceed its row
+limit, the incoming value is not retained.
+
+## Mutation intent
+
+The buffer exposes four mutation operations:
+
+```julia
+append!(buffer, key, row)
+edit!(buffer, key, row)
+delete!(buffer, key)
+reset!(buffer)
+```
+
+They update pending memory only. Repeated operations for one key coalesce to the final useful intent:
+
+| Pending sequence | Final pending operation |
+|---|---|
+| append followed by append or edit | append the latest value |
+| append followed by delete | no operation |
+| edit followed by edit | edit to the latest value |
+| edit followed by delete | delete |
+| delete followed by append or edit | edit or replace |
+| delete followed by delete | delete |
+
+Preserving this distinction matters. A pure append batch can use DuckDB's bulk Appender. An edit to
+an ordinary keyed table can use a batched update, upsert, or merge without first deleting every row.
+A processed-payload replacement is different: its physical shape and row count may change, so its
+transaction removes the old physical rows before appending the replacement and its pointer.
+
+`reset!` discards earlier pending operations, makes reads ignore committed rows, and marks the next
+flush to clear the complete result store before applying mutations submitted after the reset.
+
+## Flushing
+
+Each disk-backed buffer has one background loop. Pending work becomes flushable when:
+
+- the existing flush deadline is reached;
+- the payload row limit is reached;
+- the buffer is closing.
+
+Continued submissions do not move the existing deadline. A flush snapshots the already-coalesced
+intent and calls one ProjectCache extension point:
+
+```julia
+_flush_to_db!(buffer, snapshot)
+```
+
+The ProjectCache method inspects the whole snapshot and chooses the fewest suitable batched statements
+for that result store. It uses `buffer.write_connection` and performs exactly one transaction
+containing the snapshot's reset, appends, edits, and deletes. There are no separate append, edit, or
+delete flush hooks.
+
+Submissions may continue while database I/O runs. After a successful commit, the buffer removes only
+the exact mutation revisions present in the snapshot. A newer mutation for the same key remains
+pending.
+
+Cache outputs are reproducible. If a background flush fails, the error is reported and that snapshot
+is discarded so the flush task remains alive and a blocked submission cannot wait forever. Missing
+outputs are recomputed when demanded. Cross-buffer crash atomicity and automated cache repair are
+separate concerns.
+
+## Reads
+
+The only generic read operations are:
+
+```julia
+read(buffer, key)
+read(buffer)
+```
+
+ProjectCache supplies a result store's disk-reading behavior when it constructs the buffer. That
+behavior remains private to the buffer and cannot be called as a side-door disk read.
+
+A keyed read observes pending reset and mutation state before consulting DuckDB, then rechecks pending
+state after the database read. A complete read obtains committed rows and overlays pending
+appends and edits, removes pending deletes, or starts from an empty committed view while reset is
+pending.
+
+The full lookup order for disk-backed processed data is:
+
+```text
+pending buffer value → DuckDB value → required upstream work
+```
+
+For memory-only interpreted or processed data it is:
+
+```text
+pending buffer value → required upstream work
+```
+
+Loading `ProjectCacheIndex` reads data-less rows, processed-payload pointers, and result states. It
+does not materialize processed payload bodies merely to determine which work is already satisfied.
+
+## Lifecycle and connections
+
+A buffer is live when constructed. It is never started, stopped, paused, or restarted.
+
+`close!` is the only lifecycle transition. It rejects new operations, wakes the flush loop, drains the
+final snapshot, waits for the loop to finish, closes the owned read and write connections, and
+permanently closes the buffer. Repeated closure is an error.
+
+The tiny `meta` header is the only unbuffered data. ProjectCache uses explicit, short-lived
+connections for:
+
+- initial schema creation and validation before buffer construction;
+- reading, writing, or clearing the meta header;
+- the final checkpoint after every buffer has closed.
+
+These are named operations, not a general connection callback. There is no `with_reader`,
+`with_maintenance`, or equivalent escape hatch.
 
 ## Stored state
 
-DuckDB stores source-item fingerprints, data-less item records, typed parameters and statistics,
-failures, and only **one** item-data stage:
+The fixed DuckDB stores are:
 
-- `processed`: data returned by `process` and consumed by views.
+- `meta` — schema version plus project and source identity;
+- `source_items` — source-item ID, fingerprint, path, and timestamp;
+- `items` — data-less logical-item records and their source ownership;
+- `metadata` — typed item parameters, item statistics, collection parameters, and collection
+  statistics;
+- `item_failures` — source interpretation and logical-item failures published with the index;
+- `result_states` — independent processing, item-statistics, and collection-statistics outcomes;
+- `item_data` — pointers to cacheable processed payloads;
+- `dataframe_schemas` — the ordered user-column names belonging to each payload shape;
+- per-shape DataFrame tables — native rows of processed tabular payloads.
 
-The other stage, `interpreted` (data returned by `data_items` before `process`), is **never written to
-DuckDB** — it lives in the memory-only interpreted buffer and is recomputed from source on a miss. Whether
-an item has been processed is **derived** from a processed entry existing — it is not stored as a flag.
+Queued and running work is not persisted. It belongs to the work dependency graph.
 
-Cacheable `AbstractDataFrame` payloads live in native DuckDB tables, one physical table per distinct
-column shape (column names **and** element types — same names with different types is a different
-shape). The first time a shape is seen, its table is created with typed columns; after that, payload
-rows are appended row by row with the Appender. Each stored payload gets a compact integer surrogate
-(`seq`) from a catalog sequence; the payload rows and the pointer row that locates them share that
-`seq` instead of repeating the long item id. The payload rows and their pointer are flushed in the
-**same transaction**, so a reader can never see a pointer whose data is not yet on disk. A zero-row
-payload still gets a pointer and is reconstructed as an empty, correctly-typed result on read.
+### Persisted result state
 
-A disk-backed payload buffer is also a **read-through cache**: a freshly produced payload is held in
-memory so it reads back instantly, and is evicted only **after** its rows are durably committed — and
-only if the in-memory copy is still the exact object that was written (a later store may have replaced
-it). That ordering is why a reader never reaches a pointer whose payload isn't on disk yet.
+Successful empty statistics produce no metadata rows, so absence of metadata cannot mean "not
+computed." `result_states` therefore records:
 
-Two internal columns ride alongside the user's columns in every measurement table: the `seq` surrogate
-and a within-payload row index. They use a reserved `__mb_` prefix that user column names may not take,
-so they can never collide. Identifiers derived from data are made SQL-safe before use — a shape's table
-name is its content hash rendered as hex (never user text), and user column names are quoted in the
-generated `CREATE TABLE`. On read, a cached payload counts as a hit only if its stored fingerprints match
-the requested record's; a mismatch is a stale miss, not a hit.
+- processing failure;
+- item-statistics success, including an empty result;
+- item-statistics failure;
+- collection-statistics success, including an empty result;
+- collection-statistics failure.
 
-`cacheable(item)` decides whether the **processed** payload is written to disk; interpreted payloads are
-never written regardless (they are always memory-only). The built-in `DataItem` DataFrame path is
-cacheable; the low-level default is false. A **non-cacheable processed item is therefore handled exactly
-like an interpreted one** — held in a memory-only buffer, never written, dropped on overflow or once it
-has been consumed, and recomputed from source on a later request. Keeping such items resident
-indefinitely would be an unbounded memory leak, so the memory ceiling bounds them like everything else.
+Cacheable processed success is represented by its valid payload pointer rather than a duplicate result
+state. Non-cacheable processed success remains memory-only.
 
-### Tables
+These outcomes are independent. Processing failure prevents item statistics for that item revision,
+but an item-statistics failure does not erase a successfully processed payload. Collection-statistics
+failure does not alter member item statistics.
 
-The fixed base tables, created once at startup before any per-table buffer opens its connection:
+### Processed DataFrames
 
-- `source_items` — one row per discovered source item: id, fingerprint (hex text), path, timestamp.
-- `items` — one data-less record per logical item: id, source-item id, label, kind, collection.
-- `metadata` — typed key/value rows (a compact EAV encoding). Item parameters, item statistics, node
-  parameters, and node statistics are all `metadata` rows, distinguished by a scope tag.
-- `item_failures` — one row per failed item: item id, source-item id, message.
-- `item_data` — the **pointer** table: `(item_id, seq, …)` locating a stored payload by its `seq`.
+Cacheable processed `AbstractDataFrame` values are stored in native DuckDB tables. One physical table
+is used for each ordered combination of user column names and element types. The shape's stable digest
+becomes an internal storage ID and table name; user text is never used directly as a table name.
 
-Each base table has its own buffer. The `item_data` pointer table and the per-shape **measurement
-tables** (created on first sight of each payload shape) share one owning buffer, so a payload and its
-pointer commit together. Interpreted payloads have no table — they are memory-only.
+Each payload receives a compact integer sequence. Its `item_data` pointer and all physical rows share
+that sequence instead of repeating the logical item ID in every row. Two reserved internal columns
+store the sequence and the row order. User-derived identifiers are quoted, and the reserved internal
+prefix cannot collide with user columns.
 
-## Reads under load
+The pointer, schema registration when needed, and physical payload rows are committed in one
+transaction. A reader cannot observe a committed pointer without its payload. A zero-row DataFrame
+still has a pointer and schema, so it reconstructs as an empty value with the correct columns and
+types.
 
-DuckDB is the only package-level shared cache; there is no Julia object cache layered on top. An active
-plot or inspector owns the item objects it currently displays; a later selection reads them back
-through the buffer (memory or disk) or repeats the required upstream work. Reads use scalar `seq`
-predicates and reconstruct DataFrames as views over the query result columns rather than copying them
-again. DuckDB's buffer pool is limited to 1 GiB by default through `CACHE_MEMORY_LIMIT_MIB`;
-`set_cache_memory_limit!` changes the default or an open workspace.
+A processed cache entry is accepted only when its stored source-item and item fingerprint hashes match
+the requested `ItemRecord`. A mismatch is a cache miss.
 
-## Mutations, deferred
+## Source changes
 
-The cold rebuild — the common path, and the one we benchmark — is naturally append-only. The
-operations that genuinely change existing rows are:
+ProjectCache exposes one semantic cascade for removing a source item:
 
-- **Reprocess** an item that already had processed data (replace its processed payload and statistics).
-- **Rescan** a source item whose fingerprint changed (replace its records and dependent results).
-- **Clear a failure** when an item that previously failed later succeeds.
+```julia
+delete_source_item!(cache, source_item_id)
+```
 
-These need per-key `edit`/`delete` on the streaming path, which the first implementation does not
-provide. Until they exist, **reprocess**, **rescan-of-changed-source**, and **clear-a-failure** are not
-incremental yet. They are surfaced as an explicit *work-in-progress* limitation (a quick, honest "not
-implemented" marker rather than a silent half-update). The supported way to pick up such a change is a
-full **Rebuild Cache** — a wipe-and-append, which is pure append and needs no per-key `edit`/`delete`.
+It resolves the logical items owned by that source through buffer reads and submits typed deletes for
+the source row, its item rows, item-scoped metadata, failures, result states, disk payloads, and
+memory-only values. It does not decide which collection statistics are affected.
 
-The few bulk/DDL mutations that the cache *does* perform — stamping the identity rows, wiping for a
-Rebuild, deleting the source items a scan no longer contains, and the closing checkpoint — still go
-through the buffer, never a second writer. Each runs while the per-table buffers are quiescent (the
-identity stamp and the deletes are opening moves before any append; the checkpoint runs after the
-buffers stop), so the buffer performs them on a transient maintenance connection it opens and closes
-for the operation. The single-door guarantee holds: there is no long-lived writer parallel to the
-buffers.
+The work dependency layer separately identifies affected collection paths and calls the semantic
+collection-statistics deletion operation. A changed source is represented as buffered deletion of its
+old subtree followed by buffered stores for the replacement. Per-key coalescing turns retained keys
+into replacement edits before any database transaction is chosen.
 
-Designing per-key reprocess and rescan into the buffer's `edit`/`delete` verbs — so they become
-incremental yet fast and batched — is the next piece of work after this buffer lands.
+No maintenance cascade writes directly to DuckDB.
 
-## Location and identity
+## Cache identity
 
-Each project has one predictable DuckDB file:
+Each project has one predictable cache file:
 
 ```text
 DEPOT_PATH[1]/measurementbrowser/<project-name>/cache.duckdb
 ```
 
-The project name must be one safe path component and is used unchanged. The cache records the project
-name and `source_id(source)`. Opening the same project name for a different source fails rather than
-creating another cache. Old hash-named caches are ignored.
+The project name must be one safe path component and is used unchanged. The meta header binds the file
+to the project name and `source_id(source)`. A cache belonging to a different source fails clearly
+instead of silently replacing valid data.
 
-## Recovery
+Old schema migration is not supported by this refactor. An incompatible generated cache fails with a
+specific error and can be explicitly rebuilt from its source.
 
-Corrupt or schema-incompatible generated caches are rebuilt automatically, because no useful user
-choice exists. A project/source identity conflict is different: it fails clearly, because silently
-replacing another source's valid cache would lose useful state. Failures remain attached to the
-smallest source item, logical item, or collection that failed, and do not invalidate unrelated
-committed work.
+DuckDB's buffer pool is configured when a cache is opened. `CACHE_MEMORY_LIMIT_MIB` controls the
+default for subsequently opened caches.
 
-## What we rely on from DuckDB (and what we don't)
+## Concurrency assumptions
 
-DuckDB is mostly safe for concurrent use across connections; we do not assume otherwise. We rely on
-only two specific, observed facts:
+DuckDB permits concurrent connections inside one process and append transactions do not conflict.
+Updates or deletes of the same rows can conflict.
 
-- **Concurrent `CREATE TABLE` from different connections can conflict on the catalog.** We avoid this
-  by giving the measurement-payload tables a single owning buffer that creates them, and by creating
-  the fixed base tables once at startup before the per-table connections open.
-- **`append_blob` is broken in our DuckDB.jl version.** Fingerprints are therefore stored as hex text
-  so the bulk Appender writes them inline.
+The cache avoids ambiguous ownership structurally:
 
-Everything else (multiple connections reading and writing different tables at once, snapshot reads on a
-persistent read connection) is used as normal supported behaviour.
+- each disk-backed result store has one owning buffer with separate persistent read and write
+  connections;
+- only that buffer mutates the store;
+- one flush contains the complete coalesced snapshot transaction;
+- payload pointer, schema, and physical-row mutations are coordinated by the single payload buffer;
+- fixed schema creation finishes before buffer connections are opened;
+- meta and checkpoint operations are explicit and do not run as alternate writers to buffered stores.
 
-DuckDB's optimistic concurrency model backs this up: **appends never conflict**, even on the same table,
-and only two transactions editing the *same row* conflict (the second fails). That is why append-only
-streaming is conflict-free regardless of how many sources fan in, and why the later `edit`/`delete`
-verbs route every mutation of a table through that table's single owning buffer.
-
-### Handling Concurrency (https://duckdb.org/docs/current/connect/concurrency)
-
-#### Single Process
-In in-process mode, DuckDB has two configurable options for concurrency:
-Read-write mode: one process can both read and write to the database.
-Read-only mode: multiple processes can read from the database, but no processes can write (access_mode = 'READ_ONLY').
-When using read-write mode, DuckDB supports multiple writer threads using a combination of MVCC (Multi-Version Concurrency Control) and optimistic concurrency control (see Concurrency within a Single Process), but all within that single writer process. The reason for this concurrency model is to allow for the caching of data in RAM for faster analytical queries, rather than going back and forth to disk during each query. It also allows the caching of function pointers, the database catalog, and other items so that subsequent queries on the same connection are faster.
-#### Concurrency Model within a Single Process
-DuckDB supports concurrency within a single process according to the following rules. As long as there are no write conflicts, multiple concurrent writes will succeed. Appends will never conflict, even on the same table. Multiple threads can also simultaneously update separate tables or separate subsets of the same table. Optimistic concurrency control comes into play when two threads attempt to edit (update or delete) the same row at the same time. In that situation, the second thread to attempt the edit will fail with a conflict error.
-#### Multiple Processes
-Writing to DuckDB's native database format from multiple processes is supported through the Quack remote protocol, which turns DuckDB into a client-server database. Quack in beta stage as of DuckDB v1.5.2, and is expected to become mature by DuckDB v2.0 in fall 2026.
-For a stable solution, consider using the DuckLake format with PostgreSQL as the catalog database. By coordinating through a central PostgreSQL catalog, DuckDB instances can achieve concurrent read-writes on the same database. The DuckLake v1.0 specification and its DuckDB implementation, both intended for production use, were published in April 2026.
-
-### Optimistic Concurrency Control
-DuckDB uses optimistic concurrency control, an approach generally considered to be the best fit for read-intensive analytical database systems as it speeds up read query processing. As a result any transactions that modify the same rows at the same time will cause a transaction conflict error:
-```
-Transaction conflict: cannot update a table that has been altered!
-```
+The design does not depend on a hidden global writer, a maintenance connection, or callers waiting for
+buffers to flush before they can read the logical cache state.

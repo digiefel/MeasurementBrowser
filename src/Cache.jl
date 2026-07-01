@@ -5,17 +5,13 @@ import ..ItemIndex:
     ItemRecord,
     ItemFailure,
     Hierarchy,
-    HierarchyNode,
     SourceScan,
     MetadataValue,
     MetadataDict,
     metadata_dict,
     insert_item!,
-    collection_path_key,
     collection_path_tuple,
-    check_cancel,
-    emit_progress,
-    source_parameter_state
+    emit_progress
 import ..Projects:
     AbstractDataItem,
     cacheable,
@@ -32,8 +28,8 @@ using SHA
 using Serialization
 using Dates
 
-# CacheBuffer is the lowest level (raw per-table DuckDB access); it names no higher-level type, so it
-# is included first. ProjectCache wraps it: its CacheDB holds a CacheBuffer and drives it.
+# CacheBuffer is the domain-free keyed mechanism and is included first. ProjectCache defines every
+# concrete row, SQL operation, and the CacheDB that owns the typed buffers directly.
 include("Cache/BuildMetrics.jl")
 include("Cache/CacheBuffer.jl")
 include("Cache/ProjectCache.jl")
