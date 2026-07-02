@@ -36,6 +36,8 @@ import ..Cache:
     set_cache_memory_limit!,
     start_cache!,
     stop_cache!,
+    store_interpreted_data!,
+    store_interpreted_records!,
     store_interpreted!,
     store_item_stats!,
     store_collection_stats!,
@@ -275,6 +277,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
     profile_restart_pending::Bool
+    poll_lock::ReentrantLock
     status::WorkspaceStatus
     closed::Bool
 end
@@ -340,11 +343,13 @@ function Workspace(
         metrics,
         profiler,
         false,
+        ReentrantLock(),
         WorkspaceStatus(),
         false,
     )
     start_cache!(cache_db)
     start_work_workers!(workspace)
+    start_workspace_pump!(workspace)
     return workspace
 end
 

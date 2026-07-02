@@ -401,13 +401,8 @@ end
 # The domain write/read surface over the generic stores: pipeline stages and `ItemRecord`s map onto
 # RowStore rows and TabularFamilyStore batches. The stores know none of this; they buffer typed rows.
 
-"""Store one source item's interpreted result: data-less records to disk-backed buffers, payloads to memory. Item statistics are published independently."""
-function store_interpreted!(cache::CacheDB, records::Vector{ItemRecord},
-        data::Vector{<:AbstractDataItem})::Nothing
-    length(records) == length(data) || throw(ArgumentError(
-        "Cannot store interpreted data: received $(length(records)) records and " *
-        "$(length(data)) items; the vectors must align one-to-one",
-    ))
+"""Store one source item's lightweight interpreted records. Item data is stored separately."""
+function store_interpreted_records!(cache::CacheDB, records::Vector{ItemRecord})::Nothing
     started = time_ns()
     for record in records
         hex, hash = _encode_fingerprint(record.source_item_fingerprint)
@@ -422,14 +417,35 @@ function store_interpreted!(cache::CacheDB, records::Vector{ItemRecord},
                 metadata_value_to_row(Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key), value))
         end
     end
-    for (record, item) in zip(records, data)
-        append!(cache.interpreted, record.id, item)
-    end
     record_cache_phase!(
         cache.metrics.interpreted_write_ns,
         cache.metrics.interpreted_writes,
         started,
     )
+    return nothing
+end
+
+"""Store one source item's interpreted data in the memory-only interpreted buffer."""
+function store_interpreted_data!(
+    cache::AbstractCacheDB,
+    records::Vector{ItemRecord},
+    data::Vector{<:AbstractDataItem},
+)::Nothing
+    length(records) == length(data) || throw(ArgumentError(
+        "Cannot store interpreted data: received $(length(records)) records and " *
+        "$(length(data)) items; the vectors must align one-to-one",
+    ))
+    for (record, item) in zip(records, data)
+        append!(cache.interpreted, record.id, item)
+    end
+    return nothing
+end
+
+"""Store one source item's interpreted result: records to disk-backed buffers, payloads to memory."""
+function store_interpreted!(cache::AbstractCacheDB, records::Vector{ItemRecord},
+        data::Vector{<:AbstractDataItem})::Nothing
+    store_interpreted_records!(cache, records)
+    store_interpreted_data!(cache, records, data)
     return nothing
 end
 
@@ -510,20 +526,8 @@ function store_collection_stats!(
     return nothing
 end
 
-function store_interpreted!(
-    cache::MemoryCacheDB,
-    records::Vector{ItemRecord},
-    data::Vector{<:AbstractDataItem},
-)::Nothing
-    length(records) == length(data) || throw(ArgumentError(
-        "Cannot store interpreted data: received $(length(records)) records and " *
-        "$(length(data)) items; the vectors must align one-to-one",
-    ))
-    for (record, item) in zip(records, data)
-        append!(cache.interpreted, record.id, item)
-    end
-    return nothing
-end
+"""Memory cache has no durable record tables; records are published to `WorkspaceIndex`."""
+store_interpreted_records!(::MemoryCacheDB, ::Vector{ItemRecord})::Nothing = nothing
 
 store_result_failure!(::MemoryCacheDB, ::CacheResultKey, ::AbstractString, ::AbstractString)::Nothing =
     nothing

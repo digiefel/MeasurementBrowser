@@ -34,6 +34,7 @@ Cancel all work owned by a workspace and wait for it to stop.
 """
 function close_workspace!(workspace::Workspace)::Nothing
     workspace.closed && return nothing
+    workspace.closed = true
     cancel_job!(workspace.scan)
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
@@ -46,7 +47,6 @@ function close_workspace!(workspace::Workspace)::Nothing
             close_cache_db!(workspace.cache.db)
         finally
             close_source!(workspace.source)
-            workspace.closed = true
         end
     end
     return nothing
@@ -141,6 +141,16 @@ function track_task!(workspace::Workspace, task::Task)::Task
     return task
 end
 
+"""Keep model state moving even when no GUI frame is polling it."""
+function start_workspace_pump!(workspace::Workspace)::Task
+    return track_task!(workspace, Base.Threads.@spawn begin
+        while !workspace.closed
+            poll_workspace!(workspace)
+            sleep(0.01)
+        end
+    end)
+end
+
 """Request cancellation of one running workspace operation."""
 function cancel_job!(job::WorkspaceJob)::Nothing
     job.cancel_token === nothing && return nothing
@@ -228,16 +238,16 @@ function remove_source_item_output!(
     return old_records, invalidated
 end
 
-"""Atomically publish one source item's replacement records after validating duplicate IDs."""
-function replace_source_item_output!(
+"""Publish one source item's current records after validating duplicate IDs."""
+function publish_source_item_records!(
     workspace::Workspace,
     source_item_id_value::String,
-    replacement::SourceItemInterpretation,
+    records::Vector{ItemRecord},
 )::Tuple{Vector{ItemRecord},Vector{String}}
     old_records = source_item_records(workspace.index, source_item_id_value)
     old_ids = Set(record.id for record in old_records)
     replacement_ids = Set{String}()
-    for record in replacement.records
+    for record in records
         record.source_item_id == source_item_id_value || error(
             "Cannot publish source item '$source_item_id_value': replacement contains " *
             "record '$(record.id)' from source item '$(record.source_item_id)'",
@@ -253,9 +263,9 @@ function replace_source_item_output!(
     end
 
     old_keys = affected_collection_keys(old_records)
-    new_keys = affected_collection_keys(replacement.records)
+    new_keys = affected_collection_keys(records)
     old_records, _ = remove_source_item_output!(workspace, source_item_id_value)
-    for record in replacement.records
+    for record in records
         workspace.index.items[record.id] = record
         isempty(record.stats) || (workspace.index.item_stats[record.id] = copy(record.stats))
     end
@@ -289,6 +299,8 @@ function apply_source_changes!(
     end
     for source_item in changes.upserts
         source_item_id_value = source_item_id(source_item)
+        old_records = source_item_records(workspace.index, source_item_id_value)
+        delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
         revision = UInt64(hash((source_item_id_value, fingerprint(source_item))))
         lock(workspace.work.lock) do
             workspace.work.source_items[source_item_id_value] = source_item
@@ -726,18 +738,16 @@ function publish_work_success!(
 )::Bool
     key = node.key
     if key.kind === INTERPRET_SOURCE
-        interpretation = result::SourceItemInterpretation
-        old_records, invalidated = replace_source_item_output!(
-            workspace, key.entity, interpretation)
-        delete_source_item!(workspace.cache.db, key.entity, old_records)
+        records = result.records::Vector{ItemRecord}
+        old_records, invalidated = publish_source_item_records!(
+            workspace, key.entity, records)
         delete_collection_stats!(workspace.cache.db, invalidated)
         mark_collection_stats_missing!(workspace, invalidated)
-        store_interpreted!(
+        store_interpreted_records!(
             workspace.cache.db,
-            interpretation.records,
-            interpretation.interpreted_items,
+            records,
         )
-        for record in interpretation.records
+        for record in records
             mark_work_missing!(
                 workspace,
                 WorkKey(ITEM_STATS, record.id),
@@ -842,6 +852,12 @@ end
 
 """Apply all completed scan, cache, and work events."""
 function poll_workspace!(workspace::Workspace)::Bool
+    return lock(workspace.poll_lock) do
+        _poll_workspace!(workspace)
+    end
+end
+
+function _poll_workspace!(workspace::Workspace)::Bool
     index_changed = false
 
     scan_events = workspace.scan.events

@@ -4,8 +4,9 @@ source_analysis_failures(::Project, ::AbstractDataSource)::Vector{ItemFailure} =
 """
 One completed source-item pass.
 
-`records` are retained by the index. `interpreted_items` carry effective item data until the cache
-writer accepts it and processing is queued.
+`records` are retained by the index. `interpreted_items` carry effective item data only on direct
+interpretation paths; workspace workers put that data in the memory cache before publishing a
+lightweight completion.
 """
 struct SourceItemInterpretation
     records::Vector{ItemRecord}

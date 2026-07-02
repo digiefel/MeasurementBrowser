@@ -287,6 +287,13 @@ function take_work!(
     end
 end
 
+"""Whether this worker still owns the current running node."""
+function work_node_current(workspace::Workspace, node::WorkNode)::Bool
+    return lock(workspace.work.lock) do
+        get(workspace.work.nodes, node.key, nothing) === node && node.state === :running
+    end
+end
+
 """Return the source fallback lock shared by items from one source item."""
 function source_fallback_lock(
     graph::WorkDependencyGraph,
@@ -405,8 +412,16 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
             end
             source_item === nothing &&
                 error("Cannot interpret removed source item '$(key.entity)'")
-            interpret_source_item(
+            interpretation = interpret_source_item(
                 workspace.project, workspace.source, source_item, workspace.profiler)
+            if work_node_current(workspace, node)
+                store_interpreted_data!(
+                    workspace.cache.db,
+                    interpretation.records,
+                    interpretation.interpreted_items,
+                )
+            end
+            (records=interpretation.records, failures=interpretation.failures)
         elseif key.kind === PROCESS_ITEM
             record = lock(workspace.work.lock) do
                 get(workspace.index.items, key.entity, nothing)
