@@ -59,7 +59,7 @@ end
 Interpret every logical data item produced by one source item.
 
 The source item is read only by `data_items`. Each result is normalized to a package `DataItem` with
-effective parameters. Processing and statistics belong to the workspace processing queue.
+effective parameters. Processing and statistics belong to the workspace work graph.
 """
 function interpret_source_item(
     project::Project,

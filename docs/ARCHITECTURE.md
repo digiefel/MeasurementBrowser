@@ -43,20 +43,22 @@ source item → data_items → interpreted data → process → processed data �
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-reuses cached records for source items whose non-null fingerprints are unchanged, and assigns the
-remaining source items to a bounded worker pool. Each worker calls
-`data_items(project, source, source_item)` once and normalizes its logical items into stable records
-and interpreted data. Small ready groups commit their records and cacheable interpreted data, then
-enter the shared processing queue. Background and selected work use the same job; selection only
-changes priority. Processing publishes completed item data and item statistics to the workspace first,
-then per-table cache buffers durably store processed payloads and stats, each flushing to DuckDB on its
-own cadence.
+compares the discovered source-item ids and fingerprints with the published snapshot, and submits one
+`SourceChanges` batch to the workspace work graph. Interpretation workers call
+`data_items(project, source, source_item)` and return typed completions; `poll_workspace!` is the
+main-thread gate that rejects stale revisions, atomically publishes replacement records into
+`WorkspaceIndex`, and sends semantic writes/deletes to `ProjectCache`. The graph owns work state only:
+work identities, revisions, priority, running/queued/failed/ready state, and waiters. `WorkspaceIndex`
+owns completed records, hierarchy, parameters, statistics, failures, and selections.
+Processing, item-stat, and collection-stat workers are fixed long-lived pools. Background and selected
+work share the same work node; selection only raises priority and joins the existing revision.
 Collection-node stats run afterward from published item-stat results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
-When a view needs item data, it asks the processing queue for the selected records. A valid processed
-stage loads from DuckDB. Otherwise the job loads interpreted data from DuckDB or reuses the normal
-`data_items` path as source fallback, then runs `process`. Each materialized item carries `item.data`.
+When a view needs item data, it asks the work graph for the selected records. A valid processed stage
+loads from the cache. Otherwise the processing job loads interpreted data from the in-memory
+interpreted store or reuses the normal `data_items` path as source fallback, then runs `process`.
+Each materialized item carries `item.data`.
 GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
@@ -88,7 +90,7 @@ The workspace owns:
 - selection identities
 - cache identity, freshness, storage, and repair
 - scanning, cache work, progress, errors, and cancellation
-- the bounded processing queue and source fallback
+- work dependency graph state and source fallback
 
 The browser owns windows, controls, filters, and temporary rendering state. Annotations store
 user-authored tags, notes, coordinates, and spatial positions (currently next to the cache, keyed by

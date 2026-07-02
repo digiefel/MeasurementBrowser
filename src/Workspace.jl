@@ -38,7 +38,6 @@ import ..Cache:
     store_collection_stats!,
     store_processed!,
     store_result_failure!,
-    store_scan_collection_data!,
     write_meta_header!
 import ..ItemIndex:
     DataItem,
@@ -134,6 +133,14 @@ mutable struct WorkspaceIndex
     analysis_errors::Dict{String,String}
 end
 
+"""
+One batch of source-item changes discovered by a rescan or future watcher.
+"""
+struct SourceChanges{S<:AbstractDataSourceItem}
+    upserts::Vector{S}
+    removals::Vector{String}
+end
+
 @enum WorkKind begin
     INTERPRET_SOURCE
     PROCESS_ITEM
@@ -163,6 +170,7 @@ mutable struct WorkDependencyGraph
     lock::ReentrantLock
     condition::Base.Threads.Condition
     nodes::Dict{WorkKey,WorkNode}
+    dependents::Dict{WorkKey,Set{WorkKey}}
     queue::Vector{Tuple{WorkKey,UInt64}}
     source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
@@ -181,6 +189,7 @@ function WorkDependencyGraph()::WorkDependencyGraph
         work_lock,
         Base.Threads.Condition(work_lock),
         Dict{WorkKey,WorkNode}(),
+        Dict{WorkKey,Set{WorkKey}}(),
         Tuple{WorkKey,UInt64}[],
         Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),

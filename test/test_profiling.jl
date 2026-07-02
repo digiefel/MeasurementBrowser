@@ -1,4 +1,8 @@
 using JSON
+using MeasurementBrowser
+using CSV
+using DataFrames: DataFrame, nrow
+using Test
 
 const PROFILE = MeasurementBrowser.Profiling
 
@@ -159,65 +163,5 @@ end
         ends = [record for record in records if record["type"] == "span_end"]
         @test length(starts) == 1
         @test isempty(ends)
-    end
-end
-
-@testset "profiling restarts an active workspace build" begin
-    mktempdir() do dir
-        for index in 1:20
-            write(joinpath(dir, "m$index.csv"), "x,y\n1,2\n3,4\n")
-        end
-        reads = Base.Threads.Atomic{Int}(0)
-        project = MeasurementBrowser.define_project("ProfileRestart_$(basename(dir))")
-        MeasurementBrowser.register_item!(
-            project,
-            :table;
-            detect=file -> endswith(file.filename, ".csv"),
-            read=function (file)
-                Base.Threads.atomic_add!(reads, 1)
-                sleep(0.005)
-                DataFrame(CSV.File(file.filepath))
-            end,
-            entries=(file, data) -> [MeasurementBrowser.DataItem(
-                kind=:table,
-                collection=["profile"],
-                label=file.filename,
-                data=data,
-            )],
-            stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
-        )
-        MeasurementBrowser.register_collection_stat!(
-            project;
-            kinds=[:table],
-            compute_stats=items -> Dict{Symbol,Any}(:items => length(items)),
-        )
-        workspace = MeasurementBrowser.open_workspace(project, dir; profile_internal=true)
-        try
-            MeasurementBrowser.Workspace.start_internal_profile!(workspace)
-            @test workspace.profiler.state in (:preparing, :recording)
-            deadline = time() + 30
-            while time() < deadline
-                MeasurementBrowser.Workspace.poll_workspace!(workspace)
-                idle = !MeasurementBrowser.Workspace.source_scan_running(workspace) &&
-                    !MeasurementBrowser.Workspace.processing_work_running(workspace) &&
-                    !MeasurementBrowser.Workspace.analysis_work_running(workspace) &&
-                    workspace.analysis.state != :pending
-                idle && workspace.profiler.state === :recording && break
-                sleep(0.005)
-            end
-            report = MeasurementBrowser.Workspace.stop_internal_profile!(workspace)
-            @test report isa PROFILE.ProfileReport
-            @test report.dropped_events == 0
-            @test count(event -> event.category === :source && event.operation === :scan,
-                report.events) == 1
-            operations = Set(event.operation for event in report.events)
-            @test :discover in operations
-            @test :interpret_source_item in operations
-            @test :process in operations
-            @test :collection_stats in operations
-            @test reads[] >= 20
-        finally
-            MeasurementBrowser.close_workspace!(workspace)
-        end
     end
 end

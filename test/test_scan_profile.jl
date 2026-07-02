@@ -176,15 +176,9 @@ end
 
         workspace = MB.open_workspace(project, test_source(project, dir))
         try
-            deadline = time() + 10
-            while time() < deadline
-                MB.Workspace.poll_workspace!(workspace)
-                workspace.analysis.state in (:done, :error) && break
-                sleep(0.02)
-            end
+            wait_workspace_idle!(workspace)
 
             @test workspace.scan.state == :done
-            @test workspace.analysis.state == :done
             @test isempty(workspace.index.analysis_errors)
             ok = only(workspace.index.hierarchy.all_items)
             @test workspace.index.item_stats[ok.id][:rows] == 1
@@ -244,16 +238,9 @@ end
 
         workspace = MB.open_workspace(project, test_source(project, dir))
         try
-            deadline = time() + 10
-            while time() < deadline
-                MB.Workspace.poll_workspace!(workspace)
-                workspace.scan.state in (:done, :error) &&
-                    workspace.analysis.state in (:done, :error) && break
-                sleep(0.02)
-            end
+            wait_workspace_idle!(workspace)
 
             @test workspace.scan.state == :done
-            @test workspace.analysis.state == :done
             @test read_count[] == 1
             records = workspace.index.hierarchy.all_items
             @test length(records) == 100
@@ -295,15 +282,7 @@ end
 
         function run_scan!()
             ws = MB.open_workspace(project, test_source(project, dir))
-            deadline = time() + 10
-            while time() < deadline
-                MB.Workspace.poll_workspace!(ws)
-                # A fully-unchanged reopen is a cache hit (state :unchanged) and runs no analysis.
-                scan_done = ws.scan.state in (:done, :unchanged, :error)
-                analysis_idle = ws.analysis.state in (:idle, :done, :canceled, :error)
-                scan_done && analysis_idle && break
-                sleep(0.02)
-            end
+            wait_workspace_idle!(ws)
             @test ws.scan.state in (:done, :unchanged)
             return ws
         end
@@ -381,7 +360,7 @@ end
             @test length(ws5.index.hierarchy.all_items) == 5
             MB.close_workspace!(ws5)
         finally
-            MB.Cache._remove_cache_files(identity.cache_path)
+            rm(dirname(identity.cache_path); force=true, recursive=true)
         end
     end
 end

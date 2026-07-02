@@ -28,7 +28,7 @@ Metadata and data live in two forms, bridged by the engine via the `AbstractData
 - **`ItemRecord`** — the **internal**, data-less metadata record the hierarchy, scan, and cache store.
   Source and project code never construct or name it.
 - **`AbstractDataItem`** instances — what callbacks and views see: the package's `DataItem` or a
-  source's own subtype. They carry interpreted data into the processing queue and processed data into
+  source's own subtype. They carry interpreted data into the work graph and processed data into
   views. Later selections materialize the processed stage from DuckDB or repeat the required
   interpreted/processing work through the normal source path.
 
@@ -155,9 +155,9 @@ A single source item may yield several data items when `data_items` returns more
 a source-item identity but must have distinct `id` values within the source. The recipe API mints
 missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
 
-The source item is read once for the expansion. Its children enter the shared processing queue and
-may run on different scheduler threads. A child may carry a view into the parsed data instead of a
-copy; queue ownership keeps the parent alive until processing finishes. Because siblings may run
+The source item is read once for the expansion. Its children enter the workspace work graph and may
+run on different scheduler threads. A child may carry a view into the parsed data instead of a copy;
+the package keeps the interpreted parent alive until processing finishes. Because siblings may run
 concurrently, overlapping views must be treated as read-only. DataFrames restored from the cache are
 independent ordinary `DataFrame`s.
 

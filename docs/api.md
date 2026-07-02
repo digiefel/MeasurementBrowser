@@ -78,9 +78,10 @@ data items.
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
 
 `data_items` reads/interprets one source item and returns its loaded logical data items. Different
-source items run concurrently. Their items enter the shared processing queue, whose workers may run
-sibling `process`/stats callbacks concurrently; those callbacks must therefore be safe for concurrent
-use. When interpreted data is absent, the package calls the same `data_items` path as source fallback.
+source items run concurrently. Their items enter the workspace work graph, whose fixed workers may
+run sibling `process`/stats callbacks concurrently; those callbacks must therefore be safe for
+concurrent use. When interpreted data is absent, the package calls the same `data_items` path as
+source fallback.
 The package's built-in file-backed source item is
 `SourceFile` (below); a bare `SourceFile` has **no** universal `data_items` — the source decides what
 a file means.
@@ -194,7 +195,7 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
   the raw per-item data as `item.data`; optional `process(item)` returns the item that stats and views
   receive. When one source expands into many tabular items, `item.data` may be a row view such as
   `view(data, rows, :)`; the view keeps the parsed source table alive without copying its columns.
-  The processing queue owns those items until processing and any cache write finish. Overlapping
+  The workspace work graph owns those items until processing and any cache write finish. Overlapping
   views share storage and sibling callbacks may run concurrently, so project callbacks should treat
   them as read-only. Later cache materialization returns independent `DataFrame`s. Records are
   streamed to the workspace as each source item finishes. The adapter derives each internal record

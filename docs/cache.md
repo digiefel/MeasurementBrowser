@@ -274,17 +274,16 @@ the requested `ItemRecord`. A mismatch is a cache miss.
 ProjectCache exposes one semantic cascade for removing a source item:
 
 ```julia
-delete_source_item!(cache, source_item_id)
+delete_source_item!(cache, source_item_id, old_records)
 ```
 
-It resolves the logical items owned by that source through buffer reads and submits typed deletes for
-the source row, its item rows, item-scoped metadata, failures, result states, disk payloads, and
-memory-only values. It does not decide which collection statistics are affected.
+It derives item IDs and item-scoped metadata, failures, result states, disk payloads, and memory-only
+values from the old published records. It does not decide which collection statistics are affected.
 
 The work dependency layer separately identifies affected collection paths and calls the semantic
-collection-statistics deletion operation. A changed source is represented as buffered deletion of its
-old subtree followed by buffered stores for the replacement. Per-key coalescing turns retained keys
-into replacement edits before any database transaction is chosen.
+`delete_collection_stats!(cache, collection_keys)` operation. A changed source is represented as
+buffered deletion of its old subtree followed by buffered stores for the replacement. Per-key
+coalescing turns retained keys into replacement edits before any database transaction is chosen.
 
 No maintenance cascade writes directly to DuckDB.
 

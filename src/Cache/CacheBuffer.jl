@@ -413,6 +413,54 @@ function Base.delete!(store::AbstractDiskStore{K,R}, key::K)::Nothing where {K,R
     return nothing
 end
 
+function _key_starts_with(key::Tuple, prefix::Tuple)::Bool
+    return length(prefix) <= length(key) &&
+        all(index -> key[index] == prefix[index], eachindex(prefix))
+end
+
+"""Delete rows whose leading key columns match `prefix`, including queued buffer rows."""
+function delete_by_key_prefix!(
+    store::RowStore{K,R},
+    prefix::Tuple,
+)::Nothing where {K<:Tuple,R}
+    1 <= length(prefix) <= length(store.key_columns) ||
+        throw(ArgumentError(
+            "key prefix length $(length(prefix)) does not match table " *
+            "'$(store.table_name)' with $(length(store.key_columns)) key columns",
+        ))
+    lock(store.flush_condition)
+    try
+        _require_writable(store)
+        while !isempty(store.writing)
+            wait(store.flush_condition)
+            _require_writable(store)
+        end
+        for key in collect(keys(store.queued))
+            _key_starts_with(key, prefix) && _set_queued!(store, key, nothing)
+        end
+        predicate = join(
+            (
+                "$(store.quoted_key_columns[index]) = ?"
+                for index in eachindex(prefix)
+            ),
+            " AND ",
+        )
+        _transaction(store.write_connection) do
+            DBInterface.execute(
+                DBInterface.prepare(
+                    store.write_connection,
+                    "DELETE FROM $(store.quoted_table) WHERE $predicate",
+                ),
+                prefix,
+            )
+        end
+        notify(store.flush_condition)
+    finally
+        unlock(store.flush_condition)
+    end
+    return nothing
+end
+
 function _queue_delete_location!(
     store::TabularFamilyStore,
     location::Tuple{UInt16,UInt32},

@@ -22,18 +22,10 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
     gc = Base.gc_num()
     gc_live_bytes = Int64(Base.gc_live_bytes())
     hierarchy = workspace.index.hierarchy
-    processing = lock(workspace.processing.lock) do
-        (
-            jobs=Int64(length(workspace.processing.jobs)),
-            selected_queue=Int64(length(workspace.processing.selected)),
-            background_waiting=Int64(max(
-                length(workspace.processing.background) - workspace.processing.background_index + 1,
-                0,
-            )),
-        )
-    end
-    # Writes now live in the cache buffer, not the processing queue.
-    staged = buffer_pending_counts(workspace.cache.db.buffer)
+    _completed, _total, active = work_counts(workspace)
+    processing = (jobs=Int64(active), selected_queue=Int64(0), background_waiting=Int64(0))
+    # Writes live in the cache buffers, not in the work graph.
+    staged = cache_pending_counts(workspace.cache.db)
     return WorkspaceMemorySnapshot(
         time_ns(),
         rss_bytes,

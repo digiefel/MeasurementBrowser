@@ -25,9 +25,7 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
     elseif scan.state == :canceling
         return WorkspaceStatus(:busy, "Canceling", "Canceling…", true, nothing, errors)
     elseif processing_work_running(workspace)
-        completed, total = lock(workspace.processing.lock) do
-            (workspace.processing.completed, workspace.processing.total)
-        end
+        completed, total, _active = work_counts(workspace)
         progress = total > 0 ? Float32(clamp(completed / total, 0, 1)) : nothing
         return WorkspaceStatus(
             :busy,
@@ -37,16 +35,6 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
             progress,
             errors,
         )
-    elseif workspace.analysis.state == :analyzing
-        analysis = workspace.analysis.progress
-        detail = analysis.total_source_items > 0 ?
-            @sprintf("Summarizing %d/%d collections",
-                analysis.processed_source_items, analysis.total_source_items) :
-            "Summarizing collections…"
-        frac = analysis.total_source_items > 0 ?
-            Float32(clamp(analysis.processed_source_items / analysis.total_source_items, 0, 1)) :
-            nothing
-        return WorkspaceStatus(:busy, "Summarizing", detail, true, frac, errors)
     end
 
     # Settled: a single merged summary line, no bar.

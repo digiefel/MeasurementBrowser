@@ -1,5 +1,5 @@
 """
-Materialize processed items for selected records through the shared processing queue.
+Materialize processed items for selected records through the workspace work graph.
 
 Committed processed data comes from DuckDB. Missing results promote the existing background job or
 create one whose interpreted-data dependency may use DuckDB or the normal source fallback.

@@ -24,10 +24,13 @@ function collection_revision(workspace::Workspace, path::Tuple{Vararg{String}}):
     return UInt64(hash((path, members)))
 end
 
-"""Start the bounded worker set shared by every work kind."""
+"""Start fixed worker pools for each work kind."""
 function start_work_workers!(workspace::Workspace)::Nothing
-    for _ in 1:max(1, Base.Threads.nthreads() ÷ 2)
-        push!(workspace.work.workers, Base.Threads.@spawn work_worker!(workspace))
+    worker_count = max(1, Base.Threads.nthreads() ÷ 4)
+    for kind in (INTERPRET_SOURCE, PROCESS_ITEM, ITEM_STATS, COLLECTION_STATS)
+        for _ in 1:worker_count
+            push!(workspace.work.workers, Base.Threads.@spawn work_worker!(workspace, kind))
+        end
     end
     return nothing
 end
@@ -49,7 +52,7 @@ function cancel_waiting_work!(workspace::Workspace)::Nothing
     canceled = WorkNode[]
     lock(graph.lock) do
         for node in values(graph.nodes)
-            node.state === :queued || continue
+            node.state in (:queued, :waiting) || continue
             node.state = :missing
             append!(canceled, [node])
         end
@@ -70,6 +73,7 @@ function reset_work_graph!(workspace::Workspace)::Nothing
         any(node -> node.state in (:queued, :running), values(graph.nodes)) &&
             error("Cannot reset the work graph while work is active")
         empty!(graph.nodes)
+        empty!(graph.dependents)
         empty!(graph.queue)
         empty!(graph.source_items)
         empty!(graph.source_locks)
@@ -77,6 +81,124 @@ function reset_work_graph!(workspace::Workspace)::Nothing
         graph.completed = 0
         graph.source_batch = 0
         graph.source_batch_open = false
+    end
+    return nothing
+end
+
+work_state_terminal(state::Symbol)::Bool = state in (:ready, :failed)
+
+function dependency_ready_for(kind::WorkKind, dependency::WorkNode)::Bool
+    kind === COLLECTION_STATS && return work_state_terminal(dependency.state)
+    return dependency.state === :ready
+end
+
+function dependencies_ready(graph::WorkDependencyGraph, node::WorkNode)::Bool
+    return all(node.dependencies) do dependency_key
+        dependency = get(graph.nodes, dependency_key, nothing)
+        dependency !== nothing && dependency_ready_for(node.key.kind, dependency)
+    end
+end
+
+function remove_dependency_edges!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
+    for dependency in node.dependencies
+        dependents = get(graph.dependents, dependency, nothing)
+        dependents === nothing && continue
+        delete!(dependents, node.key)
+        isempty(dependents) && delete!(graph.dependents, dependency)
+    end
+    return nothing
+end
+
+function set_dependencies!(
+    graph::WorkDependencyGraph,
+    node::WorkNode,
+    dependencies::Vector{WorkKey},
+)::Nothing
+    remove_dependency_edges!(graph, node)
+    node.dependencies = dependencies
+    for dependency in dependencies
+        push!(get!(() -> Set{WorkKey}(), graph.dependents, dependency), node.key)
+    end
+    return nothing
+end
+
+function replace_work_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
+    previous = get(graph.nodes, node.key, nothing)
+    previous === nothing || remove_dependency_edges!(graph, previous)
+    graph.nodes[node.key] = node
+    set_dependencies!(graph, node, node.dependencies)
+    return nothing
+end
+
+function queue_ready_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
+    node.state = :queued
+    node.queued_ns = time_ns()
+    push!(graph.queue, (node.key, node.revision))
+    return nothing
+end
+
+function wake_ready_dependents!(graph::WorkDependencyGraph, dependency_key::WorkKey)::Nothing
+    for dependent_key in collect(get(graph.dependents, dependency_key, Set{WorkKey}()))
+        dependent = get(graph.nodes, dependent_key, nothing)
+        dependent === nothing && continue
+        dependent.state === :waiting || continue
+        dependencies_ready(graph, dependent) || continue
+        queue_ready_node!(graph, dependent)
+    end
+    return nothing
+end
+
+"""Record a current missing work revision without queuing it."""
+function mark_work_missing!(
+    workspace::Workspace,
+    key::WorkKey,
+    revision::UInt64;
+    dependencies::Vector{WorkKey}=WorkKey[],
+)::Nothing
+    graph = workspace.work
+    lock(graph.lock) do
+        node = get(graph.nodes, key, nothing)
+        if node === nothing || node.revision != revision || node.state !== :running
+            replace_work_node!(graph, WorkNode(
+                key,
+                revision,
+                :missing,
+                0,
+                dependencies,
+                Channel{Any}[],
+                0,
+            ))
+        end
+        notify(graph.condition; all=true)
+    end
+    return nothing
+end
+
+"""Seed a completed work revision loaded from a fresh cache index."""
+function seed_work_node!(
+    workspace::Workspace,
+    key::WorkKey,
+    revision::UInt64,
+    state::Symbol,
+)::Nothing
+    state in (:ready, :failed) ||
+        throw(ArgumentError("cached work state must be :ready or :failed, got $state"))
+    graph = workspace.work
+    lock(graph.lock) do
+        node = get(graph.nodes, key, nothing)
+        if node === nothing || node.revision != revision || node.state ∉ (:queued, :running)
+            replace_work_node!(graph, WorkNode(
+                key,
+                revision,
+                state,
+                0,
+                WorkKey[],
+                Channel{Any}[],
+                0,
+            ))
+        end
+        wake_ready_dependents!(graph, key)
+        notify(graph.condition; all=true)
     end
     return nothing
 end
@@ -95,36 +217,50 @@ function enqueue_work!(
         graph.closed && error("Cannot queue work after the workspace has closed")
         node = get(graph.nodes, key, nothing)
         if node === nothing || node.revision != revision
+            state = :waiting
             node = WorkNode(
                 key,
                 revision,
-                :queued,
+                state,
                 priority,
                 dependencies,
                 Channel{Any}[],
                 time_ns(),
             )
-            graph.nodes[key] = node
-            push!(graph.queue, (key, revision))
+            dependencies_ready(graph, node) && (node.state = :queued)
+            replace_work_node!(graph, node)
+            node.state === :queued && push!(graph.queue, (key, revision))
             graph.total += 1
         elseif node.state === :missing
-            node.state = :queued
             node.priority = priority
-            node.dependencies = dependencies
+            set_dependencies!(graph, node, dependencies)
             node.queued_ns = time_ns()
-            push!(graph.queue, (key, revision))
+            if dependencies_ready(graph, node)
+                queue_ready_node!(graph, node)
+            else
+                node.state = :waiting
+            end
             graph.total += 1
+        elseif node.state === :waiting
+            node.priority = max(node.priority, priority)
+            set_dependencies!(graph, node, dependencies)
+            if dependencies_ready(graph, node)
+                queue_ready_node!(graph, node)
+            end
         elseif node.state === :queued && priority > node.priority
             node.priority = priority
         end
         waiter === nothing || push!(node.waiters, waiter)
-        notify(graph.condition)
+        notify(graph.condition; all=true)
         node
     end
 end
 
 """Take the highest-priority current work revision."""
-function take_work!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
+function take_work!(
+    graph::WorkDependencyGraph,
+    kind::WorkKind,
+)::Union{Nothing,WorkNode}
     while true
         graph.closed && return nothing
         best_position = 0
@@ -132,7 +268,8 @@ function take_work!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
         for (position, (key, revision)) in pairs(graph.queue)
             node = get(graph.nodes, key, nothing)
             node === nothing && continue
-            node.revision == revision && node.state === :queued || continue
+            node.key.kind === kind && node.revision == revision && node.state === :queued ||
+                continue
             if node.priority > best_priority
                 best_position = position
                 best_priority = node.priority
@@ -146,7 +283,6 @@ function take_work!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
             node.state = :running
             return node
         end
-        empty!(graph.queue) || empty!(graph.queue)
         wait(graph.condition)
     end
 end
@@ -188,7 +324,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
         store_interpreted!(
             workspace.cache.db,
             interpretation.records,
-            Any[item for item in interpretation.interpreted_items],
+            interpretation.interpreted_items,
         )
         requested = findfirst(item -> item.id == record.id, interpretation.records)
         requested === nothing && error(
@@ -298,15 +434,36 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
     return nothing
 end
 
-"""Run work until workspace shutdown."""
-function work_worker!(workspace::Workspace)::Nothing
+"""Run one fixed work-kind queue until workspace shutdown."""
+function work_worker!(workspace::Workspace, kind::WorkKind)::Nothing
     graph = workspace.work
     while true
         node = lock(graph.lock) do
-            take_work!(graph)
+            take_work!(graph, kind)
         end
         node === nothing && return nothing
         execute_work!(workspace, node)
+    end
+end
+
+"""Whether any current node of one kind is queued or running."""
+function work_kind_running(workspace::Workspace, kind::WorkKind)::Bool
+    return lock(workspace.work.lock) do
+        any(
+            node -> node.key.kind === kind && node.state in (:queued, :running),
+            values(workspace.work.nodes),
+        )
+    end
+end
+
+"""Return completed, total, and active work counters for status/profiling."""
+function work_counts(workspace::Workspace)::Tuple{Int,Int,Int}
+    return lock(workspace.work.lock) do
+        active = count(
+            node -> node.state in (:queued, :running),
+            values(workspace.work.nodes),
+        )
+        (workspace.work.completed, workspace.work.total, active)
     end
 end
 
@@ -322,7 +479,6 @@ function enqueue_processing!(
         WorkKey(PROCESS_ITEM, record.id),
         item_revision(record);
         priority=selected ? 4 : 2,
-        dependencies=WorkKey[WorkKey(INTERPRET_SOURCE, record.source_item_id)],
         waiter,
     )
     return waiter

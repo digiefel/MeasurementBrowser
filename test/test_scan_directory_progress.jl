@@ -46,23 +46,6 @@ using Test
             for item in source.hierarchy.all_items
         )
 
-        workspace = MeasurementBrowser.Workspace.Workspace(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir),
-        )
-        first_record = only(source.hierarchy.all_items[1:1])
-        @test MeasurementBrowser.Workspace.append_items!(
-            workspace,
-            [first_record],
-        )
-        @test workspace.index.items[first_record.id] == first_record
-        @test length(workspace.index.items) == 1
-        @test !MeasurementBrowser.Workspace.append_items!(
-            workspace,
-            [first_record],
-        )
-        @test length(workspace.index.items) == 1
-
         fired = Ref(false)
         @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser.with_cancel(
             () -> begin

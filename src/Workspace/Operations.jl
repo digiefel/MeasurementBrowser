@@ -29,14 +29,10 @@ Cancel all work owned by a workspace and wait for it to stop.
 function close_workspace!(workspace::Workspace)::Nothing
     workspace.closed && return nothing
     cancel_job!(workspace.scan)
-    cancel_job!(workspace.analysis)
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
-    stop_processing_workers!(workspace)
-    # Workers are gone, so no more deposits can arrive; drain everything still staged and stop the
-    # flusher before the database handle closes.
-    stop_cache_buffer!(workspace.cache.db.buffer)
+    stop_work_workers!(workspace)
     try
         Profiling.close!(workspace.profiler)
     finally
@@ -123,14 +119,13 @@ cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_state in (:loading, :writing, :canceling)
 
 analysis_work_running(workspace::Workspace)::Bool =
-    workspace.analysis.state in (:analyzing, :canceling)
+    work_kind_running(workspace, COLLECTION_STATS)
 
 """Whether any item is waiting for or running processing, or its result is still being written."""
 function processing_work_running(workspace::Workspace)::Bool
-    jobs_active = lock(workspace.processing.lock) do
-        !isempty(workspace.processing.jobs)
-    end
-    return jobs_active || buffer_has_pending_writes(workspace.cache.db.buffer)
+    return work_kind_running(workspace, PROCESS_ITEM) ||
+        work_kind_running(workspace, ITEM_STATS) ||
+        cache_has_pending_writes(workspace.cache.db)
 end
 
 """Keep a background task alive until workspace shutdown."""
@@ -149,7 +144,7 @@ function cancel_job!(job::WorkspaceJob)::Nothing
 end
 
 cancel_scan!(workspace::Workspace)::Nothing = (cancel_job!(workspace.scan); nothing)
-cancel_analysis!(workspace::Workspace)::Nothing = (cancel_job!(workspace.analysis); nothing)
+cancel_analysis!(workspace::Workspace)::Nothing = (cancel_waiting_work!(workspace); nothing)
 
 """
 Cancel in-flight cache work.
@@ -157,6 +152,153 @@ Cancel in-flight cache work.
 Cache writes are now produced by the source scan itself, so cancelling cache work cancels the scan.
 """
 cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
+
+"""Return records currently published for one source item."""
+function source_item_records(index::WorkspaceIndex, source_item_id_value::String)::Vector{ItemRecord}
+    return ItemRecord[
+        record for record in values(index.items)
+        if record.source_item_id == source_item_id_value
+    ]
+end
+
+"""Return collection keys touched by records and their ancestors."""
+function affected_collection_keys(records::Vector{ItemRecord})::Vector{String}
+    keys = String[]
+    for record in records
+        for depth in eachindex(record.collection)
+            push!(keys, collection_path_key(record.collection[1:depth]))
+        end
+    end
+    return unique(keys)
+end
+
+"""Rebuild hierarchy indexes from the currently published records."""
+function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
+    records = sort!(collect(values(workspace.index.items)); by=record -> (record.source_item_id, record.id))
+    hierarchy = Hierarchy(records, workspace.source)
+    workspace.index.hierarchy = hierarchy
+    parameter_keys = Set{Symbol}()
+    for node in values(hierarchy.index)
+        union!(parameter_keys, keys(node.parameters))
+    end
+    workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
+    return nothing
+end
+
+"""Refresh the authoritative published source snapshot from current index state."""
+function refresh_workspace_source!(
+    workspace::Workspace,
+    fingerprints::AbstractDict{String},
+)::Nothing
+    workspace.index.source = SourceScan(
+        source_id(workspace.source),
+        source_label(workspace.source),
+        Dict{String,Any}(fingerprints),
+        workspace.index.hierarchy,
+        ItemFailure[],
+    )
+    return nothing
+end
+
+"""Remove all published output owned by one source item and invalidate affected collections."""
+function remove_source_item_output!(
+    workspace::Workspace,
+    source_item_id_value::String,
+)::Tuple{Vector{ItemRecord},Vector{String}}
+    old_records = source_item_records(workspace.index, source_item_id_value)
+    invalidated = affected_collection_keys(old_records)
+    for record in old_records
+        delete!(workspace.index.items, record.id)
+        delete!(workspace.index.item_stats, record.id)
+        delete!(workspace.index.analysis_errors, record.id)
+    end
+    delete!(workspace.index.analysis_errors, source_item_id_value)
+    filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
+    rebuild_workspace_hierarchy!(workspace)
+    for key in invalidated
+        node = get(workspace.index.hierarchy.index, collection_path_tuple(key), nothing)
+        node === nothing || empty!(node.stats)
+    end
+    return old_records, invalidated
+end
+
+"""Atomically publish one source item's replacement records after validating duplicate IDs."""
+function replace_source_item_output!(
+    workspace::Workspace,
+    source_item_id_value::String,
+    replacement::SourceItemInterpretation,
+)::Tuple{Vector{ItemRecord},Vector{String}}
+    old_records = source_item_records(workspace.index, source_item_id_value)
+    old_ids = Set(record.id for record in old_records)
+    replacement_ids = Set{String}()
+    for record in replacement.records
+        record.source_item_id == source_item_id_value || error(
+            "Cannot publish source item '$source_item_id_value': replacement contains " *
+            "record '$(record.id)' from source item '$(record.source_item_id)'",
+        )
+        record.id in replacement_ids && error(
+            "Cannot publish source item '$source_item_id_value': duplicate item id '$(record.id)'",
+        )
+        push!(replacement_ids, record.id)
+        haskey(workspace.index.items, record.id) && !(record.id in old_ids) && error(
+            "Cannot publish source item '$source_item_id_value': replacement item id " *
+            "'$(record.id)' already belongs to another source item",
+        )
+    end
+
+    old_keys = affected_collection_keys(old_records)
+    new_keys = affected_collection_keys(replacement.records)
+    old_records, _ = remove_source_item_output!(workspace, source_item_id_value)
+    for record in replacement.records
+        workspace.index.items[record.id] = record
+        isempty(record.stats) || (workspace.index.item_stats[record.id] = copy(record.stats))
+    end
+    filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
+    rebuild_workspace_hierarchy!(workspace)
+    invalidated = unique([old_keys; new_keys])
+    for key in invalidated
+        node = get(workspace.index.hierarchy.index, collection_path_tuple(key), nothing)
+        node === nothing || empty!(node.stats)
+    end
+    return old_records, invalidated
+end
+
+"""Submit one source-change batch to the work graph and remove deleted published output."""
+function apply_source_changes!(
+    workspace::Workspace,
+    changes::SourceChanges,
+    fingerprints::AbstractDict{String},
+    status::ProjectCacheStatus,
+)::Bool
+    changed = false
+    for removed in changes.removals
+        old_records, invalidated = remove_source_item_output!(workspace, removed)
+        delete_source_item!(workspace.cache.db, removed, old_records)
+        delete_collection_stats!(workspace.cache.db, invalidated)
+        mark_collection_stats_missing!(workspace, invalidated)
+        lock(workspace.work.lock) do
+            delete!(workspace.work.source_items, removed)
+        end
+        changed = true
+    end
+    for source_item in changes.upserts
+        source_item_id_value = source_item_id(source_item)
+        revision = UInt64(hash((source_item_id_value, fingerprint(source_item))))
+        lock(workspace.work.lock) do
+            workspace.work.source_items[source_item_id_value] = source_item
+        end
+        enqueue_work!(
+            workspace,
+            WorkKey(INTERPRET_SOURCE, source_item_id_value),
+            revision;
+            priority=3,
+        )
+        changed = true
+    end
+    refresh_workspace_source!(workspace, fingerprints)
+    workspace.cache.status = status
+    return changed
+end
 
 """
 Start one source scan that progressively populates the workspace index and cache.
@@ -173,7 +315,6 @@ function scan_source!(
 )::Nothing
     source_scan_running(workspace) && error("A source scan is already running")
     workspace.closed && error("The workspace is closed")
-    analysis_work_running(workspace) && cancel_analysis!(workspace)
 
     cachedb = workspace.cache.db
     job = workspace.scan
@@ -202,23 +343,7 @@ function scan_source!(
         ) begin
         try
             rebuild && clear_cache_index!(cachedb)
-            cached = if rebuild
-                nothing
-            else
-                cache_built = with_reader(cachedb) do connection
-                    only(DBInterface.execute(
-                        connection,
-                        "SELECT count(*) > 0 AS built FROM meta WHERE key = 'schema_version'",
-                    )).built
-                end
-                cache_built ? load_cache_index(cachedb) : nothing
-            end
-            # The UI owns `cached` (it displays it and streams progressive items into it). The scan
-            # reuses unchanged source items by record object, then rewrites their effective parameters
-            # while building its result — so it must work on its OWN deep copy, or it would mutate the
-            # very records the render thread is mutating, racing on each record's parameter dict. The
-            # copy is taken here, before `cached` is handed to the UI, so nothing else touches it yet.
-            reuse_index = cached === nothing ? nothing : deepcopy(cached)
+            cached = !rebuild && cache_built(cachedb) ? load_cache_index(cachedb) : nothing
             put!(events, (
                 kind=:cache_state,
                 job_id=scan_id,
@@ -226,82 +351,45 @@ function scan_source!(
                 index=cached,
             ))
 
-            # Establish cache identity before the scan transaction writes its replacement contents.
-            write_scan_identity!(cachedb)
-            wrote = Ref(false)
-            written_ids = Set{String}()
-            kept_ids = Set{String}()
-
-            source = with_cancel(() -> cancel_token[]) do
-                scan_source(
-                    workspace.project,
-                    workspace.source;
-                    cached_source=reuse_index === nothing ? nothing : reuse_index.source,
-                    on_progress=(progress) -> put!(events, (
-                        kind=:progress,
-                        job_id=scan_id,
-                        progress,
-                    )),
-                    on_items=(items) -> begin
-                        records = ItemRecord[ItemRecord(item) for item in items]
-                        put!(events, (kind=:items, job_id=scan_id, items=records))
-                    end,
-                    on_source_item=(interpretation::SourceItemInterpretation) -> begin
-                        records = interpretation.records
-                        # Hand the buffer every interpreted item, cacheable or not — it serves them
-                        # from memory and the flush persists only the cacheable ones. Discarding the
-                        # non-cacheable items here was what forced a redundant whole-file re-read.
-                        data = Any[item for item in interpretation.interpreted_items]
-                        wrote[] || put!(events, (
-                            kind=:cache_writing,
-                            job_id=scan_id,
-                        ))
-                        wrote[] = true
-                        # Deposit into the buffer (never blocks on the database) and enqueue the
-                        # data-less records. Processing reads the interpreted data straight back from
-                        # the buffer's staged store, before it is even durable.
-                        store_interpreted!(workspace.cache.db, records, data)
-                        for record in records
-                            push!(written_ids, record.source_item_id)
-                            enqueue_processing!(workspace, record)
-                        end
-                    end,
-                    on_kept_source_item=(source_item_id::String) ->
-                        push!(kept_ids, source_item_id),
-                    # The opening move of an update: drop source items the source no longer contains,
-                    # while the buffers are still empty so no append can race the delete.
-                    on_discovered=(present_ids) ->
-                        retain_source_items!(cachedb, present_ids),
-                    on_failure=(failure::ItemFailure) ->
-                        put!(events, (kind=:failure, job_id=scan_id, failure)),
-                    profiler=workspace.profiler,
-                )
+            write_meta_header!(cachedb)
+            discovered = with_cancel(() -> cancel_token[]) do
+                source_items(workspace.source)
             end
-            # Drain the per-item deposits before the readiness probe below queries the cache for
-            # already-processed items.
-            wait_cache_flushed!(workspace.cache.db.buffer)
-            # Unchanged source items keep their existing rows: treat them as already written so the
-            # collection-level append below records no redundant bare row for them.
-            union!(written_ids, kept_ids)
-            cache_hit = reuse_index !== nothing && source === reuse_index.source
-            cache_hit || store_scan_collection_data!(cachedb, source, written_ids)
-            # A fresh build already enqueued every record from `on_source_item`, so the readiness
-            # probe below would query DuckDB for thousands of rows only to learn nothing is cached.
-            # It earns its keep only on an incremental reopen, where unchanged source items were kept
-            # (never enqueued during the scan) and may still need processing.
-            if reuse_index !== nothing
-                records = source.hierarchy.all_items
-                processed_ids = cached_item_data_ids(cachedb, records; stage=:processed)
-                for record in records
-                    record.id in processed_ids || enqueue_processing!(workspace, record)
+            current = Dict(source_item_id(item) => fingerprint(item) for item in discovered)
+            previous = cached === nothing ?
+                Dict{String,Any}() :
+                copy(cached.source.source_item_fingerprints)
+            upserts = AbstractDataSourceItem[]
+            for item in discovered
+                id_value = source_item_id(item)
+                if !haskey(previous, id_value) || !isequal(previous[id_value], current[id_value])
+                    push!(upserts, item)
                 end
             end
+            present = Set(keys(current))
+            removals = String[id for id in keys(previous) if !(id in present)]
+            stale = count(id -> haskey(previous, id) && !isequal(previous[id], current[id]), keys(current))
+            new_items = count(id -> !haskey(previous, id), keys(current))
+            status = ProjectCacheStatus(
+                length(current),
+                length(previous),
+                length(current) - length(workspace.index.analysis_errors),
+                stale,
+                new_items,
+                length(removals),
+                length(workspace.index.analysis_errors),
+            )
             put!(events, (
-                kind=:source,
+                kind=:source_changes,
                 job_id=scan_id,
-                source,
-                cache_hit,
-                status=_post_write_status(workspace.cache.identity, source, reuse_index),
+                changes=SourceChanges(upserts, removals),
+                fingerprints=current,
+                status,
+                cache_hit=isempty(upserts) && isempty(removals),
+            ))
+            put!(events, (
+                kind=:source_done,
+                job_id=scan_id,
             ))
         catch error
             if is_job_cancelled(error)
@@ -332,14 +420,8 @@ set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
 
 """Return one lock-consistent counter snapshot for the structured profiler."""
 function profile_counter_snapshot(workspace::Workspace)::NamedTuple
-    completed, total, jobs = lock(workspace.processing.lock) do
-        (
-            workspace.processing.completed,
-            workspace.processing.total,
-            length(workspace.processing.jobs),
-        )
-    end
-    depth = jobs + buffer_pending_counts(workspace.cache.db.buffer).items
+    completed, total, jobs = work_counts(workspace)
+    depth = jobs + cache_pending_counts(workspace.cache.db).items
     return (
         scan_done=workspace.scan.progress.processed_source_items,
         scan_total=workspace.scan.progress.total_source_items,
@@ -360,7 +442,7 @@ function start_internal_profile!(workspace::Workspace)::Nothing
         workspace.profile_restart_pending = true
         cancel_scan!(workspace)
         cancel_analysis!(workspace)
-        cancel_waiting_processing!(workspace)
+        cancel_waiting_work!(workspace)
     else
         Profiling.start!(profiler, () -> profile_counter_snapshot(workspace))
     end
@@ -479,152 +561,6 @@ function append_items!(
     return true
 end
 
-"""Start background collection stats for the completed source scan."""
-function start_analysis!(workspace::Workspace)::Nothing
-    analysis_work_running(workspace) && cancel_analysis!(workspace)
-    source = workspace.index.source
-    source isa SourceScan || return nothing
-
-    job = workspace.analysis
-    job.id += 1
-    analysis_id = job.id
-    total = count(node -> !isempty(node.items), values(source.hierarchy.index))
-    job.state = :analyzing
-    job.progress = WorkspaceProgress(phase=:analyzing, total_source_items=total)
-    job.error = ""
-    events = Channel{NamedTuple}(Inf)
-    cancel_token = Base.Threads.Atomic{Bool}(false)
-    job.events = events
-    job.cancel_token = cancel_token
-
-    cachedb = workspace.cache.db
-    task = Base.Threads.@spawn begin
-        try
-            collection_node_stats = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
-            no_item_stats = Dict{String,Dict{Symbol,Any}}()
-            failures = Dict{String,String}()
-            processed = 0
-
-            with_cancel(() -> cancel_token[]) do
-                for (path, node) in source.hierarchy.index
-                    check_cancel()
-                    isempty(node.items) && continue
-                    try
-                        items = AbstractDataItem[
-                            DataItem(
-                                ItemRecord(record; stats=get(
-                                    workspace.index.item_stats, record.id, record.stats)),
-                                nothing,
-                            )
-                            for record in node.items
-                        ]
-                        computed = Profiling.@profile_span workspace.profiler :project :collection_stats Profiling.ProfileAttributes(
-                            items=Int64(length(items)),
-                        ) begin
-                            collection_stats(
-                                workspace.project,
-                                workspace.source,
-                                collect(path),
-                                items,
-                            )
-                        end
-                        isempty(computed) || (collection_node_stats[path] = computed)
-                    catch error
-                        is_job_cancelled(error) && rethrow()
-                        failures[first(node.items).id] =
-                            "collection_stats: " * sprint(showerror, error)
-                    end
-                    processed += 1
-                    put!(events, (
-                        kind=:progress,
-                        job_id=analysis_id,
-                        progress=(
-                            phase=:analyzing,
-                            total_source_items=total,
-                            processed_source_items=processed,
-                            loaded_items=length(node.items),
-                            skipped_source_items=0,
-                            current_source_item=first(node.items).source_item_id,
-                        ),
-                    ))
-                end
-                if !isempty(collection_node_stats)
-                    write_started = time_ns()
-                    store_stats!(cachedb, no_item_stats, collection_node_stats)
-                    record_cache_phase!(
-                        workspace.metrics.stats_write_ns,
-                        workspace.metrics.stats_writes,
-                        write_started,
-                    )
-                end
-            end
-
-            put!(events, (
-                kind=:analysis,
-                job_id=analysis_id,
-                source_id=source.source_id,
-                item_stats=Dict{String,Dict{Symbol,Any}}(),
-                collection_stats=collection_node_stats,
-                failures,
-            ))
-        catch error
-            if is_job_cancelled(error)
-                put!(events, (kind=:canceled, job_id=analysis_id))
-            else
-                put!(events, (
-                    kind=:error,
-                    job_id=analysis_id,
-                    error,
-                    backtrace=catch_backtrace(),
-                ))
-            end
-        finally
-            close(events)
-        end
-    end
-    track_task!(workspace, task)
-    return nothing
-end
-
-"""Merge completed background stats into the live hierarchy."""
-function apply_analysis!(
-    workspace::Workspace,
-    source_id_value::String,
-    item_stats::Dict{String,Dict{Symbol,Any}},
-    collection_node_stats::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
-    failures::Dict{String,String},
-)::Bool
-    source_id_value == source_id(workspace.source) ||
-        error("Analysis belongs to $(source_id_value), not $(source_id(workspace.source))")
-    changed = false
-    for (id, computed) in item_stats
-        haskey(workspace.index.items, id) || continue
-        workspace.index.item_stats[id] = metadata_dict(computed)
-        changed = true
-    end
-    for (path, computed) in collection_node_stats
-        node = get(workspace.index.hierarchy.index, path, nothing)
-        node === nothing && continue
-        merge!(node.stats, metadata_dict(computed))
-        changed = true
-    end
-    for (id, message) in failures
-        workspace.index.analysis_errors[id] = message
-    end
-    source = workspace.index.source
-    if source isa SourceScan
-        for (id, message) in failures
-            record = get(workspace.index.items, id, nothing)
-            push!(source.analysis_failures, ItemFailure(
-                record === nothing ? "" : record.source_item_id,
-                id,
-                message,
-            ))
-        end
-    end
-    return changed || !isempty(failures)
-end
-
 """Surface the cached index as an instant, independent first view, before the fresh scan refines it."""
 function apply_cache_index!(
     workspace::Workspace,
@@ -638,100 +574,300 @@ function apply_cache_index!(
     # The cached hierarchy is its own freshly-loaded snapshot (distinct record objects), so the live
     # scan can refine it without touching any hierarchy a previous scan's analysis still reads.
     replace_item_index!(workspace, index.source.hierarchy)
+    workspace.index.source = index.source
 
     cached_items = length(index.source.source_item_fingerprints)
     workspace.cache.status = ProjectCacheStatus(
         cached_items, cached_items, 0, 0, 0, 0, length(index.analysis_errors))
     workspace.index.analysis_errors = copy(index.analysis_errors)
+    for state in values(index.result_states)
+        CacheResultStatus(state.status) === RESULT_FAILED || continue
+        workspace.index.analysis_errors[state.entity] =
+            something(state.message, "cached work failed")
+    end
+    seed_cached_work_nodes!(workspace, index)
     return nothing
 end
 
-"""Apply the authoritative completed source scan (already mirrored into the cache) to the workspace."""
-function apply_source_scan!(
+"""Seed work graph completion nodes from a loaded cache index."""
+function seed_cached_work_nodes!(
     workspace::Workspace,
-    source::SourceScan,
-    status::ProjectCacheStatus;
-    analyze::Bool=true,
+    index::ProjectCacheIndex,
 )::Nothing
-    source.source_id == source_id(workspace.source) ||
-        error("Source scan belongs to $(source.source_id), not $(source_id(workspace.source))")
-    workspace.index.source = source
-    replace_item_index!(workspace, source.hierarchy)
-    identity = workspace.cache.identity
-    source_errors = ProjectCacheIndex(identity, source).analysis_errors
-    item_ids = keys(workspace.index.items)
-    processing_errors = Dict(
-        id => message
-        for (id, message) in workspace.index.analysis_errors
-        if id in item_ids
-    )
-    merge!(source_errors, processing_errors)
-    workspace.index.analysis_errors = source_errors
-    workspace.cache.status = status
-    analyze && (workspace.analysis.state = :pending)
+    records = Dict(record.id => record for record in workspace.index.hierarchy.all_items)
+    for (result_key, state) in index.result_states
+        work_state = CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
+        if result_key.kind === PROCESSING_RESULT
+            record = get(records, result_key.entity, nothing)
+            record === nothing && continue
+            seed_work_node!(
+                workspace,
+                WorkKey(PROCESS_ITEM, result_key.entity),
+                item_revision(record),
+                work_state,
+            )
+        elseif result_key.kind === ITEM_STATS_RESULT
+            record = get(records, result_key.entity, nothing)
+            record === nothing && continue
+            seed_work_node!(
+                workspace,
+                WorkKey(ITEM_STATS, result_key.entity),
+                item_revision(record),
+                work_state,
+            )
+        elseif result_key.kind === COLLECTION_STATS_RESULT
+            path = collection_path_tuple(result_key.entity)
+            haskey(workspace.index.hierarchy.index, path) || continue
+            seed_work_node!(
+                workspace,
+                WorkKey(COLLECTION_STATS, result_key.entity),
+                collection_revision(workspace, path),
+                work_state,
+            )
+        end
+    end
     return nothing
 end
 
-"""Apply all completed scan and cache events."""
+"""Mark invalidated collection-stat graph nodes stale without exposing cache keys to Workspace."""
+function mark_collection_stats_missing!(
+    workspace::Workspace,
+    collection_keys::Vector{String},
+)::Nothing
+    for collection_key in unique(collection_keys)
+        path = collection_path_tuple(collection_key)
+        haskey(workspace.index.hierarchy.index, path) || continue
+        mark_work_missing!(
+            workspace,
+            WorkKey(COLLECTION_STATS, collection_key),
+            collection_revision(workspace, path),
+        )
+    end
+    return nothing
+end
+
+"""Return the current node if the completion revision still owns the result."""
+function current_completion_node(
+    workspace::Workspace,
+    key::WorkKey,
+    revision::UInt64,
+)::Union{Nothing,WorkNode}
+    return lock(workspace.work.lock) do
+        node = get(workspace.work.nodes, key, nothing)
+        node === nothing && return nothing
+        node.revision == revision && node.state === :running || return nothing
+        return node
+    end
+end
+
+"""Finish a current work node and wake selected waiters."""
+function finish_work_node!(
+    workspace::Workspace,
+    node::WorkNode,
+    state::Symbol,
+)::Vector{Channel{Any}}
+    return lock(workspace.work.lock) do
+        current = get(workspace.work.nodes, node.key, nothing)
+        current === node || return Channel{Any}[]
+        node.state = state
+        workspace.work.completed += 1
+        wake_ready_dependents!(workspace.work, node.key)
+        waiters = copy(node.waiters)
+        empty!(node.waiters)
+        notify(workspace.work.condition; all=true)
+        waiters
+    end
+end
+
+"""Queue item stats after processing succeeds."""
+function enqueue_item_stats!(workspace::Workspace, record::ItemRecord)::Nothing
+    enqueue_work!(
+        workspace,
+        WorkKey(ITEM_STATS, record.id),
+        item_revision(record);
+        priority=2,
+        dependencies=WorkKey[WorkKey(PROCESS_ITEM, record.id)],
+    )
+    return nothing
+end
+
+"""Queue collection stats when all current member item-stat nodes are terminal."""
+function enqueue_ready_collection_stats!(
+    workspace::Workspace,
+    collection_keys::Vector{String},
+)::Nothing
+    for collection_key in collection_keys
+        path = collection_path_tuple(collection_key)
+        node = get(workspace.index.hierarchy.index, path, nothing)
+        node === nothing && continue
+        isempty(node.items) && continue
+        dependencies = WorkKey[WorkKey(ITEM_STATS, record.id) for record in node.items]
+        enqueue_work!(
+            workspace,
+            WorkKey(COLLECTION_STATS, collection_key),
+            collection_revision(workspace, path);
+            priority=1,
+            dependencies,
+        )
+    end
+    return nothing
+end
+
+"""Apply one successful work completion to WorkspaceIndex and ProjectCache."""
+function publish_work_success!(
+    workspace::Workspace,
+    node::WorkNode,
+    result,
+)::Bool
+    key = node.key
+    if key.kind === INTERPRET_SOURCE
+        interpretation = result::SourceItemInterpretation
+        old_records, invalidated = replace_source_item_output!(
+            workspace, key.entity, interpretation)
+        delete_source_item!(workspace.cache.db, key.entity, old_records)
+        delete_collection_stats!(workspace.cache.db, invalidated)
+        mark_collection_stats_missing!(workspace, invalidated)
+        store_interpreted!(
+            workspace.cache.db,
+            interpretation.records,
+            interpretation.interpreted_items,
+        )
+        for record in interpretation.records
+            mark_work_missing!(
+                workspace,
+                WorkKey(ITEM_STATS, record.id),
+                item_revision(record);
+                dependencies=WorkKey[WorkKey(PROCESS_ITEM, record.id)],
+            )
+            enqueue_processing!(workspace, record)
+        end
+        return true
+    elseif key.kind === PROCESS_ITEM
+        record = workspace.index.items[key.entity]
+        store_processed!(workspace.cache.db, record, result.item)
+        waiters = finish_work_node!(workspace, node, :ready)
+        loaded = DataItem(record, item_data(result.item))
+        for waiter in waiters
+            put!(waiter, ProcessingResult(loaded, nothing))
+        end
+        enqueue_item_stats!(workspace, record)
+        return false
+    elseif key.kind === ITEM_STATS
+        record = workspace.index.items[key.entity]
+        stats = metadata_dict(result)
+        workspace.index.item_stats[key.entity] = stats
+        workspace.index.items[key.entity] = ItemRecord(record; stats)
+        rebuild_workspace_hierarchy!(workspace)
+        store_item_stats!(workspace.cache.db, workspace.index.items[key.entity], stats)
+        enqueue_ready_collection_stats!(
+            workspace,
+            affected_collection_keys([workspace.index.items[key.entity]]),
+        )
+        return true
+    else
+        path = collection_path_tuple(key.entity)
+        hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
+        hierarchy_node === nothing && return false
+        empty!(hierarchy_node.stats)
+        merge!(hierarchy_node.stats, metadata_dict(result))
+        store_collection_stats!(workspace.cache.db, key.entity, hierarchy_node.stats)
+        return true
+    end
+end
+
+"""Apply one failed work completion to WorkspaceIndex and ProjectCache."""
+function publish_work_failure!(
+    workspace::Workspace,
+    node::WorkNode,
+    failure::CapturedException,
+)::Bool
+    key = node.key
+    message = sprint(showerror, failure.ex)
+    if key.kind === INTERPRET_SOURCE
+        old_records, invalidated = remove_source_item_output!(workspace, key.entity)
+        delete_source_item!(workspace.cache.db, key.entity, old_records)
+        delete_collection_stats!(workspace.cache.db, invalidated)
+        mark_collection_stats_missing!(workspace, invalidated)
+        workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
+        finish_work_node!(workspace, node, :failed)
+        return true
+    end
+    source_item_id_value = ""
+    record = key.kind in (PROCESS_ITEM, ITEM_STATS) ?
+        get(workspace.index.items, key.entity, nothing) : nothing
+    record === nothing || (source_item_id_value = record.source_item_id)
+    store_result_failure!(
+        workspace.cache.db,
+        CacheResultKey(
+            key.kind === PROCESS_ITEM ? PROCESSING_RESULT :
+            key.kind === ITEM_STATS ? ITEM_STATS_RESULT : COLLECTION_STATS_RESULT,
+            key.entity,
+        ),
+        source_item_id_value,
+        message,
+    )
+    workspace.index.analysis_errors[key.entity] = message
+    waiters = finish_work_node!(workspace, node, :failed)
+    for waiter in waiters
+        put!(waiter, ProcessingResult(nothing, failure))
+    end
+    if key.kind === ITEM_STATS && record !== nothing
+        enqueue_ready_collection_stats!(workspace, affected_collection_keys([record]))
+    end
+    return true
+end
+
+"""Apply graph completion events; stale revisions are ignored."""
+function poll_work_events!(workspace::Workspace)::Bool
+    changed = false
+    events = workspace.work.events
+    while isready(events)
+        event = take!(events)
+        node = current_completion_node(workspace, event.key, event.revision)
+        node === nothing && continue
+        if event.result isa CapturedException
+            changed |= publish_work_failure!(workspace, node, event.result)
+        else
+            changed |= publish_work_success!(workspace, node, event.result)
+            node.key.kind === PROCESS_ITEM || finish_work_node!(workspace, node, :ready)
+        end
+    end
+    return changed
+end
+
+"""Apply all completed scan, cache, and work events."""
 function poll_workspace!(workspace::Workspace)::Bool
     index_changed = false
 
     scan_events = workspace.scan.events
     if scan_events !== nothing
-        pending_items = ItemRecord[]
         while isready(scan_events)
             event = take!(scan_events)
             event.job_id == workspace.scan.id || continue
             if event.kind == :progress
                 workspace.scan.progress = WorkspaceProgress(event.progress)
                 workspace.scan.state = event.progress.phase
-            elseif event.kind == :failure
-                # Source-item failures stream in as they happen, so a long scan shows current errors
-                # instead of revealing them all at the end. apply_source_scan! later replaces this with
-                # the authoritative set.
-                failure = event.failure
-                previous = get(workspace.index.analysis_errors, failure.source_item_id, "")
-                workspace.index.analysis_errors[failure.source_item_id] =
-                    isempty(previous) ? failure.message : previous * "\n" * failure.message
-                index_changed = true
-            elseif event.kind == :items
-                # Progressive first-view items only matter until a complete scan is applied. Once
-                # `index.source` is set, a background analysis task iterates that hierarchy, so
-                # mutating it here (insert_item!/apply_collection_parameters!) would race that task
-                # and corrupt the heap. The next :source replaces the whole index anyway.
-                workspace.index.source === nothing && append!(pending_items, event.items)
             elseif event.kind == :cache_state
                 if event.index === nothing
-                    # Rebuild, or first build with no cache: clear to a fresh empty tree so the scan
-                    # streams the new hierarchy in from scratch.
                     replace_item_index!(workspace, Hierarchy(source_id(workspace.source), false))
                     empty!(workspace.index.analysis_errors)
                 else
-                    # The cache found on disk, surfaced as a complete, independent snapshot before fresh
-                    # results refine it.
                     apply_cache_index!(workspace, event.index)
                 end
                 index_changed = true
                 workspace.cache_state = event.state
                 event.state == :missing && workspace.cache.operation != :rebuild &&
                     (workspace.cache.operation = :build)
-            elseif event.kind == :cache_writing
-                workspace.cache_state = :writing
-            elseif event.kind == :source
-                # No progressive append here: apply_source_scan! rebuilds the index wholesale from
-                # event.source, which already contains every record accumulated in pending_items.
-                empty!(pending_items)
-                apply_source_scan!(
-                    workspace, event.source, event.status; analyze=!event.cache_hit)
-                index_changed = true
+            elseif event.kind == :source_changes
+                index_changed |= apply_source_changes!(
+                    workspace, event.changes, event.fingerprints, event.status)
                 workspace.scan.state = event.cache_hit ? :unchanged : :done
                 workspace.cache_state = :ready
+            elseif event.kind == :source_done
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :canceled
                 workspace.scan.state = :canceled
-                workspace.cache_state =
-                    workspace.cache_state == :writing ? :canceled : workspace.cache_state
                 workspace.scan.events = nothing
                 workspace.scan.cancel_token = nothing
             elseif event.kind == :error
@@ -750,64 +886,9 @@ function poll_workspace!(workspace::Workspace)::Bool
                 workspace.scan.cancel_token = nothing
             end
         end
-        workspace.index.source === nothing &&
-            (index_changed |= append_items!(workspace, pending_items))
     end
 
-    processing_events = workspace.processing.events
-    while isready(processing_events)
-        event = take!(processing_events)
-        if event.kind == :stats
-            workspace.index.item_stats[event.item_id] = metadata_dict(event.stats)
-            delete!(workspace.index.analysis_errors, event.item_id)
-        elseif event.kind == :failure
-            workspace.index.analysis_errors[event.item_id] = event.message
-        else
-            error("Unknown processing event kind $(event.kind)")
-        end
-        index_changed = true
-    end
-
-    analysis_events = workspace.analysis.events
-    if analysis_events !== nothing
-        while isready(analysis_events)
-            event = take!(analysis_events)
-            event.job_id == workspace.analysis.id || continue
-            if event.kind == :progress
-                workspace.analysis.progress = WorkspaceProgress(event.progress)
-            elseif event.kind == :analysis
-                index_changed |= apply_analysis!(
-                    workspace,
-                    event.source_id,
-                    event.item_stats,
-                    event.collection_stats,
-                    event.failures,
-                )
-                workspace.analysis.state = :done
-                workspace.analysis.events = nothing
-                workspace.analysis.cancel_token = nothing
-            elseif event.kind == :canceled
-                workspace.analysis.state = :canceled
-                workspace.analysis.events = nothing
-                workspace.analysis.cancel_token = nothing
-            elseif event.kind == :error
-                workspace.analysis.state = :error
-                workspace.analysis.error =
-                    "Analysis failed. See the console for full details."
-                @error(
-                    "Analysis job failed",
-                    source=source_id(workspace.source),
-                    exception=(event.error, event.backtrace),
-                )
-                workspace.analysis.events = nothing
-                workspace.analysis.cancel_token = nothing
-            end
-        end
-    end
-
-    !workspace.profile_restart_pending && workspace.analysis.state == :pending &&
-        !processing_work_running(workspace) &&
-        start_analysis!(workspace)
+    index_changed |= poll_work_events!(workspace)
 
     # Refresh the watcher snapshot while work runs (progress advances without an index change) and for
     # the one frame after it stops; idle frames skip the rebuild entirely.
@@ -815,7 +896,7 @@ function poll_workspace!(workspace::Workspace)::Bool
            analysis_work_running(workspace) ||
            cache_work_running(workspace)
     if workspace.profile_restart_pending && !busy
-        reset_processing_queue!(workspace)
+        reset_work_graph!(workspace)
         workspace.profile_restart_pending = false
         workspace.profiler.state = :idle
         Profiling.start!(

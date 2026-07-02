@@ -107,6 +107,17 @@ struct ProjectCacheIndex
     result_states::Dict{CacheResultKey,CachedResultState}
 end
 
+"""Summary of the cache/source comparison shown by workspace status."""
+struct ProjectCacheStatus
+    total_source_items::Int
+    cached_source_items::Int
+    fresh_source_items::Int
+    stale_source_items::Int
+    new_source_items::Int
+    deleted_source_items::Int
+    error_source_items::Int
+end
+
 # Storage rows (field names are the table columns; `R(database_row)` is the pure decoder)
 
 struct SourceItemRow
@@ -281,6 +292,12 @@ function open_cache_db(identity::ProjectCacheIdentity)::CacheDB
     return open_cache_db(identity, Profiling.ProfileSession(false, false, nothing, nothing))
 end
 
+"""Cache stores are live when opened; this keeps Workspace on a semantic lifecycle call."""
+start_cache!(::CacheDB)::Nothing = nothing
+
+"""Cache stores close with `close_cache_db!`; this keeps Workspace on a semantic lifecycle call."""
+stop_cache!(::CacheDB)::Nothing = nothing
+
 function _buffer_rows(item::AbstractDataItem)::Int
     data = item_data(item)
     return data isa AbstractDataFrame ? nrow(data) : 1
@@ -411,19 +428,6 @@ function store_collection_stats!(
     return nothing
 end
 
-"""Delete one collection's persisted statistics and completion state."""
-function delete_collection_stats!(
-    cache::CacheDB,
-    metadata_keys::Vector{Tuple{Int8,String,String}},
-    result_key::Tuple{Int8,String},
-)::Nothing
-    for key in metadata_keys
-        delete!(cache.metadata, key)
-    end
-    delete!(cache.result_states, result_key)
-    return nothing
-end
-
 """Delete every cached descendant of one source item through typed buffer mutations."""
 function delete_source_item!(
     cache::CacheDB,
@@ -453,6 +457,45 @@ function delete_source_item!(
     return nothing
 end
 
+"""Delete every cached result owned by one published source item."""
+function delete_source_item!(
+    cache::CacheDB,
+    source_item_id::AbstractString,
+    old_records::Vector{ItemRecord},
+)::Nothing
+    source_id = String(source_item_id)
+    item_ids = String[record.id for record in old_records]
+    metadata_keys = Tuple{Int8,String,String}[]
+    failure_keys = Tuple{String,String}[]
+    result_keys = Tuple{Int8,String}[]
+    for record in old_records
+        for key in keys(record.parameters)
+            push!(metadata_keys, (Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key)))
+        end
+        for key in keys(record.stats)
+            push!(metadata_keys, (Int8(SCOPE_ITEM_STATS), record.id, String(key)))
+        end
+        push!(failure_keys, (record.id, source_id))
+        push!(result_keys, (Int8(PROCESSING_RESULT), record.id))
+        push!(result_keys, (Int8(ITEM_STATS_RESULT), record.id))
+    end
+    push!(failure_keys, (source_id, source_id))
+    return delete_source_item!(
+        cache, source_id, item_ids, metadata_keys, failure_keys, result_keys)
+end
+
+"""Delete cached statistics for collections whose published stats are invalid."""
+function delete_collection_stats!(
+    cache::CacheDB,
+    collection_keys::Vector{String},
+)::Nothing
+    for collection_key in unique(collection_keys)
+        delete_by_key_prefix!(cache.metadata, (Int8(SCOPE_NODE_STATS), collection_key))
+        delete!(cache.result_states, (Int8(COLLECTION_STATS_RESULT), collection_key))
+    end
+    return nothing
+end
+
 """Aggregate staged durable keys and payload rows."""
 function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}}
     items = 0
@@ -466,6 +509,12 @@ function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{
         end
     end
     return (items=items, rows=rows)
+end
+
+"""Whether any cache store has queued or writing mutations."""
+function cache_has_pending_writes(cache::CacheDB)::Bool
+    pending = cache_pending_counts(cache)
+    return pending.items > 0 || pending.rows > 0
 end
 
 """Read item data through the buffer (memory first, then the database for processed). Returns a vector aligned to `records` of loaded items or `nothing` on a miss; the caller falls back to the source. Interpreted payloads are memory-only, so a memory miss is final."""

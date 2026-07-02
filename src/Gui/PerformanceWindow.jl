@@ -464,9 +464,7 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
         scan_pct = total_si > 0 ?
             Float32(100 * progress.processed_source_items / total_si) : 0.0f0
 
-        completed, total_processing = lock(workspace.processing.lock) do
-            (workspace.processing.completed, workspace.processing.total)
-        end
+        completed, total_processing, _active = Workspace.work_counts(workspace)
         analysis_pct = total_processing > 0 ?
             Float32(100 * completed / total_processing) : 0.0f0
 

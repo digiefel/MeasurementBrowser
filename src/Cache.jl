@@ -23,7 +23,7 @@ using ..Profiling: @profile_span, ProfileAttributes
 
 using DuckDB
 using DBInterface
-using DataFrames: AbstractDataFrame, DataFrame, names, nrow
+using DataFrames: AbstractDataFrame, DataFrame, groupby, names, nrow
 using SHA
 using Serialization
 using Dates

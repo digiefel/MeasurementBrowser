@@ -68,6 +68,9 @@ MB.item_data(p::Photo) = p.data
     workspace = MB.Workspace.Workspace(project, test_source(project, dir))
     plot_kind = MB.RegisteredPlot{:photo,Symbol("Image")}
     try
+        for record in records
+            workspace.index.items[record.id] = record
+        end
         figure = MB.setup_plot(workspace, plot_kind, records)
         @test figure isa Figure
         @test MB.plot_data!(workspace, plot_kind, records, figure) === nothing

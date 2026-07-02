@@ -93,6 +93,9 @@ end
     @testset "plot data api" begin
         workspace = MB.Workspace.Workspace(project, MB.DirectorySource(dirname(fixture1)))
         try
+            for item in items
+                workspace.index.items[item.id] = item
+            end
             data = read_item_data(workspace, items)
             @test length(data) == 2
             @test all(nrow(df) == 3 for df in data)

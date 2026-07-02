@@ -77,6 +77,7 @@ using DataFrames: DataFrame, nrow
             Browser._make_timings_figure(state.performance.live_plots)
             Browser._make_build_figure(state.performance.live_plots)
             Browser._sample_build_progress!(state.performance.live_plots, workspace)
+            Workspace.replace_item_index!(workspace, ItemIndex.Hierarchy(records, workspace.source))
             read_item_data(workspace, records)
             plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
             items = Workspace.materialize_items(workspace, records)

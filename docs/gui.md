@@ -20,16 +20,16 @@ diagnostics. Scan timings live with the project performing the callbacks. Intern
 and optional CPU samples belong to the workspace that captured them.
 
 The workspace owns the source, item index, selected collection and item identities, DuckDB cache,
-processing queue, and source-scan/cache state. Those values must not be copied into browser state.
+work graph, and source-scan/cache state. Those values must not be copied into browser state.
 
 The GUI reads background-work state through one snapshot, `workspace.status` (a `WorkspaceStatus`):
 its level (color), short label, one merged detail line, busy flag, optional progress fraction, and the
 live error list. `poll_workspace!` recomputes that snapshot only when something changes or work is
 active, so idle frames are allocation-free, and the GUI never reaches into the scan/analysis/cache
 internals directly. This is the stable contract: the cache's internals can change without touching the
-UI as long as it still produces the same status. Scanning streams items, per-item failures, and
-collection summaries into that snapshot as they happen; a rescan detaches the previous scan so updates
-stay live without racing any still-finishing analysis.
+UI as long as it still produces the same status. Scanning submits source changes to the work graph;
+`poll_workspace!` publishes completed work and folds progress, failures, and cache state into the
+snapshot.
 
 ## Panels
 

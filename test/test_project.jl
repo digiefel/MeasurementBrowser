@@ -2,6 +2,12 @@ using CSV
 using DataFrames: DataFrame
 using MeasurementBrowser
 
+if !isdefined(Main, :TEST_CACHE_DEPOT)
+    const TEST_CACHE_DEPOT = mktempdir()
+    pushfirst!(DEPOT_PATH, TEST_CACHE_DEPOT)
+    atexit(() -> rm(TEST_CACHE_DEPOT; force=true, recursive=true))
+end
+
 """
 A small registry project used across the package tests. One `:table` item per CSV; filenames
 beginning with `broken` fail their read so failure handling can be exercised.
@@ -51,4 +57,20 @@ end
 function write_test_source(path::AbstractString, offset::Real=0)::String
     write(path, "x,y\n$(offset + 1),$(offset + 2)\n$(offset + 3),$(offset + 4)\n")
     return String(path)
+end
+
+"""Poll until source and graph work settle, then return the workspace."""
+function wait_workspace_idle!(workspace; timeout::Real=15)
+    deadline = time() + timeout
+    while time() < deadline
+        MeasurementBrowser.Workspace.poll_workspace!(workspace)
+        _completed, _total, active = MeasurementBrowser.Workspace.work_counts(workspace)
+        idle = !MeasurementBrowser.Workspace.source_scan_running(workspace) &&
+            !MeasurementBrowser.Workspace.processing_work_running(workspace) &&
+            !MeasurementBrowser.Workspace.analysis_work_running(workspace) &&
+            active == 0
+        idle && return workspace
+        sleep(0.01)
+    end
+    return workspace
 end
