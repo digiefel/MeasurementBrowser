@@ -248,5 +248,10 @@ Base.@kwdef mutable struct BrowserState
     profile_next_plot::Bool = false
     collection_parameters_modal::Bool = true
     modal_root_path::String = ""
+    cache_rebuild_modal::Bool = false
+    cache_rebuild_path::String = ""
+    cache_rebuild_project::Union{Nothing,Project} = nothing
+    cache_rebuild_persist::Bool = true
+    cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
 end

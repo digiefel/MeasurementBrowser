@@ -287,6 +287,7 @@ function Workspace(
         Profiling.environment_path("MB_PROFILE_OUTPUT"),
     crash_trace::Union{Nothing,AbstractString}=
         Profiling.environment_path("MB_CRASH_TRACE"),
+    rebuild::Bool=false,
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_name(project), source)
@@ -294,7 +295,7 @@ function Workspace(
         profile_internal, profile_cpu, profile_output, crash_trace)
     metrics = BuildMetrics()
     cache_db = try
-        open_cache_db(identity, profiler, metrics)
+        open_cache_db(identity, profiler, metrics; rebuild)
     catch
         Profiling.close!(profiler)
         rethrow()

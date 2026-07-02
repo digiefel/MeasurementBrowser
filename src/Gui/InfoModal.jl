@@ -132,3 +132,47 @@ function render_collection_parameters_modal(state::BrowserState)::Nothing
     state.collection_parameters_modal = opened
     return nothing
 end
+
+"""Ask before discarding an old generated cache whose schema cannot be opened."""
+function render_cache_rebuild_modal(state::BrowserState)::Nothing
+    state.cache_rebuild_modal || return nothing
+
+    center = ig.ImVec2(0.5, 0.5)
+    @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
+    ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
+    ig.OpenPopup("Cache Rebuild Required")
+
+    opened = state.cache_rebuild_modal
+    if @c ig.BeginPopupModal("Cache Rebuild Required", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
+        ig.TextWrapped("This project cache was made by an older MeasurementBrowser schema.")
+        ig.TextWrapped("The source data is safe. Only the generated cache file needs to be discarded.")
+        ig.Separator()
+        ig.TextWrapped(state.cache_rebuild_error)
+        ig.Spacing()
+
+        if ig.Button("Close")
+            opened = false
+            state.cache_rebuild_path = ""
+            state.cache_rebuild_project = nothing
+            state.cache_rebuild_error = ""
+            ig.CloseCurrentPopup()
+        end
+        ig.SameLine()
+        if ig.Button("Discard cache and rebuild")
+            path = state.cache_rebuild_path
+            project = state.cache_rebuild_project
+            persist = state.cache_rebuild_persist
+            project === nothing && error("Cannot rebuild cache because no project was selected")
+            opened = false
+            state.cache_rebuild_modal = false
+            state.cache_rebuild_path = ""
+            state.cache_rebuild_project = nothing
+            state.cache_rebuild_error = ""
+            ig.CloseCurrentPopup()
+            _open_project_path!(state, path; project, persist, rebuild_cache=true)
+        end
+        ig.EndPopup()
+    end
+    state.cache_rebuild_modal = opened
+    return nothing
+end

@@ -236,46 +236,71 @@ mutable struct CacheDB
     profiler::Profiling.ProfileSession
 end
 
-"""Open (creating if needed) the cache file for one workspace and ensure its schema. Rebuilding generated state is an explicit caller decision."""
+"""Delete one generated cache file. Call only from an explicit rebuild path."""
+function _remove_cache_files!(path::AbstractString)::Nothing
+    cache_path = String(path)
+    for candidate in (cache_path, cache_path * ".wal")
+        ispath(candidate) && rm(candidate; force=true)
+    end
+    return nothing
+end
+
+"""Open one generated cache. `rebuild=true` first discards the old generated file."""
 function open_cache_db(
     identity::ProjectCacheIdentity,
     profiler::Profiling.ProfileSession,
     metrics::BuildMetrics=BuildMetrics(),
+    ;
+    rebuild::Bool=false,
 )::CacheDB
     mkpath(dirname(identity.cache_path))
+    rebuild && _remove_cache_files!(identity.cache_path)
     db = DBInterface.connect(DuckDB.DB, identity.cache_path)
     connection = DBInterface.connect(db)
     try
         try
             DBInterface.execute(connection, _memory_limit_sql(CACHE_MEMORY_LIMIT_MIB[]))
-            ensure_schema!(connection)
-            schema_versions = String[
-                String(row.value)
+            has_meta = only(Int[
+                row.n
                 for row in DBInterface.execute(
                     connection,
-                    "SELECT value FROM meta WHERE key = 'schema_version'",
+                    "SELECT COUNT(*) AS n FROM information_schema.tables " *
+                    "WHERE table_schema = 'main' AND table_name = 'meta'",
                 )
-            ]
-            if !isempty(schema_versions) &&
-               only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
-                throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
+            ]) > 0
+            if has_meta
+                schema_versions = String[
+                    String(row.value)
+                    for row in DBInterface.execute(
+                        connection,
+                        "SELECT value FROM meta WHERE key = 'schema_version'",
+                    )
+                ]
+                if !isempty(schema_versions) &&
+                   only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
+                    throw(ProjectCacheError(
+                        identity.cache_path,
+                        "cache schema is out of date; pass rebuild=true to discard and rebuild it",
+                    ))
+                end
             end
+            ensure_schema!(connection)
         finally
             DBInterface.close!(connection)
         end
-        payload = TabularFamilyStore(db; row_limit=CACHE_BUFFER_ROW_LIMIT)
+        payload = TabularFamilyStore(db; profiler, row_limit=CACHE_BUFFER_ROW_LIMIT)
         return CacheDB(
             identity,
             db,
             metrics,
-            RowStore{String,SourceItemRow}(db, "source_items", ("id",)),
-            RowStore{String,ItemRow}(db, "items", ("id",)),
+            RowStore{String,SourceItemRow}(db, "source_items", ("id",); profiler),
+            RowStore{String,ItemRow}(db, "items", ("id",); profiler),
             RowStore{Tuple{Int8,String,String},MetaRow}(
-                db, "metadata", ("scope", "entity", "key")),
+                db, "metadata", ("scope", "entity", "key"); profiler),
             RowStore{Tuple{String,String},FailureRow}(
-                db, "item_failures", ("item_id", "source_item_id")),
+                db, "item_failures", ("item_id", "source_item_id"); profiler),
             RowStore{Tuple{Int8,String},CachedResultState}(
-                db, "result_states", ("kind", "entity")),
+                db, "result_states", ("kind", "entity"); profiler),
             payload,
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
@@ -288,8 +313,12 @@ function open_cache_db(
 end
 
 """Open a cache with internal profiling disabled for direct cache operations and tests."""
-function open_cache_db(identity::ProjectCacheIdentity)::CacheDB
-    return open_cache_db(identity, Profiling.ProfileSession(false, false, nothing, nothing))
+function open_cache_db(identity::ProjectCacheIdentity; rebuild::Bool=false)::CacheDB
+    return open_cache_db(
+        identity,
+        Profiling.ProfileSession(false, false, nothing, nothing);
+        rebuild,
+    )
 end
 
 """Cache stores are live when opened; this keeps Workspace on a semantic lifecycle call."""
@@ -402,6 +431,7 @@ end
 
 """Persist one item-stat result, including a successful empty result."""
 function store_item_stats!(cache::CacheDB, record::ItemRecord, stats::AbstractDict)::Nothing
+    started = time_ns()
     for (key, value) in metadata_dict(stats)
         edit!(cache.metadata, (Int8(SCOPE_ITEM_STATS), record.id, String(key)),
             metadata_value_to_row(Int8(SCOPE_ITEM_STATS), record.id, String(key), value))
@@ -410,6 +440,11 @@ function store_item_stats!(cache::CacheDB, record::ItemRecord, stats::AbstractDi
     edit!(cache.result_states, (Int8(result_key.kind), result_key.entity),
         CachedResultState(Int8(result_key.kind), result_key.entity, Int8(RESULT_READY),
             record.source_item_id, nothing))
+    record_cache_phase!(
+        cache.metrics.stats_write_ns,
+        cache.metrics.stats_writes,
+        started,
+    )
     return nothing
 end
 
@@ -732,7 +767,10 @@ function _load_meta(cache::CacheDB)::Dict{String,String}
     isempty(meta) &&
         throw(ProjectCacheError(identity.cache_path, "cache has not been built yet"))
     get(meta, "schema_version", "") == string(PROJECT_CACHE_SCHEMA_VERSION) ||
-        throw(ProjectCacheError(identity.cache_path, "cache schema is out of date"))
+        throw(ProjectCacheError(
+            identity.cache_path,
+            "cache schema is out of date; pass rebuild=true to discard and rebuild it",
+        ))
     cached_project = get(meta, "project_name", "")
     cached_project == identity.project_name || throw(ProjectCacheError(
         identity.cache_path,

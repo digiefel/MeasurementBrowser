@@ -4,6 +4,7 @@ using ..Projects:
     PROJECTS,
     project_name
 using ..ItemIndex: collection_path_key
+using ..Cache: ProjectCacheError
 import ..Workspace
 using ..Workspace:
     close_workspace!,
@@ -24,6 +25,7 @@ function _open_project_path!(
     path::String;
     project::Union{Nothing,Project}=nothing,
     persist::Bool=true,
+    rebuild_cache::Bool=false,
 )::Nothing
     norm_path = _normalize_project_path(path)
     if project === nothing && state.project_locked
@@ -40,7 +42,21 @@ function _open_project_path!(
     else
         state.project_preference = project_name(project)
     end
-    _attach_workspace!(state, open_workspace(project, norm_path); persist)
+    try
+        _attach_workspace!(state, open_workspace(project, norm_path; rebuild=rebuild_cache); persist)
+    catch error
+        if !rebuild_cache &&
+           error isa ProjectCacheError &&
+           occursin("schema is out of date", error.message)
+            state.cache_rebuild_modal = true
+            state.cache_rebuild_path = norm_path
+            state.cache_rebuild_project = project
+            state.cache_rebuild_persist = persist
+            state.cache_rebuild_error = sprint(showerror, error)
+            return nothing
+        end
+        rethrow()
+    end
     return nothing
 end
 

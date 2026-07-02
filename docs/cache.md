@@ -10,6 +10,11 @@ Project code supplies interpretation, processing, and statistics; the package de
 their reusable outputs are stored. The cache may always be rebuilt, and its on-disk layout is an
 internal implementation detail.
 
+Opening a workspace does not discard an old cache by default. If the cache schema is out of date,
+script callers get a clear cache error and must opt in with `open_workspace(...; rebuild=true)`.
+The browser shows the same failure as a prompt and only discards the generated cache when the user
+chooses to rebuild.
+
 The cache does not schedule work and does not own the published workspace index. It reports which
 persisted results already exist. The work dependency graph decides what remains to be computed, and
 `WorkspaceIndex` owns the records, hierarchy, parameters, statistics, and failures shown by the

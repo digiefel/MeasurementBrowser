@@ -86,27 +86,36 @@ using .Workspace:
 
 include("DataSources/DirectorySource.jl")
 
-include("Visualization.jl")
-using .Visualization:
-    PlotKind,
-    RegisteredPlot,
-    plot_kind_from_name,
-    plot_kind_label,
-    plot_kind_name,
-    plot_kind_symbol,
-    plot_kinds,
-    registered_plot_kinds
-import .Visualization:
-    plot_data!,
-    setup_plot
+const ENGINE_ONLY_BENCHMARK_LOAD = get(ENV, "MB_BENCH_ENGINE_ONLY", "0") == "1"
+
+if !ENGINE_ONLY_BENCHMARK_LOAD
+    include("Visualization.jl")
+    using .Visualization:
+        PlotKind,
+        RegisteredPlot,
+        plot_kind_from_name,
+        plot_kind_label,
+        plot_kind_name,
+        plot_kind_symbol,
+        plot_kinds,
+        registered_plot_kinds
+    import .Visualization:
+        plot_data!,
+        setup_plot
+end
 
 include("TableInspector.jl")
 using .TableInspector: TablePreview, inspect_table
 
 include("Project.jl")
-include("Browser.jl")
-using .Browser: open_browser
-include("Precompile.jl")
+if ENGINE_ONLY_BENCHMARK_LOAD
+    open_browser(args...; kwargs...) =
+        error("open_browser is unavailable when MB_BENCH_ENGINE_ONLY=1")
+else
+    include("Browser.jl")
+    using .Browser: open_browser
+    include("Precompile.jl")
+end
 
 # Public API — exactly the contract. Everything else (engine internals: ItemRecord, the plot
 # dispatch, scan/data-access plumbing, table inspector, project introspection) stays un-exported and

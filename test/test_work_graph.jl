@@ -1,5 +1,7 @@
 using MeasurementBrowser
 using Test
+using DBInterface
+using DuckDB
 
 const WORK = MeasurementBrowser.Workspace
 const CACHE = MeasurementBrowser.Cache
@@ -42,6 +44,51 @@ const CACHE = MeasurementBrowser.Cache
         WORK.wake_ready_dependents!(graph, item_b)
         @test collection_node.state === :queued
         @test graph.queue == [(collection, UInt64(1))]
+    end
+end
+
+@testset "stale cache schema requires explicit rebuild" begin
+    mktempdir() do dir
+        source = MeasurementBrowser.DirectorySource(dir)
+        identity = CACHE.project_cache_identity("StaleSchema_$(basename(dir))", source)
+        mkpath(dirname(identity.cache_path))
+        db = DBInterface.connect(DuckDB.DB, identity.cache_path)
+        connection = DBInterface.connect(db)
+        try
+            DBInterface.execute(connection, "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+            DBInterface.execute(connection, "INSERT INTO meta VALUES ('schema_version', '0')")
+        finally
+            DBInterface.close!(connection)
+            DBInterface.close!(db)
+        end
+
+        @test_throws CACHE.ProjectCacheError CACHE.open_cache_db(identity)
+        @test isfile(identity.cache_path)
+
+        db = DBInterface.connect(DuckDB.DB, identity.cache_path)
+        connection = DBInterface.connect(db)
+        try
+            tables = String[
+                String(row.table_name)
+                for row in DBInterface.execute(
+                    connection,
+                    "SELECT table_name FROM information_schema.tables " *
+                    "WHERE table_schema = 'main' ORDER BY table_name",
+                )
+            ]
+            @test tables == ["meta"]
+        finally
+            DBInterface.close!(connection)
+            DBInterface.close!(db)
+        end
+
+        cache = CACHE.open_cache_db(identity; rebuild=true)
+        try
+            @test isfile(identity.cache_path)
+        finally
+            CACHE.close_cache_db!(cache)
+            rm(dirname(identity.cache_path); force=true, recursive=true)
+        end
     end
 end
 

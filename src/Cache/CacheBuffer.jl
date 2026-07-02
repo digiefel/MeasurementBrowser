@@ -103,6 +103,7 @@ function _buffer_rows end
 mutable struct RowStore{K,R} <: AbstractDiskStore{K,R}
     read_connection::DuckDB.Connection
     write_connection::DuckDB.Connection
+    profiler::Profiling.ProfileSession
     table_name::String
     quoted_table::String
     key_columns::Tuple{Vararg{Symbol}}
@@ -122,6 +123,7 @@ function RowStore{K,R}(
     database::DuckDB.DB,
     table::AbstractString,
     key_columns::Tuple{Vararg{AbstractString}};
+    profiler::Profiling.ProfileSession,
     row_limit::Union{Nothing,Int}=nothing,
 ) where {K,R}
     row_limit === nothing || row_limit > 0 ||
@@ -137,6 +139,7 @@ function RowStore{K,R}(
     store = RowStore{K,R}(
         read_connection,
         write_connection,
+        profiler,
         String(table),
         quoted_table,
         key_symbols,
@@ -242,6 +245,7 @@ mutable struct TabularFamilyStore <:
                AbstractDiskStore{Tuple{UInt16,UInt32},TabularBodyBatch}
     read_connection::DuckDB.Connection
     write_connection::DuckDB.Connection
+    profiler::Profiling.ProfileSession
     flush_condition::Base.Threads.Condition
     queued::Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}
     writing::Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}
@@ -258,6 +262,7 @@ end
 
 function TabularFamilyStore(
     database::DuckDB.DB;
+    profiler::Profiling.ProfileSession,
     row_limit::Union{Nothing,Int}=nothing,
 )::TabularFamilyStore
     row_limit === nothing || row_limit > 0 ||
@@ -288,6 +293,7 @@ function TabularFamilyStore(
     store = TabularFamilyStore(
         read_connection,
         write_connection,
+        profiler,
         Base.Threads.Condition(),
         Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}(),
         Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}(),
@@ -556,6 +562,41 @@ function _flush_due(store::AbstractDiskStore, now::Float64)::Bool
         now - store.last_flush >= CACHE_BUFFER_FLUSH_INTERVAL
 end
 
+_flush_operation(store::RowStore)::Symbol = Symbol("flush_", store.table_name)
+_flush_operation(::TabularFamilyStore)::Symbol = :flush_payload
+
+function _flush_rows(batch::Dict{K,BufferMutation{R}})::Int64 where {K,R}
+    rows = 0
+    for mutation in values(batch)
+        mutation.kind === BUFFER_DELETE && continue
+        rows += 1
+    end
+    return Int64(rows)
+end
+
+function _flush_rows(
+    batch::Dict{
+        Tuple{UInt16,UInt32},
+        BufferMutation{TabularBodyBatch},
+    },
+)::Int64
+    rows = 0
+    for mutation in values(batch)
+        mutation.kind === BUFFER_DELETE && continue
+        row = something(mutation.row)
+        rows += nrow(row.body)
+    end
+    return Int64(rows)
+end
+
+function _flush_profile_attributes(batch::Dict)::ProfileAttributes
+    return ProfileAttributes(
+        stage=:disk,
+        rows=_flush_rows(batch),
+        batch_size=length(batch),
+    )
+end
+
 function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
     while true
         writing = lock(store.flush_condition) do
@@ -584,7 +625,9 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
         end
         writing === nothing && return nothing
         try
-            _flush_to_db!(store, writing)
+            Profiling.@profile_span store.profiler :cache _flush_operation(store) _flush_profile_attributes(writing) begin
+                _flush_to_db!(store, writing)
+            end
         catch error
             lock(store.flush_condition) do
                 notify(store.flush_condition, error; all=true, error=true)

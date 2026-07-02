@@ -10,6 +10,7 @@ function open_workspace(
         Profiling.environment_path("MB_PROFILE_OUTPUT"),
     crash_trace::Union{Nothing,AbstractString}=
         Profiling.environment_path("MB_CRASH_TRACE"),
+    rebuild::Bool=false,
 )::Workspace
     workspace = Workspace(
         project,
@@ -18,8 +19,9 @@ function open_workspace(
         profile_cpu,
         profile_output,
         crash_trace,
+        rebuild,
     )
-    scan_source!(workspace)
+    scan_source!(workspace; rebuild)
     return workspace
 end
 

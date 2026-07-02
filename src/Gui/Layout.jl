@@ -577,6 +577,7 @@ function _run_browser(
             render_perf_window(state)
         end
         _save_project_view_if_changed!(state)
+        render_cache_rebuild_modal(state)
         render_collection_parameters_modal(state)
     end
 end

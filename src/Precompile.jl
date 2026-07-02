@@ -1,5 +1,68 @@
-using GLMakie: Axis, Figure, contents, lines!
+using CSV
 using DataFrames: DataFrame, nrow
+using GLMakie: Axis, Figure, contents, lines!
+
+"""Poll until background scan/work/cache activity settles, with a hard timeout."""
+function _precompile_poll_until_idle!(workspace; max_seconds::Real=45)
+    deadline = time() + max_seconds
+    while time() < deadline
+        Workspace.poll_workspace!(workspace)
+        _, _, active = Workspace.work_counts(workspace)
+        idle = active == 0 &&
+            !Workspace.source_scan_running(workspace) &&
+            !Workspace.processing_work_running(workspace) &&
+            !Workspace.analysis_work_running(workspace) &&
+            !Workspace.cache_work_running(workspace) &&
+            workspace.scan.state in (:done, :unchanged, :error, :canceled)
+        idle && return nothing
+        sleep(0.002)
+    end
+    return nothing
+end
+
+"""
+Minimal fixture project used only to exercise engine pipelines during precompilation.
+
+User project callbacks are not precompilable for other projects; this registry exists solely to
+drive scan, interpret, process, stats, collection analysis, cache writes, and plotting through the
+package machinery using bundled test fixtures.
+"""
+function _precompile_project()
+    project = define_project("Precompile")
+    register_item!(project, :iv;
+        detect=file -> endswith(file.filename, ".csv"),
+        read=file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
+        entries=(file, data) -> [DataItem(
+            kind=:iv,
+            collection=[splitext(file.filename)[1]],
+            label=file.filename,
+            data=data,
+        )],
+        process=function (item)
+            data = copy(item.data)
+            data.engine_warm = data.Current_A ./ max.(abs.(data.VoltageHigh_V), 1e-12)
+            return DataItem(item, data)
+        end,
+        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+    )
+    register_collection_stat!(project;
+        kinds=[:iv],
+        compute_stats=items -> Dict{Symbol,Any}(:items => length(items)),
+    )
+    register_plot!(project, :iv; label="I-V",
+        setup=(_workspace, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
+        draw=function (_workspace, items, figure)
+            axis = only(contents(figure[1, 1]))
+            for item in items
+                df = item_data(item)
+                nrow(df) == 0 && continue
+                hasproperty(df, :VoltageHigh_V) && hasproperty(df, :Current_A) || continue
+                lines!(axis, df.VoltageHigh_V, df.Current_A)
+            end
+            nothing
+        end)
+    return project
+end
 
 @setup_workload begin
     fixture_dir = normpath(joinpath(@__DIR__, "..", "test", "fixtures", "TASE"))
@@ -7,66 +70,39 @@ using DataFrames: DataFrame, nrow
         "TASESNS1c1f_A_2TSNJunction_11_20260224_111623_298K_FourTerminalIV.csv",
         "TASESNS1c1f_A_2TSNJunction_31_20260224_111700_298K_FourTerminalIV.csv",
     ]
+    fixture_paths = [joinpath(fixture_dir, filename) for filename in filenames]
+
     scan_dir = mktempdir()
-    foreach(filename -> cp(
-        joinpath(fixture_dir, filename),
-        joinpath(scan_dir, filename);
-        force=true,
-    ), filenames)
+    foreach(path -> cp(path, joinpath(scan_dir, basename(path)); force=true), fixture_paths)
 
     @compile_workload begin
-        # Warm the registry pipeline (define -> register -> scan -> plot) the way real projects use it.
-        project = define_project("Precompile")
-        register_item!(
-            project,
-            :iv;
-            detect=file -> endswith(file.filename, ".csv"),
-            read=function (file)
-                rows = Tuple{Float64,Float64}[]
-                for line in Iterators.drop(readlines(file.filepath), 1)
-                    isempty(strip(line)) && continue
-                    parts = split(line, ',')
-                    length(parts) >= 2 || continue
-                    a = tryparse(Float64, parts[1])
-                    b = tryparse(Float64, parts[2])
-                    (a === nothing || b === nothing) && continue
-                    push!(rows, (a, b))
-                end
-                DataFrame(i=first.(rows), v=last.(rows))
-            end,
-            entries=(file, data) -> [DataItem(
-                kind=:iv,
-                collection=[splitext(file.filename)[1]],
-                label=file.filename,
-                data=data,
-            )],
-            stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
-        )
-        register_plot!(
-            project,
-            :iv;
-            label="I-V",
-            setup=(_workspace, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
-            draw=function (_workspace, items, figure)
-                axis = only(contents(figure[1, 1]))
-                for item in items
-                    df = item.data
-                    nrow(df) == 0 && continue
-                    lines!(axis, df.i, df.v)
-                end
-                nothing
-            end,
-        )
+        project = _precompile_project()
+        records = [only(items_for_file(project, path)) for path in fixture_paths]
 
-        records = [
-            only(items_for_file(project, joinpath(fixture_dir, filename)))
-            for filename in filenames
-        ]
         precompile_depot = mktempdir()
         pushfirst!(DEPOT_PATH, precompile_depot)
         workspace = nothing
         try
-            workspace = Workspace.Workspace(project, DirectorySource(fixture_dir))
+            workspace = open_workspace(
+                project,
+                fixture_dir;
+                profile_internal=false,
+                profile_cpu=false,
+            )
+            _precompile_poll_until_idle!(workspace)
+            records = collect(values(workspace.index.items))
+            if !isempty(records)
+                select_items!(workspace, records)
+                items = Workspace.materialize_items(workspace, records)
+                plot_kind = only(registered_plot_kinds(project, :iv))
+                figure = setup_plot(workspace, plot_kind, items)
+                plot_data!(workspace, plot_kind, items, figure)
+                Cache.read_item_data(workspace.cache.db, records; stage=:interpreted)
+                Cache.read_item_data(workspace.cache.db, records; stage=:processed)
+            end
+            Workspace.workspace_memory_snapshot(workspace)
+            Cache.cache_built(workspace.cache.db) && Cache.load_cache_index(workspace.cache.db)
+
             state = Browser.BrowserState(
                 workspace=workspace,
                 project_locked=true,
@@ -77,17 +113,12 @@ using DataFrames: DataFrame, nrow
             Browser._make_timings_figure(state.performance.live_plots)
             Browser._make_build_figure(state.performance.live_plots)
             Browser._sample_build_progress!(state.performance.live_plots, workspace)
-            Workspace.replace_item_index!(workspace, ItemIndex.Hierarchy(records, workspace.source))
-            read_item_data(workspace, records)
-            plot_kind = RegisteredPlot{:iv,Symbol("I-V")}
-            items = Workspace.materialize_items(workspace, records)
-            figure = setup_plot(workspace, plot_kind, items)
-            plot_data!(workspace, plot_kind, items, figure)
         finally
             workspace === nothing || close_workspace!(workspace)
             popfirst!(DEPOT_PATH)
             rm(precompile_depot; force=true, recursive=true)
         end
+
         source = DirectorySource(scan_dir)
         scan_source(project, source)
         scan_source(project, source; count_first=true)
