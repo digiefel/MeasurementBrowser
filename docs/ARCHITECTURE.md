@@ -50,8 +50,10 @@ main-thread gate that rejects stale revisions, atomically publishes replacement 
 `WorkspaceIndex`, and sends semantic writes/deletes to `ProjectCache`. The graph owns work state only:
 work identities, revisions, priority, running/queued/failed/ready state, and waiters. `WorkspaceIndex`
 owns completed records, hierarchy, parameters, statistics, failures, and selections.
-Processing, item-stat, and collection-stat workers are fixed long-lived pools. Background and selected
-work share the same work node; selection only raises priority and joins the existing revision.
+Processing, item-stat, and collection-stat workers are fixed long-lived pools. When background
+processing is enabled, background and selected work share the same work node; selection only raises
+priority and joins the existing revision. Memory-only cache sessions never schedule unselected
+background processing.
 Collection-node stats run afterward from published item-stat results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 

@@ -62,7 +62,7 @@ end
             DBInterface.close!(db)
         end
 
-        @test_throws CACHE.ProjectCacheError CACHE.open_cache_db(identity)
+        @test_throws CACHE.ProjectCacheSchemaError CACHE.open_cache_db(identity)
         @test isfile(identity.cache_path)
 
         db = DBInterface.connect(DuckDB.DB, identity.cache_path)
@@ -87,6 +87,35 @@ end
             @test isfile(identity.cache_path)
         finally
             CACHE.close_cache_db!(cache)
+            rm(dirname(identity.cache_path); force=true, recursive=true)
+        end
+    end
+end
+
+@testset "workspace falls back to memory cache on stale disk schema" begin
+    mktempdir() do dir
+        project_name = "StaleWorkspace_$(basename(dir))"
+        project = MeasurementBrowser.define_project(project_name)
+        source = MeasurementBrowser.DirectorySource(dir)
+        identity = CACHE.project_cache_identity(project_name, source)
+        mkpath(dirname(identity.cache_path))
+        db = DBInterface.connect(DuckDB.DB, identity.cache_path)
+        connection = DBInterface.connect(db)
+        try
+            DBInterface.execute(connection, "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT)")
+            DBInterface.execute(connection, "INSERT INTO meta VALUES ('schema_version', '0')")
+        finally
+            DBInterface.close!(connection)
+            DBInterface.close!(db)
+        end
+
+        workspace = MeasurementBrowser.open_workspace(project, source)
+        try
+            @test workspace.cache.db isa CACHE.MemoryCacheDB
+            @test workspace.cache.disk_error isa CACHE.ProjectCacheSchemaError
+            @test !workspace.background_processing
+        finally
+            MeasurementBrowser.close_workspace!(workspace)
             rm(dirname(identity.cache_path); force=true, recursive=true)
         end
     end

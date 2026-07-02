@@ -11,9 +11,10 @@ their reusable outputs are stored. The cache may always be rebuilt, and its on-d
 internal implementation detail.
 
 Opening a workspace does not discard an old cache by default. If the cache schema is out of date,
-script callers get a clear cache error and must opt in with `open_workspace(...; rebuild=true)`.
-The browser shows the same failure as a prompt and only discards the generated cache when the user
-chooses to rebuild.
+the workspace stays usable with a memory-only cache for that session. Script callers can opt in with
+`open_workspace(...; rebuild=true)` to discard and rebuild the generated cache immediately. The
+browser shows the same stale-cache condition as a prompt and only discards the generated cache when
+the user chooses to rebuild.
 
 The cache does not schedule work and does not own the published workspace index. It reports which
 persisted results already exist. The work dependency graph decides what remains to be computed, and

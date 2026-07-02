@@ -52,6 +52,15 @@ end
 Base.showerror(io::IO, err::ProjectCacheError)::Nothing =
     print(io, "Invalid project cache $(err.path): $(err.message)")
 
+"""Error raised when the generated cache file exists but uses an old schema."""
+struct ProjectCacheSchemaError <: Exception
+    path::String
+    message::String
+end
+
+Base.showerror(io::IO, err::ProjectCacheSchemaError)::Nothing =
+    print(io, "Invalid project cache $(err.path): $(err.message)")
+
 """The project, source, and DuckDB file belonging to one cache."""
 struct ProjectCacheIdentity
     project_name::String
@@ -220,8 +229,10 @@ end
 
 # Connection + schema
 
+abstract type AbstractCacheDB end
+
 """One open DuckDB cache file for a workspace: typed `RowStore`/`TabularFamilyStore` owners plus memory-only payload buffers. Only schema, meta-header, and checkpoint work open short-lived connections."""
-mutable struct CacheDB
+mutable struct CacheDB <: AbstractCacheDB
     identity::ProjectCacheIdentity
     db::DuckDB.DB
     metrics::BuildMetrics
@@ -231,6 +242,15 @@ mutable struct CacheDB
     failures::RowStore{Tuple{String,String},FailureRow}
     result_states::RowStore{Tuple{Int8,String},CachedResultState}
     payload::TabularFamilyStore
+    interpreted::MemoryStore{String,AbstractDataItem}
+    processed_memory::MemoryStore{String,AbstractDataItem}
+    profiler::Profiling.ProfileSession
+end
+
+"""Session-only cache state used when DuckDB persistence is disabled or unavailable."""
+mutable struct MemoryCacheDB <: AbstractCacheDB
+    identity::ProjectCacheIdentity
+    metrics::BuildMetrics
     interpreted::MemoryStore{String,AbstractDataItem}
     processed_memory::MemoryStore{String,AbstractDataItem}
     profiler::Profiling.ProfileSession
@@ -278,7 +298,7 @@ function open_cache_db(
                 ]
                 if !isempty(schema_versions) &&
                    only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
-                    throw(ProjectCacheError(
+                    throw(ProjectCacheSchemaError(
                         identity.cache_path,
                         "cache schema is out of date; pass rebuild=true to discard and rebuild it",
                     ))
@@ -321,11 +341,29 @@ function open_cache_db(identity::ProjectCacheIdentity; rebuild::Bool=false)::Cac
     )
 end
 
+function open_memory_cache_db(
+    identity::ProjectCacheIdentity,
+    profiler::Profiling.ProfileSession,
+    metrics::BuildMetrics=BuildMetrics(),
+)::MemoryCacheDB
+    return MemoryCacheDB(
+        identity,
+        metrics,
+        MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        profiler,
+    )
+end
+
 """Cache stores are live when opened; this keeps Workspace on a semantic lifecycle call."""
-start_cache!(::CacheDB)::Nothing = nothing
+start_cache!(::AbstractCacheDB)::Nothing = nothing
 
 """Cache stores close with `close_cache_db!`; this keeps Workspace on a semantic lifecycle call."""
 stop_cache!(::CacheDB)::Nothing = nothing
+stop_cache!(::MemoryCacheDB)::Nothing = nothing
+
+set_cache_memory_limit!(::AbstractCacheDB, mib::Integer)::Int =
+    set_cache_memory_limit!(mib)
 
 function _buffer_rows(item::AbstractDataItem)::Int
     data = item_data(item)
@@ -420,6 +458,15 @@ function store_processed!(
     return nothing
 end
 
+function store_processed!(
+    cache::MemoryCacheDB,
+    record::ItemRecord,
+    item::AbstractDataItem,
+)::Nothing
+    append!(cache.processed_memory, record.id, item)
+    return nothing
+end
+
 """Persist one independent failed work result."""
 function store_result_failure!(cache::CacheDB, key::CacheResultKey,
         source_item_id::AbstractString, message::AbstractString)::Nothing
@@ -462,6 +509,26 @@ function store_collection_stats!(
         CachedResultState(Int8(result_key.kind), result_key.entity, Int8(RESULT_READY), "", nothing))
     return nothing
 end
+
+function store_interpreted!(
+    cache::MemoryCacheDB,
+    records::Vector{ItemRecord},
+    data::Vector{<:AbstractDataItem},
+)::Nothing
+    length(records) == length(data) || throw(ArgumentError(
+        "Cannot store interpreted data: received $(length(records)) records and " *
+        "$(length(data)) items; the vectors must align one-to-one",
+    ))
+    for (record, item) in zip(records, data)
+        append!(cache.interpreted, record.id, item)
+    end
+    return nothing
+end
+
+store_result_failure!(::MemoryCacheDB, ::CacheResultKey, ::AbstractString, ::AbstractString)::Nothing =
+    nothing
+store_item_stats!(::MemoryCacheDB, ::ItemRecord, ::AbstractDict)::Nothing = nothing
+store_collection_stats!(::MemoryCacheDB, ::AbstractString, ::AbstractDict)::Nothing = nothing
 
 """Delete every cached descendant of one source item through typed buffer mutations."""
 function delete_source_item!(
@@ -519,6 +586,18 @@ function delete_source_item!(
         cache, source_id, item_ids, metadata_keys, failure_keys, result_keys)
 end
 
+function delete_source_item!(
+    cache::MemoryCacheDB,
+    source_item_id::AbstractString,
+    old_records::Vector{ItemRecord},
+)::Nothing
+    for record in old_records
+        delete!(cache.interpreted, record.id)
+        delete!(cache.processed_memory, record.id)
+    end
+    return nothing
+end
+
 """Delete cached statistics for collections whose published stats are invalid."""
 function delete_collection_stats!(
     cache::CacheDB,
@@ -530,6 +609,8 @@ function delete_collection_stats!(
     end
     return nothing
 end
+
+delete_collection_stats!(::MemoryCacheDB, ::Vector{String})::Nothing = nothing
 
 """Aggregate staged durable keys and payload rows."""
 function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}}
@@ -546,8 +627,11 @@ function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{
     return (items=items, rows=rows)
 end
 
+cache_pending_counts(::MemoryCacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}} =
+    (items=0, rows=0)
+
 """Whether any cache store has queued or writing mutations."""
-function cache_has_pending_writes(cache::CacheDB)::Bool
+function cache_has_pending_writes(cache::AbstractCacheDB)::Bool
     pending = cache_pending_counts(cache)
     return pending.items > 0 || pending.rows > 0
 end
@@ -585,6 +669,13 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     return loaded
 end
 
+function read_item_data(cache::MemoryCacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
+    stage in (:interpreted, :processed) ||
+        throw(ArgumentError("unknown item-data cache stage '$stage'"))
+    store = stage === :interpreted ? cache.interpreted : cache.processed_memory
+    return Any[read(store, record.id) for record in records]
+end
+
 """Close a workspace cache's database file, checkpointing first."""
 function close_cache_db!(cachedb::CacheDB)::Nothing
     failure::Union{Nothing,Exception} = nothing
@@ -605,6 +696,12 @@ function close_cache_db!(cachedb::CacheDB)::Nothing
         DBInterface.close!(cachedb.db)
     end
     failure === nothing || throw(failure)
+    return nothing
+end
+
+function close_cache_db!(cachedb::MemoryCacheDB)::Nothing
+    close!(cachedb.interpreted)
+    close!(cachedb.processed_memory)
     return nothing
 end
 
@@ -729,6 +826,12 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
     return nothing
 end
 
+function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
+    clear!(cachedb.interpreted)
+    clear!(cachedb.processed_memory)
+    return nothing
+end
+
 """Stamp the identity `meta` rows so a scan's incremental writes are loadable before it finishes. Without them [`load_cache_index`](@ref) treats the cache as unbuilt. Scan-wide summaries are derived on load, not stored."""
 function write_meta_header!(cachedb::CacheDB)::Nothing
     identity = cachedb.identity
@@ -750,6 +853,8 @@ function write_meta_header!(cachedb::CacheDB)::Nothing
     return nothing
 end
 
+write_meta_header!(::MemoryCacheDB)::Nothing = nothing
+
 # Loading the index
 
 """Read and validate the sole unbuffered cache header."""
@@ -767,7 +872,7 @@ function _load_meta(cache::CacheDB)::Dict{String,String}
     isempty(meta) &&
         throw(ProjectCacheError(identity.cache_path, "cache has not been built yet"))
     get(meta, "schema_version", "") == string(PROJECT_CACHE_SCHEMA_VERSION) ||
-        throw(ProjectCacheError(
+        throw(ProjectCacheSchemaError(
             identity.cache_path,
             "cache schema is out of date; pass rebuild=true to discard and rebuild it",
         ))
@@ -784,6 +889,8 @@ function _load_meta(cache::CacheDB)::Dict{String,String}
     ))
     return meta
 end
+
+cache_built(::MemoryCacheDB)::Bool = false
 
 """Whether the cache has an identity header; full identity validation happens on load."""
 function cache_built(cache::CacheDB)::Bool

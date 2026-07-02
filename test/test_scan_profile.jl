@@ -174,7 +174,8 @@ end
             end,
         )
 
-        workspace = MB.open_workspace(project, test_source(project, dir))
+        workspace = MB.open_workspace(
+            project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(workspace)
 
@@ -236,7 +237,8 @@ end
             ),
         )
 
-        workspace = MB.open_workspace(project, test_source(project, dir))
+        workspace = MB.open_workspace(
+            project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(workspace)
 
@@ -281,7 +283,8 @@ end
         )
 
         function run_scan!()
-            ws = MB.open_workspace(project, test_source(project, dir))
+            ws = MB.open_workspace(
+                project, test_source(project, dir); background_processing=true)
             wait_workspace_idle!(ws)
             @test ws.scan.state in (:done, :unchanged)
             return ws

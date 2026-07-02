@@ -11,6 +11,8 @@ function open_workspace(
     crash_trace::Union{Nothing,AbstractString}=
         Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
+    cache::Bool=true,
+    background_processing::Bool=false,
 )::Workspace
     workspace = Workspace(
         project,
@@ -20,6 +22,8 @@ function open_workspace(
         profile_output,
         crash_trace,
         rebuild,
+        cache,
+        background_processing,
     )
     scan_source!(workspace; rebuild)
     return workspace
@@ -571,7 +575,6 @@ function apply_cache_index!(
     index.identity.source_id == source_id(workspace.source) ||
         error("Loaded cache belongs to $(index.identity.source_id), not $(source_id(workspace.source))")
     workspace.cache.identity = index.identity
-    workspace.cache.index = index
 
     # The cached hierarchy is its own freshly-loaded snapshot (distinct record objects), so the live
     # scan can refine it without touching any hierarchy a previous scan's analysis still reads.
@@ -741,7 +744,7 @@ function publish_work_success!(
                 item_revision(record);
                 dependencies=WorkKey[WorkKey(PROCESS_ITEM, record.id)],
             )
-            enqueue_processing!(workspace, record)
+            workspace.background_processing && enqueue_processing!(workspace, record)
         end
         return true
     elseif key.kind === PROCESS_ITEM

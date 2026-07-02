@@ -4,6 +4,7 @@ using Printf
 import ..Profiling
 
 import ..Cache:
+    AbstractCacheDB,
     BuildMetrics,
     CacheResultKey,
     CacheResultKind,
@@ -12,6 +13,7 @@ import ..Cache:
     COLLECTION_STATS_RESULT,
     ITEM_STATS_RESULT,
     PROCESSING_RESULT,
+    ProjectCacheSchemaError,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
@@ -25,6 +27,7 @@ import ..Cache:
     delete_collection_stats!,
     delete_source_item!,
     load_cache_index,
+    open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
     read_item_data,
@@ -216,8 +219,8 @@ Loaded cache state for one workspace.
 """
 mutable struct WorkspaceCache
     identity::ProjectCacheIdentity
-    db::CacheDB
-    index::Union{Nothing,ProjectCacheIndex}
+    db::AbstractCacheDB
+    disk_error::Union{Nothing,Exception}
     status::Union{Nothing,ProjectCacheStatus}
     operation::Symbol
 end
@@ -267,6 +270,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     cache_state::Symbol
     cache_error::String
     work::WorkDependencyGraph
+    background_processing::Bool
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
@@ -288,17 +292,31 @@ function Workspace(
     crash_trace::Union{Nothing,AbstractString}=
         Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
+    cache::Bool=true,
+    background_processing::Bool=false,
 )::Workspace{S} where {S<:AbstractDataSource}
     hierarchy = Hierarchy(source_id(source), false)
     identity = project_cache_identity(project_name(project), source)
     profiler = Profiling.ProfileSession(
         profile_internal, profile_cpu, profile_output, crash_trace)
     metrics = BuildMetrics()
-    cache_db = try
-        open_cache_db(identity, profiler, metrics; rebuild)
-    catch
-        Profiling.close!(profiler)
-        rethrow()
+    disk_error::Union{Nothing,Exception} = nothing
+    cache_db::AbstractCacheDB = try
+        cache ? open_cache_db(identity, profiler, metrics; rebuild) :
+            open_memory_cache_db(identity, profiler, metrics)
+    catch error
+        if cache && !rebuild && error isa ProjectCacheSchemaError
+            disk_error = error
+            @warn(
+                "Generated project cache is unavailable; continuing without disk cache",
+                cache=identity.cache_path,
+                error,
+            )
+            open_memory_cache_db(identity, profiler, metrics)
+        else
+            Profiling.close!(profiler)
+            rethrow()
+        end
     end
     workspace = Workspace(
         project,
@@ -312,11 +330,12 @@ function Workspace(
             Dict{String,String}(),
         ),
         WorkspaceSelection(),
-        WorkspaceCache(identity, cache_db, nothing, nothing, :load),
+        WorkspaceCache(identity, cache_db, disk_error, nothing, :load),
         WorkspaceJob(),
         :idle,
         "",
         WorkDependencyGraph(),
+        cache_db isa CacheDB && background_processing,
         Task[],
         metrics,
         profiler,

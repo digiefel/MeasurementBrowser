@@ -261,6 +261,8 @@ function Workspace.open_workspace(
     crash_trace::Union{Nothing,AbstractString}=
         Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
+    cache::Bool=true,
+    background_processing::Bool=false,
 )::Workspace.Workspace
     return Workspace.open_workspace(
         project,
@@ -270,5 +272,7 @@ function Workspace.open_workspace(
         profile_output,
         crash_trace,
         rebuild,
+        cache,
+        background_processing,
     )
 end
