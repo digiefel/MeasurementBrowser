@@ -41,14 +41,12 @@ There is no separate producer/consumer framework. Package code submits semantic 
 
 - `CacheDB` and the set of result stores it contains;
 - row types, keys, and cache result kinds;
-- the DuckDB schema, table names, columns, and SQL;
-- typed metadata encoding;
-- processed-payload schema detection and physical table storage;
+- the DuckDB schema, table names, and columns;
 - source-item deletion cascades;
 - cache identity and reconstruction of `ProjectCacheIndex`;
 - semantic operations used by Workspace.
 
-`CacheBuffer.jl` owns only the generic `CacheBuffer{R}` mechanism:
+`CacheBuffer.jl` owns the fully generic `CacheBuffer{R}` mechanism:
 
 - keyed pending append, edit, and delete intent;
 - reset intent;
@@ -59,7 +57,7 @@ There is no separate producer/consumer framework. Package code submits semantic 
 - memory-first reads;
 - permanent closure.
 
-The generic buffer names no concrete row type, table, column, cache stage, or ProjectCache type.
+The generic buffer names no concrete row type, table, column, cache stage, or ProjectCache type, but it can generate the generic SQL for any payload.
 `CacheDB` owns the buffers and the DuckDB database handle, but it does not own a general-purpose
 connection.
 
