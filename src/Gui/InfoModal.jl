@@ -95,6 +95,10 @@ end
 
 """Tell the user when the current source did not provide collection parameters."""
 function render_collection_parameters_modal(state::BrowserState)::Nothing
+    # Dear ImGui cannot hold two sibling root modals open: their per-frame OpenPopup calls replace
+    # each other in the popup stack, leaving an invisible modal that swallows all input. Yield to
+    # the cache-rebuild modal and appear after it is dismissed.
+    state.cache_rebuild_modal && return nothing
     workspace = state.workspace
     workspace isa Workspace.Workspace || return nothing
     # Reset dismissal when root path changes
