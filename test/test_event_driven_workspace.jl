@@ -124,6 +124,53 @@ end
     end
 end
 
+@testset "labels never observe torn parameters during publishes" begin
+    dir = mktempdir()
+    for index in 1:120
+        write_test_source(joinpath(dir, "cycle$index.csv"), index)
+    end
+    project = define_project("EventDriven_$(basename(dir))")
+    register_item!(project, :cycle;
+        detect=file -> endswith(file.filename, ".csv"),
+        read=file -> CSV.read(file.filepath, DataFrame),
+        entries=(file, data) -> [DataItem(
+            kind=:cycle,
+            collection=["run"],
+            label=file.filename,
+            parameters=Dict{Symbol,Any}(
+                :cycle => parse(Int, match(r"\d+", file.filename).match)),
+            data=data,
+        )],
+        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        label=item -> "cycle $(item.parameters[:cycle])",
+    )
+    workspace = MeasurementBrowser.open_workspace(
+        project, test_source(project, dir); background_processing=true)
+    try
+        # Mimic the GUI: render labels continuously while stats publishes rebuild the hierarchy.
+        failures = Base.Threads.Atomic{Int}(0)
+        reader = Threads.@spawn while MeasurementBrowser.Workspace.engine_work_running(workspace)
+            for record in workspace.index.hierarchy.all_items
+                try
+                    MeasurementBrowser.display_label(project, record)
+                catch
+                    Base.Threads.atomic_add!(failures, 1)
+                end
+            end
+            yield()
+        end
+        MeasurementBrowser.Workspace.wait_workspace_idle!(workspace; timeout=60)
+        wait(reader)
+        @test failures[] == 0
+        @test length(workspace.index.items) == 120
+        labels = Set(MeasurementBrowser.display_label(project, record)
+                     for record in values(workspace.index.items))
+        @test labels == Set("cycle $index" for index in 1:120)
+    finally
+        MeasurementBrowser.close_workspace!(workspace)
+    end
+end
+
 @testset "full API produces a plot without polling" begin
     dir = _event_driven_dir(2)
     project = _event_driven_project(basename(dir))

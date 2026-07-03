@@ -544,31 +544,6 @@ function replace_item_index!(
     return nothing
 end
 
-"""Add newly discovered items to the provisional workspace index."""
-function append_items!(
-    workspace::Workspace,
-    items::Vector{ItemRecord},
-)::Bool
-    isempty(items) && return false
-    hierarchy = workspace.index.hierarchy
-    item_index = workspace.index.items
-    changed = false
-    for item in items
-        haskey(item_index, item.id) && continue
-        insert_item!(hierarchy, item)
-        item_index[item.id] = item
-        changed = true
-    end
-    changed || return false
-    apply_collection_parameters!(hierarchy, workspace.source)
-    parameter_keys = Set{Symbol}()
-    for node in values(hierarchy.index)
-        union!(parameter_keys, keys(node.parameters))
-    end
-    workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
-    return true
-end
-
 """Surface the cached index as an instant, independent first view, before the fresh scan refines it."""
 function apply_cache_index!(
     workspace::Workspace,

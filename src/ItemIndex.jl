@@ -534,10 +534,12 @@ function apply_collection_parameters!(
         empty!(node.parameters)
         merge!(node.parameters, effective)
         for item in node.items
-            local_parameters = copy(item.parameters)
-            empty!(item.parameters)
-            merge!(item.parameters, effective)
-            merge!(item.parameters, local_parameters)
+            # Records are shared with the previously published hierarchy, which a GUI thread may be
+            # reading right now: only add missing keys, so an item parameter is never observed torn.
+            # Item-local keys always win, exactly as the previous replace-and-remerge did.
+            for (key, value) in effective
+                haskey(item.parameters, key) || (item.parameters[key] = value)
+            end
         end
         for child in node.children
             visit!(child, [path; child.name], effective)
