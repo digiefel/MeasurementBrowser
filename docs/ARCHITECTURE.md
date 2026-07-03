@@ -44,7 +44,8 @@ The engine is written against the **low-level source contract** ([api.md](api.md
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
 compares the discovered source-item ids and fingerprints with the published snapshot, and submits one
-`SourceChanges` batch to the workspace work graph. Interpretation workers call
+`SourceChanges` batch to the workspace work graph. Source watchers submit the same batch type;
+`DirectorySource` uses it for metadata-file parameter changes. Interpretation workers call
 `data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish
 their own completions: each finishing worker takes the workspace publish lock, rejects stale
 revisions, atomically publishes replacement records into `WorkspaceIndex`, sends semantic record
@@ -80,7 +81,8 @@ The most important boundary is between source meaning and package machinery.
 A source owns:
 
 - discovering source items
-- source-specific parameter input, such as `DirectorySource` loading `metadata.txt`
+- its own lifecycle and change watching
+- source-specific parameter input, such as `DirectorySource` loading and watching `metadata.txt`
 
 A project/source implementation owns:
 
@@ -123,8 +125,8 @@ CImGui rendering. `MeasurementBrowser` exports the small high-level API while ke
 source contract names internal.
 
 `open_workspace(project, source)` or `open_workspace(project, root_path)` creates that owner and
-immediately starts cache loading and scanning. Source code does not manage its cache, jobs, or browser
-state.
+opens the source, starts cache loading and scanning, and attaches its watcher. Source code does not
+manage its cache, jobs, or browser state.
 
 ## On-disk metadata
 

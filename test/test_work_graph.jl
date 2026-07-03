@@ -127,7 +127,12 @@ end
         identity = CACHE.project_cache_identity("WorkGraphDelete_$(basename(dir))", source)
         cache = CACHE.open_cache_db(identity)
         try
-            CACHE.store_collection_stats!(cache, "device-A", Dict(:mean => 1.0, :count => 2))
+            CACHE.store_collection_stats!(
+                cache,
+                "device-A",
+                "test-input",
+                Dict(:mean => 1.0, :count => 2),
+            )
             CACHE.delete_collection_stats!(cache, ["device-A"])
 
             @test !haskey(

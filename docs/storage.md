@@ -4,7 +4,9 @@
 
 These files annotate collections and items. Figure annotations are stored separately.
 
-`metadata.txt` is `DirectorySource` collection parameter input and lives at that source root. User
+`metadata.txt` (or the custom filename configured on `DirectorySource`) is collection parameter input
+and lives at that source root. `DirectorySource` watches it and excludes that exact path from normal
+source-file discovery. User
 annotation files (`layout.txt`, `tags.txt`, `notes.txt`) currently live next to the cache, keyed by
 `source_id`; see [cache.md](cache.md).
 

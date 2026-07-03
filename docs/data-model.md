@@ -57,7 +57,7 @@ struct ItemRecord                    # internal metadata record (never seen by s
     item_label::String
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
-    parameters::Dict{Symbol,Any}     # effective item parameters: collection + local item params
+    parameters::Dict{Symbol,Any}     # parameters produced by interpreting this item
     stats::Dict{Symbol,Any}          # values computed during the source-item pass
     item_fingerprint::Any            # nothing → item data not persistently cacheable
 end
@@ -132,13 +132,14 @@ should reuse it.
 
 Sources may provide collection parameters for a collection path through
 `collection_parameters(source, collection_path)`. The hierarchy owns inheritance: parent collection
-parameters flow to child nodes, and each item record stores the effective item parameters formed from
-that node's parameters plus the item-local `parameters(item)`. Local item parameters win on key
-conflicts.
+parameters flow to child nodes. `ItemRecord` stores only item-local `parameters(item)`. The workspace
+materializes effective parameters for project callbacks by merging the containing hierarchy node
+with the item-local values; local values win on key conflicts.
 
 For `DirectorySource`, `metadata.txt` rows are keyed by slash-joined collection path fragments. The
-source parses that sidecar file and answers collection parameter lookups; the browser model stores
-only parameters. The on-disk format is documented in [storage.md](storage.md).
+source owns loading, watching, parsing, and excluding that configured file from source discovery.
+Parameter changes rebuild effective item inputs without reinterpreting unchanged source files. The
+on-disk format is documented in [storage.md](storage.md).
 
 ## Collection stats
 

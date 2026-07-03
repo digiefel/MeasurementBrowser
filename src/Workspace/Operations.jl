@@ -14,19 +14,34 @@ function open_workspace(
     cache::Bool=true,
     background_processing::Bool=false,
 )::Workspace
-    workspace = Workspace(
-        project,
-        source;
-        profile_internal,
-        profile_cpu,
-        profile_output,
-        crash_trace,
-        rebuild,
-        cache,
-        background_processing,
-    )
-    scan_source!(workspace; rebuild)
-    return workspace
+    opened_source = open_source(source)
+    workspace = try
+        Workspace(
+            project,
+            opened_source;
+            profile_internal,
+            profile_cpu,
+            profile_output,
+            crash_trace,
+            rebuild,
+            cache,
+            background_processing,
+        )
+    catch
+        close_source!(opened_source)
+        rethrow()
+    end
+    try
+        scan_source!(workspace; rebuild)
+        watch_source(
+            opened_source,
+            event -> publish_source_event!(workspace, event),
+        )
+        return workspace
+    catch
+        close_workspace!(workspace)
+        rethrow()
+    end
 end
 
 """
@@ -206,6 +221,61 @@ function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
     return nothing
 end
 
+"""Reapply source parameters and invalidate only items whose effective inputs changed."""
+function apply_parameter_changes!(workspace::Workspace)::Bool
+    old_hierarchy = workspace.index.hierarchy
+    records = sort!(
+        collect(values(workspace.index.items));
+        by=record -> (record.source_item_id, record.id),
+    )
+    old_parameters = Dict(
+        record.id => effective_parameters(old_hierarchy, record) for record in records
+    )
+    new_hierarchy = Hierarchy(records, workspace.source, old_hierarchy.skipped_count)
+    changed = ItemRecord[
+        record for record in records
+        if old_parameters[record.id] != effective_parameters(new_hierarchy, record)
+    ]
+    old_node_stats = Dict(path => copy(node.stats) for (path, node) in old_hierarchy.index)
+    for (path, stats) in old_node_stats
+        node = get(new_hierarchy.index, path, nothing)
+        node === nothing || merge!(node.stats, stats)
+    end
+    workspace.index.hierarchy = new_hierarchy
+    parameter_keys = Set{Symbol}()
+    for node in values(new_hierarchy.index)
+        union!(parameter_keys, keys(node.parameters))
+    end
+    workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
+
+    isempty(changed) && return false
+    invalidate_item_results!(workspace.cache.db, changed)
+    affected = affected_collection_keys(changed)
+    for record in changed
+        delete!(workspace.index.item_stats, record.id)
+        delete!(workspace.index.analysis_errors, record.id)
+        mark_work_missing!(
+            workspace,
+            WorkKey(PROCESS_ITEM, record.id),
+            item_revision(workspace, record),
+        )
+        mark_work_missing!(
+            workspace,
+            WorkKey(ITEM_STATS, record.id),
+            item_revision(workspace, record);
+            dependencies=WorkKey[WorkKey(PROCESS_ITEM, record.id)],
+        )
+        workspace.background_processing && enqueue_processing!(workspace, record)
+    end
+    delete_collection_stats!(workspace.cache.db, affected)
+    for key in affected
+        node = get(new_hierarchy.index, collection_path_tuple(key), nothing)
+        node === nothing || empty!(node.stats)
+    end
+    mark_collection_stats_missing!(workspace, affected)
+    return true
+end
+
 """Refresh the authoritative published source snapshot from current index state."""
 function refresh_workspace_source!(
     workspace::Workspace,
@@ -289,7 +359,7 @@ function apply_source_changes!(
     workspace::Workspace,
     changes::SourceChanges,
     fingerprints::AbstractDict{String},
-    status::ProjectCacheStatus,
+    status::Union{Nothing,ProjectCacheStatus},
 )::Bool
     changed = false
     for removed in changes.removals
@@ -318,8 +388,9 @@ function apply_source_changes!(
         )
         changed = true
     end
+    changes.parameters_changed && (changed = apply_parameter_changes!(workspace) || changed)
     refresh_workspace_source!(workspace, fingerprints)
-    workspace.cache.status = status
+    status === nothing || (workspace.cache.status = status)
     return changed
 end
 
@@ -349,6 +420,7 @@ function scan_source!(
     workspace.cache_error = ""
     workspace.cache.operation = rebuild ? :rebuild : :update
     reset_build_metrics!(workspace.metrics)
+    reset_scan_profile!(workspace.project)
     # Detach the previous scan so this one streams into a fresh hierarchy: progressive results update
     # the displayed tree live while any still-finishing analysis from the previous scan keeps reading
     # its own, now-detached hierarchy — no shared mutable state, no race. Errors reset so stale ones
@@ -378,7 +450,10 @@ function scan_source!(
             upserts = AbstractDataSourceItem[]
             for item in discovered
                 id_value = source_item_id(item)
-                if !haskey(previous, id_value) || !isequal(previous[id_value], current[id_value])
+                # A `nothing` fingerprint means the source cannot prove the item is unchanged,
+                # so it is always re-read.
+                if !haskey(previous, id_value) || current[id_value] === nothing ||
+                   !isequal(previous[id_value], current[id_value])
                     push!(upserts, item)
                 end
             end
@@ -398,7 +473,7 @@ function scan_source!(
             publish_source_changes!(
                 workspace,
                 scan_id,
-                SourceChanges(upserts, removals),
+                SourceChanges(upserts, removals; parameters_changed=false),
                 current,
                 status,
                 isempty(upserts) && isempty(removals),
@@ -443,16 +518,21 @@ end
 function start_internal_profile!(workspace::Workspace)::Nothing
     profiler = workspace.profiler
     Profiling.validate_start(profiler)
-    busy = source_scan_running(workspace) || processing_work_running(workspace) ||
-        analysis_work_running(workspace) || cache_work_running(workspace)
-    if busy
-        profiler.state = :preparing
-        workspace.profile_restart_pending = true
-        cancel_scan!(workspace)
-        cancel_analysis!(workspace)
-        cancel_waiting_work!(workspace)
-    else
-        Profiling.start!(profiler, () -> profile_counter_snapshot(workspace))
+    # Deciding busy, arming the restart, and canceling must be one atomic step against
+    # finish_publish!: a completion landing in between would either strand the profiler in
+    # :preparing forever or let the cancels kill the freshly restarted profiled rebuild.
+    lock(workspace.publish_lock) do
+        busy = source_scan_running(workspace) || processing_work_running(workspace) ||
+            analysis_work_running(workspace) || cache_work_running(workspace)
+        if busy
+            profiler.state = :preparing
+            workspace.profile_restart_pending = true
+            cancel_scan!(workspace)
+            cancel_analysis!(workspace)
+            cancel_waiting_work!(workspace)
+        else
+            Profiling.start!(profiler, () -> profile_counter_snapshot(workspace))
+        end
     end
     return nothing
 end
@@ -553,21 +633,83 @@ function apply_cache_index!(
         error("Loaded cache belongs to $(index.identity.source_id), not $(source_id(workspace.source))")
     workspace.cache.identity = index.identity
 
-    # The cached hierarchy is its own freshly-loaded snapshot (distinct record objects), so the live
-    # scan can refine it without touching any hierarchy a previous scan's analysis still reads.
-    replace_item_index!(workspace, index.source.hierarchy)
-    workspace.index.source = index.source
+    # The cache owns item-local records only. Rebuild the hierarchy with the open source's current
+    # parameters so cached and memory-only startup produce the same effective inputs.
+    hierarchy = Hierarchy(
+        index.source.hierarchy.all_items,
+        workspace.source,
+        index.source.hierarchy.skipped_count,
+    )
+    valid_item_stats = Dict{String,Dict{Symbol,Any}}()
+    for record in index.source.hierarchy.all_items
+        materialized = effective_record(hierarchy, record)
+        state = get(
+            index.result_states,
+            CacheResultKey(ITEM_STATS_RESULT, record.id),
+            nothing,
+        )
+        valid_stats = state !== nothing &&
+            CacheResultStatus(state.status) === RESULT_READY &&
+            state.input_fingerprint == result_input_fingerprint(materialized)
+        valid_stats && haskey(index.item_stats, record.id) &&
+            (valid_item_stats[record.id] = copy(index.item_stats[record.id]))
+    end
+    replace_item_index!(workspace, hierarchy)
+    workspace.index.item_stats = valid_item_stats
+    for (path, cached_node) in index.source.hierarchy.index
+        node = get(hierarchy.index, path, nothing)
+        node === nothing && continue
+        key = collection_path_key(collect(path))
+        state = get(index.result_states, CacheResultKey(COLLECTION_STATS_RESULT, key), nothing)
+        state !== nothing &&
+            CacheResultStatus(state.status) === RESULT_READY &&
+            state.input_fingerprint == collection_input_fingerprint(workspace, path) ||
+            continue
+        merge!(node.stats, cached_node.stats)
+    end
+    workspace.index.source = SourceScan(
+        index.source.source_id,
+        index.source.source_label,
+        index.source.source_item_fingerprints,
+        hierarchy,
+        index.source.analysis_failures,
+    )
 
     cached_items = length(index.source.source_item_fingerprints)
     workspace.cache.status = ProjectCacheStatus(
         cached_items, cached_items, 0, 0, 0, 0, length(index.analysis_errors))
     workspace.index.analysis_errors = copy(index.analysis_errors)
+    seed_cached_work_nodes!(workspace, index)
     for state in values(index.result_states)
         CacheResultStatus(state.status) === RESULT_FAILED || continue
+        kind = CacheResultKind(state.kind)
+        key = WorkKey(
+            kind === PROCESSING_RESULT ? PROCESS_ITEM :
+            kind === ITEM_STATS_RESULT ? ITEM_STATS : COLLECTION_STATS,
+            state.entity,
+        )
+        valid = lock(workspace.work.lock) do
+            node = get(workspace.work.nodes, key, nothing)
+            node !== nothing && node.state === :failed
+        end
+        valid || continue
         workspace.index.analysis_errors[state.entity] =
             something(state.message, "cached work failed")
     end
-    seed_cached_work_nodes!(workspace, index)
+    # Cached derived results whose effective inputs changed while the workspace was closed did not
+    # seed above; without a fresh interpretation nothing else re-enqueues them.
+    if workspace.background_processing
+        missing_stats = lock(workspace.work.lock) do
+            ItemRecord[
+                record for record in workspace.index.hierarchy.all_items
+                if !haskey(workspace.work.nodes, WorkKey(ITEM_STATS, record.id))
+            ]
+        end
+        for record in missing_stats
+            enqueue_processing!(workspace, record)
+            enqueue_item_stats!(workspace, record)
+        end
+    end
     return nothing
 end
 
@@ -582,24 +724,29 @@ function seed_cached_work_nodes!(
         if result_key.kind === PROCESSING_RESULT
             record = get(records, result_key.entity, nothing)
             record === nothing && continue
+            materialized = effective_record(workspace.index.hierarchy, record)
+            state.input_fingerprint == result_input_fingerprint(materialized) || continue
             seed_work_node!(
                 workspace,
                 WorkKey(PROCESS_ITEM, result_key.entity),
-                item_revision(record),
+                item_revision(workspace, record),
                 work_state,
             )
         elseif result_key.kind === ITEM_STATS_RESULT
             record = get(records, result_key.entity, nothing)
             record === nothing && continue
+            materialized = effective_record(workspace.index.hierarchy, record)
+            state.input_fingerprint == result_input_fingerprint(materialized) || continue
             seed_work_node!(
                 workspace,
                 WorkKey(ITEM_STATS, result_key.entity),
-                item_revision(record),
+                item_revision(workspace, record),
                 work_state,
             )
         elseif result_key.kind === COLLECTION_STATS_RESULT
             path = collection_path_tuple(result_key.entity)
             haskey(workspace.index.hierarchy.index, path) || continue
+            state.input_fingerprint == collection_input_fingerprint(workspace, path) || continue
             seed_work_node!(
                 workspace,
                 WorkKey(COLLECTION_STATS, result_key.entity),
@@ -666,7 +813,7 @@ function enqueue_item_stats!(workspace::Workspace, record::ItemRecord)::Nothing
     enqueue_work!(
         workspace,
         WorkKey(ITEM_STATS, record.id),
-        item_revision(record);
+        item_revision(workspace, record);
         priority=2,
         dependencies=WorkKey[WorkKey(PROCESS_ITEM, record.id)],
     )
@@ -718,7 +865,7 @@ function publish_work_success!(
             mark_work_missing!(
                 workspace,
                 WorkKey(ITEM_STATS, record.id),
-                item_revision(record);
+                item_revision(workspace, record);
                 dependencies=WorkKey[WorkKey(PROCESS_ITEM, record.id)],
             )
             workspace.background_processing && enqueue_processing!(workspace, record)
@@ -726,9 +873,10 @@ function publish_work_success!(
         return true
     elseif key.kind === PROCESS_ITEM
         record = workspace.index.items[key.entity]
-        store_processed!(workspace.cache.db, record, result.item)
+        materialized_record = effective_record(workspace.index.hierarchy, record)
+        store_processed!(workspace.cache.db, materialized_record, result.item)
         waiters = finish_work_node!(workspace, node, :ready)
-        loaded = DataItem(record, item_data(result.item))
+        loaded = DataItem(materialized_record, item_data(result.item))
         for waiter in waiters
             put!(waiter, ProcessingResult(loaded, nothing))
         end
@@ -738,12 +886,14 @@ function publish_work_success!(
         record = workspace.index.items[key.entity]
         stats = metadata_dict(result)
         workspace.index.item_stats[key.entity] = stats
-        workspace.index.items[key.entity] = ItemRecord(record; stats)
-        rebuild_workspace_hierarchy!(workspace)
-        store_item_stats!(workspace.cache.db, workspace.index.items[key.entity], stats)
+        store_item_stats!(
+            workspace.cache.db,
+            effective_record(workspace.index.hierarchy, record),
+            stats,
+        )
         enqueue_ready_collection_stats!(
             workspace,
-            affected_collection_keys([workspace.index.items[key.entity]]),
+            affected_collection_keys([record]),
         )
         return true
     else
@@ -752,7 +902,12 @@ function publish_work_success!(
         hierarchy_node === nothing && return false
         empty!(hierarchy_node.stats)
         merge!(hierarchy_node.stats, metadata_dict(result))
-        store_collection_stats!(workspace.cache.db, key.entity, hierarchy_node.stats)
+        store_collection_stats!(
+            workspace.cache.db,
+            key.entity,
+            collection_input_fingerprint(workspace, path),
+            hierarchy_node.stats,
+        )
         return true
     end
 end
@@ -778,6 +933,13 @@ function publish_work_failure!(
     record = key.kind in (PROCESS_ITEM, ITEM_STATS) ?
         get(workspace.index.items, key.entity, nothing) : nothing
     record === nothing || (source_item_id_value = record.source_item_id)
+    input_fingerprint = if record !== nothing
+        result_input_fingerprint(effective_record(workspace.index.hierarchy, record))
+    elseif key.kind === COLLECTION_STATS
+        collection_input_fingerprint(workspace, collection_path_tuple(key.entity))
+    else
+        ""
+    end
     store_result_failure!(
         workspace.cache.db,
         CacheResultKey(
@@ -786,6 +948,7 @@ function publish_work_failure!(
             key.entity,
         ),
         source_item_id_value,
+        input_fingerprint,
         message,
     )
     workspace.index.analysis_errors[key.entity] = message
@@ -889,6 +1052,36 @@ function publish_source_changes!(
         apply_source_changes!(workspace, changes, fingerprints, status)
         workspace.scan.state = cache_hit ? :unchanged : :done
         workspace.cache_state = :ready
+        finish_publish!(workspace)
+    end
+    return nothing
+end
+
+"""Publish one source-owned watcher update through the same path as a scan; clears any source error."""
+function publish_source_event!(
+    workspace::Workspace,
+    changes::SourceChanges,
+)::Nothing
+    lock(workspace.publish_lock) do
+        workspace.closed && return
+        workspace.source_error = ""
+        fingerprints = workspace.index.source === nothing ?
+            Dict{String,Any}() :
+            workspace.index.source.source_item_fingerprints
+        apply_source_changes!(workspace, changes, fingerprints, nothing)
+        finish_publish!(workspace)
+    end
+    return nothing
+end
+
+"""Publish one recoverable source failure; the next good update clears it."""
+function publish_source_event!(
+    workspace::Workspace,
+    error::SourceError,
+)::Nothing
+    lock(workspace.publish_lock) do
+        workspace.closed && return
+        workspace.source_error = error.message
         finish_publish!(workspace)
     end
     return nothing

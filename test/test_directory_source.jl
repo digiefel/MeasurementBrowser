@@ -1,66 +1,13 @@
 using MeasurementBrowser
-using MeasurementBrowser: ItemRecord
 using Test
 
-@testset "scan_source progress and cancel" begin
-    mktempdir() do dir
-        write_test_source(joinpath(dir, "first.csv"))
-        write_test_source(joinpath(dir, "second.csv"), 10)
+const MBD = MeasurementBrowser
 
-        source = scan_test_source(TEST_PROJECT, dir)
-        @test source isa MeasurementBrowser.SourceScan
-        @test source.hierarchy isa MeasurementBrowser.Hierarchy
-        @test source.hierarchy.skipped_count == 0
-
-        events = NamedTuple[]
-        MeasurementBrowser.scan_source(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir);
-            on_progress=progress -> push!(events, progress),
-            count_first=true,
-        )
-        @test any(event -> event.phase == :counting, events)
-        @test any(event -> event.phase == :discovering, events)
-        @test any(event -> event.phase == :scanning, events)
-        scanning = filter(event -> event.phase == :scanning, events)
-        @test maximum(event -> event.processed_source_items, scanning) == 2
-        @test all(event -> event.total_source_items == 2, scanning)
-
-        write(joinpath(dir, ".hidden.csv"), "")
-        source = scan_test_source(TEST_PROJECT, dir)
-        @test length(source.source_item_fingerprints) == 2
-
-        streamed = Vector{ItemRecord}[]
-        source = MeasurementBrowser.scan_source(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir);
-            on_items=items -> push!(streamed, copy(items)),
-        )
-        @test sum(length, streamed) == length(source.hierarchy.all_items)
-        @test Set(
-            item.id
-            for batch in streamed
-            for item in batch
-        ) == Set(
-            item.id
-            for item in source.hierarchy.all_items
-        )
-
-        fired = Ref(false)
-        @test_throws MeasurementBrowser.JobCancelled MeasurementBrowser.with_cancel(
-            () -> begin
-                fired[] && return true
-                fired[] = true
-                return false
-            end,
-        ) do
-            MeasurementBrowser.scan_source(
-                TEST_PROJECT,
-                test_source(TEST_PROJECT, dir);
-                count_first=true,
-            )
-        end
-    end
+"""Open a memory-only workspace on `source` and wait for the build to settle."""
+function _open_settled(project, source)
+    workspace = MBD.open_workspace(project, source; cache=false)
+    wait_workspace_idle!(workspace)
+    return workspace
 end
 
 @testset "DirectorySource discovery and metadata" begin
@@ -68,6 +15,7 @@ end
         write_test_source(joinpath(dir, "root.csv"))
         mkdir(joinpath(dir, "nested"))
         write_test_source(joinpath(dir, "nested", "nested.csv"), 10)
+        write(joinpath(dir, ".hidden.csv"), "")
         write(
             joinpath(dir, "metadata.txt"),
             "collection_path,wafer,area_um2\ntest,A,12.5\ntest/nested,B,99\n",
@@ -75,8 +23,8 @@ end
         write(joinpath(dir, "tags.txt"), "ignored")
         write(joinpath(dir, "measurementbrowser.toml"), "ignored")
 
-        project = MeasurementBrowser.define_project("Parameter test")
-        MeasurementBrowser.register_item!(
+        project = MBD.define_project("Parameter test")
+        MBD.register_item!(
             project,
             :table;
             detect=file -> endswith(lowercase(file.filename), ".csv"),
@@ -86,7 +34,7 @@ end
                 parameters = name == "root" ?
                     Dict{Symbol,Any}(:area_um2 => 7.0, :local_only => true) :
                     Dict{Symbol,Any}()
-                return [MeasurementBrowser.DataItem(
+                return [MBD.DataItem(
                     kind=:table,
                     collection=["test", name],
                     label="Table $name",
@@ -96,41 +44,100 @@ end
             end,
         )
 
-        source = MeasurementBrowser.DirectorySource(dir)
-        scan = MeasurementBrowser.scan_source(project, source)
-        @test source isa MeasurementBrowser.DirectorySource
-        @test length(scan.source_item_fingerprints) == 2
-        @test scan.hierarchy.has_collection_parameters
-        root_node = scan.hierarchy.index[("test", "root")]
-        nested_node = scan.hierarchy.index[("test", "nested")]
-        @test root_node.parameters[:wafer] == "A"
-        @test root_node.parameters[:area_um2] == 12.5
-        @test nested_node.parameters[:wafer] == "B"
-        @test nested_node.parameters[:area_um2] == 99
+        workspace = _open_settled(project, MBD.DirectorySource(dir))
+        try
+            # Hidden files and sidecars are never source items.
+            @test length(workspace.index.source.source_item_fingerprints) == 2
+            hierarchy = workspace.index.hierarchy
+            @test hierarchy.has_collection_parameters
+            root_node = hierarchy.index[("test", "root")]
+            nested_node = hierarchy.index[("test", "nested")]
+            @test root_node.parameters[:wafer] == "A"
+            @test root_node.parameters[:area_um2] == 12.5
+            @test nested_node.parameters[:wafer] == "B"
+            @test nested_node.parameters[:area_um2] == 99
 
-        parameters_by_label = Dict(
-            record.item_label => record.parameters
-            for record in scan.hierarchy.all_items
-        )
-        @test parameters_by_label["Table root"][:wafer] == "A"
-        @test parameters_by_label["Table root"][:area_um2] == 7.0
-        @test parameters_by_label["Table root"][:local_only]
-        @test parameters_by_label["Table nested"][:wafer] == "B"
-        @test parameters_by_label["Table nested"][:area_um2] == 99
+            parameters_by_label = Dict(
+                record.item_label =>
+                    MBD.ItemIndex.effective_parameters(hierarchy, record)
+                for record in hierarchy.all_items
+            )
+            @test parameters_by_label["Table root"][:wafer] == "A"
+            @test parameters_by_label["Table root"][:area_um2] == 7.0
+            @test parameters_by_label["Table root"][:local_only]
+            @test parameters_by_label["Table nested"][:wafer] == "B"
+            @test parameters_by_label["Table nested"][:area_um2] == 99
+        finally
+            MBD.close_workspace!(workspace)
+        end
 
-        shallow = MeasurementBrowser.scan_source(
-            TEST_PROJECT,
-            MeasurementBrowser.DirectorySource(dir; recursive=false),
-        )
-        @test length(shallow.source_item_fingerprints) == 1
-        @test only(shallow.hierarchy.all_items).item_label == "Table root"
+        shallow = _open_settled(TEST_PROJECT, MBD.DirectorySource(dir; recursive=false))
+        try
+            @test length(shallow.index.source.source_item_fingerprints) == 1
+            @test only(shallow.index.hierarchy.all_items).item_label == "Table root"
+        finally
+            MBD.close_workspace!(shallow)
+        end
 
-        without_metadata = MeasurementBrowser.scan_source(
-            TEST_PROJECT,
-            MeasurementBrowser.DirectorySource(dir; metadata_file=nothing),
-        )
-        @test !without_metadata.hierarchy.has_collection_parameters
-        @test all(isempty(node.parameters) for node in values(without_metadata.hierarchy.index))
-        @test all(isempty(record.parameters) for record in without_metadata.hierarchy.all_items)
+        without_metadata = _open_settled(
+            TEST_PROJECT, MBD.DirectorySource(dir; metadata_file=nothing))
+        try
+            hierarchy = without_metadata.index.hierarchy
+            @test !hierarchy.has_collection_parameters
+            @test all(isempty(node.parameters) for node in values(hierarchy.index))
+            @test all(isempty(record.parameters) for record in hierarchy.all_items)
+        finally
+            MBD.close_workspace!(without_metadata)
+        end
+
+        custom_path = joinpath(dir, "device_info.txt")
+        write(custom_path, "collection_path,wafer\ntest,C\n")
+        custom = MBD.DirectorySource(dir; metadata_file="device_info.txt")
+        MBD.open_source(custom)
+        try
+            @test MBD.Projects.has_collection_parameters(custom)
+            @test all(
+                file -> file.filepath != custom_path,
+                MBD.source_items(custom),
+            )
+        finally
+            MBD.close_source!(custom)
+        end
+    end
+end
+
+@testset "malformed live metadata is a recoverable source error" begin
+    mktempdir() do dir
+        write_test_source(joinpath(dir, "a.csv"))
+        metadata_path = joinpath(dir, "metadata.txt")
+        write(metadata_path, "collection_path,wafer\ntest,A\n")
+
+        workspace = MBD.open_workspace(
+            TEST_PROJECT, MBD.DirectorySource(dir); cache=false)
+        try
+            wait_workspace_idle!(workspace)
+            @test isempty(workspace.source_error)
+
+            write(metadata_path, "no_parameter_columns\n")
+            @test Base.timedwait(() -> !isempty(workspace.source_error), 5) === :ok
+            MBD.Workspace.refresh_status!(workspace)
+            status = MBD.Workspace.workspace_status(workspace)
+            @test status.level === :error
+            @test status.label == "Source Error"
+
+            # A corrected file clears the failure without restarting anything.
+            write(metadata_path, "collection_path,wafer\ntest,B\n")
+            @test Base.timedwait(() -> isempty(workspace.source_error), 5) === :ok
+            @test Base.timedwait(
+                () -> get(
+                    workspace.index.hierarchy.index[("test",)].parameters,
+                    :wafer,
+                    nothing,
+                ) == "B",
+                5,
+            ) === :ok
+        finally
+            MBD.close_workspace!(workspace)
+        end
     end
 end

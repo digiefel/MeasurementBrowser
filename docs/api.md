@@ -55,11 +55,15 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `close_source!(source)::Nothing` | yes | release files, sockets, tasks, sessions, streams |
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
 | `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | background cross-item fold over one collection node |
-| `watch_source(source, on_change)` | no (→ `nothing`) | future live-update hook; `nothing` means static |
+| `watch_source(source, on_change)` | no (→ `nothing`) | report `SourceChanges` batches; `nothing` means static |
 
 `open_source` returns the opened source rather than mutating in place, so it carries no bang;
 `close_source!` mutates the source (releases its resources) and does. `source_items` and
 `collection_stats` are getters — they return values and never mutate their arguments.
+
+`SourceChanges` is the shared update contract for scans and watchers. It carries source-item
+upserts/removals plus `parameters_changed`; a parameter-only batch updates existing items without
+reinterpreting their source items.
 
 ### `AbstractDataSourceItem` — one discovered unit
 

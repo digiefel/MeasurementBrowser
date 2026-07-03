@@ -4,13 +4,15 @@ struct ProcessingResult
     failure::Union{Nothing,CapturedException}
 end
 
-"""Return the revision of work derived from one indexed item."""
-function item_revision(record::ItemRecord)::UInt64
+"""Return the revision of work derived from one indexed item and its effective parameters."""
+function item_revision(workspace::Workspace, record::ItemRecord)::UInt64
     return UInt64(hash((
         record.source_item_id,
         record.source_item_fingerprint,
         record.id,
         record.item_fingerprint,
+        effective_parameters(workspace.index.hierarchy, record),
+        record.stats,
     )))
 end
 
@@ -18,10 +20,32 @@ end
 function collection_revision(workspace::Workspace, path::Tuple{Vararg{String}})::UInt64
     node = workspace.index.hierarchy.index[path]
     members = sort!(Tuple{String,UInt64}[
-        (record.id, UInt64(hash(get(workspace.index.item_stats, record.id, record.stats))))
+        (record.id, UInt64(hash((
+            effective_parameters(workspace.index.hierarchy, record),
+            get(workspace.index.item_stats, record.id, record.stats),
+        ))))
         for record in node.items
     ])
     return UInt64(hash((path, members)))
+end
+
+"""Stable cache input fingerprint for collection statistics."""
+function collection_input_fingerprint(
+    workspace::Workspace,
+    path::Tuple{Vararg{String}},
+)::String
+    node = workspace.index.hierarchy.index[path]
+    members = sort!([
+        (
+            record.id,
+            sort!(collect(effective_parameters(
+                workspace.index.hierarchy, record)); by=first),
+            sort!(collect(get(
+                workspace.index.item_stats, record.id, record.stats)); by=first),
+        )
+        for record in node.items
+    ]; by=first)
+    return result_input_fingerprint((path, members))
 end
 
 """Start fixed worker pools for each work kind."""
@@ -235,6 +259,18 @@ function enqueue_work!(
             return nothing
         end
         node = get(graph.nodes, key, nothing)
+        if node !== nothing && node.revision == revision && node.state in (:ready, :failed)
+            # Terminal at this revision: no future publish fires waiters attached now. Answer the
+            # waiter immediately — an empty success means "already published, read the cache".
+            if waiter !== nothing
+                failure = node.state === :failed ?
+                    CapturedException(ErrorException(get(
+                        workspace.index.analysis_errors, key.entity, "work failed")), Any[]) :
+                    nothing
+                put!(waiter, ProcessingResult(nothing, failure))
+            end
+            return node
+        end
         if node === nothing || node.revision != revision
             state = :waiting
             node = WorkNode(
@@ -366,21 +402,27 @@ function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
         workspace.cache.db, [record]; stage=:interpreted))
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
     process_started = time_ns()
+    input = DataItem(
+        effective_record(workspace.index.hierarchy, record),
+        item_data(interpreted),
+    )
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=record.kind,
         source_id=record.source_item_id,
         item_id=record.id,
     ) begin
-        process(workspace.project, workspace.source, interpreted)
+        process(workspace.project, workspace.source, input)
     end
     record_scan_phase!(workspace.project, record.source_item_id, record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
-    return (item=DataItem(record, item_data(processed)), cacheable=cacheable(processed))
+    return (item=DataItem(input, item_data(processed)), cacheable=cacheable(processed))
 end
 
 """Run item statistics from the already-published processed result."""
 function run_item_stats(workspace::Workspace, record::ItemRecord)::MetadataDict
-    processed = only(read_item_data(workspace.cache.db, [record]; stage=:processed))
+    materialized_record = effective_record(workspace.index.hierarchy, record)
+    processed = only(read_item_data(
+        workspace.cache.db, [materialized_record]; stage=:processed))
     processed === nothing && error(
         "Cannot compute statistics for item '$(record.id)': processed data is missing",
     )
@@ -393,7 +435,10 @@ function run_item_stats(workspace::Workspace, record::ItemRecord)::MetadataDict
         metadata_dict(compute_item_stats(
             workspace.project,
             workspace.source,
-            DataItem(record, item_data(processed)),
+            DataItem(
+                materialized_record,
+                item_data(processed),
+            ),
         ))
     end
     record_scan_phase!(workspace.project, record.source_item_id, record.kind,
@@ -410,7 +455,13 @@ function run_collection_stats(workspace::Workspace, key::String)::MetadataDict
         (copy(node.items), deepcopy(workspace.index.item_stats))
     end
     items = AbstractDataItem[
-        DataItem(ItemRecord(record; stats=get(stats, record.id, record.stats)), nothing)
+        DataItem(
+            ItemRecord(
+                effective_record(workspace.index.hierarchy, record);
+                stats=get(stats, record.id, record.stats),
+            ),
+            nothing,
+        )
         for record in records
     ]
     return metadata_dict(collection_stats(
@@ -485,6 +536,14 @@ function work_kind_running(workspace::Workspace, kind::WorkKind)::Bool
     end
 end
 
+"""Return whether one work revision has already published successfully."""
+function work_ready(workspace::Workspace, key::WorkKey, revision::UInt64)::Bool
+    return lock(workspace.work.lock) do
+        node = get(workspace.work.nodes, key, nothing)
+        node !== nothing && node.revision == revision && node.state === :ready
+    end
+end
+
 """Return completed, total, and active work counters for status/profiling."""
 function work_counts(workspace::Workspace)::Tuple{Int,Int,Int}
     return lock(workspace.work.lock) do
@@ -506,7 +565,7 @@ function enqueue_processing!(
     enqueue_work!(
         workspace,
         WorkKey(PROCESS_ITEM, record.id),
-        item_revision(record);
+        item_revision(workspace, record);
         priority=selected ? 4 : 2,
         waiter,
     )
@@ -518,7 +577,27 @@ function request_processed_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
 )::Vector{AbstractDataItem}
-    cached = read_item_data(workspace.cache.db, records; stage=:processed)
+    effective_records = ItemRecord[
+        effective_record(workspace.index.hierarchy, record) for record in records
+    ]
+    loaded_item(position, item) = DataItem(
+        ItemRecord(effective_records[position]; stats=get(
+            workspace.index.item_stats, records[position].id, records[position].stats)),
+        item_data(item),
+    )
+    # The work graph decides whether a stored result is current: only revisions it has published
+    # read the cache; everything else joins or starts the work.
+    cached = Vector{Any}(nothing, length(records))
+    ready_positions = [
+        position for (position, record) in pairs(records)
+        if work_ready(workspace, WorkKey(PROCESS_ITEM, record.id),
+            item_revision(workspace, record))
+    ]
+    payloads = read_item_data(
+        workspace.cache.db, effective_records[ready_positions]; stage=:processed)
+    for (index, position) in pairs(ready_positions)
+        cached[position] = payloads[index]
+    end
     loaded = Vector{AbstractDataItem}(undef, length(records))
     waiters = Tuple{Int,Channel{Any}}[]
     for (position, record) in pairs(records)
@@ -527,17 +606,22 @@ function request_processed_items(
             waiter = enqueue_processing!(workspace, record; selected=true)
             push!(waiters, (position, waiter::Channel{Any}))
         else
-            loaded[position] = DataItem(
-                ItemRecord(record; stats=get(
-                    workspace.index.item_stats, record.id, record.stats)),
-                item_data(item),
-            )
+            loaded[position] = loaded_item(position, item)
         end
     end
     for (position, waiter) in waiters
         result = take!(waiter)::ProcessingResult
         result.failure === nothing || throw(result.failure)
-        loaded[position] = result.item::AbstractDataItem
+        if result.item === nothing
+            # Published between the readiness check and the enqueue: the payload is in the cache.
+            item = only(read_item_data(
+                workspace.cache.db, [effective_records[position]]; stage=:processed))
+            item === nothing && error(
+                "Processed data for item '$(records[position].id)' is missing from the cache")
+            loaded[position] = loaded_item(position, item)
+        else
+            loaded[position] = result.item::AbstractDataItem
+        end
     end
     return loaded
 end

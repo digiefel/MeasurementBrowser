@@ -29,6 +29,8 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
         :none, "No Project", "Open a project folder to build a cache.", false, nothing, errors)
     scan.state == :error && return WorkspaceStatus(
         :error, "Scan Error", scan.error, false, nothing, errors)
+    isempty(workspace.source_error) || return WorkspaceStatus(
+        :error, "Source Error", workspace.source_error, false, nothing, errors)
     workspace.cache_state == :error && return WorkspaceStatus(
         :error, "Cache Error", workspace.cache_error, false, nothing, errors)
     workspace.cache_state == :missing && return WorkspaceStatus(

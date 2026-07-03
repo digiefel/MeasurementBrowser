@@ -9,7 +9,7 @@ include("test_project.jl")
 @testset "MeasurementBrowser Tests" begin
     include("test_tase_analysis.jl")
     include("test_project_view_state.jl")
-    include("test_scan_directory_progress.jl")
+    include("test_directory_source.jl")
     include("test_work_graph.jl")
     include("test_scan_profile.jl")
     include("test_event_driven_workspace.jl")

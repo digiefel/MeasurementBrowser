@@ -134,6 +134,36 @@ abstract type AbstractDataSource end
 """One addressable unit discovered inside a data source."""
 abstract type AbstractDataSourceItem end
 
+"""
+One source-owned change batch.
+
+Sources report physical source-item replacements/removals and source-provided parameter changes
+through the same update contract. An empty item batch with `parameters_changed=true` updates
+existing logical items without reinterpreting their source items.
+"""
+struct SourceChanges{S<:AbstractDataSourceItem}
+    upserts::Vector{S}
+    removals::Vector{String}
+    parameters_changed::Bool
+end
+
+SourceChanges(
+    upserts::Vector{S},
+    removals::Vector{String};
+    parameters_changed::Bool=false,
+) where {S<:AbstractDataSourceItem} = SourceChanges(upserts, removals, parameters_changed)
+
+"""
+One recoverable source failure reported through the watch contract.
+
+Failures are expected states, not watcher deaths: a source that cannot currently produce a
+consistent update (e.g. a malformed live metadata file) reports the reason as a value and keeps
+watching; a later successful update clears it.
+"""
+struct SourceError
+    message::String
+end
+
 """Stable source identity used for workspace/cache ownership."""
 function source_id end
 
@@ -149,7 +179,10 @@ close_source!(::AbstractDataSource)::Nothing = nothing
 """Return the current source items discovered by a source."""
 function source_items end
 
-"""Future live-update hook. `nothing` means the source is static."""
+"""
+Watch a source and call `on_change` with each `SourceChanges` batch or recoverable `SourceError`.
+`nothing` means the source is static.
+"""
 watch_source(::AbstractDataSource, ::Function) = nothing
 
 """Stable source-item identity within a source."""

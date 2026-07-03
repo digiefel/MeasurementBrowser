@@ -25,56 +25,51 @@ function _profile_project()
     return project
 end
 
-@testset "scan skip on unchanged files" begin
+@testset "reopen applies collection parameters changed between sessions" begin
     mktempdir() do dir
-        write_test_source(joinpath(dir, "first.csv"))
-        write_test_source(joinpath(dir, "second.csv"), 10)
+        write(joinpath(dir, "ok.csv"), "x,y\n1,2\n")
+        write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,42\n")
 
-        source = scan_test_source(TEST_PROJECT, dir)
-
-        # Nothing changed: the scan must short-circuit to the very same cached object.
-        skipped = MB.scan_source(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir);
-            cached_source=source,
+        project = MB.define_project("ReopenParameters")
+        MB.register_item!(
+            project,
+            :table;
+            detect=file -> endswith(file.filename, ".csv"),
+            read=file -> DataFrame(CSV.File(file.filepath)),
+            entries=(file, data) -> [DataItem(
+                kind=:table,
+                collection=["dev", splitext(file.filename)[1]],
+                data=data,
+            )],
+            stats=item -> Dict{Symbol,Any}(:area_um2 => item.parameters[:area_um2]),
         )
-        @test skipped === source
 
-        # A changed fingerprint forces a real scan that returns a fresh object.
-        write_test_source(joinpath(dir, "second.csv"), 99)
-        rescanned = MB.scan_source(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir);
-            cached_source=source,
-        )
-        @test rescanned !== source
-        @test length(rescanned.source_item_fingerprints) == 2
-    end
-end
+        workspace = MB.open_workspace(
+            project, test_source(project, dir); background_processing=true)
+        identity = workspace.cache.identity
+        try
+            wait_workspace_idle!(workspace)
+            record = only(workspace.index.hierarchy.all_items)
+            @test workspace.index.item_stats[record.id][:area_um2] == 42
+        finally
+            MB.close_workspace!(workspace)
+        end
 
-@testset "scan cache compares effective parameters" begin
-    mktempdir() do dir
-        write_test_source(joinpath(dir, "first.csv"))
-        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\n")
-
-        source = scan_test_source(TEST_PROJECT, dir)
-
-        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,A\nunused,B\n")
-        same = MB.scan_source(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir);
-            cached_source=source,
-        )
-        @test same === source
-
-        write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ntest,B\n")
-        changed = MB.scan_source(
-            TEST_PROJECT,
-            test_source(TEST_PROJECT, dir);
-            cached_source=source,
-        )
-        @test changed !== source
-        @test only(changed.hierarchy.all_items).parameters[:wafer] == "B"
+        # The metadata file changed while the workspace was closed: cached derived results are
+        # stale by input fingerprint and must be recomputed with the new effective parameters.
+        write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,43\n")
+        reopened = MB.open_workspace(
+            project, test_source(project, dir); background_processing=true)
+        try
+            wait_workspace_idle!(reopened)
+            record = only(reopened.index.hierarchy.all_items)
+            @test MB.ItemIndex.effective_parameters(
+                reopened.index.hierarchy, record)[:area_um2] == 43
+            @test reopened.index.item_stats[record.id][:area_um2] == 43
+        finally
+            MB.close_workspace!(reopened)
+            rm(dirname(identity.cache_path); force=true, recursive=true)
+        end
     end
 end
 
@@ -88,7 +83,11 @@ end
 
         project = _profile_project()
 
-        source = scan_test_source(project, dir)
+        workspace = MB.open_workspace(
+            project, test_source(project, dir); background_processing=true)
+        identity = workspace.cache.identity
+        wait_workspace_idle!(workspace)
+        MB.close_workspace!(workspace)
         rows = MB.scan_profile_summary(project)
         @test length(rows) == 1
         row = only(rows)
@@ -114,13 +113,16 @@ end
         @test all(row -> !isabspath(row.source_item_label), source_rows)
         @test issorted(source_rows; by=row -> row.total_seconds, rev=true)
 
-        # A cache hit does no per-kind work, so the profile resets to empty.
-        MB.scan_source(
-            project,
-            test_source(project, dir);
-            cached_source=source,
-        )
-        @test isempty(MB.scan_profile_summary(project))
+        # A cache-hit reopen does no per-kind work, so the profile resets to empty.
+        try
+            reopened = MB.open_workspace(
+                project, test_source(project, dir); background_processing=true)
+            wait_workspace_idle!(reopened)
+            MB.close_workspace!(reopened)
+            @test isempty(MB.scan_profile_summary(project))
+        finally
+            rm(dirname(identity.cache_path); force=true, recursive=true)
+        end
     end
 end
 
@@ -184,6 +186,124 @@ end
             ok = only(workspace.index.hierarchy.all_items)
             @test workspace.index.item_stats[ok.id][:rows] == 1
             @test workspace.index.item_stats[ok.id][:area_um2] == 42
+        finally
+            MB.close_workspace!(workspace)
+        end
+
+        reopened = MB.open_workspace(
+            project, test_source(project, dir); background_processing=true)
+        try
+            wait_workspace_idle!(reopened)
+            ok = only(reopened.index.hierarchy.all_items)
+            effective = MB.ItemIndex.effective_parameters(reopened.index.hierarchy, ok)
+            @test effective[:area_um2] == 42
+            @test reopened.index.item_stats[ok.id][:area_um2] == 42
+        finally
+            MB.close_workspace!(reopened)
+        end
+    end
+end
+
+@testset "DirectorySource metadata changes invalidate only affected items" begin
+    mktempdir() do dir
+        write(joinpath(dir, "a.csv"), "x\n2\n")
+        write(joinpath(dir, "b.csv"), "x\n3\n")
+        metadata_path = joinpath(dir, "device_info.txt")
+        write(metadata_path, "collection_path,scale\ndev/a,2\ndev/b,4\n")
+
+        reads = Dict("a.csv" => Threads.Atomic{Int}(0), "b.csv" => Threads.Atomic{Int}(0))
+        entries = Dict("a.csv" => Threads.Atomic{Int}(0), "b.csv" => Threads.Atomic{Int}(0))
+        processes = Dict("a" => Threads.Atomic{Int}(0), "b" => Threads.Atomic{Int}(0))
+        project = MB.define_project("MetadataWatcher_$(basename(dir))")
+        MB.register_item!(
+            project,
+            :table;
+            detect=file -> endswith(file.filename, ".csv"),
+            read=function (file)
+                Threads.atomic_add!(reads[file.filename], 1)
+                return DataFrame(CSV.File(file.filepath))
+            end,
+            entries=function (file, data)
+                Threads.atomic_add!(entries[file.filename], 1)
+                name = splitext(file.filename)[1]
+                return [DataItem(
+                    kind=:table,
+                    collection=["dev", name],
+                    parameters=name == "b" ? Dict{Symbol,Any}(:scale => 20) :
+                        Dict{Symbol,Any}(),
+                    data=data,
+                )]
+            end,
+            process=function (item)
+                name = last(item.collection)
+                Threads.atomic_add!(processes[name], 1)
+                scale = get(item.parameters, :scale, 1)
+                return DataItem(item, DataFrame(y=item.data.x .* scale))
+            end,
+            stats=item -> Dict{Symbol,Any}(:maximum => maximum(item.data.y)),
+        )
+
+        workspace = MB.open_workspace(
+            project,
+            MB.DirectorySource(dir; metadata_file="device_info.txt");
+            cache=false,
+        )
+        try
+            wait_workspace_idle!(workspace)
+            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            MB.Workspace.materialize_items(workspace, records)
+            wait_workspace_idle!(workspace)
+            @test [counter[] for counter in values(reads)] == [1, 1]
+            @test [counter[] for counter in values(entries)] == [1, 1]
+            @test processes["a"][] == 1
+            @test processes["b"][] == 1
+
+            write(metadata_path, "collection_path,scale\ndev/a,3\ndev/b,5\n")
+            @test Base.timedwait(
+                () -> workspace.index.hierarchy.index[("dev", "a")].parameters[:scale] == 3,
+                5,
+            ) === :ok
+            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            loaded = MB.Workspace.materialize_items(workspace, records)
+            wait_workspace_idle!(workspace)
+
+            @test only(item.data.y for item in loaded if last(item.collection) == "a") == [6]
+            @test only(item.data.y for item in loaded if last(item.collection) == "b") == [60]
+            @test all(counter[] == 1 for counter in values(reads))
+            @test all(counter[] == 1 for counter in values(entries))
+            @test processes["a"][] == 2
+            @test processes["b"][] == 1
+
+            write(metadata_path, "collection_path,scale\ndev/b,5\n")
+            @test Base.timedwait(
+                () -> !haskey(
+                    workspace.index.hierarchy.index[("dev", "a")].parameters,
+                    :scale,
+                ),
+                5,
+            ) === :ok
+            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            MB.Workspace.materialize_items(workspace, records)
+            wait_workspace_idle!(workspace)
+            @test processes["a"][] == 3
+            @test processes["b"][] == 1
+            @test all(counter[] == 1 for counter in values(reads))
+
+            write(metadata_path, "collection_path,scale\ndev/a,4\ndev/b,5\n")
+            @test Base.timedwait(
+                () -> get(
+                    workspace.index.hierarchy.index[("dev", "a")].parameters,
+                    :scale,
+                    nothing,
+                ) == 4,
+                5,
+            ) === :ok
+            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            MB.Workspace.materialize_items(workspace, records)
+            wait_workspace_idle!(workspace)
+            @test processes["a"][] == 4
+            @test processes["b"][] == 1
+            @test all(counter[] == 1 for counter in values(reads))
         finally
             MB.close_workspace!(workspace)
         end
@@ -303,21 +423,6 @@ end
         )
         @test haskey(ws1.index.analysis_errors, failed_item_id)
 
-        # A missing fingerprint cannot prove that a source item is unchanged.
-        cached_source = ws1.index.source
-        unverifiable = Dict{String,Any}(
-            id => nothing for id in keys(cached_source.source_item_fingerprints))
-        unverifiable_source = MB.SourceScan(
-            cached_source.source_id,
-            cached_source.source_label,
-            unverifiable,
-            cached_source.hierarchy,
-            cached_source.analysis_failures,
-        )
-        @test !MB.ItemIndex.source_unchanged(
-            test_source(project, dir), unverifiable, unverifiable_source)
-        _, reusable = MB.ItemIndex._incremental_reuse_plan(unverifiable_source, unverifiable)
-        @test isempty(reusable)
         MB.close_workspace!(ws1)
 
         try

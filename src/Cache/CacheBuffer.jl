@@ -102,6 +102,8 @@ function _buffer_rows end
 
 mutable struct RowStore{K,R} <: AbstractDiskStore{K,R}
     read_connection::DuckDB.Connection
+    # DuckDB connections are not thread-safe; every read_connection use holds this lock.
+    read_lock::ReentrantLock
     write_connection::DuckDB.Connection
     profiler::Profiling.ProfileSession
     table_name::String
@@ -138,6 +140,7 @@ function RowStore{K,R}(
     initial_flush_task = current_task()
     store = RowStore{K,R}(
         read_connection,
+        ReentrantLock(),
         write_connection,
         profiler,
         String(table),
@@ -244,6 +247,8 @@ _buffer_rows(batch::TabularBodyBatch)::Int = nrow(batch.body)
 mutable struct TabularFamilyStore <:
                AbstractDiskStore{Tuple{UInt16,UInt32},TabularBodyBatch}
     read_connection::DuckDB.Connection
+    # DuckDB connections are not thread-safe; every read_connection use holds this lock.
+    read_lock::ReentrantLock
     write_connection::DuckDB.Connection
     profiler::Profiling.ProfileSession
     flush_condition::Base.Threads.Condition
@@ -292,6 +297,7 @@ function TabularFamilyStore(
         error("Processed-data cache exhausted its UInt32 sequence space")
     store = TabularFamilyStore(
         read_connection,
+        ReentrantLock(),
         write_connection,
         profiler,
         Base.Threads.Condition(),
@@ -687,14 +693,17 @@ function Base.read(store::RowStore{K,R})::Dict{K,R} where {K,R}
             (store.writing, store.queued)
         end
         rows = Dict{K,R}()
-        for database_row in DBInterface.execute(
-            store.read_connection,
-            "SELECT * FROM $(store.quoted_table)",
-        )
-            row = R(database_row)
-            values = Tuple(getproperty(database_row, column) for column in store.key_columns)
-            raw_key = length(values) == 1 ? only(values) : values
-            rows[convert(K, raw_key)] = row
+        lock(store.read_lock) do
+            for database_row in DBInterface.execute(
+                store.read_connection,
+                "SELECT * FROM $(store.quoted_table)",
+            )
+                row = R(database_row)
+                values = Tuple(
+                    getproperty(database_row, column) for column in store.key_columns)
+                raw_key = length(values) == 1 ? only(values) : values
+                rows[convert(K, raw_key)] = row
+            end
         end
         stable = lock(store.flush_condition) do
             _require_open(store)
@@ -732,15 +741,17 @@ function _read_tabular_locations(
         unique_seqs = unique(seqs)
         table = _quote_identifier(_dataframe_table_name(storage_id))
         placeholders = join(fill("?", length(unique_seqs)), ", ")
-        rows = DataFrame(DBInterface.execute(
-            DBInterface.prepare(store.read_connection, """
-                SELECT *
-                FROM $table
-                WHERE $MB_SEQ_COLUMN IN ($placeholders)
-                ORDER BY $MB_SEQ_COLUMN, $MB_ROW_COLUMN
-            """),
-            Tuple(unique_seqs),
-        ))
+        rows = lock(store.read_lock) do
+            DataFrame(DBInterface.execute(
+                DBInterface.prepare(store.read_connection, """
+                    SELECT *
+                    FROM $table
+                    WHERE $MB_SEQ_COLUMN IN ($placeholders)
+                    ORDER BY $MB_SEQ_COLUMN, $MB_ROW_COLUMN
+                """),
+                Tuple(unique_seqs),
+            ))
+        end
         data_columns = String[
             name for name in names(rows) if name ∉ (MB_SEQ_COLUMN, MB_ROW_COLUMN)
         ]

@@ -44,7 +44,10 @@ function _item_matches_filter(
         return true
     end
     text = string(
-        display_label(workspace.project, item),
+        # Label callbacks are project callbacks: they receive the effective parameters, not the
+        # item-local subset the record stores.
+        display_label(workspace.project,
+            Workspace.effective_record(workspace.index.hierarchy, item)),
         "\n",
         item.item_label,
         "\n",
@@ -492,7 +495,8 @@ function _render_items_panel(
                                 tag_state, id, [dev_key; ancestor_keys])
                         end
                         if ig.Selectable(
-                            display_label(workspace.project, item),
+                            display_label(workspace.project,
+                                Workspace.effective_record(workspace.index.hierarchy, item)),
                             is_selected,
                             ig.ImGuiSelectableFlags_SpanAllColumns,
                         )

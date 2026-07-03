@@ -18,6 +18,8 @@ using .Projects:
     PROJECTS,
     PlotRecipe,
     Project,
+    SourceChanges,
+    SourceError,
     SourceItemProfile,
     SourceProfileRow,
     cacheable,
@@ -38,7 +40,8 @@ using .Projects:
     source_item_timestamp,
     source_items,
     source_label,
-    stats
+    stats,
+    watch_source
 import .Projects:
     detect_kind,
     collection_path_label,
@@ -72,7 +75,6 @@ using .ItemIndex:
     insert_item!,
     is_job_cancelled,
     item_timestamp_key,
-    scan_source,
     with_cancel
 
 include("Cache.jl")

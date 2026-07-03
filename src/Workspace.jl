@@ -26,12 +26,14 @@ import ..Cache:
     close_cache_db!,
     delete_collection_stats!,
     delete_source_item!,
+    invalidate_item_results!,
     load_cache_index,
     open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
     read_item_data,
     record_cache_phase!,
+    result_input_fingerprint,
     reset_build_metrics!,
     set_cache_memory_limit!,
     start_cache!,
@@ -57,16 +59,19 @@ import ..ItemIndex:
     check_cancel,
     collection_path_key,
     collection_path_tuple,
+    effective_parameters,
+    effective_record,
     is_job_cancelled,
     metadata_dict,
     interpret_source_item,
-    scan_source,
     with_cancel
 import ..Projects:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
     Project,
+    SourceChanges,
+    SourceError,
     close_source!,
     collection_stats,
     compute_item_stats,
@@ -76,13 +81,16 @@ import ..Projects:
     id,
     item_data,
     process,
+    open_source,
     project_name,
     record_scan_phase!,
+    reset_scan_profile!,
     scan_profile_summary,
     source_id,
     source_item_id,
     source_items,
-    source_label
+    source_label,
+    watch_source
 
 """
 One cancellable workspace operation and its latest visible state.
@@ -106,14 +114,6 @@ mutable struct WorkspaceIndex
     collection_parameter_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
-end
-
-"""
-One batch of source-item changes discovered by a rescan or future watcher.
-"""
-struct SourceChanges{S<:AbstractDataSourceItem}
-    upserts::Vector{S}
-    removals::Vector{String}
 end
 
 @enum WorkKind begin
@@ -239,6 +239,8 @@ mutable struct Workspace{S<:AbstractDataSource}
     # only a visible state and last error rather than a full WorkspaceJob.
     cache_state::Symbol
     cache_error::String
+    # Last recoverable failure reported by the source watcher; cleared by the next good update.
+    source_error::String
     work::WorkDependencyGraph
     background_processing::Bool
     background_tasks::Vector{Task}
@@ -306,6 +308,7 @@ function Workspace(
         WorkspaceCache(identity, cache_db, disk_error, nothing, :load),
         WorkspaceJob(),
         :idle,
+        "",
         "",
         WorkDependencyGraph(),
         cache_db isa CacheDB && background_processing,

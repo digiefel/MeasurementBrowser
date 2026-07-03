@@ -21,6 +21,9 @@ persisted results already exist. The work dependency graph decides what remains 
 `WorkspaceIndex` owns the records, hierarchy, parameters, statistics, and failures shown by the
 application.
 
+Cached item records contain item-local parameters only. Source-owned collection parameters are read
+from the open source and applied to restored records exactly as they are in a memory-only workspace.
+
 ## Vocabulary
 
 These terms have one meaning throughout the cache code:
@@ -244,13 +247,14 @@ Successful empty statistics produce no metadata rows, so absence of metadata can
 computed." `result_states` therefore records:
 
 - processing failure;
+- processing success for a persisted payload;
 - item-statistics success, including an empty result;
 - item-statistics failure;
 - collection-statistics success, including an empty result;
 - collection-statistics failure.
 
-Cacheable processed success is represented by its valid payload pointer rather than a duplicate result
-state. Non-cacheable processed success remains memory-only.
+Each state records the effective-input fingerprint that produced it. Non-cacheable processed success
+remains memory-only.
 
 These outcomes are independent. Processing failure prevents item statistics for that item revision,
 but an item-statistics failure does not erase a successfully processed payload. Collection-statistics
@@ -272,8 +276,12 @@ transaction. A reader cannot observe a committed pointer without its payload. A 
 still has a pointer and schema, so it reconstructs as an empty value with the correct columns and
 types.
 
-A processed cache entry is accepted only when its stored source-item and item fingerprint hashes match
-the requested `ItemRecord`. A mismatch is a cache miss.
+Stored input fingerprints are validated once, when the cache index is loaded: an entry whose
+fingerprint matches the current source-item identity, item identity, and effective parameters seeds
+a completed node in the workspace work graph; a mismatch seeds nothing and the work is re-enqueued
+(the interpreted item record remains reusable). At runtime the work graph is the single freshness
+authority — readers consult it and then read payloads raw; `result_states` is only written, never
+re-read, until the next load.
 
 ## Source changes
 

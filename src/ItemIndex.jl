@@ -517,7 +517,7 @@ function _effective_parameters(
     return parameters
 end
 
-"""Apply source collection parameters to hierarchy nodes and item records."""
+"""Apply source collection parameters to hierarchy nodes."""
 function apply_collection_parameters!(
     hierarchy::Hierarchy,
     source::AbstractDataSource,
@@ -533,14 +533,6 @@ function apply_collection_parameters!(
         isempty(path) || merge!(effective, metadata_dict(collection_parameters(source, path)))
         empty!(node.parameters)
         merge!(node.parameters, effective)
-        for item in node.items
-            # Records are shared with the previously published hierarchy, which a GUI thread may be
-            # reading right now: only add missing keys, so an item parameter is never observed torn.
-            # Item-local keys always win, exactly as the previous replace-and-remerge did.
-            for (key, value) in effective
-                haskey(item.parameters, key) || (item.parameters[key] = value)
-            end
-        end
         for child in node.children
             visit!(child, [path; child.name], effective)
         end
@@ -553,22 +545,17 @@ function apply_collection_parameters!(
     return nothing
 end
 
-"""Return the effective collection/item parameter state used for cache freshness."""
-function source_parameter_state(source::SourceScan)::Dict{String,Dict{String,Tuple}}
-    state = Dict{String,Dict{String,Tuple}}()
-    for record in source.hierarchy.all_items
-        node = get(source.hierarchy.index, Tuple(record.collection), nothing)
-        node_parameters = node === nothing ? MetadataDict() : node.parameters
-        by_item = get!(state, record.source_item_id) do
-            Dict{String,Tuple}()
-        end
-        by_item[record.id] = (
-            copy(record.collection),
-            copy(record.parameters),
-            copy(node_parameters),
-        )
-    end
-    return state
+"""Return one record's source-inherited and item-local parameters."""
+function effective_parameters(hierarchy::Hierarchy, record::ItemRecord)::MetadataDict
+    node = get(hierarchy.index, Tuple(record.collection), nothing)
+    effective = node === nothing ? MetadataDict() : copy(node.parameters)
+    merge!(effective, record.parameters)
+    return effective
+end
+
+"""Materialize a record with the effective parameters consumed by project callbacks."""
+function effective_record(hierarchy::Hierarchy, record::ItemRecord)::ItemRecord
+    return ItemRecord(record; parameters=effective_parameters(hierarchy, record))
 end
 
 """

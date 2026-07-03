@@ -47,7 +47,9 @@ function render_info_window(state::BrowserState)::Nothing
 
         ig.TableNextColumn()
         if length(selected_items) == 1
-            m = selected_items[1]
+            # Show effective parameters (collection-inherited + item-local), exactly what project
+            # callbacks receive.
+            m = Workspace.effective_record(workspace.index.hierarchy, selected_items[1])
             ig.Text("Title: $(m.item_label)")
             ig.Separator()
             kind_text = kind_label(workspace.project, m.kind)

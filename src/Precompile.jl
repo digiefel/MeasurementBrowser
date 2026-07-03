@@ -54,9 +54,6 @@ end
     ]
     fixture_paths = [joinpath(fixture_dir, filename) for filename in filenames]
 
-    scan_dir = mktempdir()
-    foreach(path -> cp(path, joinpath(scan_dir, basename(path)); force=true), fixture_paths)
-
     @compile_workload begin
         project = _precompile_project()
         records = [only(items_for_file(project, path)) for path in fixture_paths]
@@ -101,9 +98,5 @@ end
             popfirst!(DEPOT_PATH)
             rm(precompile_depot; force=true, recursive=true)
         end
-
-        source = DirectorySource(scan_dir)
-        scan_source(project, source)
-        scan_source(project, source; count_first=true)
     end
 end
