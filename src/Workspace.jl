@@ -87,30 +87,16 @@ import ..Projects:
     source_label
 
 """
-Progress reported by one workspace job.
-"""
-Base.@kwdef mutable struct WorkspaceProgress
-    phase::Symbol = :idle
-    total_source_items::Int = 0
-    processed_source_items::Int = 0
-    loaded_items::Int = 0
-    skipped_source_items::Int = 0
-    current_source_item::String = ""
-end
-
-"""
 One cancellable workspace operation and its latest visible state.
 """
 mutable struct WorkspaceJob
     id::Int
     state::Symbol
-    progress::WorkspaceProgress
     error::String
     cancel_token::Union{Nothing,Base.Threads.Atomic{Bool}}
 end
 
-WorkspaceJob()::WorkspaceJob =
-    WorkspaceJob(0, :idle, WorkspaceProgress(), "", nothing)
+WorkspaceJob()::WorkspaceJob = WorkspaceJob(0, :idle, "", nothing)
 
 """
 The progressively populated item index for one open source.
@@ -261,7 +247,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
     profile_restart_pending::Bool
-    poll_lock::ReentrantLock
+    publish_lock::ReentrantLock
     idle_condition::Base.Threads.Condition
     status::WorkspaceStatus
     closed::Bool
@@ -343,19 +329,6 @@ end
 # Pretty printing
 # ---------------------------------------------------------------------------
 
-"""One-line description of where the source scan currently stands."""
-function _scan_summary(workspace::Workspace)::String
-    state = workspace.scan.state
-    progress = workspace.scan.progress
-    if state in (:counting, :discovering)
-        return "$state ($(progress.processed_source_items) source items found)"
-    elseif state == :scanning
-        return "$state ($(progress.processed_source_items)/$(progress.total_source_items) source items)"
-    else
-        return string(state)
-    end
-end
-
 Base.show(io::IO, workspace::Workspace) = print(
     io,
     "Workspace(", project_name(workspace.project), ", ", source_label(workspace.source),
@@ -366,7 +339,7 @@ function Base.show(io::IO, ::MIME"text/plain", workspace::Workspace)
     println(io, "Workspace · ", project_name(workspace.project))
     println(io, "  source label: ", source_label(workspace.source))
     println(io, "  source:       ", source_id(workspace.source))
-    println(io, "  scan:         ", _scan_summary(workspace))
+    println(io, "  scan:         ", workspace.scan.state)
     println(io, "  cache:        ", workspace.cache_state)
     println(io, "  items:        ", length(workspace.index.items))
     print(io,   "  failures:     ", length(workspace.index.analysis_errors))

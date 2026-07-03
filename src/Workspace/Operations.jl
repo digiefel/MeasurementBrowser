@@ -119,7 +119,7 @@ function select_items!(
 end
 
 source_scan_running(workspace::Workspace)::Bool =
-    workspace.scan.state in (:counting, :discovering, :scanning, :canceling)
+    workspace.scan.state in (:discovering, :canceling)
 
 cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_state in (:loading, :writing, :canceling)
@@ -344,7 +344,6 @@ function scan_source!(
     job.id += 1
     scan_id = job.id
     job.state = :discovering
-    job.progress = WorkspaceProgress()
     job.error = ""
     workspace.cache_state = :loading
     workspace.cache_error = ""
@@ -431,8 +430,9 @@ function profile_counter_snapshot(workspace::Workspace)::NamedTuple
     completed, total, jobs = work_counts(workspace)
     depth = jobs + cache_pending_counts(workspace.cache.db).items
     return (
-        scan_done=workspace.scan.progress.processed_source_items,
-        scan_total=workspace.scan.progress.total_source_items,
+        # Scan-level progress counters are not populated; the schema keeps their columns.
+        scan_done=0,
+        scan_total=0,
         processing_done=completed,
         processing_total=total,
         queue_depth=depth,
@@ -831,7 +831,7 @@ function publish_work_completion!(
     revision::UInt64,
     result,
 )::Nothing
-    lock(workspace.poll_lock) do
+    lock(workspace.publish_lock) do
         node = current_completion_node(workspace, key, revision)
         node === nothing && return
         if result isa CapturedException
@@ -869,7 +869,7 @@ workspace drains it.
 """
 function wait_workspace_idle!(workspace::Workspace; timeout::Real=60)::Workspace
     deadline = time() + Float64(timeout)
-    lock(workspace.poll_lock) do
+    lock(workspace.publish_lock) do
         while engine_work_running(workspace)
             wait_condition_deadline(workspace.idle_condition, deadline) || break
         end
@@ -884,7 +884,7 @@ function publish_cache_state!(
     state::Symbol,
     index::Union{Nothing,ProjectCacheIndex},
 )::Nothing
-    lock(workspace.poll_lock) do
+    lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
         if index === nothing
             replace_item_index!(workspace, Hierarchy(source_id(workspace.source), false))
@@ -909,7 +909,7 @@ function publish_source_changes!(
     status::ProjectCacheStatus,
     cache_hit::Bool,
 )::Nothing
-    lock(workspace.poll_lock) do
+    lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
         apply_source_changes!(workspace, changes, fingerprints, status)
         workspace.scan.state = cache_hit ? :unchanged : :done
@@ -927,7 +927,7 @@ function publish_scan_end!(
     error=nothing,
     backtrace=nothing,
 )::Nothing
-    lock(workspace.poll_lock) do
+    lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
         # A scan that ends without reaching :ready must settle cache_state, or busy spins forever.
         if canceled
@@ -943,7 +943,6 @@ function publish_scan_end!(
             @error(
                 "Source scan job failed",
                 source=source_id(workspace.source),
-                current_source_item=workspace.scan.progress.current_source_item,
                 exception=(error, backtrace),
             )
         end

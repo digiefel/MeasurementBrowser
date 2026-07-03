@@ -2,26 +2,13 @@
 function workspace_status(workspace::Workspace)::WorkspaceStatus
     errors = sort!(collect(workspace.index.analysis_errors); by=first)
     scan = workspace.scan
-    progress = scan.progress
-    fraction = total -> total > 0 ?
-        Float32(clamp(progress.processed_source_items / total, 0, 1)) : nothing
 
     # Active work: one live line, determinate bar when totals are known.
-    if scan.state in (:counting, :discovering)
-        found = progress.processed_source_items
-        return WorkspaceStatus(:busy, "Scanning",
-            found > 0 ? "Finding source items… $found found" : "Finding source items…",
-            true, nothing, errors)
-    elseif scan.state == :scanning
+    if scan.state == :discovering
         label = workspace.cache.operation === :rebuild ? "Rebuilding" :
                 workspace.cache.operation === :build ? "Building" : "Scanning"
-        detail = progress.total_source_items > 0 ?
-            @sprintf("Reading %d/%d source items · %d items",
-                progress.processed_source_items, progress.total_source_items,
-                progress.loaded_items) :
-            "Reading source items…"
         return WorkspaceStatus(
-            :busy, label, detail, true, fraction(progress.total_source_items), errors)
+            :busy, label, "Finding source items…", true, nothing, errors)
     elseif scan.state == :canceling
         return WorkspaceStatus(:busy, "Canceling", "Canceling…", true, nothing, errors)
     elseif processing_work_running(workspace)

@@ -45,10 +45,13 @@ The engine is written against the **low-level source contract** ([api.md](api.md
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
 compares the discovered source-item ids and fingerprints with the published snapshot, and submits one
 `SourceChanges` batch to the workspace work graph. Interpretation workers call
-`data_items(project, source, source_item)`, put interpreted data into the memory cache, and return
-lightweight completions; `poll_workspace!` is the publisher that rejects stale completions,
-atomically publishes replacement records into `WorkspaceIndex`, and sends semantic record
-writes/deletes to `ProjectCache`. A workspace-owned pump calls it independently of GUI frames. The graph owns work state only:
+`data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish
+their own completions: each finishing worker takes the workspace publish lock, rejects stale
+revisions, atomically publishes replacement records into `WorkspaceIndex`, sends semantic record
+writes/deletes to `ProjectCache`, queues follow-up work, and notifies the idle condition. Nothing
+polls: the engine progresses on completion events alone, blocking callers
+(`request_processed_items`, `wait_workspace_idle!`) sleep until a publication wakes them, and the
+GUI frame only calls `refresh_status!` to rebuild the display snapshot. The graph owns work state only:
 work identities, revisions, priority, running/queued/failed/ready state, and waiters. `WorkspaceIndex`
 owns completed records, hierarchy, parameters, statistics, failures, and selections.
 Processing, item-stat, and collection-stat workers are fixed long-lived pools. When background

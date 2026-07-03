@@ -70,7 +70,7 @@ function cancel_waiting_work!(workspace::Workspace)::Nothing
     for node in canceled, waiter in node.waiters
         put!(waiter, result)
     end
-    lock(workspace.poll_lock) do
+    lock(workspace.publish_lock) do
         notify(workspace.idle_condition; all=true)
     end
     return nothing

@@ -459,11 +459,7 @@ function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
     stats_seconds = 0.0f0
 
     if workspace isa Workspace.Workspace
-        progress = workspace.scan.progress
-        total_si = progress.total_source_items
-        scan_pct = total_si > 0 ?
-            Float32(100 * progress.processed_source_items / total_si) : 0.0f0
-
+        # Scan-level progress counters are not populated; the scan trace stays at zero.
         completed, total_processing, _active = Workspace.work_counts(workspace)
         analysis_pct = total_processing > 0 ?
             Float32(100 * completed / total_processing) : 0.0f0
