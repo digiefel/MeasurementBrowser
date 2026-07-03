@@ -43,6 +43,7 @@ import ..Cache:
     store_collection_stats!,
     store_processed!,
     store_result_failure!,
+    wait_condition_deadline,
     write_meta_header!
 import ..ItemIndex:
     DataItem,
@@ -179,7 +180,6 @@ mutable struct WorkDependencyGraph
     queue::Vector{Tuple{WorkKey,UInt64}}
     source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
-    events::Channel{NamedTuple}
     workers::Vector{Task}
     total::Int
     completed::Int
@@ -198,7 +198,6 @@ function WorkDependencyGraph()::WorkDependencyGraph
         Tuple{WorkKey,UInt64}[],
         Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),
-        Channel{NamedTuple}(Inf),
         Task[],
         0,
         0,
@@ -278,6 +277,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     profiler::Profiling.ProfileSession
     profile_restart_pending::Bool
     poll_lock::ReentrantLock
+    idle_condition::Base.Threads.Condition
     status::WorkspaceStatus
     closed::Bool
 end
@@ -321,6 +321,7 @@ function Workspace(
             rethrow()
         end
     end
+    publish_lock = ReentrantLock()
     workspace = Workspace(
         project,
         source,
@@ -343,13 +344,13 @@ function Workspace(
         metrics,
         profiler,
         false,
-        ReentrantLock(),
+        publish_lock,
+        Base.Threads.Condition(publish_lock),
         WorkspaceStatus(),
         false,
     )
     start_cache!(cache_db)
     start_work_workers!(workspace)
-    start_workspace_pump!(workspace)
     return workspace
 end
 

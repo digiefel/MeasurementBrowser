@@ -35,7 +35,7 @@ function start_work_workers!(workspace::Workspace)::Nothing
     return nothing
 end
 
-"""Stop accepting work and wait for all running callbacks."""
+"""Stop accepting work, wait for all running callbacks, and fail any still-attached waiters."""
 function stop_work_workers!(workspace::Workspace)::Nothing
     graph = workspace.work
     lock(graph.lock) do
@@ -43,6 +43,13 @@ function stop_work_workers!(workspace::Workspace)::Nothing
         notify(graph.condition; all=true)
     end
     foreach(wait, graph.workers)
+    result = ProcessingResult(nothing, CapturedException(JobCancelled(), Any[]))
+    lock(graph.lock) do
+        for node in values(graph.nodes), waiter in node.waiters
+            put!(waiter, result)
+        end
+        foreach(node -> empty!(node.waiters), values(graph.nodes))
+    end
     return nothing
 end
 
@@ -62,6 +69,9 @@ function cancel_waiting_work!(workspace::Workspace)::Nothing
     result = ProcessingResult(nothing, CapturedException(JobCancelled(), Any[]))
     for node in canceled, waiter in node.waiters
         put!(waiter, result)
+    end
+    lock(workspace.poll_lock) do
+        notify(workspace.idle_condition; all=true)
     end
     return nothing
 end
@@ -203,7 +213,12 @@ function seed_work_node!(
     return nothing
 end
 
-"""Queue one work revision once, promoting it when its requested priority increases."""
+"""
+Queue one work revision once, promoting it when its requested priority increases.
+
+A closed graph drops the request: in-flight completions publishing during shutdown may legitimately
+try to queue follow-up work, which shutdown discards. An attached waiter fails immediately.
+"""
 function enqueue_work!(
     workspace::Workspace,
     key::WorkKey,
@@ -211,10 +226,14 @@ function enqueue_work!(
     priority::Int,
     dependencies::Vector{WorkKey}=WorkKey[],
     waiter::Union{Nothing,Channel{Any}}=nothing,
-)::WorkNode
+)::Union{Nothing,WorkNode}
     graph = workspace.work
     return lock(graph.lock) do
-        graph.closed && error("Cannot queue work after the workspace has closed")
+        if graph.closed
+            waiter === nothing ||
+                put!(waiter, ProcessingResult(nothing, CapturedException(JobCancelled(), Any[])))
+            return nothing
+        end
         node = get(graph.nodes, key, nothing)
         if node === nothing || node.revision != revision
             state = :waiting
@@ -402,7 +421,7 @@ function run_collection_stats(workspace::Workspace, key::String)::MetadataDict
     ))
 end
 
-"""Execute one work node and emit a typed completion event."""
+"""Execute one work node and publish its completion immediately."""
 function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
     key = node.key
     result = try
@@ -440,12 +459,7 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
     catch error
         CapturedException(error, catch_backtrace())
     end
-    put!(workspace.work.events, (
-        kind=:work_complete,
-        key,
-        revision=node.revision,
-        result,
-    ))
+    publish_work_completion!(workspace, key, node.revision, result)
     return nothing
 end
 
@@ -521,10 +535,6 @@ function request_processed_items(
         end
     end
     for (position, waiter) in waiters
-        while !isready(waiter)
-            poll_workspace!(workspace)
-            yield()
-        end
         result = take!(waiter)::ProcessingResult
         result.failure === nothing || throw(result.failure)
         loaded[position] = result.item::AbstractDataItem

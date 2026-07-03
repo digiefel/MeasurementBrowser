@@ -555,6 +555,21 @@ end
 cached_item_ids(store::TabularFamilyStore)::Vector{String} =
     lock(() -> (_require_open(store); collect(keys(store.item_locations))), store.flush_condition)
 
+"""Wait on a held condition, waking no later than `deadline`; whether the deadline is still ahead."""
+function wait_condition_deadline(condition::Base.Threads.Condition, deadline::Float64)::Bool
+    remaining = deadline - time()
+    remaining <= 0 && return false
+    timer = Timer(remaining) do _
+        lock(() -> notify(condition; all=true), condition)
+    end
+    try
+        wait(condition)
+    finally
+        close(timer)
+    end
+    return time() < deadline
+end
+
 function _flush_due(store::AbstractDiskStore, now::Float64)::Bool
     isempty(store.queued) && return false
     at_capacity = store.row_limit !== nothing && store.queued_rows >= store.row_limit
@@ -602,17 +617,14 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
         writing = lock(store.flush_condition) do
             while !_flush_due(store, time())
                 store.closing && isempty(store.queued) && return nothing
-                remaining = max(
-                    eps(Float64),
-                    CACHE_BUFFER_FLUSH_INTERVAL - (time() - store.last_flush),
-                )
-                timer = Timer(remaining) do _
-                    lock(() -> notify(store.flush_condition), store.flush_condition)
-                end
-                try
+                if isempty(store.queued)
+                    # No queued rows means no flush deadline; sleep until an append notifies.
                     wait(store.flush_condition)
-                finally
-                    close(timer)
+                else
+                    wait_condition_deadline(
+                        store.flush_condition,
+                        store.last_flush + CACHE_BUFFER_FLUSH_INTERVAL,
+                    )
                 end
             end
             store.writing = store.queued

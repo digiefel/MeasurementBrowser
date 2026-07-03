@@ -134,21 +134,26 @@ function processing_work_running(workspace::Workspace)::Bool
         cache_has_pending_writes(workspace.cache.db)
 end
 
+"""Whether the scan or any queued or running work-graph node is still in flight."""
+function engine_work_running(workspace::Workspace)::Bool
+    _, _, active = work_counts(workspace)
+    return active > 0 || source_scan_running(workspace) || cache_work_running(workspace)
+end
+
+"""
+Whether a watcher should keep refreshing: engine work is in flight or writes are still flushing.
+
+Pending cache writes are display-only busyness — reads overlay the write buffer and appends
+backpressure on row pressure, so nothing in the engine gates on flush completion.
+"""
+workspace_busy(workspace::Workspace)::Bool =
+    engine_work_running(workspace) || cache_has_pending_writes(workspace.cache.db)
+
 """Keep a background task alive until workspace shutdown."""
 function track_task!(workspace::Workspace, task::Task)::Task
     filter!(!istaskdone, workspace.background_tasks)
     push!(workspace.background_tasks, task)
     return task
-end
-
-"""Keep model state moving even when no GUI frame is polling it."""
-function start_workspace_pump!(workspace::Workspace)::Task
-    return track_task!(workspace, Base.Threads.@spawn begin
-        while !workspace.closed
-            poll_workspace!(workspace)
-            sleep(0.01)
-        end
-    end)
 end
 
 """Request cancellation of one running workspace operation."""
@@ -730,6 +735,8 @@ function enqueue_ready_collection_stats!(
     return nothing
 end
 
+# In both publish functions, waiter wakeup must happen before any call that can throw, so blocked
+# `request_processed_items` callers are never left waiting on a `take!` that will not resolve.
 """Apply one successful work completion to WorkspaceIndex and ProjectCache."""
 function publish_work_success!(
     workspace::Workspace,
@@ -832,22 +839,57 @@ function publish_work_failure!(
     return true
 end
 
-"""Apply graph completion events; stale revisions are ignored."""
-function poll_work_events!(workspace::Workspace)::Bool
-    changed = false
-    events = workspace.work.events
-    while isready(events)
-        event = take!(events)
-        node = current_completion_node(workspace, event.key, event.revision)
-        node === nothing && continue
-        if event.result isa CapturedException
-            changed |= publish_work_failure!(workspace, node, event.result)
+"""Commit one finished work revision the moment its worker completes; stale revisions are ignored."""
+function publish_work_completion!(
+    workspace::Workspace,
+    key::WorkKey,
+    revision::UInt64,
+    result,
+)::Nothing
+    lock(workspace.poll_lock) do
+        node = current_completion_node(workspace, key, revision)
+        node === nothing && return
+        if result isa CapturedException
+            publish_work_failure!(workspace, node, result)
         else
-            changed |= publish_work_success!(workspace, node, event.result)
-            node.key.kind === PROCESS_ITEM || finish_work_node!(workspace, node, :ready)
+            publish_work_success!(workspace, node, result)
+            key.kind === PROCESS_ITEM || finish_work_node!(workspace, node, :ready)
+        end
+        finish_publish!(workspace)
+    end
+    return nothing
+end
+
+"""Advance idle-gated work and wake blocked waiters after one publication (publish lock held)."""
+function finish_publish!(workspace::Workspace)::Nothing
+    if workspace.profile_restart_pending && !engine_work_running(workspace)
+        reset_work_graph!(workspace)
+        workspace.profile_restart_pending = false
+        workspace.profiler.state = :idle
+        Profiling.start!(
+            workspace.profiler,
+            () -> profile_counter_snapshot(workspace),
+        )
+        scan_source!(workspace; rebuild=true)
+    end
+    notify(workspace.idle_condition; all=true)
+    return nothing
+end
+
+"""
+Block until the workspace has no running scan and no queued or running work, or until `timeout`
+seconds pass. Purely event-driven: every publication notifies the workspace idle condition. Cache
+writes still flushing do not delay idleness — reads overlay the write buffer, and closing the
+workspace drains it.
+"""
+function wait_workspace_idle!(workspace::Workspace; timeout::Real=60)::Workspace
+    deadline = time() + Float64(timeout)
+    lock(workspace.poll_lock) do
+        while engine_work_running(workspace)
+            wait_condition_deadline(workspace.idle_condition, deadline) || break
         end
     end
-    return changed
+    return workspace
 end
 
 """Apply all completed scan, cache, and work events."""
@@ -909,25 +951,10 @@ function _poll_workspace!(workspace::Workspace)::Bool
         end
     end
 
-    index_changed |= poll_work_events!(workspace)
-
+    finish_publish!(workspace)
     # Refresh the watcher snapshot while work runs (progress advances without an index change) and for
     # the one frame after it stops; idle frames skip the rebuild entirely.
-    busy = source_scan_running(workspace) || processing_work_running(workspace) ||
-           analysis_work_running(workspace) ||
-           cache_work_running(workspace)
-    if workspace.profile_restart_pending && !busy
-        reset_work_graph!(workspace)
-        workspace.profile_restart_pending = false
-        workspace.profiler.state = :idle
-        Profiling.start!(
-            workspace.profiler,
-            () -> profile_counter_snapshot(workspace),
-        )
-        scan_source!(workspace; rebuild=true)
-        busy = true
-    end
-    (index_changed || busy || workspace.status.busy) &&
+    (index_changed || workspace_busy(workspace) || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))
     return index_changed
 end
