@@ -10,6 +10,24 @@ using ..Workspace:
     close_workspace!,
     open_workspace
 
+"""Profiler and directory options preserved when reopening a source root from the GUI."""
+function _workspace_reopen_kwargs(workspace::Workspace.Workspace)
+    profiler = workspace.profiler
+    kwargs = (
+        profile_internal=profiler.enabled,
+        profile_cpu=profiler.cpu_enabled,
+        profile_output=profiler.output_path,
+        crash_trace=profiler.crash_path,
+    )
+    source = workspace.source
+    hasproperty(source, :metadata_file) && hasproperty(source, :recursive) || return kwargs
+    return (;
+        kwargs...,
+        metadata_file=source.metadata_file,
+        recursive=source.recursive,
+    )
+end
+
 """Return the project selected by the saved project preference."""
 function _project_for_preference(pref::AbstractString)::Project
     pref == "auto" && return something(DEFAULT_PROJECT[])
@@ -42,7 +60,15 @@ function _open_project_path!(
     else
         state.project_preference = project_name(project)
     end
-    _attach_workspace!(state, open_workspace(project, norm_path; rebuild=rebuild_cache); persist)
+    previous_workspace = state.workspace
+    reopen_kwargs = previous_workspace isa Workspace.Workspace ?
+        _workspace_reopen_kwargs(previous_workspace) :
+        NamedTuple()
+    _attach_workspace!(
+        state,
+        open_workspace(project, norm_path; reopen_kwargs..., rebuild=rebuild_cache);
+        persist,
+    )
     return nothing
 end
 
