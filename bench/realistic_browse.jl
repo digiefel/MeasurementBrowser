@@ -448,7 +448,6 @@ function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
     while MB.Workspace.cache_has_pending_writes(ws.cache.db)
         counts = MB.Workspace.cache_pending_counts(ws.cache.db)
         peak_pending_rows = max(peak_pending_rows, Int64(counts.rows))
-        MB.Workspace.poll_workspace!(ws)
         sleep(0.004)
     end
     flush_ms = (time() - flush_started) * 1e3
@@ -604,7 +603,6 @@ function run_benchmark()
         MB.Workspace.start_internal_profile!(ws)
         deadline = time() + 60
         while ws.profiler.state !== :recording
-            MB.Workspace.poll_workspace!(ws)
             time() < deadline || error(
                 "Profiler did not reach recording state within 60 seconds; state=$(ws.profiler.state)",
             )
@@ -631,7 +629,6 @@ function run_benchmark()
         memory_samples = MemorySample[]
         kind_cursor = 1
         while true
-            MB.Workspace.poll_workspace!(ws)
             now = time() - t_start
             if now - last_rss_sample >= 0.1
                 last_rss_sample = now
@@ -674,7 +671,6 @@ function run_benchmark()
                 @warn("hit MAX_BUILD_SECONDS"); break)
             sleep(0.004)
         end
-        MB.Workspace.poll_workspace!(ws)
         final_memory = MB.Workspace.workspace_memory_snapshot(ws)
         rss_end_bytes = final_memory.rss_bytes
         push!(memory_samples, MemorySample(time() - t_start, final_memory))
@@ -763,7 +759,6 @@ function _reopen_once(project, data_root, plot_kinds, kinds)
     deadline = time() + MAX_BUILD_SECONDS
     try
         while true
-            MB.Workspace.poll_workspace!(ws)
             now = time() - t0
             first_view_s == 0 && !isempty(ws.index.items) && (first_view_s = now)
             if build_idle(ws)

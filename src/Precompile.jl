@@ -2,24 +2,6 @@ using CSV
 using DataFrames: DataFrame, nrow
 using GLMakie: Axis, Figure, contents, lines!
 
-"""Poll until background scan/work/cache activity settles, with a hard timeout."""
-function _precompile_poll_until_idle!(workspace; max_seconds::Real=45)
-    deadline = time() + max_seconds
-    while time() < deadline
-        Workspace.poll_workspace!(workspace)
-        _, _, active = Workspace.work_counts(workspace)
-        idle = active == 0 &&
-            !Workspace.source_scan_running(workspace) &&
-            !Workspace.processing_work_running(workspace) &&
-            !Workspace.analysis_work_running(workspace) &&
-            !Workspace.cache_work_running(workspace) &&
-            workspace.scan.state in (:done, :unchanged, :error, :canceled)
-        idle && return nothing
-        sleep(0.002)
-    end
-    return nothing
-end
-
 """
 Minimal fixture project used only to exercise engine pipelines during precompilation.
 
@@ -89,7 +71,8 @@ end
                 profile_internal=false,
                 profile_cpu=false,
             )
-            _precompile_poll_until_idle!(workspace)
+            Workspace.wait_workspace_idle!(workspace; timeout=45)
+            Workspace.refresh_status!(workspace)
             records = collect(values(workspace.index.items))
             if !isempty(records)
                 select_items!(workspace, records)

@@ -27,7 +27,7 @@ import ..Workspace
 using ..Workspace:
     WorkspaceStatus,
     cancel_scan!,
-    poll_workspace!,
+    refresh_status!,
     rebuild_cache!,
     scan_source!,
     source_scan_running
@@ -533,7 +533,7 @@ function _run_browser(
         end
         state.performance.frame += 1
         workspace = state.workspace
-        workspace isa Workspace.Workspace && poll_workspace!(workspace)
+        workspace isa Workspace.Workspace && refresh_status!(workspace)
         if exit_after_frames !== nothing && state.performance.frame >= exit_after_frames
             _shutdown_background_jobs!(state)
             return :imgui_exit_loop

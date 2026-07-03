@@ -356,9 +356,7 @@ function scan_source!(
     # from the previous scan never linger.
     workspace.index.source = nothing
     empty!(workspace.index.analysis_errors)
-    events = Channel{NamedTuple}(Inf)
     cancel_token = Base.Threads.Atomic{Bool}(false)
-    job.events = events
     job.cancel_token = cancel_token
     task = Base.Threads.@spawn begin
         Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
@@ -367,12 +365,8 @@ function scan_source!(
         try
             rebuild && clear_cache_index!(cachedb)
             cached = !rebuild && cache_built(cachedb) ? load_cache_index(cachedb) : nothing
-            put!(events, (
-                kind=:cache_state,
-                job_id=scan_id,
-                state=cached === nothing ? :missing : :ready,
-                index=cached,
-            ))
+            publish_cache_state!(
+                workspace, scan_id, cached === nothing ? :missing : :ready, cached)
 
             write_meta_header!(cachedb)
             discovered = with_cancel(() -> cancel_token[]) do
@@ -402,31 +396,22 @@ function scan_source!(
                 length(removals),
                 length(workspace.index.analysis_errors),
             )
-            put!(events, (
-                kind=:source_changes,
-                job_id=scan_id,
-                changes=SourceChanges(upserts, removals),
-                fingerprints=current,
+            publish_source_changes!(
+                workspace,
+                scan_id,
+                SourceChanges(upserts, removals),
+                current,
                 status,
-                cache_hit=isempty(upserts) && isempty(removals),
-            ))
-            put!(events, (
-                kind=:source_done,
-                job_id=scan_id,
-            ))
+                isempty(upserts) && isempty(removals),
+            )
+            publish_scan_end!(workspace, scan_id)
         catch error
             if is_job_cancelled(error)
-                put!(events, (kind=:canceled, job_id=scan_id))
+                publish_scan_end!(workspace, scan_id; canceled=true)
             else
-                put!(events, (
-                    kind=:error,
-                    job_id=scan_id,
-                    error,
-                    backtrace=catch_backtrace(),
-                ))
+                publish_scan_end!(
+                    workspace, scan_id; error, backtrace=catch_backtrace())
             end
-        finally
-            close(events)
         end
         end
     end
@@ -892,69 +877,89 @@ function wait_workspace_idle!(workspace::Workspace; timeout::Real=60)::Workspace
     return workspace
 end
 
-"""Apply all completed scan, cache, and work events."""
-function poll_workspace!(workspace::Workspace)::Bool
-    return lock(workspace.poll_lock) do
-        _poll_workspace!(workspace)
+"""Publish the loaded (or missing) cache index as the instant first view of one scan."""
+function publish_cache_state!(
+    workspace::Workspace,
+    scan_id::Int,
+    state::Symbol,
+    index::Union{Nothing,ProjectCacheIndex},
+)::Nothing
+    lock(workspace.poll_lock) do
+        scan_id == workspace.scan.id || return
+        if index === nothing
+            replace_item_index!(workspace, Hierarchy(source_id(workspace.source), false))
+            empty!(workspace.index.analysis_errors)
+        else
+            apply_cache_index!(workspace, index)
+        end
+        workspace.cache_state = state
+        state == :missing && workspace.cache.operation != :rebuild &&
+            (workspace.cache.operation = :build)
+        finish_publish!(workspace)
     end
+    return nothing
 end
 
-function _poll_workspace!(workspace::Workspace)::Bool
-    index_changed = false
-
-    scan_events = workspace.scan.events
-    if scan_events !== nothing
-        while isready(scan_events)
-            event = take!(scan_events)
-            event.job_id == workspace.scan.id || continue
-            if event.kind == :progress
-                workspace.scan.progress = WorkspaceProgress(event.progress)
-                workspace.scan.state = event.progress.phase
-            elseif event.kind == :cache_state
-                if event.index === nothing
-                    replace_item_index!(workspace, Hierarchy(source_id(workspace.source), false))
-                    empty!(workspace.index.analysis_errors)
-                else
-                    apply_cache_index!(workspace, event.index)
-                end
-                index_changed = true
-                workspace.cache_state = event.state
-                event.state == :missing && workspace.cache.operation != :rebuild &&
-                    (workspace.cache.operation = :build)
-            elseif event.kind == :source_changes
-                index_changed |= apply_source_changes!(
-                    workspace, event.changes, event.fingerprints, event.status)
-                workspace.scan.state = event.cache_hit ? :unchanged : :done
-                workspace.cache_state = :ready
-            elseif event.kind == :source_done
-                workspace.scan.events = nothing
-                workspace.scan.cancel_token = nothing
-            elseif event.kind == :canceled
-                workspace.scan.state = :canceled
-                workspace.scan.events = nothing
-                workspace.scan.cancel_token = nothing
-            elseif event.kind == :error
-                workspace.scan.state = :error
-                workspace.scan.error =
-                    "Source scan failed. See the console for full details."
-                workspace.cache_state == :writing &&
-                    (workspace.cache_state = :error)
-                @error(
-                    "Source scan job failed",
-                    source=source_id(workspace.source),
-                    current_source_item=workspace.scan.progress.current_source_item,
-                    exception=(event.error, event.backtrace),
-                )
-                workspace.scan.events = nothing
-                workspace.scan.cancel_token = nothing
-            end
-        end
+"""Publish one scan's discovered source changes and queue their interpretation."""
+function publish_source_changes!(
+    workspace::Workspace,
+    scan_id::Int,
+    changes::SourceChanges,
+    fingerprints::AbstractDict{String},
+    status::ProjectCacheStatus,
+    cache_hit::Bool,
+)::Nothing
+    lock(workspace.poll_lock) do
+        scan_id == workspace.scan.id || return
+        apply_source_changes!(workspace, changes, fingerprints, status)
+        workspace.scan.state = cache_hit ? :unchanged : :done
+        workspace.cache_state = :ready
+        finish_publish!(workspace)
     end
+    return nothing
+end
 
-    finish_publish!(workspace)
-    # Refresh the watcher snapshot while work runs (progress advances without an index change) and for
-    # the one frame after it stops; idle frames skip the rebuild entirely.
-    (index_changed || workspace_busy(workspace) || workspace.status.busy) &&
+"""Publish the end of one scan job: finished normally, canceled, or failed."""
+function publish_scan_end!(
+    workspace::Workspace,
+    scan_id::Int;
+    canceled::Bool=false,
+    error=nothing,
+    backtrace=nothing,
+)::Nothing
+    lock(workspace.poll_lock) do
+        scan_id == workspace.scan.id || return
+        # A scan that ends without reaching :ready must settle cache_state, or busy spins forever.
+        if canceled
+            workspace.scan.state = :canceled
+            workspace.cache_state in (:loading, :writing, :canceling) &&
+                (workspace.cache_state = :stale)
+        elseif error !== nothing
+            workspace.scan.state = :error
+            workspace.scan.error =
+                "Source scan failed. See the console for full details."
+            workspace.cache_state in (:loading, :writing, :canceling) &&
+                (workspace.cache_state = :error)
+            @error(
+                "Source scan job failed",
+                source=source_id(workspace.source),
+                current_source_item=workspace.scan.progress.current_source_item,
+                exception=(error, backtrace),
+            )
+        end
+        workspace.scan.cancel_token = nothing
+        finish_publish!(workspace)
+    end
+    return nothing
+end
+
+"""
+Rebuild the GUI-facing status snapshot when work is or was just running.
+
+Display-only: the engine publishes without it, and idle frames keep reading the cached value.
+"""
+function refresh_status!(workspace::Workspace)::Nothing
+    (workspace_busy(workspace) || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))
-    return index_changed
+    return nothing
 end

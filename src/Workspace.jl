@@ -99,20 +99,6 @@ Base.@kwdef mutable struct WorkspaceProgress
 end
 
 """
-Convert one scan or cache progress event into workspace-owned progress.
-"""
-function WorkspaceProgress(progress::NamedTuple)::WorkspaceProgress
-    return WorkspaceProgress(
-        phase=progress.phase,
-        total_source_items=progress.total_source_items,
-        processed_source_items=progress.processed_source_items,
-        loaded_items=progress.loaded_items,
-        skipped_source_items=progress.skipped_source_items,
-        current_source_item=progress.current_source_item,
-    )
-end
-
-"""
 One cancellable workspace operation and its latest visible state.
 """
 mutable struct WorkspaceJob
@@ -120,12 +106,11 @@ mutable struct WorkspaceJob
     state::Symbol
     progress::WorkspaceProgress
     error::String
-    events::Union{Nothing,Channel{NamedTuple}}
     cancel_token::Union{Nothing,Base.Threads.Atomic{Bool}}
 end
 
 WorkspaceJob()::WorkspaceJob =
-    WorkspaceJob(0, :idle, WorkspaceProgress(), "", nothing, nothing)
+    WorkspaceJob(0, :idle, WorkspaceProgress(), "", nothing)
 
 """
 The progressively populated item index for one open source.
@@ -231,8 +216,8 @@ A single snapshot of everything a watcher needs to show about a workspace's back
 
 This is the stable contract between the engine and any watcher (the GUI today, scripts and workflows
 later): watchers read `WorkspaceStatus` and nothing else about jobs, progress, or the cache. It is
-recomputed only when [`poll_workspace!`](@ref) observes a change or work is active, so an idle render
-loop reads a cached value instead of rebuilding strings every frame.
+recomputed only when [`refresh_status!`](@ref) observes active or just-stopped work, so an idle
+render loop reads a cached value instead of rebuilding strings every frame.
 
 - `level` drives the watcher's color/emphasis: `:none`, `:busy`, `:fresh`, `:stale`, `:missing`,
   `:error`.
