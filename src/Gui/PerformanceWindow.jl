@@ -37,15 +37,14 @@ function _begin_perf_table(id::String, n_cols::Int, height::Float32=0.0f0)::Bool
 end
 
 # ---------------------------------------------------------------------------
-# Tab: Plot Redraw
+# Tab: Project — where project code (recipes) spends its time
 # ---------------------------------------------------------------------------
 
-"""Render the Plot Redraw tab: per-phase columns mean / max / last / alloc for each phase."""
-function _render_plot_redraw_tab(performance::PerformanceState)::Nothing
+"""Render mean/max/last/alloc for the plot-recipe phases (load, setup, draw, total)."""
+function _render_plot_phase_table(performance::PerformanceState)::Nothing
     timings = performance.timings
     allocs  = performance.allocations
 
-    # The four canonical plot-redraw phase keys, in order
     phases = (
         (:plot_load,  "Load"),
         (:plot_setup, "Setup"),
@@ -88,268 +87,6 @@ function _render_plot_redraw_tab(performance::PerformanceState)::Nothing
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Tab: Sampling Hotspots
-# ---------------------------------------------------------------------------
-
-"""Render CPU hotspots from the latest internal capture or explicit plot profile."""
-function _render_hotspots_tab(
-    performance::PerformanceState,
-    workspace,
-)::Nothing
-    internal = workspace isa Workspace.Workspace ? workspace.profiler.report : nothing
-    profile = internal isa Profiling.ProfileReport && internal.cpu !== nothing ?
-        internal.cpu : performance.plot_sampling_profile
-
-    if profile === nothing
-        ig.Spacing()
-        ig.TextDisabled("No CPU profile captured yet.")
-        return nothing
-    end
-
-    ig.Spacing()
-    if profile.truncated
-        ig.TextColored(
-            (0.95f0, 0.65f0, 0.15f0, 1.0f0),
-            "Sample buffer filled before the rebuild finished — results are truncated.",
-        )
-    end
-    total = max(profile.total_samples, 1)
-    ig.TextDisabled(@sprintf(
-        "%d samples at %.0f ms intervals   (%.2f s wall)",
-        profile.total_samples, 1000 * profile.delay_seconds,
-        profile.delay_seconds * profile.total_samples,
-    ))
-    ig.Spacing()
-
-    # Table: self% / total% / self ms / function / file:line
-    if _begin_perf_table("hotspots", 5, 0.0f0)
-        ig.TableSetupScrollFreeze(0, 1)
-        ig.TableSetupColumn("Self %",   ig.ImGuiTableColumnFlags_WidthFixed,   64.0f0)
-        ig.TableSetupColumn("Total %",  ig.ImGuiTableColumnFlags_WidthFixed,   64.0f0)
-        ig.TableSetupColumn("Self ms",  ig.ImGuiTableColumnFlags_WidthFixed,   68.0f0)
-        ig.TableSetupColumn("Function", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-        ig.TableSetupColumn("File:line",ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-        ig.TableHeadersRow()
-
-        secs_per = profile.delay_seconds
-        for row in profile.rows
-            ig.TableNextRow()
-            ig.TableNextColumn()
-            _table_text(@sprintf("%.1f%%", 100 * row.self_samples / total))
-            ig.TableNextColumn()
-            _table_text(@sprintf("%.1f%%", 100 * row.samples / total))
-            ig.TableNextColumn()
-            self_ms = 1e3 * secs_per * row.self_samples
-            _table_text(self_ms >= 1 ? @sprintf("%.0f", self_ms) : @sprintf("%.2f", self_ms))
-            ig.TableNextColumn()
-            _table_text(row.function_name)
-            ig.TableNextColumn()
-            loc = row.line > 0 ?
-                "$(basename(row.file)):$(row.line)" : basename(row.file)
-            _table_text(loc)
-            if ig.BeginItemTooltip()
-                ig.TextUnformatted(row.file)
-                ig.EndTooltip()
-            end
-        end
-        ig.EndTable()
-    end
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Tab: Operations
-# ---------------------------------------------------------------------------
-
-"""Render the Operations tab: all perf-sample keys (frame timings, plot phases, etc.)."""
-function _render_operations_tab(performance::PerformanceState)::Nothing
-    timings = performance.timings
-    allocs  = performance.allocations
-
-    if isempty(timings)
-        ig.TextDisabled("No operation timings yet.")
-        return nothing
-    end
-
-    all_keys = sort!(collect(keys(timings)))
-    if _begin_perf_table("operations", 6, 0.0f0)
-        ig.TableSetupScrollFreeze(0, 1)
-        ig.TableSetupColumn("Operation", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-        ig.TableSetupColumn("n",         ig.ImGuiTableColumnFlags_WidthFixed,  40.0f0)
-        ig.TableSetupColumn("Mean ms",   ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
-        ig.TableSetupColumn("Max ms",    ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
-        ig.TableSetupColumn("Last ms",   ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
-        ig.TableSetupColumn("AllocLast", ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
-        ig.TableHeadersRow()
-
-        for key in all_keys
-            samples = timings[key]
-            isempty(samples) && continue
-            bytes = get(allocs, key, Int[])
-            last_alloc_kb = isempty(bytes) ? 0 : bytes[end]
-
-            ig.TableNextRow()
-            ig.TableNextColumn(); _table_text(String(key))
-            ig.TableNextColumn(); _table_text(string(length(samples)))
-            ig.TableNextColumn(); _table_text(@sprintf("%.2f", mean(samples)))
-            ig.TableNextColumn(); _table_text(@sprintf("%.2f", maximum(samples)))
-            ig.TableNextColumn(); _table_text(@sprintf("%.2f", samples[end]))
-            ig.TableNextColumn()
-            if last_alloc_kb >= 1024^2
-                _table_text(@sprintf("%.1f MB", last_alloc_kb / 1024^2))
-            elseif last_alloc_kb >= 1024
-                _table_text(@sprintf("%.1f KB", last_alloc_kb / 1024))
-            else
-                _table_text(@sprintf("%d B", last_alloc_kb))
-            end
-        end
-        ig.EndTable()
-    end
-
-    ig.Spacing()
-    if ig.Button("Clear timings")
-        empty!(performance.timings)
-        empty!(performance.allocations)
-    end
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Tab: Memory & GL
-# ---------------------------------------------------------------------------
-
-"""Render the Memory & GL tab: RSS, GC stats, GL strings, and frame/tree counters."""
-function _render_memory_gl_tab(state::BrowserState)::Nothing
-    performance = state.performance
-
-    # ---- Frame / tree counters ----
-    raw_io = ig.GetIO()
-    fps = unsafe_load(raw_io.Framerate)
-    if fps > 0
-        ig.Text(@sprintf("FPS: %.1f   Frame: %.2f ms", fps, 1000 / fps))
-    end
-    ig.Text("Tree nodes rendered: $(performance.node_count)")
-    ig.Text("Items visible / rendered: $(performance.item_rows_visible) / $(performance.item_rows_rendered)")
-
-    # ---- Process memory ----
-    mem = _memory_snapshot()
-    if mem.vmrss_kb !== nothing
-        performance.memory_start_rss_kb === nothing &&
-            (performance.memory_start_rss_kb = mem.vmrss_kb)
-        start_rss = something(performance.memory_start_rss_kb)
-        peak_rss  = max(something(performance.memory_peak_rss_kb, mem.vmrss_kb), mem.vmrss_kb)
-        performance.memory_peak_rss_kb = peak_rss
-
-        read_bytes = something(mem.read_bytes, 0)
-        performance.memory_start_read_bytes === nothing &&
-            (performance.memory_start_read_bytes = read_bytes)
-        start_read = something(performance.memory_start_read_bytes)
-
-        ig.Separator()
-        ig.TextUnformatted("Process memory")
-        if _begin_perf_table("memory", 2, 140.0f0)
-            ig.TableSetupColumn("Field",  ig.ImGuiTableColumnFlags_WidthFixed,   110.0f0)
-            ig.TableSetupColumn("Value",  ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-            ig.TableHeadersRow()
-
-            _mem_row(k, v) = begin
-                ig.TableNextRow()
-                ig.TableNextColumn(); _table_text(k)
-                ig.TableNextColumn(); _table_text(v)
-            end
-            _mem_row("RSS",         _fmt_kb(mem.vmrss_kb))
-            _mem_row("RSS Δstart",  _fmt_kb(mem.vmrss_kb - start_rss))
-            _mem_row("RSS peak",    _fmt_kb(peak_rss))
-            _mem_row("Anon",        _fmt_kb(mem.rssanon_kb))
-            _mem_row("VSize",       _fmt_kb(mem.vmsize_kb))
-            _mem_row("VPeak",       _fmt_kb(mem.vmpeak_kb))
-            _mem_row("GC live",     _fmt_bytes(mem.gc_live_bytes))
-            _mem_row("maxrss",      _fmt_bytes(mem.maxrss_bytes))
-            _mem_row("IO Δstart",   _fmt_bytes(read_bytes - start_read))
-            ig.EndTable()
-        end
-    else
-        ig.Spacing()
-        ig.TextDisabled("Process memory not available (Linux /proc only).")
-    end
-
-    # ---- GL info ----
-    gi = performance.gl_info
-    if !isempty(gi)
-        ig.Separator()
-        ig.TextUnformatted("OpenGL")
-        if _begin_perf_table("glinfo", 2, 0.0f0)
-            ig.TableSetupColumn("Key",   ig.ImGuiTableColumnFlags_WidthFixed,   80.0f0)
-            ig.TableSetupColumn("Value", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-            ig.TableHeadersRow()
-            for k in (:vendor, :renderer, :version, :sl)
-                haskey(gi, k) || continue
-                ig.TableNextRow()
-                ig.TableNextColumn(); _table_text(String(k))
-                ig.TableNextColumn(); _table_text(gi[k])
-            end
-            ig.EndTable()
-        end
-    end
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Tab: Scan Profile
-# ---------------------------------------------------------------------------
-
-"""
-Refresh the cached scan-profile rows when the project or TTL changes, then render them.
-
-The per-kind and per-source-item tables reuse the existing `render_data_grid!` infrastructure
-already wired up in Layout.jl; the grid states live in `PerformanceState`.
-"""
-function _render_scan_tab(state::BrowserState)::Nothing
-    performance = state.performance
-    workspace   = state.workspace
-
-    if workspace isa Workspace.Workspace
-        if performance.scan_profile_project !== workspace.project ||
-           time() >= performance.scan_profile_refresh_at
-            performance.scan_profile_project   = workspace.project
-            performance.scan_kind_rows         = scan_profile_summary(workspace.project)
-            performance.scan_source_rows       = scan_source_profile(workspace.project)
-            performance.scan_profile_refresh_at = time() + 0.5
-        end
-    elseif performance.scan_profile_project !== nothing
-        performance.scan_profile_project = nothing
-        empty!(performance.scan_kind_rows)
-        empty!(performance.scan_source_rows)
-    end
-
-    scan_rows   = performance.scan_kind_rows
-    source_rows = performance.scan_source_rows
-
-    if isempty(scan_rows)
-        ig.TextDisabled("No scan timing yet — cache hit or no scan run.")
-        return nothing
-    end
-
-    source_items = sum(row.source_items for row in scan_rows)
-    items_total  = sum(row.items for row in scan_rows)
-    ig.Text(@sprintf("Last scan: %d source items, %d items", source_items, items_total))
-    ig.TextDisabled("Total = elapsed per source item; process/stats = summed item work.")
-
-    ig.Spacing()
-    ig.TextUnformatted("Per-kind summary")
-    _render_scan_kind_table(scan_rows, performance.scan_kind_grid)
-
-    ig.Spacing()
-    ig.TextUnformatted("Slow source items")
-    _render_scan_source_table(source_rows, performance.scan_source_grid)
-    return nothing
-end
-
-# ---------------------------------------------------------------------------
-# Tab: Live Plots
-# ---------------------------------------------------------------------------
-
 """
 Build the redraw-timings figure once: one axis, four phase lines.
 
@@ -365,48 +102,6 @@ function _make_timings_figure(lp::LivePlotsState)::Figure
     lines!(axis, lp.total_x, lp.total_obs; color=:crimson, label="total")
     axislegend(axis; position=:lt, labelsize=10)
     return fig
-end
-
-"""
-Build the six-panel live build dashboard once.
-
-All series share elapsed seconds on x. Separate axes keep percentages, rates, times, and memory from
-distorting each other.
-"""
-function _make_build_figure(lp::LivePlotsState)::Figure
-    fig = Figure(size=(680, 560))
-
-    progress_axis = Axis(fig[1, 1]; ylabel="%", title="Progress")
-    lines!(progress_axis, lp.elapsed_obs, lp.scan_pct_obs; color=:royalblue, label="scan")
-    lines!(progress_axis, lp.elapsed_obs, lp.analysis_pct_obs;
-        color=:darkorange, label="analysis")
-    axislegend(progress_axis; position=:lt, labelsize=10)
-
-    throughput_axis = Axis(fig[1, 2]; ylabel="items / s", title="Analysis throughput")
-    lines!(throughput_axis, lp.elapsed_obs, lp.throughput_obs; color=:purple)
-
-    item_write_axis = Axis(fig[2, 1]; ylabel="ms / item", title="Processed write cost")
-    lines!(item_write_axis, lp.elapsed_obs, lp.per_item_write_obs; color=:teal)
-
-    cumulative_axis = Axis(
-        fig[2, 2]; xlabel="elapsed (s)", ylabel="s", title="Cumulative write time")
-    lines!(cumulative_axis, lp.elapsed_obs, lp.interp_cum_obs; color=:orchid, label="interp")
-    lines!(cumulative_axis, lp.elapsed_obs, lp.processed_cum_obs;
-        color=:seagreen, label="processed")
-    lines!(cumulative_axis, lp.elapsed_obs, lp.stats_cum_obs;
-        color=:goldenrod, label="stats")
-    axislegend(cumulative_axis; position=:lt, labelsize=10)
-
-    rss_axis = Axis(fig[3, 1]; xlabel="elapsed (s)", ylabel="GiB", title="Peak RSS")
-    lines!(rss_axis, lp.elapsed_obs, lp.rss_obs; color=:darkorange)
-    return fig
-end
-
-"""Push `v` into a bounded ring buffer of `capacity` elements (mutates `buf` in place)."""
-@inline function _ring_push!(buf::Vector{Float32}, v::Float32, capacity::Int)::Nothing
-    push!(buf, v)
-    length(buf) > capacity && popfirst!(buf)
-    return nothing
 end
 
 """
@@ -439,71 +134,223 @@ function _update_live_timings!(lp::LivePlotsState, timings::Dict{Symbol,Vector{F
 end
 
 """
-Sample live build counters into bounded dashboard buffers at most once per 250 ms.
+Render project-code timings: per-kind scan recipes, slow source items, and plot-recipe phases.
+
+The per-kind and per-source-item tables reuse the existing `render_data_grid!` infrastructure
+already wired up in Layout.jl; the grid states live in `PerformanceState`.
 """
+function _render_project_tab!(state::BrowserState)::Nothing
+    performance = state.performance
+    workspace   = state.workspace
+
+    if workspace isa Workspace.Workspace
+        if performance.scan_profile_project !== workspace.project ||
+           time() >= performance.scan_profile_refresh_at
+            performance.scan_profile_project   = workspace.project
+            performance.scan_kind_rows         = scan_profile_summary(workspace.project)
+            performance.scan_source_rows       = scan_source_profile(workspace.project)
+            performance.scan_profile_refresh_at = time() + 0.5
+        end
+    elseif performance.scan_profile_project !== nothing
+        performance.scan_profile_project = nothing
+        empty!(performance.scan_kind_rows)
+        empty!(performance.scan_source_rows)
+    end
+
+    scan_rows   = performance.scan_kind_rows
+    source_rows = performance.scan_source_rows
+
+    if isempty(scan_rows)
+        ig.TextDisabled("No scan timing yet — cache hit or no scan run.")
+    else
+        source_items = sum(row.source_items for row in scan_rows)
+        items_total  = sum(row.items for row in scan_rows)
+        ig.Text(@sprintf("Last scan: %d source items, %d items", source_items, items_total))
+        ig.TextDisabled("Total = elapsed per source item; process/stats = summed item work.")
+
+        ig.Spacing()
+        ig.TextUnformatted("Per-kind summary")
+        _render_scan_kind_table(scan_rows, performance.scan_kind_grid)
+
+        ig.Spacing()
+        ig.TextUnformatted("Slow source items")
+        _render_scan_source_table(source_rows, performance.scan_source_grid)
+    end
+
+    ig.Spacing()
+    ig.Separator()
+    ig.TextUnformatted("Plot recipes (setup / draw callbacks)")
+    _render_plot_phase_table(performance)
+
+    lp = performance.live_plots
+    lp.timings_figure === nothing && (lp.timings_figure = _make_timings_figure(lp))
+    _update_live_timings!(lp, performance.timings)
+    if ig.Button("Export##live_timings_export")
+        series = Pair{String,Vector{Float32}}[
+            "redraw" => copy(lp.total_x[]),
+            "load_ms" => copy(lp.load_obs[]),
+            "setup_ms" => copy(lp.setup_obs[]),
+            "data_ms" => copy(lp.data_obs[]),
+            "total_ms" => copy(lp.total_obs[]),
+        ]
+        lp.timings_export_error = _export_live_figure(
+            lp.timings_figure, "perf-timings.png", series)
+    end
+    isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
+    MakieFigure(
+        "perf_live_timings", lp.timings_figure;
+        auto_resize_x=true,
+        auto_resize_y=false,
+    )
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Tab: Memory — cross-platform process and workspace memory
+# ---------------------------------------------------------------------------
+
+"""Render process RSS/GC totals and, when a workspace is open, its index footprint counts."""
+function _render_memory_tab(state::BrowserState)::Nothing
+    performance = state.performance
+
+    rss = Profiling.process_rss_bytes()
+    performance.memory_start_rss === nothing && (performance.memory_start_rss = rss)
+    start_rss = something(performance.memory_start_rss)
+    performance.memory_peak_rss = max(performance.memory_peak_rss, rss)
+    gc = Base.gc_num()
+    gc_live = Int64(Base.gc_live_bytes())
+
+    ig.TextUnformatted("Process memory")
+    if _begin_perf_table("memory", 2, 240.0f0)
+        ig.TableSetupColumn("Field",  ig.ImGuiTableColumnFlags_WidthFixed,   130.0f0)
+        ig.TableSetupColumn("Value",  ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
+        ig.TableHeadersRow()
+
+        _mem_row(k, v) = begin
+            ig.TableNextRow()
+            ig.TableNextColumn(); _table_text(k)
+            ig.TableNextColumn(); _table_text(v)
+        end
+        _mem_row("RSS",           _fmt_bytes(rss))
+        _mem_row("RSS Δstart",    _fmt_bytes(rss - start_rss))
+        _mem_row("RSS peak",      _fmt_bytes(performance.memory_peak_rss))
+        _mem_row("RSS peak (OS)", _fmt_bytes(Int64(Sys.maxrss())))
+        _mem_row("GC live",       _fmt_bytes(gc_live))
+        _mem_row("Heap slack",    _fmt_bytes(max(Int64(0), rss - gc_live)))
+        _mem_row("GC time",       @sprintf("%.1f s", gc.total_time / 1e9))
+        _mem_row("GC pauses",     @sprintf(
+            "%d (%d full, max %.1f ms)", gc.pause, gc.full_sweep, gc.max_pause / 1e6))
+        _mem_row("Allocated",     _fmt_bytes(Int64(gc.total_allocd)))
+        ig.EndTable()
+    end
+
+    workspace = state.workspace
+    if workspace isa Workspace.Workspace
+        index = workspace.index
+        ig.Separator()
+        ig.Text("Index: $(length(index.items)) items in " *
+                "$(length(index.hierarchy.index)) collections")
+        ig.Text("Stats held: $(length(index.item_stats))   " *
+                "Analysis errors: $(length(index.analysis_errors))")
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Internal tab: Build — live engine pipeline
+# ---------------------------------------------------------------------------
+
+"""Push `v` into a bounded ring buffer of `capacity` elements (mutates `buf` in place)."""
+@inline function _ring_push!(buf::Vector{Float32}, v::Float32, capacity::Int)::Nothing
+    push!(buf, v)
+    length(buf) > capacity && popfirst!(buf)
+    return nothing
+end
+
 const _BUILD_SAMPLE_INTERVAL_NS = UInt64(250_000_000)  # 250 ms
 
-function _sample_build_progress!(lp::LivePlotsState, workspace)::Nothing
+"""
+Sample live engine counters into the build sparkline buffers at most once per 250 ms.
+
+Called whenever the Performance window is open (any tab), so the series covers the whole build
+rather than the moments the Build tab happened to be visible.
+"""
+function _sample_build!(lp::LivePlotsState, workspace::Workspace.Workspace)::Nothing
     now = time_ns()
     lp.t0_ns == 0 && (lp.t0_ns = now)
     now - lp.last_sample_ns < _BUILD_SAMPLE_INTERVAL_NS && return nothing
     lp.last_sample_ns = now
     elapsed = Float64(now - lp.t0_ns) / 1e9
 
-    scan_pct = 0.0f0
-    analysis_pct = 0.0f0
-    completed = 0
-    processed_write_ns = Int64(0)
-    interpreted_seconds = 0.0f0
-    processed_seconds = 0.0f0
-    stats_seconds = 0.0f0
-
-    if workspace isa Workspace.Workspace
-        # Scan-level progress counters are not populated; the scan trace stays at zero.
-        completed, total_processing, _active = Workspace.work_counts(workspace)
-        analysis_pct = total_processing > 0 ?
-            Float32(100 * completed / total_processing) : 0.0f0
-
-        metrics = workspace.metrics
-        processed_write_ns = metrics.processed_write_ns[]
-        interpreted_seconds = Float32(metrics.interpreted_write_ns[] / 1e9)
-        processed_seconds = Float32(metrics.processed_write_ns[] / 1e9)
-        stats_seconds = Float32(metrics.stats_write_ns[] / 1e9)
-    end
+    completed, _total, active = Workspace.work_counts(workspace)
+    staged = Workspace.cache_pending_counts(workspace.cache.db)
 
     elapsed_delta = elapsed - lp.last_elapsed_s
     completed_delta = completed - lp.last_completed
-    write_delta = processed_write_ns - lp.last_processed_write_ns
     throughput = elapsed_delta > 0 && completed_delta >= 0 ?
         Float32(completed_delta / elapsed_delta) : 0.0f0
-    per_item_write = completed_delta > 0 && write_delta >= 0 ?
-        Float32(write_delta / 1e6 / completed_delta) : 0.0f0
-    peak_rss_gib = Float32(Sys.maxrss() / 1024^3)
-
     lp.last_elapsed_s = elapsed
     lp.last_completed = completed
-    lp.last_processed_write_ns = processed_write_ns
 
     capacity = lp.capacity
     _ring_push!(lp.elapsed_buf, Float32(elapsed), capacity)
-    _ring_push!(lp.scan_pct_buf, scan_pct, capacity)
-    _ring_push!(lp.analysis_pct_buf, analysis_pct, capacity)
     _ring_push!(lp.throughput_buf, throughput, capacity)
-    _ring_push!(lp.per_item_write_buf, per_item_write, capacity)
-    _ring_push!(lp.interp_cum_buf, interpreted_seconds, capacity)
-    _ring_push!(lp.processed_cum_buf, processed_seconds, capacity)
-    _ring_push!(lp.stats_cum_buf, stats_seconds, capacity)
-    _ring_push!(lp.rss_buf, peak_rss_gib, capacity)
+    _ring_push!(lp.active_buf, Float32(active), capacity)
+    _ring_push!(lp.pending_buf, Float32(staged.rows), capacity)
+    _ring_push!(lp.rss_buf, Float32(Profiling.process_rss_bytes() / 1024^3), capacity)
 
     lp.elapsed_obs[] = copy(lp.elapsed_buf)
-    lp.scan_pct_obs[] = copy(lp.scan_pct_buf)
-    lp.analysis_pct_obs[] = copy(lp.analysis_pct_buf)
     lp.throughput_obs[] = copy(lp.throughput_buf)
-    lp.per_item_write_obs[] = copy(lp.per_item_write_buf)
-    lp.interp_cum_obs[] = copy(lp.interp_cum_buf)
-    lp.processed_cum_obs[] = copy(lp.processed_cum_buf)
-    lp.stats_cum_obs[] = copy(lp.stats_cum_buf)
+    lp.active_obs[] = copy(lp.active_buf)
+    lp.pending_obs[] = copy(lp.pending_buf)
     lp.rss_obs[] = copy(lp.rss_buf)
+    return nothing
+end
+
+"""Build the three-panel engine dashboard once; series share elapsed seconds on x."""
+function _make_build_figure(lp::LivePlotsState)::Figure
+    fig = Figure(size=(680, 400))
+
+    throughput_axis = Axis(fig[1, 1]; ylabel="items / s", title="Analysis throughput")
+    lines!(throughput_axis, lp.elapsed_obs, lp.throughput_obs; color=:purple)
+
+    backlog_axis = Axis(fig[1, 2]; ylabel="count", title="Backlog")
+    lines!(backlog_axis, lp.elapsed_obs, lp.active_obs; color=:steelblue, label="active work")
+    lines!(backlog_axis, lp.elapsed_obs, lp.pending_obs;
+        color=:seagreen, label="pending cache rows")
+    axislegend(backlog_axis; position=:lt, labelsize=10)
+
+    rss_axis = Axis(fig[2, 1]; xlabel="elapsed (s)", ylabel="GiB", title="RSS")
+    lines!(rss_axis, lp.elapsed_obs, lp.rss_obs; color=:darkorange)
+    return fig
+end
+
+"""Render live pipeline counters and the build sparklines."""
+function _render_build_tab!(state::BrowserState, workspace::Workspace.Workspace)::Nothing
+    lp = state.performance.live_plots
+
+    completed, total, active = Workspace.work_counts(workspace)
+    staged = Workspace.cache_pending_counts(workspace.cache.db)
+    ig.Text(@sprintf("Analysis: %d / %d done   %d active", completed, total, active))
+    ig.Text("Scan: $(workspace.scan.state)   Cache: $(workspace.cache_state)")
+    ig.Text(@sprintf(
+        "Cache write buffer: %d items / %d rows pending", staged.items, staged.rows))
+    ig.Spacing()
+
+    lp.build_figure === nothing && (lp.build_figure = _make_build_figure(lp))
+    if ig.Button("Export##live_build_export")
+        series = Pair{String,Vector{Float32}}[
+            "elapsed_s" => copy(lp.elapsed_obs[]),
+            "throughput_per_s" => copy(lp.throughput_obs[]),
+            "active_work" => copy(lp.active_obs[]),
+            "pending_rows" => copy(lp.pending_obs[]),
+            "rss_gib" => copy(lp.rss_obs[]),
+        ]
+        lp.build_export_error = _export_live_figure(
+            lp.build_figure, "perf-build.png", series)
+    end
+    isempty(lp.build_export_error) || ig.TextWrapped(lp.build_export_error)
+    MakieFigure("perf_live_build", lp.build_figure; auto_resize_x=true, auto_resize_y=false)
     return nothing
 end
 
@@ -544,65 +391,9 @@ function _export_live_figure(
     return ""
 end
 
-"""
-Render redraw timings and aggregate build plots.
-
-`MakieFigure` polls GLMakie for pending updates and renders only dirty frames.
-"""
-function _render_live_plots_tab!(state::BrowserState)::Nothing
-    lp        = state.performance.live_plots
-    workspace = state.workspace
-
-    lp.timings_figure === nothing && (lp.timings_figure = _make_timings_figure(lp))
-    _update_live_timings!(lp, state.performance.timings)
-    ig.TextUnformatted("Plot redraw phase timings (ms per redraw)")
-    ig.SameLine()
-    if ig.Button("Export##live_timings_export")
-        series = Pair{String,Vector{Float32}}[
-            "redraw" => copy(lp.total_x[]),
-            "load_ms" => copy(lp.load_obs[]),
-            "setup_ms" => copy(lp.setup_obs[]),
-            "data_ms" => copy(lp.data_obs[]),
-            "total_ms" => copy(lp.total_obs[]),
-        ]
-        lp.timings_export_error = _export_live_figure(
-            lp.timings_figure, "perf-timings.png", series)
-    end
-    isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
-    MakieFigure(
-        "perf_live_timings", lp.timings_figure;
-        auto_resize_x=true,
-        auto_resize_y=false,
-    )
-    ig.Spacing()
-    ig.Separator()
-    ig.Spacing()
-
-    lp.build_figure === nothing && (lp.build_figure = _make_build_figure(lp))
-    _sample_build_progress!(lp, workspace)
-    ig.TextUnformatted("Live build dashboard")
-    ig.SameLine()
-    if ig.Button("Export##live_build_export")
-        series = Pair{String,Vector{Float32}}[
-            "elapsed_s" => copy(lp.elapsed_obs[]),
-            "scan_pct" => copy(lp.scan_pct_obs[]),
-            "analysis_pct" => copy(lp.analysis_pct_obs[]),
-            "throughput_per_s" => copy(lp.throughput_obs[]),
-            "per_item_write_ms" => copy(lp.per_item_write_obs[]),
-            "interp_cum_s" => copy(lp.interp_cum_obs[]),
-            "processed_cum_s" => copy(lp.processed_cum_obs[]),
-            "stats_cum_s" => copy(lp.stats_cum_obs[]),
-            "peak_rss_gib" => copy(lp.rss_obs[]),
-        ]
-        lp.build_export_error = _export_live_figure(
-            lp.build_figure, "perf-build.png", series)
-    end
-    isempty(lp.build_export_error) || ig.TextWrapped(lp.build_export_error)
-
-    MakieFigure("perf_live_build", lp.build_figure; auto_resize_x=true, auto_resize_y=false)
-
-    return nothing
-end
+# ---------------------------------------------------------------------------
+# Internal tab: Profile — structured capture, hotspots, events
+# ---------------------------------------------------------------------------
 
 """Run one internal profiler UI action and retain an actionable error."""
 function _profile_action!(action::Function, profiler::Profiling.ProfileSession)::Nothing
@@ -635,8 +426,71 @@ function _profile_filter_combo!(
     return current
 end
 
-"""Render opt-in internal capture controls, summaries, events, and process counters."""
-function _render_internal_profile_tab!(
+"""Render CPU hotspots from the latest internal capture or explicit plot profile."""
+function _render_hotspots_section(
+    performance::PerformanceState,
+    workspace,
+)::Nothing
+    internal = workspace isa Workspace.Workspace ? workspace.profiler.report : nothing
+    profile = internal isa Profiling.ProfileReport && internal.cpu !== nothing ?
+        internal.cpu : performance.plot_sampling_profile
+
+    if profile === nothing
+        ig.TextDisabled("No CPU profile captured yet.")
+        return nothing
+    end
+
+    if profile.truncated
+        ig.TextColored(
+            (0.95f0, 0.65f0, 0.15f0, 1.0f0),
+            "Sample buffer filled before the rebuild finished — results are truncated.",
+        )
+    end
+    total = max(profile.total_samples, 1)
+    ig.TextDisabled(@sprintf(
+        "%d samples at %.0f ms intervals   (%.2f s wall)",
+        profile.total_samples, 1000 * profile.delay_seconds,
+        profile.delay_seconds * profile.total_samples,
+    ))
+
+    # Table: self% / total% / self ms / function / file:line
+    if _begin_perf_table("hotspots", 5, 220.0f0)
+        ig.TableSetupScrollFreeze(0, 1)
+        ig.TableSetupColumn("Self %",   ig.ImGuiTableColumnFlags_WidthFixed,   64.0f0)
+        ig.TableSetupColumn("Total %",  ig.ImGuiTableColumnFlags_WidthFixed,   64.0f0)
+        ig.TableSetupColumn("Self ms",  ig.ImGuiTableColumnFlags_WidthFixed,   68.0f0)
+        ig.TableSetupColumn("Function", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
+        ig.TableSetupColumn("File:line",ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
+        ig.TableHeadersRow()
+
+        secs_per = profile.delay_seconds
+        for row in profile.rows
+            ig.TableNextRow()
+            ig.TableNextColumn()
+            _table_text(@sprintf("%.1f%%", 100 * row.self_samples / total))
+            ig.TableNextColumn()
+            _table_text(@sprintf("%.1f%%", 100 * row.samples / total))
+            ig.TableNextColumn()
+            self_ms = 1e3 * secs_per * row.self_samples
+            _table_text(self_ms >= 1 ? @sprintf("%.0f", self_ms) : @sprintf("%.2f", self_ms))
+            ig.TableNextColumn()
+            _table_text(row.function_name)
+            ig.TableNextColumn()
+            loc = row.line > 0 ?
+                "$(basename(row.file)):$(row.line)" : basename(row.file)
+            _table_text(loc)
+            if ig.BeginItemTooltip()
+                ig.TextUnformatted(row.file)
+                ig.EndTooltip()
+            end
+        end
+        ig.EndTable()
+    end
+    return nothing
+end
+
+"""Render capture controls, span summaries, hotspots, events, and process counters."""
+function _render_profile_tab!(
     state::BrowserState,
     workspace::Workspace.Workspace,
 )::Nothing
@@ -738,6 +592,11 @@ function _render_internal_profile_tab!(
         ))
     end
 
+    ig.Spacing()
+    ig.Separator()
+    ig.TextUnformatted("CPU hotspots")
+    _render_hotspots_section(state.performance, workspace)
+
     available = report isa Profiling.ProfileReport ?
         report.events : Profiling.recent_events(profiler; limit=2_000)
     categories = sort!(unique([event.category for event in available]))
@@ -793,69 +652,131 @@ function _render_internal_profile_tab!(
 end
 
 # ---------------------------------------------------------------------------
+# Internal tab: Frames — app-overhead debugging
+# ---------------------------------------------------------------------------
+
+"""Render frame rate, per-panel timings, and OpenGL strings (app overhead, not project code)."""
+function _render_frames_tab(state::BrowserState)::Nothing
+    performance = state.performance
+
+    raw_io = ig.GetIO()
+    fps = unsafe_load(raw_io.Framerate)
+    if fps > 0
+        ig.Text(@sprintf("FPS: %.1f   Frame: %.2f ms", fps, 1000 / fps))
+    end
+    ig.Text("Tree nodes rendered: $(performance.node_count)")
+    ig.Text("Items visible / rendered: $(performance.item_rows_visible) / $(performance.item_rows_rendered)")
+    ig.Spacing()
+
+    timings = performance.timings
+    allocs  = performance.allocations
+    if isempty(timings)
+        ig.TextDisabled("No operation timings yet.")
+    elseif _begin_perf_table("operations", 6, 260.0f0)
+        ig.TableSetupScrollFreeze(0, 1)
+        ig.TableSetupColumn("Operation", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
+        ig.TableSetupColumn("n",         ig.ImGuiTableColumnFlags_WidthFixed,  40.0f0)
+        ig.TableSetupColumn("Mean ms",   ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
+        ig.TableSetupColumn("Max ms",    ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
+        ig.TableSetupColumn("Last ms",   ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
+        ig.TableSetupColumn("AllocLast", ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
+        ig.TableHeadersRow()
+
+        for key in sort!(collect(keys(timings)))
+            samples = timings[key]
+            isempty(samples) && continue
+            bytes = get(allocs, key, Int[])
+            last_alloc = isempty(bytes) ? 0 : bytes[end]
+
+            ig.TableNextRow()
+            ig.TableNextColumn(); _table_text(String(key))
+            ig.TableNextColumn(); _table_text(string(length(samples)))
+            ig.TableNextColumn(); _table_text(@sprintf("%.2f", mean(samples)))
+            ig.TableNextColumn(); _table_text(@sprintf("%.2f", maximum(samples)))
+            ig.TableNextColumn(); _table_text(@sprintf("%.2f", samples[end]))
+            ig.TableNextColumn(); _table_text(_fmt_bytes(last_alloc))
+        end
+        ig.EndTable()
+    end
+    if ig.Button("Clear timings")
+        empty!(performance.timings)
+        empty!(performance.allocations)
+    end
+
+    gi = performance.gl_info
+    if !isempty(gi)
+        ig.Separator()
+        ig.TextUnformatted("OpenGL")
+        if _begin_perf_table("glinfo", 2, 0.0f0)
+            ig.TableSetupColumn("Key",   ig.ImGuiTableColumnFlags_WidthFixed,   80.0f0)
+            ig.TableSetupColumn("Value", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
+            ig.TableHeadersRow()
+            for k in (:vendor, :renderer, :version, :sl)
+                haskey(gi, k) || continue
+                ig.TableNextRow()
+                ig.TableNextColumn(); _table_text(String(k))
+                ig.TableNextColumn(); _table_text(gi[k])
+            end
+            ig.EndTable()
+        end
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 # Top-level entry point
 # ---------------------------------------------------------------------------
 
 """
-Render the Performance debug window with a tab bar.
+Render the Performance window with a tab bar. The window is dual-use:
 
-Tabs:
-- Live         — GLMakie line plots for rolling plot-redraw timings
-- Plot Redraw  — load / setup / draw / total phase timings (table)
-- Hotspots     — sampling profiler results (also the "Profile full rebuild" button)
-- Operations   — all keyed `_append_perf_sample!` timings
-- Scan         — per-kind and per-source-item scan timings
-- Memory & GL  — process RSS, GC, I/O, OpenGL strings, frame counters
-- Internal     — opt-in structured engine spans, counters, CPU samples, and export
+User tabs (always shown) focus on where *project code* spends time:
+- Project — per-kind recipe timings, slow source items, plot-recipe phases
+- Memory  — cross-platform process RSS/GC and workspace index footprint
+
+Internal tabs (shown only when the workspace was opened with `profile_internal=true`) focus on
+engine overhead, which should be ~0 in ideal operation:
+- Build   — live pipeline counters and sparklines
+- Profile — structured capture, span summary, CPU hotspots, event list
+- Frames  — frame rate, per-panel render timings, OpenGL strings
 """
 function render_perf_window(state::BrowserState)::Nothing
     state.show_performance_window || return nothing
 
     if ig.Begin("Performance###perf_window")
         workspace = state.workspace
+        internal = workspace isa Workspace.Workspace && workspace.profiler.enabled
+        internal && _sample_build!(state.performance.live_plots, workspace)
 
         if ig.BeginTabBar("##perf_tabs")
-            if ig.BeginTabItem("Live")
+            if ig.BeginTabItem("Project")
                 ig.Spacing()
-                _render_live_plots_tab!(state)
+                _render_project_tab!(state)
                 ig.EndTabItem()
             end
 
-            if ig.BeginTabItem("Plot Redraw")
+            if ig.BeginTabItem("Memory")
                 ig.Spacing()
-                _render_plot_redraw_tab(state.performance)
+                _render_memory_tab(state)
                 ig.EndTabItem()
             end
 
-            if ig.BeginTabItem("Hotspots")
-                ig.Spacing()
-                _render_hotspots_tab(state.performance, workspace)
-                ig.EndTabItem()
-            end
-
-            if ig.BeginTabItem("Operations")
-                ig.Spacing()
-                _render_operations_tab(state.performance)
-                ig.EndTabItem()
-            end
-
-            if ig.BeginTabItem("Scan")
-                ig.Spacing()
-                _render_scan_tab(state)
-                ig.EndTabItem()
-            end
-
-            if ig.BeginTabItem("Memory & GL")
-                ig.Spacing()
-                _render_memory_gl_tab(state)
-                ig.EndTabItem()
-            end
-
-            if workspace isa Workspace.Workspace && workspace.profiler.enabled &&
-               ig.BeginTabItem("Internal")
-                ig.Spacing()
-                _render_internal_profile_tab!(state, workspace)
-                ig.EndTabItem()
+            if internal
+                if ig.BeginTabItem("Build")
+                    ig.Spacing()
+                    _render_build_tab!(state, workspace)
+                    ig.EndTabItem()
+                end
+                if ig.BeginTabItem("Profile")
+                    ig.Spacing()
+                    _render_profile_tab!(state, workspace)
+                    ig.EndTabItem()
+                end
+                if ig.BeginTabItem("Frames")
+                    ig.Spacing()
+                    _render_frames_tab(state)
+                    ig.EndTabItem()
+                end
             end
 
             ig.EndTabBar()

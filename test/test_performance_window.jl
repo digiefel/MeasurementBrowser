@@ -17,10 +17,10 @@ const PERFORMANCE_BROWSER = MeasurementBrowser.Browser
     @test length(live.total_x[]) == length(live.total_obs[])
 
     @test PERFORMANCE_BROWSER._make_build_figure(live) !== nothing
-    PERFORMANCE_BROWSER._sample_build_progress!(live, nothing)
-    @test length(live.elapsed_obs[]) == 1
-    @test length(live.elapsed_obs[]) == length(live.throughput_obs[])
-    @test length(live.elapsed_obs[]) == length(live.rss_obs[])
+    for value in (1.0f0, 2.0f0, 3.0f0, 4.0f0)
+        PERFORMANCE_BROWSER._ring_push!(live.elapsed_buf, value, live.capacity)
+    end
+    @test live.elapsed_buf == Float32[2, 3, 4]
 
     profiler = MeasurementBrowser.Profiling.ProfileSession(true, false, nothing, nothing)
     called = Ref(false)
