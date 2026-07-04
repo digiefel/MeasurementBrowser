@@ -215,16 +215,21 @@ function affected_collection_keys(records::Vector{ItemRecord})::Vector{String}
     return unique(keys)
 end
 
+"""Refresh the collection-parameter key list from the current hierarchy."""
+function refresh_collection_parameter_keys!(index::WorkspaceIndex)::Nothing
+    parameter_keys = Set{Symbol}()
+    for node in values(index.hierarchy.index)
+        union!(parameter_keys, keys(node.parameters))
+    end
+    index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
+    return nothing
+end
+
 """Rebuild hierarchy indexes from the currently published records."""
 function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
     records = sort!(collect(values(workspace.index.items)); by=record -> (record.source_item_id, record.id))
-    hierarchy = Hierarchy(records, workspace.source)
-    workspace.index.hierarchy = hierarchy
-    parameter_keys = Set{Symbol}()
-    for node in values(hierarchy.index)
-        union!(parameter_keys, keys(node.parameters))
-    end
-    workspace.index.collection_parameter_keys = sort!(collect(parameter_keys); by=String)
+    workspace.index.hierarchy = Hierarchy(records, workspace.source)
+    refresh_collection_parameter_keys!(workspace.index)
     return nothing
 end
 
@@ -312,11 +317,14 @@ function remove_source_item_output!(
     end
     delete!(workspace.index.analysis_errors, source_item_id_value)
     filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
-    rebuild_workspace_hierarchy!(workspace)
+    isempty(old_records) && return old_records, invalidated
+    edit = edit_hierarchy(workspace.index.hierarchy)
+    remove_records!(edit, old_records)
     for key in invalidated
-        node = get(workspace.index.hierarchy.index, collection_path_tuple(key), nothing)
-        node === nothing || empty!(node.stats)
+        clear_node_stats!(edit, collection_path_tuple(key))
     end
+    workspace.index.hierarchy = finish_edit!(edit, workspace.source)
+    refresh_collection_parameter_keys!(workspace.index)
     return old_records, invalidated
 end
 
@@ -346,18 +354,26 @@ function publish_source_item_records!(
 
     old_keys = affected_collection_keys(old_records)
     new_keys = affected_collection_keys(records)
-    old_records, _ = remove_source_item_output!(workspace, source_item_id_value)
+    for record in old_records
+        delete!(workspace.index.items, record.id)
+        delete!(workspace.index.item_stats, record.id)
+        delete!(workspace.index.analysis_errors, record.id)
+    end
+    delete!(workspace.index.analysis_errors, source_item_id_value)
     for record in records
         workspace.index.items[record.id] = record
         isempty(record.stats) || (workspace.index.item_stats[record.id] = copy(record.stats))
     end
     filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
-    rebuild_workspace_hierarchy!(workspace)
     invalidated = unique([old_keys; new_keys])
+    edit = edit_hierarchy(workspace.index.hierarchy)
+    remove_records!(edit, old_records)
+    foreach(record -> insert_record!(edit, record), records)
     for key in invalidated
-        node = get(workspace.index.hierarchy.index, collection_path_tuple(key), nothing)
-        node === nothing || empty!(node.stats)
+        clear_node_stats!(edit, collection_path_tuple(key))
     end
+    workspace.index.hierarchy = finish_edit!(edit, workspace.source)
+    refresh_collection_parameter_keys!(workspace.index)
     return old_records, invalidated
 end
 
@@ -443,14 +459,21 @@ function scan_source!(
             source_id=source_id(workspace.source),
         ) begin
         try
-            rebuild && clear_cache_index!(cachedb)
-            cached = !rebuild && cache_built(cachedb) ? load_cache_index(cachedb) : nothing
+            rebuild && Profiling.@profile_span workspace.profiler :source :cache_clear Profiling.ProfileAttributes() begin
+                clear_cache_index!(cachedb)
+            end
+            cached = !rebuild && cache_built(cachedb) ?
+                Profiling.@profile_span(workspace.profiler, :source, :cache_load,
+                    Profiling.ProfileAttributes(), load_cache_index(cachedb)) :
+                nothing
             publish_cache_state!(
                 workspace, scan_id, cached === nothing ? :missing : :ready, cached)
 
             write_meta_header!(cachedb)
-            discovered = with_cancel(() -> cancel_token[]) do
-                source_items(workspace.source)
+            discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
+                with_cancel(() -> cancel_token[]) do
+                    source_items(workspace.source)
+                end
             end
             current = Dict(source_item_id(item) => fingerprint(item) for item in discovered)
             previous = cached === nothing ?
@@ -479,13 +502,18 @@ function scan_source!(
                 length(removals),
                 length(workspace.index.analysis_errors),
             )
-            publish_source_changes!(
-                workspace,
-                scan_id,
-                SourceChanges(upserts, removals; parameters_changed=false),
-                current,
-                status,
-            )
+            Profiling.@profile_span workspace.profiler :source :publish_changes Profiling.ProfileAttributes(
+                items=length(upserts),
+                batch_size=length(removals),
+            ) begin
+                publish_source_changes!(
+                    workspace,
+                    scan_id,
+                    SourceChanges(upserts, removals; parameters_changed=false),
+                    current,
+                    status,
+                )
+            end
             publish_scan_end!(
                 workspace, scan_id;
                 cache_hit=isempty(upserts) && isempty(removals),
@@ -813,6 +841,10 @@ function finish_work_node!(
     return lock(workspace.work.lock) do
         current = get(workspace.work.nodes, node.key, nothing)
         current === node || return Channel{Any}[]
+        if node.state === :running
+            kind = node.key.kind
+            workspace.work.running[kind] = max(0, get(workspace.work.running, kind, 0) - 1)
+        end
         node.state = state
         workspace.work.completed += 1
         wake_ready_dependents!(workspace.work, node.key)
@@ -868,8 +900,12 @@ function publish_work_success!(
     key = node.key
     if key.kind === INTERPRET_SOURCE
         records = result.records::Vector{ItemRecord}
-        old_records, invalidated = publish_source_item_records!(
-            workspace, key.entity, records)
+        old_records, invalidated = Profiling.@profile_span workspace.profiler :source :publish_records Profiling.ProfileAttributes(
+            source_id=key.entity,
+            batch_size=length(records),
+        ) begin
+            publish_source_item_records!(workspace, key.entity, records)
+        end
         delete_collection_stats!(workspace.cache.db, invalidated)
         mark_collection_stats_missing!(workspace, invalidated)
         store_interpreted_records!(

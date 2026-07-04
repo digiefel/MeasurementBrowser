@@ -57,13 +57,18 @@ import ..ItemIndex:
     SourceItemInterpretation,
     SourceScan,
     check_cancel,
+    clear_node_stats!,
     collection_path_key,
     collection_path_tuple,
+    edit_hierarchy,
     effective_parameters,
     effective_record,
+    finish_edit!,
+    insert_record!,
     is_job_cancelled,
     metadata_dict,
     interpret_source_item,
+    remove_records!,
     with_cancel
 import ..Projects:
     AbstractDataSource,
@@ -148,6 +153,7 @@ mutable struct WorkDependencyGraph
     nodes::Dict{WorkKey,WorkNode}
     dependents::Dict{WorkKey,Set{WorkKey}}
     queue::Dict{Int,Vector{Tuple{WorkKey,UInt64}}}
+    running::Dict{WorkKind,Int}
     source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
     workers::Vector{Task}
@@ -166,6 +172,7 @@ function WorkDependencyGraph()::WorkDependencyGraph
         Dict{WorkKey,WorkNode}(),
         Dict{WorkKey,Set{WorkKey}}(),
         Dict{Int,Vector{Tuple{WorkKey,UInt64}}}(),
+        Dict{WorkKind,Int}(),
         Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),
         Task[],

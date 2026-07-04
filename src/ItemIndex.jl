@@ -440,11 +440,8 @@ item_timestamp_key(item::ItemRecord)::DateTime =
     DateTime(Dates.year(typemax(Date))) :
     item.source_item_timestamp
 
-"""
-Sort one hierarchy node recursively using natural names and source-item time.
-"""
-function Base.sort!(node::HierarchyNode)::HierarchyNode
-    foreach(sort!, node.children)
+"""Sort one node's children using Roman-numeral or natural name order."""
+function sort_children!(node::HierarchyNode)::HierarchyNode
     roman = !isempty(node.children) &&
         all(child -> roman_value(child.name) !== nothing, node.children)
     sort!(
@@ -453,10 +450,20 @@ function Base.sort!(node::HierarchyNode)::HierarchyNode
             child -> roman_value(child.name) :
             child -> natural_key(child.name),
     )
-    foreach(
-        child -> sort!(child.items; by=item_timestamp_key),
-        node.children,
-    )
+    return node
+end
+
+"""Sort one node's own items by source-item time."""
+sort_items!(node::HierarchyNode)::HierarchyNode =
+    (sort!(node.items; by=item_timestamp_key); node)
+
+"""
+Sort one hierarchy node recursively using natural names and source-item time.
+"""
+function Base.sort!(node::HierarchyNode)::HierarchyNode
+    foreach(sort!, node.children)
+    sort_children!(node)
+    foreach(sort_items!, node.children)
     return node
 end
 
@@ -517,30 +524,35 @@ function _effective_parameters(
     return parameters
 end
 
+"""
+Set one node's parameters from its parent's already-effective parameters plus the source's own
+collection parameters for the path. Parents must be refreshed before children (depth order).
+"""
+function refresh_node_parameters!(
+    hierarchy::Hierarchy,
+    source::AbstractDataSource,
+    path::Tuple{Vararg{String}},
+)::Nothing
+    node = get(hierarchy.index, path, nothing)
+    node === nothing && return nothing
+    inherited = length(path) == 1 ?
+        hierarchy.root.parameters :
+        hierarchy.index[path[1:end-1]].parameters
+    effective = copy(inherited)
+    merge!(effective, metadata_dict(collection_parameters(source, collect(path))))
+    empty!(node.parameters)
+    merge!(node.parameters, effective)
+    return nothing
+end
+
 """Apply source collection parameters to hierarchy nodes."""
 function apply_collection_parameters!(
     hierarchy::Hierarchy,
     source::AbstractDataSource,
 )::Nothing
     empty!(hierarchy.root.parameters)
-
-    function visit!(
-        node::HierarchyNode,
-        path::Vector{String},
-        inherited::MetadataDict,
-    )::Nothing
-        effective = copy(inherited)
-        isempty(path) || merge!(effective, metadata_dict(collection_parameters(source, path)))
-        empty!(node.parameters)
-        merge!(node.parameters, effective)
-        for child in node.children
-            visit!(child, [path; child.name], effective)
-        end
-        return nothing
-    end
-
-    for child in hierarchy.root.children
-        visit!(child, String[child.name], hierarchy.root.parameters)
+    for path in sort!(collect(keys(hierarchy.index)); by=length)
+        refresh_node_parameters!(hierarchy, source, path)
     end
     return nothing
 end
@@ -577,6 +589,152 @@ function Hierarchy(
 end
 
 children(node::HierarchyNode)::Vector{HierarchyNode} = node.children
+
+# ------------------------------- Copy-on-write hierarchy edits -----------------------------------
+#
+# Publishing swaps `workspace.index.hierarchy` as one reference assignment so concurrent readers
+# always traverse a complete tree. A `HierarchyEdit` keeps that contract at incremental cost: it
+# clones only the nodes it mutates (plus their ancestor chain), shares every untouched subtree with
+# the original, and re-sorts/re-parameterizes only what changed, using the same per-node primitives
+# as the full build.
+
+const CollectionPath = Tuple{Vararg{String}}
+
+"""One in-progress copy-on-write edit of a hierarchy."""
+mutable struct HierarchyEdit
+    hierarchy::Hierarchy
+    cloned::Set{CollectionPath}
+    items_dirty::Set{CollectionPath}
+    children_dirty::Set{CollectionPath}
+    created::Vector{CollectionPath}
+    pruned::Bool
+end
+
+_clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
+    node.name,
+    node.kind,
+    copy(node.parameters),
+    copy(node.children),
+    copy(node.items),
+    copy(node.stats),
+)
+
+"""Begin a copy-on-write edit; the original hierarchy is never mutated."""
+function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
+    return HierarchyEdit(
+        Hierarchy(
+            _clone_node(hierarchy.root),
+            copy(hierarchy.all_items),
+            hierarchy.source_id,
+            copy(hierarchy.index),
+            hierarchy.has_collection_parameters,
+            hierarchy.skipped_count,
+        ),
+        Set{CollectionPath}([()]),
+        Set{CollectionPath}(),
+        Set{CollectionPath}(),
+        CollectionPath[],
+        false,
+    )
+end
+
+_node_at(hierarchy::Hierarchy, path::CollectionPath)::Union{Nothing,HierarchyNode} =
+    path === () ? hierarchy.root : get(hierarchy.index, path, nothing)
+
+"""Return the node at `path` cloned for mutation, cloning uncloned ancestors as needed."""
+function editable_node!(edit::HierarchyEdit, path::CollectionPath)::HierarchyNode
+    hierarchy = edit.hierarchy
+    node = hierarchy.root
+    for depth in eachindex(path)
+        prefix = path[1:depth]
+        child = hierarchy.index[prefix]
+        if !(prefix in edit.cloned)
+            child = _clone_node(child)
+            position = findfirst(existing -> existing.name == child.name, node.children)
+            node.children[position] = child
+            hierarchy.index[prefix] = child
+            push!(edit.cloned, prefix)
+        else
+            child = hierarchy.index[prefix]
+        end
+        node = child
+    end
+    return node
+end
+
+"""Insert one record, creating (and parameter-marking) any missing collection nodes."""
+function insert_record!(edit::HierarchyEdit, record::ItemRecord)::Nothing
+    hierarchy = edit.hierarchy
+    leaf_path = Tuple(record.collection)
+    for depth in eachindex(leaf_path)
+        prefix = leaf_path[1:depth]
+        haskey(hierarchy.index, prefix) && continue
+        parent = editable_node!(edit, prefix[1:end-1])
+        kind = depth == length(leaf_path) ? :leaf : :level
+        child = HierarchyNode(String(leaf_path[depth]), kind)
+        push!(parent.children, child)
+        hierarchy.index[prefix] = child
+        push!(edit.cloned, prefix)
+        push!(edit.created, prefix)
+        push!(edit.children_dirty, prefix[1:end-1])
+    end
+    node = editable_node!(edit, leaf_path)
+    push!(node.items, record)
+    push!(hierarchy.all_items, record)
+    push!(edit.items_dirty, leaf_path)
+    return nothing
+end
+
+"""Remove records by id, pruning collection nodes the removal leaves empty."""
+function remove_records!(edit::HierarchyEdit, records::Vector{ItemRecord})::Nothing
+    isempty(records) && return nothing
+    hierarchy = edit.hierarchy
+    ids = Set(record.id for record in records)
+    filter!(record -> !(record.id in ids), hierarchy.all_items)
+    for path in unique(Tuple(record.collection) for record in records)
+        node = editable_node!(edit, path)
+        filter!(item -> !(item.id in ids), node.items)
+        while path !== () && isempty(node.items) && isempty(node.children)
+            parent_path = path[1:end-1]
+            parent = editable_node!(edit, parent_path)
+            position = findfirst(child -> child.name == node.name, parent.children)
+            deleteat!(parent.children, position)
+            delete!(hierarchy.index, path)
+            delete!(edit.items_dirty, path)
+            delete!(edit.children_dirty, path)
+            edit.pruned = true
+            path, node = parent_path, parent
+        end
+    end
+    return nothing
+end
+
+"""Clear the stats of one collection node if it still exists."""
+function clear_node_stats!(edit::HierarchyEdit, path::CollectionPath)::Nothing
+    _node_at(edit.hierarchy, path) === nothing && return nothing
+    empty!(editable_node!(edit, path).stats)
+    return nothing
+end
+
+"""
+Finish an edit: parameterize created nodes, re-sort what changed, and return the new hierarchy,
+ready to swap in with one reference assignment.
+"""
+function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarchy
+    hierarchy = edit.hierarchy
+    for path in sort!(edit.created; by=length)
+        refresh_node_parameters!(hierarchy, source, path)
+    end
+    for path in edit.items_dirty
+        node = _node_at(hierarchy, path)
+        node === nothing || sort_items!(node)
+    end
+    for path in edit.children_dirty
+        node = _node_at(hierarchy, path)
+        node === nothing || sort_children!(node)
+    end
+    return hierarchy
+end
 
 include("ItemIndex/Scanning.jl")
 

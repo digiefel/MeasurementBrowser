@@ -106,6 +106,7 @@ function reset_work_graph!(workspace::Workspace)::Nothing
         empty!(graph.nodes)
         empty!(graph.dependents)
         empty!(graph.queue)
+        empty!(graph.running)
         empty!(graph.source_items)
         empty!(graph.source_locks)
         graph.total = 0
@@ -320,16 +321,35 @@ function enqueue_work!(
     end
 end
 
-"""Pop the highest-priority queued current revision; caller must hold `graph.lock`."""
+"""
+Concurrent-execution cap for one work kind.
+
+Interpretation is capped below the pool size because project `read` callbacks may parse with
+internal parallelism of their own (CSV.jl does); uncapped, a full pool of concurrent reads
+oversubscribes the thread pool and starves processing and the cache writer.
+"""
+work_kind_capacity(kind::WorkKind)::Int =
+    kind === INTERPRET_SOURCE ? max(1, Base.Threads.nthreads() ÷ 2) : typemax(Int)
+
+"""Pop the highest-priority queued current revision under kind caps; caller holds `graph.lock`."""
 function pop_queued_node!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
     for priority in sort!(collect(keys(graph.queue)); rev=true)
         bucket = graph.queue[priority]
-        while !isempty(bucket)
-            key, revision = popfirst!(bucket)
+        position = 1
+        while position <= length(bucket)
+            key, revision = bucket[position]
             node = get(graph.nodes, key, nothing)
-            node === nothing && continue
-            node.revision == revision && node.state === :queued || continue
+            if node === nothing || node.revision != revision || node.state !== :queued
+                deleteat!(bucket, position)
+                continue
+            end
+            if get(graph.running, key.kind, 0) >= work_kind_capacity(key.kind)
+                position += 1
+                continue
+            end
+            deleteat!(bucket, position)
             node.state = :running
+            graph.running[key.kind] = get(graph.running, key.kind, 0) + 1
             return node
         end
     end
