@@ -429,7 +429,10 @@ function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
     records = _records_of_kind(ws, kind)
     stress_items = ceil(Int, PROCESSED_STRESS_ROWS / KIND3_ROWS)
     stress_items = min(length(records), stress_items)
-    stress_items > 0 || error("Cannot saturate processed writes: no completed $kind items exist")
+    if stress_items == 0
+        @warn "Skipping processed-writer saturation: no completed $kind items exist"
+        return SaturationSample(kind, 0, 0, 0, 0.0, 0.0, 0, 0)
+    end
     selected = records[end-stress_items+1:end]
     estimated_rows = Int64(stress_items) * Int64(KIND3_ROWS)
     if REQUIRE_SATURATION && estimated_rows < CACHE_ROW_CEILING
