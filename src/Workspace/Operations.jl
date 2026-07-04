@@ -1025,7 +1025,10 @@ function publish_cache_state!(
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
         if index === nothing
-            replace_item_index!(workspace, Hierarchy(source_id(workspace.source), false))
+            replace_item_index!(workspace, Hierarchy(
+                source_id(workspace.source),
+                has_collection_parameters(workspace.source),
+            ))
             empty!(workspace.index.analysis_errors)
         else
             apply_cache_index!(workspace, index)
