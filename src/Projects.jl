@@ -176,6 +176,12 @@ open_source(source::AbstractDataSource)::AbstractDataSource = source
 """Release resources owned by a source."""
 close_source!(::AbstractDataSource)::Nothing = nothing
 
+"""
+Source construction options to replay when reopening an equivalent source, as keyword arguments
+accepted by the source's `open_workspace` method. Sources without reopen options return `(;)`.
+"""
+source_open_options(::AbstractDataSource)::NamedTuple = (;)
+
 """Return the current source items discovered by a source."""
 function source_items end
 

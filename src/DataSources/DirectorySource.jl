@@ -323,6 +323,9 @@ function Projects.watch_source(
     return task
 end
 
+Projects.source_open_options(source::DirectorySource)::NamedTuple =
+    (; recursive=source.recursive, metadata_file=source.metadata_file)
+
 function Projects.close_source!(source::DirectorySource)::Nothing
     source.watcher_closed[] = true
     task = source.watcher_task

@@ -90,6 +90,7 @@ import ..Projects:
     source_item_id,
     source_items,
     source_label,
+    source_open_options,
     watch_source
 
 """
@@ -243,6 +244,9 @@ mutable struct Workspace{S<:AbstractDataSource}
     source_error::String
     work::WorkDependencyGraph
     background_processing::Bool
+    # The effective construction options `open_workspace` was called with, replayed verbatim
+    # (splatted) when the browser reopens an equivalent workspace on the same source root.
+    open_options::NamedTuple
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     profiler::Profiling.ProfileSession
@@ -293,6 +297,15 @@ function Workspace(
         end
     end
     publish_lock = ReentrantLock()
+    open_options = (;
+        profile_internal,
+        profile_cpu,
+        profile_output,
+        crash_trace,
+        cache,
+        background_processing,
+        source_open_options(source)...,
+    )
     workspace = Workspace(
         project,
         source,
@@ -312,6 +325,7 @@ function Workspace(
         "",
         WorkDependencyGraph(),
         cache_db isa CacheDB && background_processing,
+        open_options,
         Task[],
         metrics,
         profiler,

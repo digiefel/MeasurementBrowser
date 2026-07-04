@@ -56,6 +56,7 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
 | `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | background cross-item fold over one collection node |
 | `watch_source(source, on_change)` | no (→ `nothing`) | report `SourceChanges` batches; `nothing` means static |
+| `source_open_options(source)::NamedTuple` | no (→ `(;)`) | construction options replayed as `open_workspace` kwargs when reopening an equivalent source |
 
 `open_source` returns the opened source rather than mutating in place, so it carries no bang;
 `close_source!` mutates the source (releases its resources) and does. `source_items` and
