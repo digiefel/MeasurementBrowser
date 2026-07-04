@@ -140,13 +140,13 @@ mutable struct WorkNode
     queued_ns::UInt64
 end
 
-"""Workspace-owned dependency state and scheduling queue."""
+"""Workspace-owned dependency state and scheduling queue (FIFO buckets keyed by priority)."""
 mutable struct WorkDependencyGraph
     lock::ReentrantLock
     condition::Base.Threads.Condition
     nodes::Dict{WorkKey,WorkNode}
     dependents::Dict{WorkKey,Set{WorkKey}}
-    queue::Vector{Tuple{WorkKey,UInt64}}
+    queue::Dict{Int,Vector{Tuple{WorkKey,UInt64}}}
     source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
     workers::Vector{Task}
@@ -164,7 +164,7 @@ function WorkDependencyGraph()::WorkDependencyGraph
         Base.Threads.Condition(work_lock),
         Dict{WorkKey,WorkNode}(),
         Dict{WorkKey,Set{WorkKey}}(),
-        Tuple{WorkKey,UInt64}[],
+        Dict{Int,Vector{Tuple{WorkKey,UInt64}}}(),
         Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),
         Task[],
@@ -269,7 +269,7 @@ function Workspace(
     cache::Bool=true,
     background_processing::Bool=false,
 )::Workspace{S} where {S<:AbstractDataSource}
-    hierarchy = Hierarchy(source_id(source), false)
+    hierarchy = Hierarchy(source_id(source), has_collection_parameters(source))
     identity = project_cache_identity(project_name(project), source)
     profiler = Profiling.ProfileSession(
         profile_internal, profile_cpu, profile_output, crash_trace)

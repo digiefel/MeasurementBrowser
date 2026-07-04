@@ -43,7 +43,10 @@ const CACHE = MeasurementBrowser.Cache
         graph.nodes[item_b].state = :failed
         WORK.wake_ready_dependents!(graph, item_b)
         @test collection_node.state === :queued
-        @test graph.queue == [(collection, UInt64(1))]
+        @test graph.queue == Dict(1 => [(collection, UInt64(1))])
+        @test WORK.pop_queued_node!(graph) === collection_node
+        @test collection_node.state === :running
+        @test WORK.pop_queued_node!(graph) === nothing
     end
 end
 

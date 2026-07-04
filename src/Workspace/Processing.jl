@@ -48,13 +48,10 @@ function collection_input_fingerprint(
     return result_input_fingerprint((path, members))
 end
 
-"""Start fixed worker pools for each work kind."""
+"""Start one work-conserving worker pool shared by every work kind."""
 function start_work_workers!(workspace::Workspace)::Nothing
-    worker_count = max(1, Base.Threads.nthreads() ÷ 4)
-    for kind in (INTERPRET_SOURCE, PROCESS_ITEM, ITEM_STATS, COLLECTION_STATS)
-        for _ in 1:worker_count
-            push!(workspace.work.workers, Base.Threads.@spawn work_worker!(workspace, kind))
-        end
+    for _ in 1:max(2, Base.Threads.nthreads())
+        push!(workspace.work.workers, Base.Threads.@spawn work_worker!(workspace))
     end
     return nothing
 end
@@ -164,10 +161,20 @@ function replace_work_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
     return nothing
 end
 
+"""Append one queue entry to its priority bucket."""
+function push_queue_entry!(
+    graph::WorkDependencyGraph,
+    priority::Int,
+    entry::Tuple{WorkKey,UInt64},
+)::Nothing
+    push!(get!(() -> Tuple{WorkKey,UInt64}[], graph.queue, priority), entry)
+    return nothing
+end
+
 function queue_ready_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
     node.state = :queued
     node.queued_ns = time_ns()
-    push!(graph.queue, (node.key, node.revision))
+    push_queue_entry!(graph, node.priority, (node.key, node.revision))
     return nothing
 end
 
@@ -282,9 +289,8 @@ function enqueue_work!(
                 Channel{Any}[],
                 time_ns(),
             )
-            dependencies_ready(graph, node) && (node.state = :queued)
             replace_work_node!(graph, node)
-            node.state === :queued && push!(graph.queue, (key, revision))
+            dependencies_ready(graph, node) && queue_ready_node!(graph, node)
             graph.total += 1
         elseif node.state === :missing
             node.priority = priority
@@ -303,7 +309,10 @@ function enqueue_work!(
                 queue_ready_node!(graph, node)
             end
         elseif node.state === :queued && priority > node.priority
+            # Promote by re-queuing at the higher priority; the stale lower-bucket entry is
+            # skipped on take because the node is no longer :queued by the time it surfaces.
             node.priority = priority
+            push_queue_entry!(graph, priority, (key, revision))
         end
         waiter === nothing || push!(node.waiters, waiter)
         notify(graph.condition; all=true)
@@ -311,34 +320,34 @@ function enqueue_work!(
     end
 end
 
-"""Take the highest-priority current work revision."""
-function take_work!(
-    graph::WorkDependencyGraph,
-    kind::WorkKind,
-)::Union{Nothing,WorkNode}
-    while true
-        graph.closed && return nothing
-        best_position = 0
-        best_priority = typemin(Int)
-        for (position, (key, revision)) in pairs(graph.queue)
-            node = get(graph.nodes, key, nothing)
-            node === nothing && continue
-            node.key.kind === kind && node.revision == revision && node.state === :queued ||
-                continue
-            if node.priority > best_priority
-                best_position = position
-                best_priority = node.priority
-            end
-        end
-        if best_position > 0
-            key, revision = splice!(graph.queue, best_position)
+"""Pop the highest-priority queued current revision; caller must hold `graph.lock`."""
+function pop_queued_node!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
+    for priority in sort!(collect(keys(graph.queue)); rev=true)
+        bucket = graph.queue[priority]
+        while !isempty(bucket)
+            key, revision = popfirst!(bucket)
             node = get(graph.nodes, key, nothing)
             node === nothing && continue
             node.revision == revision && node.state === :queued || continue
             node.state = :running
             return node
         end
-        wait(graph.condition)
+    end
+    return nothing
+end
+
+"""Take the highest-priority current work revision, blocking until one is ready or the graph closes."""
+function take_work!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
+    lock(graph.lock)
+    try
+        while true
+            graph.closed && return nothing
+            node = pop_queued_node!(graph)
+            node === nothing || return node
+            wait(graph.condition)
+        end
+    finally
+        unlock(graph.lock)
     end
 end
 
@@ -514,13 +523,11 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
     return nothing
 end
 
-"""Run one fixed work-kind queue until workspace shutdown."""
-function work_worker!(workspace::Workspace, kind::WorkKind)::Nothing
+"""Run pooled work of any kind until workspace shutdown."""
+function work_worker!(workspace::Workspace)::Nothing
     graph = workspace.work
     while true
-        node = lock(graph.lock) do
-            take_work!(graph, kind)
-        end
+        node = take_work!(graph)
         node === nothing && return nothing
         execute_work!(workspace, node)
     end
