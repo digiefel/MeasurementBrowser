@@ -106,7 +106,6 @@ function reset_work_graph!(workspace::Workspace)::Nothing
         empty!(graph.nodes)
         empty!(graph.dependents)
         empty!(graph.queue)
-        empty!(graph.running)
         empty!(graph.source_items)
         empty!(graph.source_locks)
         graph.total = 0
@@ -176,6 +175,9 @@ function queue_ready_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
     node.state = :queued
     node.queued_ns = time_ns()
     push_queue_entry!(graph, node.priority, (node.key, node.revision))
+    # One queued node needs one worker. Waking the whole pool here made every bulk enqueue a
+    # thundering herd serialized behind the caller's locks.
+    notify(graph.condition; all=false)
     return nothing
 end
 
@@ -211,7 +213,6 @@ function mark_work_missing!(
                 0,
             ))
         end
-        notify(graph.condition; all=true)
     end
     return nothing
 end
@@ -240,7 +241,6 @@ function seed_work_node!(
             ))
         end
         wake_ready_dependents!(graph, key)
-        notify(graph.condition; all=true)
     end
     return nothing
 end
@@ -316,40 +316,20 @@ function enqueue_work!(
             push_queue_entry!(graph, priority, (key, revision))
         end
         waiter === nothing || push!(node.waiters, waiter)
-        notify(graph.condition; all=true)
         node
     end
 end
 
-"""
-Concurrent-execution cap for one work kind.
-
-Interpretation is capped below the pool size because project `read` callbacks may parse with
-internal parallelism of their own (CSV.jl does); uncapped, a full pool of concurrent reads
-oversubscribes the thread pool and starves processing and the cache writer.
-"""
-work_kind_capacity(kind::WorkKind)::Int =
-    kind === INTERPRET_SOURCE ? max(1, Base.Threads.nthreads() ÷ 2) : typemax(Int)
-
-"""Pop the highest-priority queued current revision under kind caps; caller holds `graph.lock`."""
+"""Pop the highest-priority queued current revision; caller must hold `graph.lock`."""
 function pop_queued_node!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
     for priority in sort!(collect(keys(graph.queue)); rev=true)
         bucket = graph.queue[priority]
-        position = 1
-        while position <= length(bucket)
-            key, revision = bucket[position]
+        while !isempty(bucket)
+            key, revision = popfirst!(bucket)
             node = get(graph.nodes, key, nothing)
-            if node === nothing || node.revision != revision || node.state !== :queued
-                deleteat!(bucket, position)
-                continue
-            end
-            if get(graph.running, key.kind, 0) >= work_kind_capacity(key.kind)
-                position += 1
-                continue
-            end
-            deleteat!(bucket, position)
+            node === nothing && continue
+            node.revision == revision && node.state === :queued || continue
             node.state = :running
-            graph.running[key.kind] = get(graph.running, key.kind, 0) + 1
             return node
         end
     end

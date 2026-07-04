@@ -153,7 +153,6 @@ mutable struct WorkDependencyGraph
     nodes::Dict{WorkKey,WorkNode}
     dependents::Dict{WorkKey,Set{WorkKey}}
     queue::Dict{Int,Vector{Tuple{WorkKey,UInt64}}}
-    running::Dict{WorkKind,Int}
     source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
     workers::Vector{Task}
@@ -172,7 +171,6 @@ function WorkDependencyGraph()::WorkDependencyGraph
         Dict{WorkKey,WorkNode}(),
         Dict{WorkKey,Set{WorkKey}}(),
         Dict{Int,Vector{Tuple{WorkKey,UInt64}}}(),
-        Dict{WorkKind,Int}(),
         Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),
         Task[],
