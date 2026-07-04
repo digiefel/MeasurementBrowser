@@ -50,7 +50,7 @@ Cancel all work owned by a workspace and wait for it to stop.
 function close_workspace!(workspace::Workspace)::Nothing
     workspace.closed && return nothing
     workspace.closed = true
-    cancel_job!(workspace.scan)
+    cancel_scan!(workspace)
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
@@ -171,15 +171,22 @@ function track_task!(workspace::Workspace, task::Task)::Task
     return task
 end
 
-"""Request cancellation of one running workspace operation."""
-function cancel_job!(job::WorkspaceJob)::Nothing
-    job.cancel_token === nothing && return nothing
-    Base.Threads.atomic_xchg!(job.cancel_token, true)
-    job.state = :canceling
+"""
+Request cancellation of a running source scan.
+
+Only a scan that is actually running moves into `:canceling`; the check and the transition share
+the publish lock with the scan task's own settlement, so a settled job can never re-enter
+`:canceling`.
+"""
+function cancel_scan!(workspace::Workspace)::Nothing
+    lock(workspace.publish_lock) do
+        job = workspace.scan
+        job.state === :discovering || return
+        Base.Threads.atomic_xchg!(job.cancel_token, true)
+        job.state = :canceling
+    end
     return nothing
 end
-
-cancel_scan!(workspace::Workspace)::Nothing = (cancel_job!(workspace.scan); nothing)
 cancel_analysis!(workspace::Workspace)::Nothing = (cancel_waiting_work!(workspace); nothing)
 
 """
@@ -407,28 +414,30 @@ function scan_source!(
     workspace::Workspace;
     rebuild::Bool=false,
 )::Nothing
-    source_scan_running(workspace) && error("A source scan is already running")
-    workspace.closed && error("The workspace is closed")
-
     cachedb = workspace.cache.db
     job = workspace.scan
-    job.id += 1
-    scan_id = job.id
-    job.state = :discovering
-    job.error = ""
-    workspace.cache_state = :loading
-    workspace.cache_error = ""
-    workspace.cache.operation = rebuild ? :rebuild : :update
-    reset_build_metrics!(workspace.metrics)
-    reset_scan_profile!(workspace.project)
-    # Detach the previous scan so this one streams into a fresh hierarchy: progressive results update
-    # the displayed tree live while any still-finishing analysis from the previous scan keeps reading
-    # its own, now-detached hierarchy — no shared mutable state, no race. Errors reset so stale ones
-    # from the previous scan never linger.
-    workspace.index.source = nothing
-    empty!(workspace.index.analysis_errors)
-    cancel_token = Base.Threads.Atomic{Bool}(false)
-    job.cancel_token = cancel_token
+    # Job setup runs under the publish lock so cancel_scan!'s running check can never interleave
+    # with the transition into :discovering.
+    scan_id, cancel_token = lock(workspace.publish_lock) do
+        source_scan_running(workspace) && error("A source scan is already running")
+        workspace.closed && error("The workspace is closed")
+        job.id += 1
+        job.state = :discovering
+        job.error = ""
+        workspace.cache_state = :loading
+        workspace.cache_error = ""
+        workspace.cache.operation = rebuild ? :rebuild : :update
+        reset_build_metrics!(workspace.metrics)
+        reset_scan_profile!(workspace.project)
+        # Detach the previous scan so this one streams into a fresh hierarchy: progressive results
+        # update the displayed tree live while any still-finishing analysis from the previous scan
+        # keeps reading its own, now-detached hierarchy — no shared mutable state, no race. Errors
+        # reset so stale ones from the previous scan never linger.
+        workspace.index.source = nothing
+        empty!(workspace.index.analysis_errors)
+        job.cancel_token = Base.Threads.Atomic{Bool}(false)
+        (job.id, job.cancel_token)
+    end
     task = Base.Threads.@spawn begin
         Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
             source_id=source_id(workspace.source),
@@ -476,9 +485,11 @@ function scan_source!(
                 SourceChanges(upserts, removals; parameters_changed=false),
                 current,
                 status,
-                isempty(upserts) && isempty(removals),
             )
-            publish_scan_end!(workspace, scan_id)
+            publish_scan_end!(
+                workspace, scan_id;
+                cache_hit=isempty(upserts) && isempty(removals),
+            )
         catch error
             if is_job_cancelled(error)
                 publish_scan_end!(workspace, scan_id; canceled=true)
@@ -542,11 +553,15 @@ function stop_internal_profile!(
     workspace::Workspace,
 )::Union{Nothing,Profiling.ProfileReport}
     profiler = workspace.profiler
-    if profiler.state === :preparing
+    # Aborting a pending restart must be atomic against finish_publish!: a completion landing
+    # between the state check and the clear would start a profiled rebuild this stop then clobbers.
+    aborted_preparation = lock(workspace.publish_lock) do
+        profiler.state === :preparing || return false
         workspace.profile_restart_pending = false
         profiler.state = :idle
-        return nothing
+        return true
     end
+    aborted_preparation && return nothing
     return Profiling.stop!(profiler)
 end
 
@@ -919,6 +934,15 @@ function publish_work_failure!(
     failure::CapturedException,
 )::Bool
     key = node.key
+    if is_job_cancelled(failure.ex)
+        # Cancellation is not an analysis error: finish the node and answer waiters with the
+        # cancellation, but record nothing in the index or the cache failure results.
+        waiters = finish_work_node!(workspace, node, :failed)
+        for waiter in waiters
+            put!(waiter, ProcessingResult(nothing, failure))
+        end
+        return false
+    end
     message = sprint(showerror, failure.ex)
     if key.kind === INTERPRET_SOURCE
         old_records, invalidated = remove_source_item_output!(workspace, key.entity)
@@ -1048,12 +1072,10 @@ function publish_source_changes!(
     changes::SourceChanges,
     fingerprints::AbstractDict{String},
     status::ProjectCacheStatus,
-    cache_hit::Bool,
 )::Nothing
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
         apply_source_changes!(workspace, changes, fingerprints, status)
-        workspace.scan.state = cache_hit ? :unchanged : :done
         workspace.cache_state = :ready
         finish_publish!(workspace)
     end
@@ -1090,10 +1112,17 @@ function publish_source_event!(
     return nothing
 end
 
-"""Publish the end of one scan job: finished normally, canceled, or failed."""
+"""
+Publish the end of one scan job: finished normally, canceled, or failed.
+
+This is the single settlement point for `scan.state`: the scan task reaches it on every exit path,
+and it assigns a terminal state unconditionally, so a cancel request that lands between the last
+progress publication and this one can never leave the job stuck in `:canceling`.
+"""
 function publish_scan_end!(
     workspace::Workspace,
     scan_id::Int;
+    cache_hit::Bool=false,
     canceled::Bool=false,
     error=nothing,
     backtrace=nothing,
@@ -1116,6 +1145,8 @@ function publish_scan_end!(
                 source=source_id(workspace.source),
                 exception=(error, backtrace),
             )
+        else
+            workspace.scan.state = cache_hit ? :unchanged : :done
         end
         workspace.scan.cancel_token = nothing
         finish_publish!(workspace)

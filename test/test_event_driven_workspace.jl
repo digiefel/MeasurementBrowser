@@ -171,6 +171,65 @@ end
     end
 end
 
+"""Poll one predicate until it holds or the deadline passes; returns the final value."""
+function _settles(predicate::Function; timeout::Real=5.0)::Bool
+    deadline = time() + timeout
+    while !predicate() && time() < deadline
+        sleep(0.02)
+    end
+    return predicate()
+end
+
+@testset "aborting profile prep settles scan state" begin
+    dir = _event_driven_dir(3)
+    project = _event_driven_project(basename(dir); process_delay=0.2)
+    workspace = MeasurementBrowser.open_workspace(
+        project, test_source(project, dir);
+        background_processing=true, profile_internal=true)
+    try
+        MeasurementBrowser.Workspace.start_internal_profile!(workspace)
+        @test workspace.profiler.state === :preparing
+        sleep(0.1)
+        MeasurementBrowser.Workspace.stop_internal_profile!(workspace)
+        @test workspace.profiler.state === :idle
+        @test _settles(() -> !MeasurementBrowser.Workspace.source_scan_running(workspace))
+        @test workspace.scan.state != :canceling
+    finally
+        MeasurementBrowser.close_workspace!(workspace)
+    end
+end
+
+@testset "scan cancel settles promptly" begin
+    dir = _event_driven_dir(3)
+    project = _event_driven_project(basename(dir))
+    workspace = MeasurementBrowser.open_workspace(
+        project, test_source(project, dir); background_processing=false)
+    try
+        MeasurementBrowser.Workspace.cancel_scan!(workspace)
+        @test _settles(() -> workspace.scan.state != :canceling)
+        @test workspace.scan.state in (:canceled, :done, :unchanged)
+    finally
+        MeasurementBrowser.close_workspace!(workspace)
+    end
+end
+
+@testset "late cancel is a no-op on a settled scan" begin
+    dir = _event_driven_dir(2)
+    project = _event_driven_project(basename(dir))
+    workspace = MeasurementBrowser.open_workspace(
+        project, test_source(project, dir); background_processing=false)
+    try
+        MeasurementBrowser.Workspace.wait_workspace_idle!(workspace; timeout=30)
+        settled = workspace.scan.state
+        @test settled in (:done, :unchanged)
+        MeasurementBrowser.Workspace.cancel_scan!(workspace)
+        @test workspace.scan.state === settled
+        @test !MeasurementBrowser.Workspace.source_scan_running(workspace)
+    finally
+        MeasurementBrowser.close_workspace!(workspace)
+    end
+end
+
 @testset "full API produces a plot without polling" begin
     dir = _event_driven_dir(2)
     project = _event_driven_project(basename(dir))
