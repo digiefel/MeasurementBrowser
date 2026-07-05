@@ -33,16 +33,15 @@ Metadata and data live in two forms, bridged by the engine via the `AbstractData
   interpreted/processing work through the normal source path.
 
 ```julia
-abstract type AbstractDataItem end   # contract: id, item_label, kind, collection, parameters,
-                                     # stats, item_data (+ optional process, cacheable, item_fingerprint)
+abstract type AbstractDataItem end   # contract: id, item_label, kind, collection, metadata,
+                                     # item_data (+ optional process, cacheable, item_fingerprint)
 
 struct DataItem <: AbstractDataItem  # the normal item; the recipe API's `entries` produces it
     id::String
     label::String
     kind::Symbol
     collection::Vector{String}
-    parameters::Dict{Symbol,Any}
-    stats::Dict{Symbol,Any}
+    metadata::Dict{Symbol,Any}       # one dict: parsed parameters + computed values, provenance merged
     data::Any                        # loaded item data, reachable as `item.data`
 end
 
@@ -57,11 +56,16 @@ struct ItemRecord                    # internal metadata record (never seen by s
     item_label::String
     kind::Symbol
     collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
-    parameters::Dict{Symbol,Any}     # parameters produced by interpreting this item
-    stats::Dict{Symbol,Any}          # values computed during the source-item pass
+    metadata::Dict{Symbol,Any}       # the entries layer: metadata from interpreting this item
     item_fingerprint::Any            # nothing → item data not persistently cacheable
 end
 ```
+
+An item carries **one `metadata` dict**. Internally the engine tracks provenance in layers — the
+entries layer (`ItemRecord.metadata`, written at interpretation and restored on reload), inherited
+collection metadata, and the computed layers from item `analyze` and collection `process` — but
+project code only ever sees the merged result. Delivery is one unconditional merge: inherited
+collection metadata ⊕ entries ⊕ computed layers, deeper/newer wins.
 
 Source-*level* identity (`source_id`, `source_label`) is **not** copied onto every record — it lives
 once on the `SourceScan`. A record carries only the source-*item* identity it needs to be reloaded.
@@ -77,6 +81,7 @@ struct SourceScan                     # the result of one full scan, source-neut
     source_id::String
     source_label::String
     source_item_fingerprints::Dict{String,Any}
+    collection_metadata_fingerprints::Dict{String,Any}   # source-metadata inputs, for reopen diffs
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
 end
@@ -84,17 +89,18 @@ end
 
 ## Hierarchy
 
-Records organize into a tree by their `collection::Vector{String}`. Nodes carry their own
-collection-level stats, filled by workspace background analysis:
+Records organize into a tree by their `collection::Vector{String}`. Each node keeps two dicts: the
+source-provided `metadata` (re-applied wholesale on source updates) and the `analysis` output of
+collection `analyze` (filled by workspace background analysis). The GUI shows them merged:
 
 ```julia
 struct HierarchyNode
     name::String                       # one path segment
     kind::Symbol                       # :root | :level (intermediate) | :leaf (last segment)
-    parameters::Dict{Symbol,Any}       # effective collection parameters at this node
+    metadata::Dict{Symbol,Any}         # effective source-provided collection metadata at this node
     children::Vector{HierarchyNode}
     items::Vector{ItemRecord}          # records, populated only on :leaf nodes
-    stats::Dict{Symbol,Any}            # collection-level stats for this node
+    analysis::Dict{Symbol,Any}         # collection `analyze` output for this node
 end
 
 struct Hierarchy
@@ -102,7 +108,7 @@ struct Hierarchy
     all_items::Vector{ItemRecord}
     source_id::String
     index::Dict{Tuple{Vararg{String}}, HierarchyNode}   # path tuple → node
-    has_collection_parameters::Bool
+    has_collection_metadata::Bool
     skipped_count::Int
 end
 ```
@@ -125,36 +131,60 @@ An item's `collection::Vector{String}` is its canonical placement. Two equivalen
 - **String** (used in on-disk files): `"RuO2test/A9/VI/D1"` — built by `collection_path_key(collection)`.
 - **Round-trip**: `collection_path_tuple("RuO2test/A9/VI/D1")` parses and validates the string form.
 
-The slash-joined string is the canonical identifier in any stored parameters. New metadata systems
+The slash-joined string is the canonical identifier in any stored metadata. New metadata systems
 should reuse it.
 
-## Collection parameters
+## Collection metadata
 
-Sources may provide collection parameters for a collection path through
-`collection_parameters(source, collection_path)`. The hierarchy owns inheritance: parent collection
-parameters flow to child nodes. `ItemRecord` stores only item-local `parameters(item)`. The workspace
-materializes effective parameters for project callbacks by merging the containing hierarchy node
-with the item-local values; local values win on key conflicts.
+Sources may provide collection metadata for a collection path through
+`collection_metadata(source, collection_path)`. The hierarchy owns inheritance: parent collection
+metadata flows to child nodes. `ItemRecord.metadata` stores only the item's entries layer. The
+workspace materializes each item's effective metadata by merging the containing hierarchy node with
+the item-local values; item values win on key conflicts.
 
 For `DirectorySource`, `metadata.txt` rows are keyed by slash-joined collection path fragments. The
 source owns loading, watching, parsing, and excluding that configured file from source discovery.
-Parameter changes rebuild effective item inputs without reinterpreting unchanged source files. The
+Metadata changes re-merge effective item inputs without reinterpreting unchanged source files. The
 on-disk format is documented in [storage.md](storage.md).
 
-## Collection stats
+## The metadata pipeline
 
-Cross-item stats over one collection node are computed by the
-`collection_stats(project, source, collection, items)` hook after the hierarchy is built from
-data-less `DataItem` handles containing the completed parameters and item stats, and stored on the
-node's `stats` dict. The high-level
-`register_collection_stat!` is the callback form of the same hook. This is distinct from per-item
-`stats`: item stats describe one item; node stats describe a group.
+Each item runs a fixed staged pipeline, each stage fed the previous output:
+
+```text
+entries → item process → item analyze → collection process → collection analyze
+```
+
+`entries` seeds the item's initial metadata and data. `process` may change per-item data or metadata.
+`analyze` returns a dict merged over the item's computed layer (new keys win). The collection stages
+are gated on every member of a registered kind finishing its item stages, and group by collection
+path plus registered kind:
+
+- **collection `process`** is the down-flow: it rewrites each member (one output per input, same ids),
+  overwriting per-item data or metadata for the whole collection. Returning the same `data` object
+  skips the payload rewrite, so metadata-only recipes cost nothing extra.
+- **collection `analyze`** folds the post-process members into one dict attached to the collection
+  node's `analysis` only. It does not flow down to items.
+
+Re-running a stage replaces that stage's previous output; the internal layering keeps stale keys from
+accumulating.
+
+## Freshness
+
+Freshness comes from source data only. In-session it is event-driven: a source upsert/removal or a
+collection-metadata change propagates through the work graph, bumping the affected keys' revisions
+(plain per-key counters) and re-marking their results stale; recompute overwrites the stored rows.
+At reopen the same mechanism replays from a source-fingerprint diff — the scan compares per-source-item
+fingerprints and the source's collection-metadata fingerprints against the stored `SourceScan`, and
+marks the subtrees downstream of anything changed. A result's validity is derived from its position
+downstream of unchanged sources, not from a stored per-result claim. Callback code is not tracked yet:
+an edited callback leaves stale stored results until the next recompute or rebuild.
 
 ## Virtual item expansion
 
 A single source item may yield several data items when `data_items` returns more than one. They share
 a source-item identity but must have distinct `id` values within the source. The recipe API mints
-missing ids from the source-item path, kind, and the `parameters` that distinguish siblings.
+missing ids from the source-item path, kind, and the `metadata` that distinguishes siblings.
 
 The source item is read once for the expansion. Its children enter the workspace work graph and may
 run on different scheduler threads. A child may carry a view into the parsed data instead of a copy;
@@ -164,7 +194,7 @@ independent ordinary `DataFrame`s.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
 into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number
-in `parameters`).
+in `metadata`).
 
 Item kinds and discovery rules belong to source/project implementations. The package stores the
 resulting `Symbol` (`kind`) without assigning it project-specific meaning.

@@ -65,22 +65,31 @@ project = define_project("TASE"; description="…")
 register_item!(project, :iv;
     detect  = file -> occursin("iv", lowercase(file.filename)),  # Bool; first match wins
     read    = file -> DataFrame(...),                            # whole file, parsed once
-    entries = (file, data) -> [DataItem(kind=:iv, collection=[...], parameters=..., data=data)],
-    process = item -> DataItem(item, clean(item.data)),          # optional; default passthrough
-    stats   = item -> Dict{Symbol,Any}(...),                     # optional; background analysis
+    entries = (file, data) -> [DataItem(kind=:iv, collection=[...], metadata=..., data=data)],
+    process = item -> DataItem(item, clean(item.data)),          # optional; may change data or metadata
+    analyze = item -> Dict{Symbol,Any}(...),                     # optional; merged over item metadata, new wins
     label   = item -> "…")                                       # optional
 
-register_collection_stat!(project; kinds=[:iv],                  # cross-item fold over a collection
-    compute_stats = group -> …)                                  # returns a Dict stored on the collection node
+register_collection_analysis!(project, :iv;                      # optional collection stages for a kind
+    process = items -> …,                                        # rewrite members (one output per input)
+    analyze = items -> …)                                        # fold members into collection-node metadata
 
 register_plot!(project, :iv; label="I–V", setup=…, draw=…)       # one plot recipe per kind
 ```
 
+Every item carries one `metadata :: Dict{Symbol,Any}`; the engine tracks provenance internally
+(entries layer, inherited collection metadata, and the computed layers from `analyze`/collection
+`process`) but project code sees a single merged dict. The per-item pipeline is
+`entries → item process → item analyze → collection process → collection analyze`, with the collection
+stages gated on every member of a registered kind finishing its item stages. Collection `process` is
+the down-flow (one output per input, may overwrite per-item data/metadata); collection `analyze`
+attaches a dict to the collection node only.
+
 The `entries` callback enumerates the items in a file and is where a single file expands into multiple
-entries (e.g. one item per fatigue cycle, distinguished by `parameters`). When an entry omits `id`,
-the directory adapter mints one from the source-item path, kind, and params. Entries attach the raw
-per-item payload as `item.data`; optional `process(item)` returns the item that stats and views
-receive, and optional `stats(item)` runs after indexing in workspace background analysis.
+entries (e.g. one item per fatigue cycle, distinguished by `metadata`). When an entry omits `id`,
+the directory adapter mints one from the source-item path, kind, and metadata. Entries attach the raw
+per-item payload as `item.data`; optional `process(item)` returns the item later stages and views
+receive, and optional `analyze(item)` runs after indexing in workspace background analysis.
 `entries` returns the package's `DataItem` (the **recipe API**) — or, to go beyond it, a project's own
 `AbstractDataItem` subtype carrying typed fields and its data (the **type API**); the engine derives
 the internal record from either via the contract. Re-calling a `register_*` with the same key replaces
@@ -92,12 +101,12 @@ the recipe in place, so editing and re-running a line updates a live project.
    `data_items(project, source, source_item)` interprets it into data items (the adapter applies the first
    matching `detect`'s `read → entries`). The engine derives each item's internal `ItemRecord` via the
    contract; per-source-item failures are recorded and scanning continues. The file-backed adapter
-   provides collection parameters from `metadata.txt`; the index inherits them through the hierarchy
-   and merges them into each record's effective `parameters`.
+   provides collection metadata from `metadata.txt`; the index inherits it through the hierarchy
+   and merges it into each record's effective `metadata`.
 2. **Analysis:** after the tree exists, a workspace background job materializes items with
-   `read → entries → process`, computes per-item `stats(item)`, then runs
-   `collection_stats(project, source, collection, items)` (the callback form is
-   `register_collection_stat!`) for collection nodes.
+   `read → entries → process`, computes per-item `analyze(item)`, then runs the collection stages
+   (`process_collection`/`analyze_collection`; the callback form is `register_collection_analysis!`)
+   for collection nodes.
 3. **Cache:** the `SourceScan` is stored in a source-id-keyed DuckDB cache; a fresh cache
    restores the hierarchy quickly while scanning continues.
 4. **View:** for the selection, the engine reloads items via
@@ -110,19 +119,19 @@ the recipe in place, so editing and re-running a line updates a live project.
 - `AbstractDataSource` / `AbstractDataSourceItem` / `AbstractDataItem` — the low-level contract: a
   source owns lifecycle + discovery (`source_items`), a source item is one discovered unit
   (`data_items`, `load_data_item`), a data item is one logical browser object (`id`, `item_label`,
-  `kind`, `collection`, `parameters`, `stats`, `item_data`, + optional `process`/`cacheable`/
+  `kind`, `collection`, `metadata`, `item_data`, + optional `process`/`cacheable`/
   `fingerprint`). The engine is written against these, never a concrete type.
 - `DataItem <: AbstractDataItem` — the normal item the recipe API's `entries` produces: `kind`,
-  `collection`, `parameters`/`stats` dicts, and `data` (as `item.data`).
+  `collection`, one `metadata` dict, and `data` (as `item.data`).
 - `SourceFile <: AbstractDataSourceItem` — the built-in file-backed source item: path, filename,
   timestamp, fingerprint. A bare `SourceFile` has no universal `data_items`.
 - `ItemRecord` — **internal**, data-less record the hierarchy/scan/cache store: source-item identity
   (`source_item_id`/label/fingerprint/path/timestamp), item identity (`id`, `item_label`,
-  `kind`), `collection`, `parameters`, `stats`, `item_fingerprint`. Never named
+  `kind`), `collection`, `metadata` (the entries layer), `item_fingerprint`. Never named
   by source/project code, never a field of any item; the engine converts item ↔ record via the contract.
 - `SourceScan` — internal scan result (source-neutral; source-level identity lives once on the scan).
   `Hierarchy` / `HierarchyNode` — the browsable collection tree.
-- `Project` / `ItemRecipe` / `CollectionStatRecipe` / `PlotRecipe` — the callback registry model;
+- `Project` / `ItemRecipe` / `CollectionRecipe` / `PlotRecipe` — the callback registry model;
   `DirectorySource` supplies the built-in directory-backed source.
 
 ## Launching

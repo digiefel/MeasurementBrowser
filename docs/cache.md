@@ -21,8 +21,8 @@ persisted results already exist. The work dependency graph decides what remains 
 `WorkspaceIndex` owns the records, hierarchy, parameters, statistics, and failures shown by the
 application.
 
-Cached item records contain item-local parameters only. Source-owned collection parameters are read
-from the open source and applied to restored records exactly as they are in a memory-only workspace.
+Cached item records carry the entries layer of their metadata only. Source-owned collection metadata
+is read from the open source and applied to restored records exactly as in a memory-only workspace.
 
 ## Vocabulary
 
@@ -228,37 +228,67 @@ These are named operations, not a general connection callback. There is no `with
 
 The fixed DuckDB stores are:
 
-- `meta` — schema version plus project and source identity;
+- `meta` — schema version, project and source identity, and the source's collection-metadata
+  fingerprints;
 - `source_items` — source-item ID, fingerprint, path, and timestamp;
-- `items` — data-less logical-item records and their source ownership;
-- `metadata` — typed item parameters, item statistics, collection parameters, and collection
-  statistics;
+- `items` — data-less logical-item records, their source ownership, and each item's integer `item_key`
+  surrogate;
+- `item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
+  `ItemRecord.metadata`;
+- `item_effective_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
+  layers), keyed by `item_key`; this is the query surface, and reload restores the computed layers for
+  items whose governing result is valid;
+- `collection_metadata` — collection `analyze` output per collection, keyed by collection key;
+- `wide_columns` — the registry naming each wide table's columns and their logical type;
 - `item_failures` — source interpretation and logical-item failures published with the index;
-- `result_states` — independent processing, item-statistics, and collection-statistics outcomes;
-- `item_data` — pointers to cacheable processed payloads;
+- `result_states` — independent processing, item-analysis, collection-process, and collection-analysis
+  outcomes;
+- `item_data` — pointers to cacheable processed payloads, keyed by `(item_key, stage)`;
 - `dataframe_schemas` — the ordered user-column names belonging to each payload shape;
 - per-shape DataFrame tables — native rows of processed tabular payloads.
 
 Queued and running work is not persisted. It belongs to the work dependency graph.
 
+### Wide metadata tables
+
+`item_metadata`, `item_effective_metadata`, and `collection_metadata` are wide, dynamically-widened
+typed tables: one row per entity, one bare column per metadata name (`max_current DOUBLE`,
+`polarity VARCHAR`). A new name is registered on first write — the flush adds the column with
+`ALTER TABLE ADD COLUMN` and a `wide_columns` row in the same transaction. The first type registered
+for a name wins; a later mismatched write drops that one value and surfaces a graceful failure naming
+the key and types, while everything else in the write proceeds. `missing` is not stored — the key is
+simply absent after reload. Symbol/String and Date/DateTime share a SQL type, so the `wide_columns`
+registry is the only correct decoder.
+
+### The item-key surrogate
+
+Each logical item has one integer `item_key`, minted at interpretation and shared across the wide
+tables and the payload store. `open_cache_db` loads the committed `item_key`s from `items`; a rebuild
+resets them. Payloads are keyed by `(item_key, stage)`, where the stage is either the item's own
+`process` output or the collection `process` rewrite.
+
 ### Persisted result state
 
-Successful empty statistics produce no metadata rows, so absence of metadata cannot mean "not
-computed." `result_states` therefore records:
+Successful empty analysis produces no metadata rows, so absence of metadata cannot mean "not
+computed." `result_states` therefore records processing, item-analysis, collection-process, and
+collection-analysis outcomes (success — including empty — or failure), each as `(kind, entity, status,
+message)`. Non-cacheable processed success remains memory-only.
 
-- processing failure;
-- processing success for a persisted payload;
-- item-statistics success, including an empty result;
-- item-statistics failure;
-- collection-statistics success, including an empty result;
-- collection-statistics failure.
+`result_states` carries no per-result input fingerprint: a result's validity is derived from its
+position downstream of unchanged sources, not from a stored claim. At reopen every persisted result
+seeds a completed work node; the source-fingerprint diff then bumps and re-marks whatever changed
+while the workspace was closed.
 
-Each state records the effective-input fingerprint that produced it. Non-cacheable processed success
-remains memory-only.
+These outcomes are independent. Processing failure prevents item analysis for that item, but an
+item-analysis failure does not erase a successfully processed payload. Collection-analysis failure
+does not alter member item metadata.
 
-These outcomes are independent. Processing failure prevents item statistics for that item revision,
-but an item-statistics failure does not erase a successfully processed payload. Collection-statistics
-failure does not alter member item statistics.
+### Query surface
+
+`query_items(cache, predicate)` returns item ids whose delivered metadata satisfies a SQL predicate,
+over a view `items LEFT JOIN item_effective_metadata USING (item_key)`. The view is recreated only
+when the effective-metadata column signature changes. Queries read committed DB state, so a value
+written within the buffer flush window may not appear yet.
 
 ### Processed DataFrames
 
@@ -276,10 +306,10 @@ transaction. A reader cannot observe a committed pointer without its payload. A 
 still has a pointer and schema, so it reconstructs as an empty value with the correct columns and
 types.
 
-Stored input fingerprints are validated once, when the cache index is loaded: an entry whose
-fingerprint matches the current source-item identity, item identity, and effective parameters seeds
-a completed node in the workspace work graph; a mismatch seeds nothing and the work is re-enqueued
-(the interpreted item record remains reusable). At runtime the work graph is the single freshness
+Freshness is derived from source data, not from stored per-result claims. When the cache index is
+loaded, every persisted result seeds a completed node in the workspace work graph at counter revision
+1; the scan's source-fingerprint diff then bumps and re-marks whatever is downstream of a changed
+source item or changed collection-metadata input. At runtime the work graph is the single freshness
 authority — readers consult it and then read payloads raw; `result_states` is only written, never
 re-read, until the next load.
 
@@ -291,11 +321,11 @@ ProjectCache exposes one semantic cascade for removing a source item:
 delete_source_item!(cache, source_item_id, old_records)
 ```
 
-It derives item IDs and item-scoped metadata, failures, result states, disk payloads, and memory-only
-values from the old published records. It does not decide which collection statistics are affected.
+It deletes each old record's item rows, wide-metadata rows, failures, result states, disk payloads,
+and memory-only values by `item_key`. It does not decide which collections are affected.
 
 The work dependency layer separately identifies affected collection paths and calls the semantic
-`delete_collection_stats!(cache, collection_keys)` operation. A changed source is represented as
+`delete_collection_metadata!(cache, collection_keys)` operation. A changed source is represented as
 buffered deletion of its old subtree followed by buffered stores for the replacement. Per-key
 coalescing turns retained keys into replacement edits before any database transaction is chosen.
 

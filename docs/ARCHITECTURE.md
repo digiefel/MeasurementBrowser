@@ -35,9 +35,9 @@ presentation tools.
 ## Core Flow
 
 ```
-source item → data_items → interpreted data → process → processed data → views
+source item → data_items → interpreted data → process → analyze → collection process/analyze → views
                     │              │              │
-                    └─ ItemRecord  └─ DuckDB      └─ DuckDB + item statistics
+                    └─ ItemRecord  └─ DuckDB      └─ DuckDB + item metadata
 ```
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
@@ -45,7 +45,7 @@ The engine is written against the **low-level source contract** ([api.md](api.md
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
 compares the discovered source-item ids and fingerprints with the published snapshot, and submits one
 `SourceChanges` batch to the workspace work graph. Source watchers submit the same batch type;
-`DirectorySource` uses it for metadata-file parameter changes. Interpretation workers call
+`DirectorySource` uses it for metadata-file changes. Interpretation workers call
 `data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish
 their own completions: each finishing worker takes the workspace publish lock, rejects stale
 revisions, atomically publishes replacement records into `WorkspaceIndex`, sends semantic record
@@ -53,13 +53,14 @@ writes/deletes to `ProjectCache`, queues follow-up work, and notifies the idle c
 polls: the engine progresses on completion events alone, blocking callers
 (`request_processed_items`, `wait_workspace_idle!`) sleep until a publication wakes them, and the
 GUI frame only calls `refresh_status!` to rebuild the display snapshot. The graph owns work state only:
-work identities, revisions, priority, running/queued/failed/ready state, and waiters. `WorkspaceIndex`
-owns completed records, hierarchy, parameters, statistics, failures, and selections.
-Processing, item-stat, and collection-stat workers are fixed long-lived pools. When background
+work identities, revisions (per-key counters bumped by events), priority, running/queued/failed/ready
+state, and waiters. `WorkspaceIndex` owns completed records, hierarchy, metadata, failures, and
+selections. The five work kinds — `SOURCE_INTERPRET`, `ITEM_PROCESS`, `ITEM_ANALYZE`,
+`COLLECTION_PROCESS`, `COLLECTION_ANALYZE` — run on one fixed long-lived pool. When background
 processing is enabled, background and selected work share the same work node; selection only raises
 priority and joins the existing revision. Memory-only cache sessions never schedule unselected
 background processing.
-Collection-node stats run afterward from published item-stat results.
+Collection-node work runs afterward from published item-analysis results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
 When a view needs item data, it asks the work graph for the selected records. A valid processed stage
@@ -70,7 +71,7 @@ GUI selection, background work, and Makie embedding are described in [gui.md](gu
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
 uses the built-in `DirectorySource <: AbstractDataSource`: the source walks a data root into
-`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`process`/`stats`
+`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`process`/`analyze`
 through the same engine. Nothing downstream can tell a callback project from a hand-written
 project/source pair.
 
@@ -88,7 +89,7 @@ A project/source implementation owns:
 
 - interpreting each source item into logical data items
 - processing one interpreted item
-- computing per-item and per-collection stats
+- computing per-item and per-collection metadata (item/collection `analyze`, collection `process`)
 - defining project-specific visualizers when generic ones are not enough
 
 The workspace owns:
@@ -130,14 +131,14 @@ manage its cache, jobs, or browser state.
 
 ## On-disk metadata
 
-Directory-backed collection parameters and annotations are lean text files (see [storage](storage.md)
+Directory-backed collection metadata and annotations are lean text files (see [storage](storage.md)
 for formats):
 
-- `metadata.txt` — `DirectorySource` source-root parameters with path-fragment matching.
+- `metadata.txt` — `DirectorySource` source-root collection metadata with path-fragment matching.
 - `tags.txt` — tag catalog and per-path assignments.
 
 `metadata.txt` belongs to `DirectorySource`; sources without that file simply have no collection
-parameters. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
+metadata. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
 source still has somewhere to persist user-authored notes/tags/layout. The DuckDB cache itself is
 generated and lives outside the source.
 
