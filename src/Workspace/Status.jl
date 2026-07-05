@@ -52,14 +52,14 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
         return WorkspaceStatus(:fresh, "Loaded",
             @sprintf("%d source items cached (source not checked)", status.cached_source_items),
             false, nothing, errors)
-    elseif status.stale_source_items > 0 || status.new_source_items > 0 ||
-           status.deleted_source_items > 0
-        return WorkspaceStatus(:stale, "Stale",
-            @sprintf("%d stale · %d new · %d deleted", status.stale_source_items,
-                status.new_source_items, status.deleted_source_items),
-            false, nothing, errors)
     end
-    return WorkspaceStatus(:fresh, "Fresh",
-        @sprintf("%d source items · %d items cached", status.total_source_items, item_count),
-        false, nothing, errors)
+    # A settled successful scan has ingested every difference it found, so the cache mirrors the
+    # source; the scan's stale/new/deleted counts describe the work it did, not pending work.
+    changed = status.stale_source_items + status.new_source_items + status.deleted_source_items
+    detail = changed > 0 ?
+        @sprintf("%d source items · %d items cached · last scan: %d stale · %d new · %d deleted",
+            status.total_source_items, item_count, status.stale_source_items,
+            status.new_source_items, status.deleted_source_items) :
+        @sprintf("%d source items · %d items cached", status.total_source_items, item_count)
+    return WorkspaceStatus(:fresh, "Fresh", detail, false, nothing, errors)
 end
