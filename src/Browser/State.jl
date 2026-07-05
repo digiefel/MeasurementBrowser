@@ -235,7 +235,7 @@ Base.@kwdef mutable struct BrowserState
     # When set, the next plot redraw is wrapped in the sampling profiler + cache timers and the full
     # breakdown is printed to the console. Set it via the toolbar button or `request_plot_profile!`.
     profile_next_plot::Bool = false
-    collection_parameters_modal::Bool = true
+    collection_metadata_modal::Bool = true
     modal_root_path::String = ""
     cache_rebuild_modal::Bool = false
     cache_rebuild_path::String = ""

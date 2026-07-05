@@ -12,12 +12,14 @@ import ..ItemIndex:
     insert_item!,
     collection_path_tuple,
     emit_progress
+import ..Projects
 import ..Projects:
     AbstractDataItem,
     AbstractDataSourceItem,
     cacheable,
     fingerprint,
     item_data,
+    metadata,
     source_id,
     source_item_id,
     source_item_path,

@@ -31,13 +31,14 @@ function render_info_window(state::BrowserState)::Nothing
             sel_name = join(selected_path, "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
-            if !isempty(collection_node.parameters)
-                ig.Text("Collection parameters")
-                for k in sort!(collect(keys(collection_node.parameters)); by=String)
-                    ig.BulletText("$(k): $(collection_node.parameters[k])")
+            collection_metadata = merge(collection_node.metadata, collection_node.analysis)
+            if !isempty(collection_metadata)
+                ig.Text("Collection metadata")
+                for k in sort!(collect(keys(collection_metadata)); by=String)
+                    ig.BulletText("$(k): $(collection_metadata[k])")
                 end
             else
-                ig.TextDisabled("No collection parameters found")
+                ig.TextDisabled("No collection metadata found")
             end
         elseif isempty(selected_collections)
             ig.TextDisabled("Select a collection to see details")
@@ -47,9 +48,10 @@ function render_info_window(state::BrowserState)::Nothing
 
         ig.TableNextColumn()
         if length(selected_items) == 1
-            # Show effective parameters (collection-inherited + item-local), exactly what project
-            # callbacks receive.
-            m = Workspace.effective_record(workspace.index.hierarchy, selected_items[1])
+            m = selected_items[1]
+            # The delivered metadata dict (inherited ⊕ entries ⊕ computed layers), exactly what
+            # project callbacks and views receive.
+            delivered = Workspace.delivered_metadata(workspace, m)
             ig.Text("Title: $(m.item_label)")
             ig.Separator()
             kind_text = kind_label(workspace.project, m.kind)
@@ -63,25 +65,13 @@ function render_info_window(state::BrowserState)::Nothing
                 ig.BulletText("Source item: $(m.source_item_id)")
             end
             ig.Separator()
-            if !isempty(m.parameters)
-                ig.Text("Parameters")
-                for k in sort!(collect(keys(m.parameters)); by=String)
-                    v = m.parameters[k]
-                    ig.BulletText("$(k) = $(v)")
+            if !isempty(delivered)
+                ig.Text("Metadata")
+                for k in sort!(collect(keys(delivered)); by=String)
+                    ig.BulletText("$(k) = $(delivered[k])")
                 end
             else
-                ig.TextDisabled("No parameters extracted")
-            end
-
-            if !isempty(m.stats)
-                ig.Separator()
-                ig.Text("Statistics")
-                for k in sort!(collect(keys(m.stats)); by=String)
-                    v = m.stats[k]
-                    ig.BulletText("$(k) = $(v)")
-                end
-            else
-                ig.TextDisabled("No stats computed")
+                ig.TextDisabled("No metadata")
             end
 
         elseif isempty(selected_items)
@@ -96,7 +86,7 @@ function render_info_window(state::BrowserState)::Nothing
 end
 
 """Tell the user when the current source did not provide collection parameters."""
-function render_collection_parameters_modal(state::BrowserState)::Nothing
+function render_collection_metadata_modal(state::BrowserState)::Nothing
     # Dear ImGui cannot hold two sibling root modals open: their per-frame OpenPopup calls replace
     # each other in the popup stack, leaving an invisible modal that swallows all input. Yield to
     # the cache-rebuild modal and appear after it is dismissed.
@@ -107,19 +97,19 @@ function render_collection_parameters_modal(state::BrowserState)::Nothing
     current_root = workspace.cache.identity.source_id
     if state.modal_root_path != current_root
         state.modal_root_path = current_root
-        state.collection_parameters_modal = true
+        state.collection_metadata_modal = true
     end
     # always center
     center = ig.ImVec2(0.5, 0.5)
     @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
 
-    if state.collection_parameters_modal &&
-       !workspace.index.hierarchy.has_collection_parameters
+    if state.collection_metadata_modal &&
+       !workspace.index.hierarchy.has_collection_metadata
         ig.OpenPopup("Collection Parameters Missing")
     end
 
-    opened = state.collection_parameters_modal
+    opened = state.collection_metadata_modal
 
     if @c ig.BeginPopupModal("Collection Parameters Missing", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
         ig.Text("No collection parameters were provided by this source.")
@@ -135,7 +125,7 @@ function render_collection_parameters_modal(state::BrowserState)::Nothing
         end
         ig.EndPopup()
     end
-    state.collection_parameters_modal = opened
+    state.collection_metadata_modal = opened
     return nothing
 end
 

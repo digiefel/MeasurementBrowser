@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 10
+const PROJECT_CACHE_SCHEMA_VERSION = 11
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -16,30 +16,6 @@ _memory_limit_sql(mib::Integer)::String = "SET memory_limit = '$(Int(mib)) MiB'"
 function set_cache_memory_limit!(mib::Integer)::Int
     mib >= 1 || throw(ArgumentError("cache memory limit must be at least 1 MiB"))
     return CACHE_MEMORY_LIMIT_MIB[] = Int(mib)
-end
-
-"""Which dict one metadata (EAV) row belongs to. Stored in the `scope` column."""
-@enum MetaScope::Int8 begin
-    SCOPE_ITEM_PARAMETERS = 0
-    SCOPE_ITEM_BASE_STATS = 1
-    SCOPE_ITEM_STATS = 2
-    SCOPE_NODE_STATS = 3
-end
-
-"""Discriminator naming which [`MetadataValue`](@ref) variant a metadata row holds."""
-@enum MetaVType::Int8 begin
-    VT_BOOL = 1
-    VT_INT = 2
-    VT_FLOAT = 3
-    VT_STRING = 4
-    VT_SYMBOL = 5
-    VT_DATE = 6
-    VT_DATETIME = 7
-    VT_MISSING = 8
-    VT_VBOOL = 9
-    VT_VINT = 10
-    VT_VFLOAT = 11
-    VT_VSTRING = 12
 end
 
 """Error raised when a project cache is missing or does not match the current project."""
@@ -71,8 +47,9 @@ end
 
 @enum CacheResultKind::Int8 begin
     PROCESSING_RESULT = 1
-    ITEM_STATS_RESULT = 2
-    COLLECTION_STATS_RESULT = 3
+    ITEM_ANALYSIS_RESULT = 2
+    COLLECTION_ANALYSIS_RESULT = 3
+    COLLECTION_PROCESS_RESULT = 4
 end
 
 @enum CacheResultStatus::Int8 begin
@@ -97,7 +74,6 @@ struct CachedResultState
     entity::String
     status::Int8
     source_item_id::String
-    input_fingerprint::String
     message::Union{Nothing,String}
 end
 
@@ -106,7 +82,6 @@ CachedResultState(row)::CachedResultState = CachedResultState(
     String(row.entity),
     Int8(row.status),
     String(row.source_item_id),
-    String(row.input_fingerprint),
     _null_to_nothing(row.message),
 )
 
@@ -115,7 +90,9 @@ struct ProjectCacheIndex
     identity::ProjectCacheIdentity
     source::SourceScan
     analysis_errors::Dict{String,String}
-    item_stats::Dict{String,MetadataDict}
+    # The computed layers (analyze output + collection-process overwrite) per item, restored for
+    # items whose governing result is valid: delivered effective minus the entries layer.
+    item_metadata::Dict{String,MetadataDict}
     result_states::Dict{CacheResultKey,CachedResultState}
 end
 
@@ -150,6 +127,7 @@ SourceItemRow(row)::SourceItemRow = SourceItemRow(
 
 struct ItemRow
     id::String
+    item_key::Int64
     source_item_id::String
     item_label::String
     kind::String
@@ -159,43 +137,12 @@ end
 
 ItemRow(row)::ItemRow = ItemRow(
     String(row.id),
+    Int64(row.item_key),
     String(row.source_item_id),
     String(row.item_label),
     String(row.kind),
     Vector{String}(row.collection),
     _null_to_nothing(row.item_fingerprint_hex),
-)
-
-struct MetaRow
-    scope::Int8
-    entity::String
-    key::String
-    vtype::Int8
-    b::Union{Missing,Bool}
-    i::Union{Missing,Int64}
-    d::Union{Missing,Float64}
-    s::Union{Missing,String}
-    ts::Union{Missing,DateTime}
-    lb::Union{Missing,Vector{Bool}}
-    li::Union{Missing,Vector{Int64}}
-    ld::Union{Missing,Vector{Float64}}
-    ls::Union{Missing,Vector{String}}
-end
-
-MetaRow(row)::MetaRow = MetaRow(
-    Int8(row.scope),
-    String(row.entity),
-    String(row.key),
-    Int8(row.vtype),
-    row.b,
-    row.i,
-    row.d,
-    row.s,
-    row.ts,
-    _meta_column(Bool, row.lb),
-    _meta_column(Int64, row.li),
-    _meta_column(Float64, row.ld),
-    _meta_column(String, row.ls),
 )
 
 struct FailureRow
@@ -241,12 +188,21 @@ mutable struct CacheDB <: AbstractCacheDB
     metrics::BuildMetrics
     source_items::RowStore{String,SourceItemRow}
     items::RowStore{String,ItemRow}
-    metadata::RowStore{Tuple{Int8,String,String},MetaRow}
+    item_metadata::WideRowStore{Int64}
+    item_effective_metadata::WideRowStore{Int64}
+    collection_metadata::WideRowStore{String}
     failures::RowStore{Tuple{String,String},FailureRow}
     result_states::RowStore{Tuple{Int8,String},CachedResultState}
     payload::TabularFamilyStore
     interpreted::MemoryStore{String,AbstractDataItem}
     processed_memory::MemoryStore{String,AbstractDataItem}
+    # One integer surrogate per item id, shared with the payload store; minted at interpretation.
+    item_keys::Dict{String,Int64}
+    next_item_key::Int64
+    key_lock::ReentrantLock
+    # The signature of the item_effective_metadata columns backing the query view; the view is
+    # recreated only when it changes.
+    query_view_signature::Vector{Symbol}
     profiler::Profiling.ProfileSession
 end
 
@@ -312,14 +268,16 @@ function open_cache_db(
             DBInterface.close!(connection)
         end
         payload = TabularFamilyStore(db; profiler, row_limit=CACHE_BUFFER_ROW_LIMIT)
+        item_keys, next_item_key = _load_item_keys(db)
         return CacheDB(
             identity,
             db,
             metrics,
             RowStore{String,SourceItemRow}(db, "source_items", ("id",); profiler),
             RowStore{String,ItemRow}(db, "items", ("id",); profiler),
-            RowStore{Tuple{Int8,String,String},MetaRow}(
-                db, "metadata", ("scope", "entity", "key"); profiler),
+            WideRowStore{Int64}(db, "item_metadata", "item_key"; profiler),
+            WideRowStore{Int64}(db, "item_effective_metadata", "item_key"; profiler),
+            WideRowStore{String}(db, "collection_metadata", "collection_key"; profiler),
             RowStore{Tuple{String,String},FailureRow}(
                 db, "item_failures", ("item_id", "source_item_id"); profiler),
             RowStore{Tuple{Int8,String},CachedResultState}(
@@ -327,11 +285,44 @@ function open_cache_db(
             payload,
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+            item_keys,
+            next_item_key,
+            ReentrantLock(),
+            Symbol[],
             profiler,
         )
     catch
         DBInterface.close!(db)
         rethrow()
+    end
+end
+
+"""Load the committed item-id → surrogate map and the next free surrogate from the `items` table."""
+function _load_item_keys(db::DuckDB.DB)::Tuple{Dict{String,Int64},Int64}
+    connection = DBInterface.connect(db)
+    try
+        item_keys = Dict{String,Int64}()
+        for row in DBInterface.execute(connection, "SELECT id, item_key FROM items")
+            item_keys[String(row.id)] = Int64(row.item_key)
+        end
+        next = isempty(item_keys) ? Int64(1) : maximum(values(item_keys)) + 1
+        return item_keys, next
+    finally
+        DBInterface.close!(connection)
+    end
+end
+
+"""Mint or resolve the integer surrogate for one item id. Minting happens only at interpretation."""
+function item_key!(cache::CacheDB, id::AbstractString; mint::Bool=false)::Int64
+    key = String(id)
+    return lock(cache.key_lock) do
+        existing = get(cache.item_keys, key, nothing)
+        existing !== nothing && return existing
+        mint || error("no item_key minted for item '$key'")
+        minted = cache.next_item_key
+        cache.next_item_key += 1
+        cache.item_keys[key] = minted
+        minted
     end
 end
 
@@ -373,21 +364,6 @@ function _buffer_rows(item::AbstractDataItem)::Int
     return data isa AbstractDataFrame ? nrow(data) : 1
 end
 
-"""Stable digest of the item identity and effective parameters consumed by derived work."""
-result_input_fingerprint(value)::String =
-    something(_encode_fingerprint(value)[2])
-
-function result_input_fingerprint(record::ItemRecord)::String
-    return result_input_fingerprint((
-        record.source_item_id,
-        record.source_item_fingerprint,
-        record.id,
-        record.item_fingerprint,
-        sort!(collect(record.parameters); by=first),
-        sort!(collect(record.stats); by=first),
-    ))
-end
-
 """Create the cache tables if they do not already exist."""
 function ensure_schema!(connection)::Nothing
     DBInterface.execute(connection, """
@@ -397,14 +373,31 @@ function ensure_schema!(connection)::Nothing
     """)
     DBInterface.execute(connection, create_table_sql(SourceItemRow, "source_items", (:id,)))
     DBInterface.execute(connection, create_table_sql(ItemRow, "items", (:id,)))
-    DBInterface.execute(connection, create_table_sql(MetaRow, "metadata", (:scope, :entity, :key)))
     DBInterface.execute(connection, create_table_sql(FailureRow, "item_failures", (:item_id, :source_item_id)))
     DBInterface.execute(connection, create_table_sql(CachedResultState, "result_states", (:kind, :entity)))
     DBInterface.execute(connection, """
+        CREATE TABLE IF NOT EXISTS wide_columns(
+            table_name TEXT,
+            column_name TEXT,
+            vtype TINYINT,
+            PRIMARY KEY (table_name, column_name))
+    """)
+    DBInterface.execute(connection, """
+        CREATE TABLE IF NOT EXISTS item_metadata(item_key BIGINT PRIMARY KEY)
+    """)
+    DBInterface.execute(connection, """
+        CREATE TABLE IF NOT EXISTS item_effective_metadata(item_key BIGINT PRIMARY KEY)
+    """)
+    DBInterface.execute(connection, """
+        CREATE TABLE IF NOT EXISTS collection_metadata(collection_key TEXT PRIMARY KEY)
+    """)
+    DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS item_data(
-            item_id TEXT PRIMARY KEY,
+            item_key BIGINT,
+            stage TINYINT,
             storage_id USMALLINT,
             seq UINTEGER,
+            PRIMARY KEY (item_key, stage),
             UNIQUE (storage_id, seq))
     """)
     DBInterface.execute(connection, """
@@ -424,38 +417,35 @@ Store one source item's interpretation index rows: its identity row plus each re
 
 The identity row belongs to the interpretation, not to its records: a source item that interprets
 into zero records still persists its fingerprint, so a reopen recognizes it as unchanged instead of
-rediscovering it as new.
+rediscovering it as new. Returns type-conflict messages for keys dropped from the metadata rows.
 """
 function store_interpreted_records!(
     cache::CacheDB,
     source_item::AbstractDataSourceItem,
     records::Vector{ItemRecord},
-)::Nothing
+    effective::Vector{<:AbstractDataItem},
+)::Vector{String}
     started = time_ns()
     id = source_item_id(source_item)
     hex, hash = _encode_fingerprint(fingerprint(source_item))
     append!(cache.source_items, id, SourceItemRow(
         id, hex, hash, source_item_path(source_item), source_item_timestamp(source_item)))
-    for record in records
+    dropped = WideConflict[]
+    for (record, effective_item) in zip(records, effective)
+        key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
-            ItemRow(record.id, record.source_item_id, record.item_label, String(record.kind),
-                record.collection, _serialize_hex(record.item_fingerprint)))
-        for (key, value) in record.parameters
-            append!(cache.metadata, (Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key)),
-                metadata_value_to_row(Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key), value))
-        end
-        for (key, value) in record.stats
-            append!(cache.metadata, (Int8(SCOPE_ITEM_BASE_STATS), record.id, String(key)),
-                metadata_value_to_row(
-                    Int8(SCOPE_ITEM_BASE_STATS), record.id, String(key), value))
-        end
+            ItemRow(record.id, key, record.source_item_id, record.item_label,
+                String(record.kind), record.collection, _serialize_hex(record.item_fingerprint)))
+        append!(dropped, edit!(cache.item_metadata, key, record.metadata))
+        append!(dropped, edit!(
+            cache.item_effective_metadata, key, metadata_dict(Projects.metadata(effective_item))))
     end
     record_cache_phase!(
         cache.metrics.interpreted_write_ns,
         cache.metrics.interpreted_writes,
         started,
     )
-    return nothing
+    return _conflict_messages(unique(dropped))
 end
 
 """Store one source item's interpreted data in the memory-only interpreted buffer."""
@@ -474,45 +464,61 @@ function store_interpreted_data!(
     return nothing
 end
 
-"""Store one source item's interpreted result: records to disk-backed buffers, payloads to memory."""
+"""
+Store one source item's interpreted result: records to disk-backed buffers, payloads to memory.
+
+`data` carries each record's effective (inherited ⊕ entries) metadata and its interpreted payload:
+the metadata seeds `item_effective_metadata`, the payload the memory buffer. Returns the
+interpretation-time type-conflict messages.
+"""
 function store_interpreted!(cache::AbstractCacheDB, source_item::AbstractDataSourceItem,
-        records::Vector{ItemRecord}, data::Vector{<:AbstractDataItem})::Nothing
-    store_interpreted_records!(cache, source_item, records)
+        records::Vector{ItemRecord}, data::Vector{<:AbstractDataItem})::Vector{String}
+    conflicts = store_interpreted_records!(cache, source_item, records, data)
     store_interpreted_data!(cache, records, data)
-    return nothing
+    return conflicts
 end
 
-"""Store one processed result in the payload family when cacheable, else in the memory-only processed buffer. Non-cacheable items are held like interpreted ones (docs/cache.md "Two backing modes")."""
+store_interpreted_records!(
+    ::MemoryCacheDB, ::AbstractDataSourceItem, ::Vector{ItemRecord},
+    ::Vector{<:AbstractDataItem},
+)::Vector{String} = String[]
+
+"""
+Store one processed payload for a record at a payload stage (`:processed` or `:collection_processed`).
+
+Cacheable DataFrame payloads land in the payload family; non-cacheable ones stay in the memory-only
+processed buffer. Only the `:processed` stage tracks the `PROCESSING_RESULT` ledger.
+"""
 function store_processed!(
     cache::CacheDB,
     record::ItemRecord,
-    item::AbstractDataItem,
+    item::AbstractDataItem;
+    stage::Symbol=:processed,
 )::Nothing
+    key = item_key!(cache, record.id)
     payload = item_data(item)
     disk = cacheable(item) && payload isa AbstractDataFrame && !isempty(names(payload))
     if disk
         started = time_ns()
-        delete!(cache.processed_memory, record.id)
-        append!(cache.payload, record.id, payload)
+        stage === :processed && delete!(cache.processed_memory, record.id)
+        append!(cache.payload, (key, _payload_stage_code(stage)), payload)
         record_cache_phase!(
             cache.metrics.processed_write_ns,
             cache.metrics.processed_writes,
             started,
         )
-        input_fingerprint = result_input_fingerprint(record)
-        edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id),
+        stage === :processed && edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id),
             CachedResultState(
                 Int8(PROCESSING_RESULT),
                 record.id,
                 Int8(RESULT_READY),
                 record.source_item_id,
-                input_fingerprint,
                 nothing,
             ))
     else
-        delete!(cache.payload, record.id)
-        append!(cache.processed_memory, record.id, item)
-        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+        delete!(cache.payload, (key, _payload_stage_code(stage)))
+        stage === :processed && append!(cache.processed_memory, record.id, item)
+        stage === :processed && delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
     end
     return nothing
 end
@@ -520,128 +526,102 @@ end
 function store_processed!(
     cache::MemoryCacheDB,
     record::ItemRecord,
-    item::AbstractDataItem,
+    item::AbstractDataItem;
+    stage::Symbol=:processed,
 )::Nothing
-    append!(cache.processed_memory, record.id, item)
+    stage === :processed && append!(cache.processed_memory, record.id, item)
     return nothing
 end
 
 """Persist one independent failed work result."""
-function store_result_failure!(cache::CacheDB, key::CacheResultKey,
-        source_item_id::AbstractString, input_fingerprint::AbstractString,
+function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
+        entity::AbstractString, source_item_id::AbstractString,
         message::AbstractString)::Nothing
-    edit!(cache.result_states, (Int8(key.kind), key.entity),
-        CachedResultState(Int8(key.kind), key.entity, Int8(RESULT_FAILED),
-            String(source_item_id), String(input_fingerprint), String(message)))
+    edit!(cache.result_states, (Int8(kind), String(entity)),
+        CachedResultState(Int8(kind), String(entity), Int8(RESULT_FAILED),
+            String(source_item_id), String(message)))
     return nothing
 end
 
-"""Persist one item-stat result, including a successful empty result."""
-function store_item_stats!(cache::CacheDB, record::ItemRecord, stats::AbstractDict)::Nothing
+"""Format wide-column type conflicts as the messages the failure channels surface."""
+_conflict_messages(dropped::Vector{WideConflict})::Vector{String} = String[
+    "metadata :$name expected $(_vtype_julia(registered)), got $(_vtype_julia(incoming)); " *
+    "value dropped"
+    for (name, registered, incoming) in dropped
+]
+
+"""Persist one item's delivered metadata. Returns type-conflict messages for dropped keys."""
+function store_item_metadata!(
+    cache::CacheDB, record::ItemRecord, effective::AbstractDict,
+)::Vector{String}
     started = time_ns()
-    for (key, value) in metadata_dict(stats)
-        edit!(cache.metadata, (Int8(SCOPE_ITEM_STATS), record.id, String(key)),
-            metadata_value_to_row(Int8(SCOPE_ITEM_STATS), record.id, String(key), value))
-    end
-    result_key = CacheResultKey(ITEM_STATS_RESULT, record.id)
-    edit!(cache.result_states, (Int8(result_key.kind), result_key.entity),
-        CachedResultState(Int8(result_key.kind), result_key.entity, Int8(RESULT_READY),
-            record.source_item_id, result_input_fingerprint(record), nothing))
+    key = item_key!(cache, record.id)
+    dropped = edit!(cache.item_effective_metadata, key, metadata_dict(effective))
+    edit!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id),
+        CachedResultState(Int8(ITEM_ANALYSIS_RESULT), record.id, Int8(RESULT_READY),
+            record.source_item_id, nothing))
     record_cache_phase!(
-        cache.metrics.stats_write_ns,
-        cache.metrics.stats_writes,
+        cache.metrics.metadata_write_ns,
+        cache.metrics.metadata_writes,
         started,
     )
-    return nothing
+    return _conflict_messages(dropped)
 end
 
-"""Persist one collection-stat result, including a successful empty result."""
-function store_collection_stats!(
-    cache::CacheDB, collection_key::AbstractString, input_fingerprint::AbstractString,
-    stats::AbstractDict,
+"""Persist one collection's analyze output. Returns type-conflict messages for dropped keys."""
+function store_collection_metadata!(
+    cache::CacheDB, collection_key::AbstractString, analysis::AbstractDict,
+)::Vector{String}
+    entity = String(collection_key)
+    dropped = edit!(cache.collection_metadata, entity, metadata_dict(analysis))
+    edit!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), entity),
+        CachedResultState(
+            Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing))
+    return _conflict_messages(dropped)
+end
+
+"""Persist one collection-process result state (payloads and member metadata land separately)."""
+function store_collection_process_result!(
+    cache::CacheDB, collection_key::AbstractString,
 )::Nothing
     entity = String(collection_key)
-    for (key, value) in metadata_dict(stats)
-        edit!(cache.metadata, (Int8(SCOPE_NODE_STATS), entity, String(key)),
-            metadata_value_to_row(Int8(SCOPE_NODE_STATS), entity, String(key), value))
-    end
-    result_key = CacheResultKey(COLLECTION_STATS_RESULT, entity)
-    edit!(cache.result_states, (Int8(result_key.kind), result_key.entity),
+    edit!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), entity),
         CachedResultState(
-            Int8(result_key.kind), result_key.entity, Int8(RESULT_READY), "",
-            String(input_fingerprint), nothing))
+            Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing))
     return nothing
 end
-
-"""Memory cache has no durable record tables; records are published to `WorkspaceIndex`."""
-store_interpreted_records!(
-    ::MemoryCacheDB, ::AbstractDataSourceItem, ::Vector{ItemRecord},
-)::Nothing = nothing
 
 store_result_failure!(
-    ::MemoryCacheDB, ::CacheResultKey, ::AbstractString, ::AbstractString, ::AbstractString,
-)::Nothing =
-    nothing
-store_item_stats!(::MemoryCacheDB, ::ItemRecord, ::AbstractDict)::Nothing = nothing
-store_collection_stats!(
-    ::MemoryCacheDB, ::AbstractString, ::AbstractString, ::AbstractDict,
+    ::MemoryCacheDB, ::CacheResultKind, ::AbstractString, ::AbstractString, ::AbstractString,
 )::Nothing = nothing
+store_item_metadata!(::MemoryCacheDB, ::ItemRecord, ::AbstractDict)::Vector{String} = String[]
+store_collection_metadata!(::MemoryCacheDB, ::AbstractString, ::AbstractDict)::Vector{String} =
+    String[]
+store_collection_process_result!(::MemoryCacheDB, ::AbstractString)::Nothing = nothing
 
-"""Delete every cached descendant of one source item through typed buffer mutations."""
-function delete_source_item!(
-    cache::CacheDB,
-    source_item_id::AbstractString,
-    item_ids::Vector{String},
-    metadata_keys::Vector{Tuple{Int8,String,String}},
-    failure_keys::Vector{Tuple{String,String}},
-    result_keys::Vector{Tuple{Int8,String}},
-)::Nothing
-    source_id = String(source_item_id)
-    delete!(cache.source_items, source_id)
-    for item_id in item_ids
-        delete!(cache.items, item_id)
-        delete!(cache.payload, item_id)
-        delete!(cache.interpreted, item_id)
-        delete!(cache.processed_memory, item_id)
-    end
-    for key in metadata_keys
-        delete!(cache.metadata, key)
-    end
-    for key in failure_keys
-        delete!(cache.failures, key)
-    end
-    for key in result_keys
-        delete!(cache.result_states, key)
-    end
-    return nothing
-end
-
-"""Delete every cached result owned by one published source item."""
+"""Delete every cached result owned by one published source item, keyed by item surrogate."""
 function delete_source_item!(
     cache::CacheDB,
     source_item_id::AbstractString,
     old_records::Vector{ItemRecord},
 )::Nothing
     source_id = String(source_item_id)
-    item_ids = String[record.id for record in old_records]
-    metadata_keys = Tuple{Int8,String,String}[]
-    failure_keys = Tuple{String,String}[]
-    result_keys = Tuple{Int8,String}[]
+    delete!(cache.source_items, source_id)
     for record in old_records
-        delete_by_key_prefix!(cache.metadata, (Int8(SCOPE_ITEM_STATS), record.id))
-        for key in keys(record.parameters)
-            push!(metadata_keys, (Int8(SCOPE_ITEM_PARAMETERS), record.id, String(key)))
-        end
-        for key in keys(record.stats)
-            push!(metadata_keys, (Int8(SCOPE_ITEM_BASE_STATS), record.id, String(key)))
-        end
-        push!(failure_keys, (record.id, source_id))
-        push!(result_keys, (Int8(PROCESSING_RESULT), record.id))
-        push!(result_keys, (Int8(ITEM_STATS_RESULT), record.id))
+        key = item_key!(cache, record.id)
+        delete!(cache.items, record.id)
+        delete!(cache.item_metadata, key)
+        delete!(cache.item_effective_metadata, key)
+        delete!(cache.payload, (key, PAYLOAD_STAGE_PROCESSED))
+        delete!(cache.payload, (key, PAYLOAD_STAGE_COLLECTION_PROCESSED))
+        delete!(cache.interpreted, record.id)
+        delete!(cache.processed_memory, record.id)
+        delete!(cache.failures, (record.id, source_id))
+        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+        delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
     end
-    push!(failure_keys, (source_id, source_id))
-    return delete_source_item!(
-        cache, source_id, item_ids, metadata_keys, failure_keys, result_keys)
+    delete!(cache.failures, (source_id, source_id))
+    return nothing
 end
 
 function delete_source_item!(
@@ -656,55 +636,30 @@ function delete_source_item!(
     return nothing
 end
 
-"""Delete cached statistics for collections whose published stats are invalid."""
-function delete_collection_stats!(
+"""Delete cached analysis for collections whose published metadata is invalid."""
+function delete_collection_metadata!(
     cache::CacheDB,
     collection_keys::Vector{String},
 )::Nothing
     for collection_key in unique(collection_keys)
-        delete_by_key_prefix!(cache.metadata, (Int8(SCOPE_NODE_STATS), collection_key))
-        delete!(cache.result_states, (Int8(COLLECTION_STATS_RESULT), collection_key))
+        delete!(cache.collection_metadata, collection_key)
+        delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
+        delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), collection_key))
     end
     return nothing
 end
 
-delete_collection_stats!(::MemoryCacheDB, ::Vector{String})::Nothing = nothing
-
-"""Discard derived item work while preserving its reusable interpreted record and data."""
-function invalidate_item_results!(
-    cache::CacheDB,
-    records::Vector{ItemRecord},
-)::Nothing
-    for record in records
-        delete!(cache.payload, record.id)
-        delete!(cache.processed_memory, record.id)
-        delete_by_key_prefix!(cache.metadata, (Int8(SCOPE_ITEM_STATS), record.id))
-        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
-        delete!(cache.result_states, (Int8(ITEM_STATS_RESULT), record.id))
-    end
-    return nothing
-end
-
-function invalidate_item_results!(
-    cache::MemoryCacheDB,
-    records::Vector{ItemRecord},
-)::Nothing
-    for record in records
-        delete!(cache.processed_memory, record.id)
-    end
-    return nothing
-end
+delete_collection_metadata!(::MemoryCacheDB, ::Vector{String})::Nothing = nothing
 
 """Aggregate staged durable keys and payload rows."""
 function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}}
     items = 0
     rows = 0
     for buffer in
-        (cache.source_items, cache.items, cache.metadata, cache.failures,
-         cache.result_states, cache.payload)
+        (cache.source_items, cache.items, cache.item_metadata, cache.item_effective_metadata,
+         cache.collection_metadata, cache.failures, cache.result_states, cache.payload)
         lock(buffer.flush_condition) do
-            items += length(buffer.queued) + length(buffer.writing) +
-                _pending_prefix_count(buffer)
+            items += length(buffer.queued) + length(buffer.writing)
             rows += buffer.queued_rows + buffer.writing_rows
         end
     end
@@ -720,9 +675,14 @@ function cache_has_pending_writes(cache::AbstractCacheDB)::Bool
     return pending.items > 0 || pending.rows > 0
 end
 
-"""Read item data through the buffer (memory first, then the database for processed). Returns a vector aligned to `records` of loaded items or `nothing` on a miss; the caller falls back to the source. Interpreted payloads are memory-only, so a memory miss is final."""
+"""
+Read item data through the buffer for a stage (`:interpreted`, `:processed`, or
+`:collection_processed`). Returns a vector aligned to `records` of loaded items or `nothing` on a
+miss; the caller falls back to the source. Interpreted payloads are memory-only, so a memory miss is
+final. `:collection_processed` is disk-only (rewrites are DataFrames).
+"""
 function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
-    stage in (:interpreted, :processed) ||
+    stage in (:interpreted, :processed, :collection_processed) ||
         throw(ArgumentError("unknown item-data cache stage '$stage'"))
     isempty(records) && return Any[]
 
@@ -733,32 +693,36 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     # Raw payload reads: at runtime the work graph decides whether a stored result is current
     # (a `:ready` node at the record's revision), and stale payloads are deleted on invalidation.
     # The `result_states` ledger is only read once, at load, to seed the graph.
+    stage_code = _payload_stage_code(stage)
     loaded = Vector{Any}(undef, length(records))
-    disk_ids = String[]
+    disk_keys = Tuple{Int64,Int8}[]
     for (index, record) in pairs(records)
-        held = read(cache.processed_memory, record.id)
-        if held !== nothing
-            loaded[index] = held
-            continue
+        if stage === :processed
+            held = read(cache.processed_memory, record.id)
+            if held !== nothing
+                loaded[index] = held
+                continue
+            end
         end
-        push!(disk_ids, record.id)
+        push!(disk_keys, (item_key!(cache, record.id), stage_code))
         loaded[index] = nothing
     end
 
-    disk_data = isempty(disk_ids) ?
-        Dict{String,Union{Nothing,AbstractDataFrame}}() :
-        read(cache.payload, unique(disk_ids))
+    disk_data = isempty(disk_keys) ?
+        Dict{Tuple{Int64,Int8},Union{Nothing,AbstractDataFrame}}() :
+        read(cache.payload, unique(disk_keys))
     for (index, record) in pairs(records)
         loaded[index] !== nothing && continue
-        data = get(disk_data, record.id, nothing)
+        data = get(disk_data, (item_key!(cache, record.id), stage_code), nothing)
         loaded[index] = data === nothing ? nothing : DataItem(record, data)
     end
     return loaded
 end
 
 function read_item_data(cache::MemoryCacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
-    stage in (:interpreted, :processed) ||
+    stage in (:interpreted, :processed, :collection_processed) ||
         throw(ArgumentError("unknown item-data cache stage '$stage'"))
+    stage === :collection_processed && return Any[nothing for _ in records]
     store = stage === :interpreted ? cache.interpreted : cache.processed_memory
     return Any[read(store, record.id) for record in records]
 end
@@ -767,7 +731,8 @@ end
 function close_cache_db!(cachedb::CacheDB)::Nothing
     failure::Union{Nothing,Exception} = nothing
     for buffer in
-        (cachedb.source_items, cachedb.items, cachedb.metadata, cachedb.failures,
+        (cachedb.source_items, cachedb.items, cachedb.item_metadata,
+         cachedb.item_effective_metadata, cachedb.collection_metadata, cachedb.failures,
          cachedb.result_states, cachedb.payload, cachedb.interpreted, cachedb.processed_memory)
         try
             close!(buffer)
@@ -813,9 +778,6 @@ end
 """Map a SQL NULL (`missing`) to `nothing`, passing other values through."""
 _null_to_nothing(value) = ismissing(value) ? nothing : value
 
-"""Coerce one metadata list column to its stored element type, preserving SQL NULL as `missing`."""
-_meta_column(::Type{T}, value) where {T} = ismissing(value) ? missing : Vector{T}(value)
-
 """Hex-text storage and content hash for one fingerprint, as `(hex, hash)` (`nothing` when absent)."""
 function _encode_fingerprint(fingerprint)::Tuple{Union{Nothing,String},Union{Nothing,String}}
     fingerprint === nothing && return (nothing, nothing)
@@ -823,59 +785,7 @@ function _encode_fingerprint(fingerprint)::Tuple{Union{Nothing,String},Union{Not
     return (bytes2hex(bytes), bytes2hex(sha1(bytes)))
 end
 
-"""Encode one [`MetadataValue`](@ref) into a flat [`MetaRow`](@ref): the active typed column is set, the rest stay SQL NULL. Decode with [`metadata_row_to_value`](@ref)."""
-function metadata_value_to_row(scope::Int8, entity::String, key::String, value)::MetaRow
-    b = missing; i = missing; d = missing; s = missing; ts = missing
-    lb = missing; li = missing; ld = missing; ls = missing
-    vtype = if value isa Bool
-        b = value; VT_BOOL
-    elseif value isa Int64
-        i = value; VT_INT
-    elseif value isa Float64
-        d = value; VT_FLOAT
-    elseif value isa String
-        s = value; VT_STRING
-    elseif value isa Symbol
-        s = String(value); VT_SYMBOL
-    elseif value isa Date
-        ts = DateTime(value); VT_DATE
-    elseif value isa DateTime
-        ts = value; VT_DATETIME
-    elseif value === missing
-        VT_MISSING
-    elseif value isa Vector{Bool}
-        lb = value; VT_VBOOL
-    elseif value isa Vector{Int64}
-        li = value; VT_VINT
-    elseif value isa Vector{Float64}
-        ld = value; VT_VFLOAT
-    elseif value isa Vector{String}
-        ls = value; VT_VSTRING
-    else
-        error("No metadata encoding for $(typeof(value))")
-    end
-    return MetaRow(scope, entity, key, Int8(vtype), b, i, d, s, ts, lb, li, ld, ls)
-end
-
-"""Reconstruct one [`MetadataValue`](@ref) from a flat [`MetaRow`](@ref) at the domain edge."""
-function metadata_row_to_value(row::MetaRow)::MetadataValue
-    vtype = MetaVType(row.vtype)
-    vtype === VT_BOOL && return row.b
-    vtype === VT_INT && return row.i
-    vtype === VT_FLOAT && return row.d
-    vtype === VT_STRING && return row.s
-    vtype === VT_SYMBOL && return Symbol(row.s)
-    vtype === VT_DATE && return Date(row.ts)
-    vtype === VT_DATETIME && return row.ts
-    vtype === VT_MISSING && return missing
-    vtype === VT_VBOOL && return Vector{Bool}(row.lb)
-    vtype === VT_VINT && return Vector{Int64}(row.li)
-    vtype === VT_VFLOAT && return Vector{Float64}(row.ld)
-    vtype === VT_VSTRING && return Vector{String}(row.ls)
-    error("Unknown metadata vtype $vtype")
-end
-
-# Index construction + comparison (in memory; unchanged from the previous cache)
+# Index construction + comparison (in memory)
 
 """Build the complete cache index for one finished source scan. Analysis failures stay attached to their source items; successful items stay available."""
 function ProjectCacheIndex(
@@ -896,14 +806,17 @@ function ProjectCacheIndex(
     )
 end
 
-# Incremental writing (per source item, as the scan streams)
-
-"""Delete every index and item-data row, leaving an empty (but schema-valid) cache for a rebuild."""
+"""Delete every index and item-data row and reset the item-key map, leaving a schema-valid cache."""
 function clear_cache_index!(cachedb::CacheDB)::Nothing
     for buffer in
-        (cachedb.source_items, cachedb.items, cachedb.metadata, cachedb.failures,
+        (cachedb.source_items, cachedb.items, cachedb.item_metadata,
+         cachedb.item_effective_metadata, cachedb.collection_metadata, cachedb.failures,
          cachedb.result_states, cachedb.payload, cachedb.interpreted, cachedb.processed_memory)
         clear!(buffer)
+    end
+    lock(cachedb.key_lock) do
+        empty!(cachedb.item_keys)
+        cachedb.next_item_key = Int64(1)
     end
     connection = DBInterface.connect(cachedb.db)
     try
@@ -913,6 +826,8 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
     end
     return nothing
 end
+
+# Incremental writing (per source item, as the scan streams)
 
 function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
     clear!(cachedb.interpreted)
@@ -994,21 +909,45 @@ function cache_built(cache::CacheDB)::Bool
     end
 end
 
-"""Group the metadata buffer's complete logical view."""
-function _load_metadata(cache::CacheDB)::Dict{Tuple{MetaScope,String},MetadataDict}
-    grouped = Dict{Tuple{MetaScope,String},MetadataDict}()
-    for row in values(read(cache.metadata))
-        scope = MetaScope(row.scope)
-        dict = get!(() -> MetadataDict(), grouped, (scope, row.entity))
-        dict[Symbol(row.key)] = metadata_row_to_value(row)
+"""Persist the source's collection-metadata input fingerprints for reopen freshness diffing."""
+function store_collection_metadata_fingerprints!(
+    cache::CacheDB, fingerprints::AbstractDict{String},
+)::Nothing
+    hex = _serialize_hex(Dict{String,Any}(fingerprints))
+    connection = DBInterface.connect(cache.db)
+    try
+        DBInterface.execute(
+            DBInterface.prepare(connection,
+                "INSERT INTO meta VALUES ('collection_metadata_fingerprints', ?) " *
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value"),
+            (hex,))
+    finally
+        DBInterface.close!(connection)
     end
-    return grouped
+    return nothing
 end
 
-"""Reconstruct the full `SourceScan` stored in one DuckDB cache."""
+store_collection_metadata_fingerprints!(::MemoryCacheDB, ::AbstractDict{String})::Nothing = nothing
+
+function _load_collection_metadata_fingerprints(cache::CacheDB)::Dict{String,Any}
+    connection = DBInterface.connect(cache.db)
+    try
+        rows = String[String(row.value) for row in DBInterface.execute(
+            connection,
+            "SELECT value FROM meta WHERE key = 'collection_metadata_fingerprints'")]
+        isempty(rows) && return Dict{String,Any}()
+        decoded = _deserialize_hex(only(rows))
+        return decoded === nothing ? Dict{String,Any}() : Dict{String,Any}(decoded)
+    finally
+        DBInterface.close!(connection)
+    end
+end
+
+"""Reconstruct the full `SourceScan` stored in one DuckDB cache (entries-layer metadata only)."""
 function _load_source_scan(
     cache::CacheDB,
-    metadata::Dict{Tuple{MetaScope,String},MetadataDict},
+    item_metadata_by_key::Dict{Int64,MetadataDict},
+    collection_analysis::Dict{String,MetadataDict},
 )::SourceScan
     identity = cache.identity
     _load_meta(cache)
@@ -1040,8 +979,7 @@ function _load_source_scan(
             item_label=row.item_label,
             kind=Symbol(row.kind),
             collection=row.collection,
-            parameters=get(metadata, (SCOPE_ITEM_PARAMETERS, row.id), MetadataDict()),
-            stats=get(metadata, (SCOPE_ITEM_BASE_STATS, row.id), MetadataDict()),
+            metadata=get(item_metadata_by_key, row.item_key, MetadataDict()),
             item_fingerprint=_deserialize_hex(row.item_fingerprint_hex),
         ))
     end
@@ -1054,11 +992,10 @@ function _load_source_scan(
     for record in records
         insert_item!(hierarchy, record)
     end
-    for ((scope, entity), dict) in metadata
-        scope == SCOPE_NODE_STATS || continue
+    for (entity, dict) in collection_analysis
         node = get(hierarchy.index, collection_path_tuple(entity), nothing)
         node === nothing && continue
-        merge!(node.stats, dict)
+        merge!(node.analysis, dict)
     end
     sort!(hierarchy)
 
@@ -1066,6 +1003,7 @@ function _load_source_scan(
         identity.source_id,
         identity.source_label,
         fingerprints,
+        _load_collection_metadata_fingerprints(cache),
         hierarchy,
         failures,
     )
@@ -1080,13 +1018,26 @@ function load_cache_index(
     index = @profile_span cachedb.profiler :cache :load_index ProfileAttributes(
         source_id=identity.source_id,
     ) begin
-        metadata = _load_metadata(cachedb)
-        base = ProjectCacheIndex(identity, _load_source_scan(cachedb, metadata))
-        item_stats = Dict{String,MetadataDict}(
-            entity => dict
-            for ((scope, entity), dict) in metadata
-            if scope === SCOPE_ITEM_STATS
-        )
+        entries_by_key = read(cachedb.item_metadata)
+        effective_by_key = read(cachedb.item_effective_metadata)
+        collection_analysis = read(cachedb.collection_metadata)
+        key_to_id = Dict{Int64,String}(
+            row.item_key => row.id for row in values(read(cachedb.items)))
+        # The computed layer is the delivered effective minus the entries layer: what analyze and
+        # collection-process added, restored per item id.
+        item_metadata = Dict{String,MetadataDict}()
+        for (key, effective) in effective_by_key
+            id = get(key_to_id, key, nothing)
+            id === nothing && continue
+            entries = get(entries_by_key, key, MetadataDict())
+            computed = MetadataDict()
+            for (name, value) in effective
+                get(entries, name, nothing) == value || (computed[name] = value)
+            end
+            isempty(computed) || (item_metadata[id] = computed)
+        end
+        base = ProjectCacheIndex(
+            identity, _load_source_scan(cachedb, entries_by_key, collection_analysis))
         result_states = Dict{CacheResultKey,CachedResultState}()
         for state in values(read(cachedb.result_states))
             result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
@@ -1095,7 +1046,7 @@ function load_cache_index(
             base.identity,
             base.source,
             base.analysis_errors,
-            item_stats,
+            item_metadata,
             result_states,
         )
     end
@@ -1109,4 +1060,50 @@ function load_cache_index(
         current_source_item=index.identity.cache_path,
     )
     return index
+end
+
+# Query surface
+
+"""
+Return the ids of items whose delivered effective metadata satisfies a SQL predicate.
+
+Queries committed DB state over `items LEFT JOIN item_effective_metadata USING (item_key)`; the
+buffer's ≤2s staleness applies. Columns are exactly the metadata names users coded.
+"""
+function query_items(cache::CacheDB, predicate::AbstractString)::Vector{String}
+    _ensure_items_view!(cache)
+    connection = DBInterface.connect(cache.db)
+    try
+        return String[String(row.id) for row in DBInterface.execute(
+            connection, "SELECT id FROM mb_item_query WHERE $(predicate)")]
+    finally
+        DBInterface.close!(connection)
+    end
+end
+
+query_items(::MemoryCacheDB, ::AbstractString)::Vector{String} = String[]
+
+"""Recreate the query view when the effective-metadata column signature changed."""
+function _ensure_items_view!(cache::CacheDB)::Nothing
+    connection = DBInterface.connect(cache.db)
+    try
+        signature = Symbol[]
+        for row in DBInterface.execute(connection, """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'main' AND table_name = 'item_effective_metadata'
+            ORDER BY ordinal_position
+        """)
+            push!(signature, Symbol(String(row.column_name)))
+        end
+        signature == cache.query_view_signature && return nothing
+        DBInterface.execute(connection, "DROP VIEW IF EXISTS mb_item_query")
+        DBInterface.execute(connection, """
+            CREATE VIEW mb_item_query AS
+            SELECT * FROM items LEFT JOIN item_effective_metadata USING (item_key)
+        """)
+        cache.query_view_signature = signature
+    finally
+        DBInterface.close!(connection)
+    end
+    return nothing
 end

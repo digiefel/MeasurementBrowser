@@ -11,7 +11,7 @@ using .Projects:
     AbstractDataSourceItem,
     AbstractDataItem,
     Collection,
-    CollectionStatRecipe,
+    CollectionRecipe,
     DEFAULT_PROJECT,
     ItemRecipe,
     KindProfileRow,
@@ -25,14 +25,13 @@ using .Projects:
     cacheable,
     close_source!,
     collection,
-    collection_stats,
     data_items,
     fingerprint,
     id,
     item_data,
     item_label,
+    metadata,
     open_source,
-    parameters,
     source_id,
     source_item_id,
     source_item_label,
@@ -40,7 +39,6 @@ using .Projects:
     source_item_timestamp,
     source_items,
     source_label,
-    stats,
     watch_source
 import .Projects:
     detect_kind,
@@ -83,6 +81,7 @@ include("Workspace.jl")
 using .Workspace:
     close_workspace!,
     open_workspace,
+    query_items,
     read_item_data,
     select_items!
 
@@ -124,12 +123,12 @@ end
 # is reachable only as `MeasurementBrowser.name` when genuinely needed.
 #
 # Run the app
-export open_browser, open_workspace, close_workspace!, select_items!
+export open_browser, open_workspace, close_workspace!, select_items!, query_items
 # Build a project
-export define_project, register_item!, register_collection_stat!, register_plot!
+export define_project, register_item!, register_collection_analysis!, register_plot!
 # The AbstractDataItem contract — implement these for a custom item type
 export AbstractDataItem, Collection
-export id, item_label, kind, collection, parameters, stats, item_data, process, cacheable, fingerprint
+export id, item_label, kind, collection, metadata, item_data, process, cacheable, fingerprint
 # Types you name
 export Project, DirectorySource, SourceFile, DataItem
 

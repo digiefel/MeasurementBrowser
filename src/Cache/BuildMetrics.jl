@@ -4,8 +4,8 @@ mutable struct BuildMetrics
     interpreted_writes::Base.Threads.Atomic{Int64}
     processed_write_ns::Base.Threads.Atomic{Int64}
     processed_writes::Base.Threads.Atomic{Int64}
-    stats_write_ns::Base.Threads.Atomic{Int64}
-    stats_writes::Base.Threads.Atomic{Int64}
+    metadata_write_ns::Base.Threads.Atomic{Int64}
+    metadata_writes::Base.Threads.Atomic{Int64}
 end
 
 """Construct zeroed build metrics."""
@@ -21,8 +21,8 @@ function reset_build_metrics!(metrics::BuildMetrics)::Nothing
         metrics.interpreted_writes,
         metrics.processed_write_ns,
         metrics.processed_writes,
-        metrics.stats_write_ns,
-        metrics.stats_writes,
+        metrics.metadata_write_ns,
+        metrics.metadata_writes,
     )
         counter[] = 0
     end

@@ -26,7 +26,7 @@ end
             _edit_record(id="b1", source_item_id="file-b", collection=["dev-B", "run-1"]),
         ]
         original = HE_INDEX.Hierarchy(records, source)
-        merge!(original.index[("dev-B",)].stats, Dict(:count => 1))
+        merge!(original.index[("dev-B",)].analysis, Dict(:count => 1))
         # Natural sort: run-2 before run-10.
         @test [child.name for child in original.index[("dev-A",)].children] ==
             ["run-2", "run-10"]
@@ -38,7 +38,7 @@ end
         replacement = _edit_record(
             id="a3", source_item_id="file-a", collection=["dev-A", "run-3"])
         HE_INDEX.insert_record!(edit, replacement)
-        HE_INDEX.clear_node_stats!(edit, ("dev-A",))
+        HE_INDEX.clear_node_analysis!(edit, ("dev-A",))
         updated = HE_INDEX.finish_edit!(edit, source)
 
         # The original tree is untouched: full contract for concurrent readers.
@@ -55,7 +55,7 @@ end
         @test updated.index[("dev-A", "run-3")].items[1].id == "a3"
         # Untouched subtree nodes are shared, and their stats survive the edit.
         @test updated.index[("dev-B", "run-1")] === original.index[("dev-B", "run-1")]
-        @test updated.index[("dev-B",)].stats == Dict(:count => 1)
+        @test updated.index[("dev-B",)].analysis == Dict(:count => 1)
 
         # Removing the last record of a device prunes the whole branch up to the root.
         second = HE_INDEX.edit_hierarchy(updated)

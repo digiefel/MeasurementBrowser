@@ -12,17 +12,17 @@ import ..Projects:
     AbstractDataItem,
     Project,
     collection,
-    collection_parameters,
+    collection_metadata,
     collection_path_label,
     data_items,
     fingerprint,
     finish_source_profile!,
-    has_collection_parameters,
+    has_collection_metadata,
     id,
     item_data,
     kind,
     kind_label,
-    parameters,
+    metadata,
     project_name,
     reset_scan_profile!,
     source_id,
@@ -95,7 +95,7 @@ function collection_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
 end
 
 """
-The value types a `parameters`/`stats` entry may hold.
+The value types a `metadata` entry may hold.
 
 Kept deliberately narrow: these dicts describe items and collections with flat, queryable scalars
 (exactly what `parse_metadata_value` emits) plus `Symbol` tags, `Missing` for absent values, and
@@ -107,7 +107,7 @@ const MetadataValue = Union{
     Vector{Bool}, Vector{Int64}, Vector{Float64}, Vector{String},
 }
 
-"""The typed dict the engine stores for item/collection `parameters` and `stats`."""
+"""The typed dict the engine stores for item/collection `metadata`."""
 const MetadataDict = Dict{Symbol,MetadataValue}
 
 """
@@ -126,7 +126,7 @@ function metadata_value(value)::MetadataValue
     value isa AbstractVector{<:AbstractString} && return String.(value)
     throw(ArgumentError(
         "unsupported metadata value of type $(typeof(value)): $(repr(value)); " *
-        "parameters/stats must be scalars (Bool/Int64/Float64/String/Symbol/Date/DateTime/Missing) " *
+        "metadata must be scalars (Bool/Int64/Float64/String/Symbol/Date/DateTime/Missing) " *
         "or homogeneous Bool/Int64/Float64/String vectors",
     ))
 end
@@ -163,8 +163,7 @@ struct ItemRecord
     item_label::String
     kind::Symbol
     collection::Vector{String}
-    parameters::MetadataDict
-    stats::MetadataDict
+    metadata::MetadataDict
     item_fingerprint::Any
 end
 
@@ -180,8 +179,7 @@ function ItemRecord(;
     item_label::AbstractString,
     kind::Symbol,
     collection::AbstractVector{<:AbstractString},
-    parameters::AbstractDict=MetadataDict(),
-    stats::AbstractDict=MetadataDict(),
+    metadata::AbstractDict=MetadataDict(),
     item_fingerprint=nothing,
 )::ItemRecord
     record_id = String(id)
@@ -195,8 +193,7 @@ function ItemRecord(;
         String(item_label),
         kind,
         String[String(segment) for segment in collection],
-        metadata_dict(parameters),
-        metadata_dict(stats),
+        metadata_dict(metadata),
         item_fingerprint,
     )
 end
@@ -214,8 +211,7 @@ function ItemRecord(
     item_label::AbstractString=record.item_label,
     kind::Symbol=record.kind,
     collection::AbstractVector{<:AbstractString}=copy(record.collection),
-    parameters::AbstractDict=deepcopy(record.parameters),
-    stats::AbstractDict=deepcopy(record.stats),
+    metadata::AbstractDict=deepcopy(record.metadata),
     item_fingerprint=record.item_fingerprint,
 )::ItemRecord
     return ItemRecord(;
@@ -227,8 +223,7 @@ function ItemRecord(
         item_label,
         kind,
         collection,
-        parameters,
-        stats,
+        metadata,
         item_fingerprint,
     )
 end
@@ -240,16 +235,15 @@ and carries its loaded data as `item.data`. A project that needs more subtypes `
 directly instead, side by side with this type.
 
 The engine materializes a `DataItem` from an internal `ItemRecord` plus loaded data at view time,
-sharing the record's `collection`/`parameters`/`stats` so engine-computed metadata is already
-present. `ItemRecord` is never a field of a `DataItem`.
+sharing the record's `collection`/`metadata` so engine-computed metadata is already present.
+`ItemRecord` is never a field of a `DataItem`.
 """
 struct DataItem <: AbstractDataItem
     id::String
     label::String
     kind::Symbol
     collection::Vector{String}
-    parameters::Dict{Symbol,Any}
-    stats::Dict{Symbol,Any}
+    metadata::Dict{Symbol,Any}
     data::Any
 end
 
@@ -259,8 +253,7 @@ DataItem(record::ItemRecord, data)::DataItem = DataItem(
     record.item_label,
     record.kind,
     record.collection,
-    record.parameters,
-    record.stats,
+    record.metadata,
     data,
 )
 
@@ -270,8 +263,7 @@ DataItem(item::DataItem, data)::DataItem = DataItem(
     item.label,
     item.kind,
     item.collection,
-    item.parameters,
-    item.stats,
+    item.metadata,
     data,
 )
 
@@ -279,15 +271,14 @@ DataItem(item::DataItem, data)::DataItem = DataItem(
 Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
 
 A recipe supplies the metadata it knows: `kind`, `collection`, and optionally
-`label`/`parameters`/`id`. `data` carries the raw per-item data; an optional `process` callback
+`label`/`metadata`/`id`. `data` carries the raw per-item data; an optional `process` callback
 can return another item before views receive it.
 """
 function DataItem(;
     kind::Symbol,
     collection::AbstractVector{<:AbstractString},
     label::AbstractString="",
-    parameters::Dict{Symbol,Any}=Dict{Symbol,Any}(),
-    stats::Dict{Symbol,Any}=Dict{Symbol,Any}(),
+    metadata::Dict{Symbol,Any}=Dict{Symbol,Any}(),
     data=nothing,
     id::AbstractString="",
 )::DataItem
@@ -296,8 +287,7 @@ function DataItem(;
         String(label),
         kind,
         String[String(segment) for segment in collection],
-        parameters,
-        stats,
+        metadata,
         data,
     )
 end
@@ -309,7 +299,7 @@ function ItemRecord(
     item::AbstractDataItem;
     source_item::AbstractDataSourceItem,
     kind::Symbol=Projects.kind(item),
-    parameters=Projects.parameters(item),
+    metadata=Projects.metadata(item),
 )::ItemRecord
     label = Projects.item_label(item)
     title = isempty(label) ?
@@ -324,8 +314,7 @@ function ItemRecord(
         item_label=title,
         kind,
         collection=Projects.collection(item),
-        parameters,
-        stats=Projects.stats(item),
+        metadata,
         item_fingerprint=fingerprint(item),
     )
 end
@@ -334,8 +323,7 @@ Projects.id(item::DataItem)::String = item.id
 Projects.item_label(item::DataItem)::String = item.label
 Projects.kind(item::DataItem)::Symbol = item.kind
 Projects.collection(item::DataItem)::Vector{String} = item.collection
-Projects.parameters(item::DataItem)::Dict{Symbol,Any} = item.parameters
-Projects.stats(item::DataItem)::Dict{Symbol,Any} = item.stats
+Projects.metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
 Projects.item_data(item::DataItem) = item.data
 Projects.fingerprint(item::DataItem) = nothing
 
@@ -350,10 +338,10 @@ One node in the collection hierarchy.
 struct HierarchyNode
     name::String
     kind::Symbol
-    parameters::MetadataDict
+    metadata::MetadataDict
     children::Vector{HierarchyNode}
     items::Vector{ItemRecord}
-    stats::MetadataDict
+    analysis::MetadataDict
 end
 
 HierarchyNode(name::String, kind::Symbol) =
@@ -374,7 +362,7 @@ struct Hierarchy
     all_items::Vector{ItemRecord}
     source_id::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
-    has_collection_parameters::Bool
+    has_collection_metadata::Bool
     skipped_count::Int
 end
 
@@ -385,6 +373,7 @@ struct SourceScan
     source_id::String
     source_label::String
     source_item_fingerprints::Dict{String,Any}
+    collection_metadata_fingerprints::Dict{String,Any}
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
 end
@@ -393,12 +382,14 @@ end
 function SourceScan(
     source::AbstractDataSource,
     source_item_fingerprints::Dict{String,Any},
+    collection_metadata_fingerprints::Dict{String,Any},
     hierarchy::Hierarchy,
 )::SourceScan
     return SourceScan(
         source_id(source),
         source_label(source),
         source_item_fingerprints,
+        collection_metadata_fingerprints,
         hierarchy,
         ItemFailure[],
     )
@@ -477,7 +468,7 @@ Create an empty hierarchy ready for progressive scan results.
 """
 function Hierarchy(
     source_id::String,
-    has_collection_parameters::Bool,
+    has_collection_metadata::Bool,
     skipped_count::Int=0,
 )::Hierarchy
     return Hierarchy(
@@ -485,7 +476,7 @@ function Hierarchy(
         ItemRecord[],
         source_id,
         Dict{Tuple{Vararg{String}},HierarchyNode}(),
-        has_collection_parameters,
+        has_collection_metadata,
         skipped_count,
     )
 end
@@ -514,21 +505,21 @@ function insert_item!(
     return item
 end
 
-function _effective_parameters(
+function _effective_metadata(
     source::AbstractDataSource,
     collection_path::AbstractVector{<:AbstractString},
-    local_parameters::AbstractDict,
+    local_metadata::AbstractDict,
 )::MetadataDict
-    parameters = metadata_dict(collection_parameters(source, collection_path))
-    merge!(parameters, metadata_dict(local_parameters))
-    return parameters
+    metadata = metadata_dict(collection_metadata(source, collection_path))
+    merge!(metadata, metadata_dict(local_metadata))
+    return metadata
 end
 
 """
-Set one node's parameters from its parent's already-effective parameters plus the source's own
-collection parameters for the path. Parents must be refreshed before children (depth order).
+Set one node's metadata from its parent's already-effective metadata plus the source's own
+collection metadata for the path. Parents must be refreshed before children (depth order).
 """
-function refresh_node_parameters!(
+function refresh_node_metadata!(
     hierarchy::Hierarchy,
     source::AbstractDataSource,
     path::Tuple{Vararg{String}},
@@ -536,38 +527,38 @@ function refresh_node_parameters!(
     node = get(hierarchy.index, path, nothing)
     node === nothing && return nothing
     inherited = length(path) == 1 ?
-        hierarchy.root.parameters :
-        hierarchy.index[path[1:end-1]].parameters
+        hierarchy.root.metadata :
+        hierarchy.index[path[1:end-1]].metadata
     effective = copy(inherited)
-    merge!(effective, metadata_dict(collection_parameters(source, collect(path))))
-    empty!(node.parameters)
-    merge!(node.parameters, effective)
+    merge!(effective, metadata_dict(collection_metadata(source, collect(path))))
+    empty!(node.metadata)
+    merge!(node.metadata, effective)
     return nothing
 end
 
-"""Apply source collection parameters to hierarchy nodes."""
-function apply_collection_parameters!(
+"""Apply source collection metadata to hierarchy nodes."""
+function apply_collection_metadata!(
     hierarchy::Hierarchy,
     source::AbstractDataSource,
 )::Nothing
-    empty!(hierarchy.root.parameters)
+    empty!(hierarchy.root.metadata)
     for path in sort!(collect(keys(hierarchy.index)); by=length)
-        refresh_node_parameters!(hierarchy, source, path)
+        refresh_node_metadata!(hierarchy, source, path)
     end
     return nothing
 end
 
-"""Return one record's source-inherited and item-local parameters."""
-function effective_parameters(hierarchy::Hierarchy, record::ItemRecord)::MetadataDict
+"""Return one record's source-inherited and item-local metadata."""
+function effective_metadata(hierarchy::Hierarchy, record::ItemRecord)::MetadataDict
     node = get(hierarchy.index, Tuple(record.collection), nothing)
-    effective = node === nothing ? MetadataDict() : copy(node.parameters)
-    merge!(effective, record.parameters)
+    effective = node === nothing ? MetadataDict() : copy(node.metadata)
+    merge!(effective, record.metadata)
     return effective
 end
 
-"""Materialize a record with the effective parameters consumed by project callbacks."""
+"""Materialize a record with the effective metadata consumed by project callbacks."""
 function effective_record(hierarchy::Hierarchy, record::ItemRecord)::ItemRecord
-    return ItemRecord(record; parameters=effective_parameters(hierarchy, record))
+    return ItemRecord(record; metadata=effective_metadata(hierarchy, record))
 end
 
 """
@@ -580,11 +571,11 @@ function Hierarchy(
 )::Hierarchy
     hierarchy = Hierarchy(
         source_id(source),
-        has_collection_parameters(source),
+        has_collection_metadata(source),
         skipped_count,
     )
     foreach(item -> insert_item!(hierarchy, item), items)
-    apply_collection_parameters!(hierarchy, source)
+    apply_collection_metadata!(hierarchy, source)
     return sort!(hierarchy)
 end
 
@@ -617,10 +608,10 @@ end
 _clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
     node.name,
     node.kind,
-    copy(node.parameters),
+    copy(node.metadata),
     copy(node.children),
     copy(node.items),
-    copy(node.stats),
+    copy(node.analysis),
 )
 
 """
@@ -636,7 +627,7 @@ function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
             hierarchy.all_items,
             hierarchy.source_id,
             copy(hierarchy.index),
-            hierarchy.has_collection_parameters,
+            hierarchy.has_collection_metadata,
             hierarchy.skipped_count,
         ),
         Set{CollectionPath}([()]),
@@ -676,7 +667,7 @@ function editable_node!(edit::HierarchyEdit, path::CollectionPath)::HierarchyNod
     return node
 end
 
-"""Insert one record, creating (and parameter-marking) any missing collection nodes."""
+"""Insert one record, creating (and metadata-marking) any missing collection nodes."""
 function insert_record!(edit::HierarchyEdit, record::ItemRecord)::Nothing
     hierarchy = edit.hierarchy
     leaf_path = Tuple(record.collection)
@@ -724,21 +715,21 @@ function remove_records!(edit::HierarchyEdit, records::Vector{ItemRecord})::Noth
     return nothing
 end
 
-"""Clear the stats of one collection node if it still exists."""
-function clear_node_stats!(edit::HierarchyEdit, path::CollectionPath)::Nothing
+"""Clear the analysis of one collection node if it still exists."""
+function clear_node_analysis!(edit::HierarchyEdit, path::CollectionPath)::Nothing
     _node_at(edit.hierarchy, path) === nothing && return nothing
-    empty!(editable_node!(edit, path).stats)
+    empty!(editable_node!(edit, path).analysis)
     return nothing
 end
 
 """
-Finish an edit: parameterize created nodes, re-sort what changed, and return the new hierarchy,
+Finish an edit: metadata-mark created nodes, re-sort what changed, and return the new hierarchy,
 ready to swap in with one reference assignment.
 """
 function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarchy
     hierarchy = edit.hierarchy
     for path in sort!(edit.created; by=length)
-        refresh_node_parameters!(hierarchy, source, path)
+        refresh_node_metadata!(hierarchy, source, path)
     end
     for path in edit.items_dirty
         node = _node_at(hierarchy, path)
@@ -758,7 +749,7 @@ function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarch
         all_items,
         hierarchy.source_id,
         hierarchy.index,
-        hierarchy.has_collection_parameters,
+        hierarchy.has_collection_metadata,
         hierarchy.skipped_count,
     )
 end

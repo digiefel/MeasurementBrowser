@@ -16,8 +16,7 @@ MB.id(p::Photo) = p.id
 MB.item_label(p::Photo) = "exp=$(p.exposure)"
 MB.kind(::Photo) = :photo
 MB.collection(p::Photo) = p.collection
-MB.parameters(p::Photo) = Dict{Symbol,Any}(:exposure => p.exposure)
-MB.stats(p::Photo) = Dict{Symbol,Any}()
+MB.metadata(p::Photo) = Dict{Symbol,Any}(:exposure => p.exposure)
 MB.item_data(p::Photo) = p.data
 
 @testset "type API: custom AbstractDataItem end to end" begin
@@ -63,7 +62,7 @@ MB.item_data(p::Photo) = p.data
         records = workspace.index.hierarchy.all_items
         @test length(records) == 2
         @test all(r -> r.kind == :photo, records)
-        @test Set(r.parameters[:exposure] for r in records) == Set([2.0, 4.0])
+        @test Set(r.metadata[:exposure] for r in records) == Set([2.0, 4.0])
         @test all(r -> !isempty(r.collection), records)
 
         # Plot: the bridge re-runs read+entries for the type API and matches items to records by

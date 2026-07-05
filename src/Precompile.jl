@@ -6,7 +6,7 @@ using GLMakie: Axis, Figure, contents, lines!
 Minimal fixture project used only to exercise engine pipelines during precompilation.
 
 User project callbacks are not precompilable for other projects; this registry exists solely to
-drive scan, interpret, process, stats, collection analysis, cache writes, and plotting through the
+drive scan, interpret, process, analyze, collection analysis, cache writes, and plotting through the
 package machinery using bundled test fixtures.
 """
 function _precompile_project()
@@ -25,11 +25,10 @@ function _precompile_project()
             data.engine_warm = data.Current_A ./ max.(abs.(data.VoltageHigh_V), 1e-12)
             return DataItem(item, data)
         end,
-        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
     )
-    register_collection_stat!(project;
-        kinds=[:iv],
-        compute_stats=items -> Dict{Symbol,Any}(:items => length(items)),
+    register_collection_analysis!(project, :iv;
+        analyze=items -> Dict{Symbol,Any}(:items => length(items)),
     )
     register_plot!(project, :iv; label="I-V",
         setup=(_workspace, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),

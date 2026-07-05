@@ -31,14 +31,14 @@ end
             read=file -> read(file.filepath, String),
             entries=function (file, data)
                 name = splitext(file.filename)[1]
-                parameters = name == "root" ?
+                metadata = name == "root" ?
                     Dict{Symbol,Any}(:area_um2 => 7.0, :local_only => true) :
                     Dict{Symbol,Any}()
                 return [MBD.DataItem(
                     kind=:table,
                     collection=["test", name],
                     label="Table $name",
-                    parameters=parameters,
+                    metadata=metadata,
                     data=data,
                 )]
             end,
@@ -49,24 +49,24 @@ end
             # Hidden files and sidecars are never source items.
             @test length(workspace.index.source.source_item_fingerprints) == 2
             hierarchy = workspace.index.hierarchy
-            @test hierarchy.has_collection_parameters
+            @test hierarchy.has_collection_metadata
             root_node = hierarchy.index[("test", "root")]
             nested_node = hierarchy.index[("test", "nested")]
-            @test root_node.parameters[:wafer] == "A"
-            @test root_node.parameters[:area_um2] == 12.5
-            @test nested_node.parameters[:wafer] == "B"
-            @test nested_node.parameters[:area_um2] == 99
+            @test root_node.metadata[:wafer] == "A"
+            @test root_node.metadata[:area_um2] == 12.5
+            @test nested_node.metadata[:wafer] == "B"
+            @test nested_node.metadata[:area_um2] == 99
 
-            parameters_by_label = Dict(
+            metadata_by_label = Dict(
                 record.item_label =>
-                    MBD.ItemIndex.effective_parameters(hierarchy, record)
+                    MBD.ItemIndex.effective_metadata(hierarchy, record)
                 for record in hierarchy.all_items
             )
-            @test parameters_by_label["Table root"][:wafer] == "A"
-            @test parameters_by_label["Table root"][:area_um2] == 7.0
-            @test parameters_by_label["Table root"][:local_only]
-            @test parameters_by_label["Table nested"][:wafer] == "B"
-            @test parameters_by_label["Table nested"][:area_um2] == 99
+            @test metadata_by_label["Table root"][:wafer] == "A"
+            @test metadata_by_label["Table root"][:area_um2] == 7.0
+            @test metadata_by_label["Table root"][:local_only]
+            @test metadata_by_label["Table nested"][:wafer] == "B"
+            @test metadata_by_label["Table nested"][:area_um2] == 99
         finally
             MBD.close_workspace!(workspace)
         end
@@ -83,9 +83,9 @@ end
             TEST_PROJECT, MBD.DirectorySource(dir; metadata_file=nothing))
         try
             hierarchy = without_metadata.index.hierarchy
-            @test !hierarchy.has_collection_parameters
-            @test all(isempty(node.parameters) for node in values(hierarchy.index))
-            @test all(isempty(record.parameters) for record in hierarchy.all_items)
+            @test !hierarchy.has_collection_metadata
+            @test all(isempty(node.metadata) for node in values(hierarchy.index))
+            @test all(isempty(record.metadata) for record in hierarchy.all_items)
         finally
             MBD.close_workspace!(without_metadata)
         end
@@ -95,7 +95,7 @@ end
         custom = MBD.DirectorySource(dir; metadata_file="device_info.txt")
         MBD.open_source(custom)
         try
-            @test MBD.Projects.has_collection_parameters(custom)
+            @test MBD.Projects.has_collection_metadata(custom)
             @test all(
                 file -> file.filepath != custom_path,
                 MBD.source_items(custom),
@@ -130,7 +130,7 @@ end
             @test Base.timedwait(() -> isempty(workspace.source_error), 5) === :ok
             @test Base.timedwait(
                 () -> get(
-                    workspace.index.hierarchy.index[("test",)].parameters,
+                    workspace.index.hierarchy.index[("test",)].metadata,
                     :wafer,
                     nothing,
                 ) == "B",

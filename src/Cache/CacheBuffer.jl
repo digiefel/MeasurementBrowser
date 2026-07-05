@@ -113,10 +113,6 @@ mutable struct RowStore{K,R} <: AbstractDiskStore{K,R}
     flush_condition::Base.Threads.Condition
     queued::Dict{K,BufferMutation{R}}
     writing::Dict{K,BufferMutation{R}}
-    # Pending key-prefix deletes, flushed before the batch's row mutations. Kept separate from the
-    # keyed dicts because one prefix covers unknown disk keys; reads overlay them in queue order.
-    queued_prefixes::Vector{Tuple}
-    writing_prefixes::Vector{Tuple}
     queued_rows::Int
     writing_rows::Int
     row_limit::Union{Nothing,Int}
@@ -154,8 +150,6 @@ function RowStore{K,R}(
         Base.Threads.Condition(),
         Dict{K,BufferMutation{R}}(),
         Dict{K,BufferMutation{R}}(),
-        Tuple[],
-        Tuple[],
         0,
         0,
         row_limit,
@@ -166,6 +160,319 @@ function RowStore{K,R}(
     store.flush_task = Base.Threads.@spawn _flush_loop!(store)
     return store
 end
+
+# Disk-backed dynamically-widened metadata table
+
+"""A wide metadata column's logical type: the discriminator restoring the [`MetadataValue`](@ref)."""
+@enum MetaVType::Int8 begin
+    VT_BOOL = 1
+    VT_INT = 2
+    VT_FLOAT = 3
+    VT_STRING = 4
+    VT_SYMBOL = 5
+    VT_DATE = 6
+    VT_DATETIME = 7
+    VT_VBOOL = 9
+    VT_VINT = 10
+    VT_VFLOAT = 11
+    VT_VSTRING = 12
+end
+
+"""Classify one [`MetadataValue`](@ref) as its wide-column logical type. `missing` is not stored."""
+function _meta_vtype(value)::MetaVType
+    value isa Bool && return VT_BOOL
+    value isa Int64 && return VT_INT
+    value isa Float64 && return VT_FLOAT
+    value isa String && return VT_STRING
+    value isa Symbol && return VT_SYMBOL
+    value isa Date && return VT_DATE
+    value isa DateTime && return VT_DATETIME
+    value isa Vector{Bool} && return VT_VBOOL
+    value isa Vector{Int64} && return VT_VINT
+    value isa Vector{Float64} && return VT_VFLOAT
+    value isa Vector{String} && return VT_VSTRING
+    error("No wide-column vtype for $(typeof(value))")
+end
+
+"""The Julia type name a wide-column logical type stands for, for conflict messages."""
+function _vtype_julia(vtype::MetaVType)::String
+    vtype === VT_BOOL && return "Bool"
+    vtype === VT_INT && return "Int64"
+    vtype === VT_FLOAT && return "Float64"
+    vtype === VT_STRING && return "String"
+    vtype === VT_SYMBOL && return "Symbol"
+    vtype === VT_DATE && return "Date"
+    vtype === VT_DATETIME && return "DateTime"
+    vtype === VT_VBOOL && return "Vector{Bool}"
+    vtype === VT_VINT && return "Vector{Int64}"
+    vtype === VT_VFLOAT && return "Vector{Float64}"
+    vtype === VT_VSTRING && return "Vector{String}"
+    error("No Julia type name for wide-column vtype $vtype")
+end
+
+"""One wide-column type conflict: the name, its registered type, and the rejected value's type."""
+const WideConflict = Tuple{Symbol,MetaVType,MetaVType}
+
+"""The DuckDB column type storing one wide-column logical type."""
+function _meta_vtype_sql(vtype::MetaVType)::String
+    vtype === VT_BOOL && return "BOOLEAN"
+    vtype === VT_INT && return "BIGINT"
+    vtype === VT_FLOAT && return "DOUBLE"
+    vtype === VT_STRING && return "VARCHAR"
+    vtype === VT_SYMBOL && return "VARCHAR"
+    vtype === VT_DATE && return "TIMESTAMP"
+    vtype === VT_DATETIME && return "TIMESTAMP"
+    vtype === VT_VBOOL && return "BOOLEAN[]"
+    vtype === VT_VINT && return "BIGINT[]"
+    vtype === VT_VFLOAT && return "DOUBLE[]"
+    vtype === VT_VSTRING && return "VARCHAR[]"
+    error("No SQL type for wide-column vtype $vtype")
+end
+
+"""The value stored in a wide column for one [`MetadataValue`](@ref) (Symbol/Date normalized to SQL)."""
+function _encode_wide_value(value)
+    value isa Symbol && return String(value)
+    value isa Date && return DateTime(value)
+    return value
+end
+
+"""Restore one [`MetadataValue`](@ref) from a wide-column cell using the registry's logical type."""
+function _decode_wide_value(vtype::MetaVType, raw)
+    vtype === VT_BOOL && return Bool(raw)
+    vtype === VT_INT && return Int64(raw)
+    vtype === VT_FLOAT && return Float64(raw)
+    vtype === VT_STRING && return String(raw)
+    vtype === VT_SYMBOL && return Symbol(String(raw))
+    vtype === VT_DATE && return Date(raw)
+    vtype === VT_DATETIME && return DateTime(raw)
+    vtype === VT_VBOOL && return Vector{Bool}(raw)
+    vtype === VT_VINT && return Vector{Int64}(raw)
+    vtype === VT_VFLOAT && return Vector{Float64}(raw)
+    vtype === VT_VSTRING && return Vector{String}(raw)
+    error("No decoder for wide-column vtype $vtype")
+end
+
+"""
+A dynamically-widened metadata table: one row per entity, one bare column per metadata name.
+
+Reuses the generic disk-store queue (`append!`/`edit!`/`delete!`/`clear!`/`close!`) with whole-row
+replace semantics. `edit!` type-checks each value against the first type registered for its name,
+registers unseen names in memory immediately, and returns the keys it dropped for a type conflict;
+the domain layer surfaces those as failures. The flush additively `ALTER TABLE ADD COLUMN`s new names
+in one transaction with the keyed deletes and the Appender pass.
+"""
+mutable struct WideRowStore{K} <: AbstractDiskStore{K,MetadataDict}
+    read_connection::DuckDB.Connection
+    read_lock::ReentrantLock
+    write_connection::DuckDB.Connection
+    profiler::Profiling.ProfileSession
+    table_name::String
+    quoted_table::String
+    key_column::Symbol
+    quoted_key_column::String
+    flush_condition::Base.Threads.Condition
+    queued::Dict{K,BufferMutation{MetadataDict}}
+    writing::Dict{K,BufferMutation{MetadataDict}}
+    queued_rows::Int
+    writing_rows::Int
+    row_limit::Union{Nothing,Int}
+    last_flush::Float64
+    closing::Bool
+    flush_task::Task
+    # Registered columns: their logical type and their physical order (matching the Appender).
+    column_vtypes::Dict{Symbol,MetaVType}
+    column_order::Vector{Symbol}
+    # Names first seen in memory this session, flushed as ALTER TABLE ADD COLUMN + registry insert.
+    pending_columns::Vector{Symbol}
+end
+
+_buffer_rows(::MetadataDict)::Int = 1
+
+function WideRowStore{K}(
+    database::DuckDB.DB,
+    table::AbstractString,
+    key_column::AbstractString;
+    profiler::Profiling.ProfileSession,
+) where {K}
+    key_symbol = Symbol(String(key_column))
+    quoted_table = _quote_identifier(table)
+    read_connection = DBInterface.connect(database)
+    write_connection = DBInterface.connect(database)
+    column_vtypes = Dict{Symbol,MetaVType}()
+    for row in DBInterface.execute(
+        DBInterface.prepare(
+            read_connection,
+            "SELECT column_name, vtype FROM wide_columns WHERE table_name = ?"),
+        (String(table),),
+    )
+        column_vtypes[Symbol(String(row.column_name))] = MetaVType(Int8(row.vtype))
+    end
+    column_order = Symbol[]
+    for row in DBInterface.execute(
+        DBInterface.prepare(read_connection, """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = 'main' AND table_name = ?
+            ORDER BY ordinal_position
+        """),
+        (String(table),),
+    )
+        name = Symbol(String(row.column_name))
+        name === key_symbol || push!(column_order, name)
+    end
+    store = WideRowStore{K}(
+        read_connection,
+        ReentrantLock(),
+        write_connection,
+        profiler,
+        String(table),
+        quoted_table,
+        key_symbol,
+        _quote_identifier(String(key_column)),
+        Base.Threads.Condition(),
+        Dict{K,BufferMutation{MetadataDict}}(),
+        Dict{K,BufferMutation{MetadataDict}}(),
+        0,
+        0,
+        nothing,
+        time(),
+        false,
+        current_task(),
+        column_vtypes,
+        column_order,
+        Symbol[],
+    )
+    store.flush_task = Base.Threads.@spawn _flush_loop!(store)
+    return store
+end
+
+"""
+Buffer one whole-row metadata replacement, type-checked against registered columns.
+
+Returns the conflicts dropped from the row: each name whose registered logical type differs from
+the incoming value's, with both types. Unseen names register their type immediately, in memory.
+The surviving keys are stored; conflicting keys are omitted from the row.
+"""
+function edit!(store::WideRowStore{K}, key::K, row::MetadataDict)::Vector{WideConflict} where {K}
+    dropped = WideConflict[]
+    accepted = MetadataDict()
+    lock(store.flush_condition) do
+        _require_writable(store)
+        for (name, value) in row
+            value === missing && continue
+            incoming = _meta_vtype(value)
+            registered = get(store.column_vtypes, name, nothing)
+            if registered === nothing
+                store.column_vtypes[name] = incoming
+                push!(store.column_order, name)
+                push!(store.pending_columns, name)
+            elseif registered !== incoming
+                push!(dropped, (name, registered, incoming))
+                continue
+            end
+            accepted[name] = value
+        end
+        _accept_rows!(store, key, accepted)
+        previous = get(store.queued, key, nothing)
+        kind = previous !== nothing && previous.kind === BUFFER_APPEND ?
+            BUFFER_APPEND : BUFFER_EDIT
+        _set_queued!(store, key, BufferMutation{MetadataDict}(kind, accepted))
+    end
+    return dropped
+end
+
+function Base.read(store::WideRowStore{K})::Dict{K,MetadataDict} where {K}
+    while true
+        writing, queued, vtypes = lock(store.flush_condition) do
+            _require_open(store)
+            (store.writing, store.queued, copy(store.column_vtypes))
+        end
+        rows = Dict{K,MetadataDict}()
+        lock(store.read_lock) do
+            for database_row in DBInterface.execute(
+                store.read_connection, "SELECT * FROM $(store.quoted_table)")
+                raw_key = getproperty(database_row, store.key_column)
+                dict = MetadataDict()
+                for (name, vtype) in vtypes
+                    raw = getproperty(database_row, name)
+                    ismissing(raw) && continue
+                    dict[name] = _decode_wide_value(vtype, raw)
+                end
+                rows[convert(K, raw_key)] = dict
+            end
+        end
+        stable = lock(store.flush_condition) do
+            _require_open(store)
+            store.writing === writing && store.queued === queued || return false
+            _overlay!(rows, store.writing)
+            _overlay!(rows, store.queued)
+            true
+        end
+        stable && return rows
+    end
+end
+
+function _flush_to_db!(
+    store::WideRowStore{K},
+    batch::Dict{K,BufferMutation{MetadataDict}},
+)::Nothing where {K}
+    deleted_keys = K[]
+    rows = Pair{K,MetadataDict}[]
+    for (key, mutation) in batch
+        if mutation.kind === BUFFER_DELETE
+            push!(deleted_keys, key)
+        else
+            mutation.kind === BUFFER_EDIT && push!(deleted_keys, key)
+            push!(rows, key => something(mutation.row))
+        end
+    end
+    new_columns, column_order, vtypes = lock(store.flush_condition) do
+        (copy(store.pending_columns), copy(store.column_order), copy(store.column_vtypes))
+    end
+    _transaction(store.write_connection) do
+        for name in new_columns
+            DBInterface.execute(
+                store.write_connection,
+                "ALTER TABLE $(store.quoted_table) ADD COLUMN " *
+                "$(_quote_identifier(String(name))) $(_meta_vtype_sql(vtypes[name]))",
+            )
+            DBInterface.execute(
+                DBInterface.prepare(
+                    store.write_connection, "INSERT INTO wide_columns VALUES (?, ?, ?)"),
+                (store.table_name, String(name), Int8(vtypes[name])),
+            )
+        end
+        _delete_keys!(
+            store.write_connection,
+            store.quoted_table,
+            String[store.quoted_key_column],
+            deleted_keys,
+        )
+        isempty(rows) || _append_table!(store.write_connection, store.table_name) do appender
+            for (key, dict) in rows
+                DuckDB.append(appender, key)
+                for name in column_order
+                    value = get(dict, name, missing)
+                    DuckDB.append(
+                        appender, value === missing ? missing : _encode_wide_value(value))
+                end
+                DuckDB.end_row(appender)
+            end
+        end
+    end
+    lock(store.flush_condition) do
+        filter!(name -> !(name in new_columns), store.pending_columns)
+    end
+    return nothing
+end
+
+_flush_operation(store::WideRowStore)::Symbol = Symbol("flush_", store.table_name)
+
+_clear_db!(store::WideRowStore)::Nothing =
+    (_transaction(() -> DBInterface.execute(
+        store.write_connection, "DELETE FROM $(store.quoted_table)"), store.write_connection);
+     nothing)
+
+_reset_memory!(::WideRowStore)::Nothing = nothing
 
 # Memory-only FIFO
 
@@ -243,8 +550,20 @@ end
 
 # Disk-backed tabular table family
 
+const PAYLOAD_STAGE_PROCESSED = Int8(0)
+const PAYLOAD_STAGE_COLLECTION_PROCESSED = Int8(1)
+
+_payload_stage_code(stage::Symbol)::Int8 =
+    stage === :processed ? PAYLOAD_STAGE_PROCESSED :
+    stage === :collection_processed ? PAYLOAD_STAGE_COLLECTION_PROCESSED :
+    throw(ArgumentError("unknown payload stage '$stage'"))
+
+"""One item's payload key: its integer surrogate and the payload stage it belongs to."""
+const PayloadKey = Tuple{Int64,Int8}
+
 struct TabularBodyBatch
-    item_id::String
+    item_key::Int64
+    stage::Int8
     body::AbstractDataFrame
 end
 
@@ -266,7 +585,7 @@ mutable struct TabularFamilyStore <:
     last_flush::Float64
     closing::Bool
     flush_task::Task
-    item_locations::Dict{String,Tuple{UInt16,UInt32}}
+    item_locations::Dict{PayloadKey,Tuple{UInt16,UInt32}}
     dataframe_schemas::Dict{DataFrameShape,UInt16}
     next_seq::UInt32
 end
@@ -280,9 +599,11 @@ function TabularFamilyStore(
         throw(ArgumentError("cache buffer row limit must be positive"))
     read_connection = DBInterface.connect(database)
     write_connection = DBInterface.connect(database)
-    locations = Dict{String,Tuple{UInt16,UInt32}}()
-    for row in DBInterface.execute(read_connection, "SELECT item_id, storage_id, seq FROM item_data")
-        locations[String(row.item_id)] = (UInt16(row.storage_id), UInt32(row.seq))
+    locations = Dict{PayloadKey,Tuple{UInt16,UInt32}}()
+    for row in DBInterface.execute(
+        read_connection, "SELECT item_key, stage, storage_id, seq FROM item_data")
+        locations[(Int64(row.item_key), Int8(row.stage))] =
+            (UInt16(row.storage_id), UInt32(row.seq))
     end
     schemas = Dict{DataFrameShape,UInt16}()
     for row in DBInterface.execute(
@@ -431,68 +752,6 @@ function Base.delete!(store::AbstractDiskStore{K,R}, key::K)::Nothing where {K,R
     return nothing
 end
 
-function _key_starts_with(key::Tuple, prefix::Tuple)::Bool
-    return length(prefix) <= length(key) &&
-        all(index -> key[index] == prefix[index], eachindex(prefix))
-end
-
-# Prefix deletes exist only on RowStore; the other stores answer the generic flush/clear/read
-# machinery through these no-op hooks.
-_pending_prefix_count(::AbstractDiskStore)::Int = 0
-_pending_prefix_count(store::RowStore)::Int =
-    length(store.queued_prefixes) + length(store.writing_prefixes)
-_queued_prefixes_pending(::AbstractDiskStore)::Bool = false
-_queued_prefixes_pending(store::RowStore)::Bool = !isempty(store.queued_prefixes)
-_writing_prefixes_pending(::AbstractDiskStore)::Bool = false
-_writing_prefixes_pending(store::RowStore)::Bool = !isempty(store.writing_prefixes)
-_clear_queued_prefixes!(::AbstractDiskStore)::Nothing = nothing
-_clear_queued_prefixes!(store::RowStore)::Nothing = (empty!(store.queued_prefixes); nothing)
-_swap_prefixes!(::AbstractDiskStore)::Nothing = nothing
-function _swap_prefixes!(store::RowStore)::Nothing
-    store.writing_prefixes = store.queued_prefixes
-    store.queued_prefixes = Tuple[]
-    return nothing
-end
-_finish_writing_prefixes!(::AbstractDiskStore)::Nothing = nothing
-_finish_writing_prefixes!(store::RowStore)::Nothing = (store.writing_prefixes = Tuple[]; nothing)
-
-"""Drop buffered rows matching one queued prefix delete from a logical read view."""
-function _apply_prefixes!(rows::Dict{K,R}, prefixes::Vector{Tuple})::Nothing where {K,R}
-    isempty(prefixes) && return nothing
-    filter!(
-        pair -> !any(prefix -> _key_starts_with(pair.first, prefix), prefixes),
-        rows,
-    )
-    return nothing
-end
-
-"""
-Queue one delete of every row whose leading key columns match `prefix`.
-
-A buffered mutation like any other: matching rows queued so far are dropped immediately, disk rows
-are deleted by the next flush before that batch's appends land, and reads overlay the pending
-prefix. Never blocks on in-flight flushes, so it is safe under publish-side locks.
-"""
-function delete_by_key_prefix!(
-    store::RowStore{K,R},
-    prefix::Tuple,
-)::Nothing where {K<:Tuple,R}
-    1 <= length(prefix) <= length(store.key_columns) ||
-        throw(ArgumentError(
-            "key prefix length $(length(prefix)) does not match table " *
-            "'$(store.table_name)' with $(length(store.key_columns)) key columns",
-        ))
-    lock(store.flush_condition) do
-        _require_writable(store)
-        for key in collect(keys(store.queued))
-            _key_starts_with(key, prefix) && _set_queued!(store, key, nothing)
-        end
-        push!(store.queued_prefixes, prefix)
-        notify(store.flush_condition)
-    end
-    return nothing
-end
-
 function _queue_delete_location!(
     store::TabularFamilyStore,
     location::Tuple{UInt16,UInt32},
@@ -512,21 +771,20 @@ end
 
 function Base.append!(
     store::TabularFamilyStore,
-    item_id::AbstractString,
+    payload_key::PayloadKey,
     body::AbstractDataFrame,
 )::Bool
-    id = String(item_id)
     any(name -> name in (MB_SEQ_COLUMN, MB_ROW_COLUMN), names(body)) &&
         error(
-            "Tabular item '$id' uses a reserved cache column name " *
+            "Tabular item '$(payload_key[1])' uses a reserved cache column name " *
             "'$MB_SEQ_COLUMN' or '$MB_ROW_COLUMN'",
         )
-    batch = TabularBodyBatch(id, body)
+    batch = TabularBodyBatch(payload_key[1], payload_key[2], body)
     lock(store.flush_condition)
     try
         _require_writable(store)
         incoming = _buffer_rows(batch)
-        old_location = get(store.item_locations, id, nothing)
+        old_location = get(store.item_locations, payload_key, nothing)
         old_mutation = old_location === nothing ?
             nothing : get(store.queued, old_location, nothing)
         old_rows = _mutation_rows(store, old_mutation)
@@ -535,7 +793,7 @@ function Base.append!(
               store.queued_rows - old_rows + incoming > store.row_limit
             wait(store.flush_condition)
             _require_writable(store)
-            old_location = get(store.item_locations, id, nothing)
+            old_location = get(store.item_locations, payload_key, nothing)
             old_mutation = old_location === nothing ?
                 nothing : get(store.queued, old_location, nothing)
             old_rows = _mutation_rows(store, old_mutation)
@@ -554,8 +812,8 @@ function Base.append!(
         end
         location = (storage_id, store.next_seq)
         store.next_seq += UInt32(1)
-        old_location = pop!(store.item_locations, id, nothing)
-        store.item_locations[id] = location
+        old_location = pop!(store.item_locations, payload_key, nothing)
+        store.item_locations[payload_key] = location
         old_location === nothing || _queue_delete_location!(store, old_location)
         _set_queued!(
             store,
@@ -568,18 +826,14 @@ function Base.append!(
     end
 end
 
-function Base.delete!(store::TabularFamilyStore, item_id::AbstractString)::Nothing
-    id = String(item_id)
+function Base.delete!(store::TabularFamilyStore, payload_key::PayloadKey)::Nothing
     lock(store.flush_condition) do
         _require_writable(store)
-        location = pop!(store.item_locations, id, nothing)
+        location = pop!(store.item_locations, payload_key, nothing)
         location === nothing || _queue_delete_location!(store, location)
     end
     return nothing
 end
-
-cached_item_ids(store::TabularFamilyStore)::Vector{String} =
-    lock(() -> (_require_open(store); collect(keys(store.item_locations))), store.flush_condition)
 
 """Wait on a held condition, waking no later than `deadline`; whether the deadline is still ahead."""
 function wait_condition_deadline(condition::Base.Threads.Condition, deadline::Float64)::Bool
@@ -596,8 +850,7 @@ function wait_condition_deadline(condition::Base.Threads.Condition, deadline::Fl
     return time() < deadline
 end
 
-_queue_empty(store::AbstractDiskStore)::Bool =
-    isempty(store.queued) && !_queued_prefixes_pending(store)
+_queue_empty(store::AbstractDiskStore)::Bool = isempty(store.queued)
 
 function _flush_due(store::AbstractDiskStore, now::Float64)::Bool
     _queue_empty(store) && return false
@@ -658,7 +911,6 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
             end
             store.writing = store.queued
             store.writing_rows = store.queued_rows
-            _swap_prefixes!(store)
             store.queued = Dict{K,BufferMutation{R}}()
             store.queued_rows = 0
             store.last_flush = time()
@@ -680,7 +932,6 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
         lock(store.flush_condition) do
             store.writing = Dict{K,BufferMutation{R}}()
             store.writing_rows = 0
-            _finish_writing_prefixes!(store)
             notify(store.flush_condition)
         end
     end
@@ -733,12 +984,7 @@ function Base.read(store::RowStore{K,R})::Dict{K,R} where {K,R}
         stable = lock(store.flush_condition) do
             _require_open(store)
             store.writing === writing && store.queued === queued || return false
-            # Pending prefix deletes apply between the eras they separate: writing-era prefixes
-            # precede the writing batch's surviving mutations, queued-era prefixes cover both the
-            # disk rows and anything the in-flight flush is about to commit.
-            _apply_prefixes!(rows, store.writing_prefixes)
             _overlay!(rows, store.writing)
-            _apply_prefixes!(rows, store.queued_prefixes)
             _overlay!(rows, store.queued)
             true
         end
@@ -795,25 +1041,25 @@ end
 
 function Base.read(
     store::TabularFamilyStore,
-    item_ids::Vector{String},
-)::Dict{String,Union{Nothing,AbstractDataFrame}}
-    remaining = unique(item_ids)
-    results = Dict{String,Union{Nothing,AbstractDataFrame}}()
+    payload_keys::Vector{PayloadKey},
+)::Dict{PayloadKey,Union{Nothing,AbstractDataFrame}}
+    remaining = unique(payload_keys)
+    results = Dict{PayloadKey,Union{Nothing,AbstractDataFrame}}()
     while !isempty(remaining)
-        locations = Dict{String,Tuple{UInt16,UInt32}}()
+        locations = Dict{PayloadKey,Tuple{UInt16,UInt32}}()
         lock(store.flush_condition) do
             _require_open(store)
-            for id in remaining
-                location = get(store.item_locations, id, nothing)
+            for key in remaining
+                location = get(store.item_locations, key, nothing)
                 if location === nothing
-                    results[id] = nothing
+                    results[key] = nothing
                     continue
                 end
                 handled, data = _pending_tabular_body(store, location)
                 if handled
-                    results[id] = data
+                    results[key] = data
                 else
-                    locations[id] = location
+                    locations[key] = location
                 end
             end
         end
@@ -822,22 +1068,22 @@ function Base.read(
             store,
             collect(Set(values(locations))),
         )
-        retry = String[]
+        retry = PayloadKey[]
         lock(store.flush_condition) do
             _require_open(store)
-            for (id, location) in locations
-                current_location = get(store.item_locations, id, nothing)
+            for (key, location) in locations
+                current_location = get(store.item_locations, key, nothing)
                 if current_location === nothing
-                    results[id] = nothing
+                    results[key] = nothing
                     continue
                 end
                 handled, data = _pending_tabular_body(store, current_location)
                 if handled
-                    results[id] = data
+                    results[key] = data
                 elseif current_location == location
-                    results[id] = disk_rows[location]
+                    results[key] = disk_rows[location]
                 else
-                    push!(retry, id)
+                    push!(retry, key)
                 end
             end
         end
@@ -928,21 +1174,6 @@ function _flush_to_db!(
         end
     end
     _transaction(store.write_connection) do
-        # Prefix deletes precede the batch's row mutations: every matching row queued before the
-        # prefix was dropped at queue time, so everything appended below survives it.
-        for prefix in store.writing_prefixes
-            predicate = join(
-                ("$(store.quoted_key_columns[index]) = ?" for index in eachindex(prefix)),
-                " AND ",
-            )
-            DBInterface.execute(
-                DBInterface.prepare(
-                    store.write_connection,
-                    "DELETE FROM $(store.quoted_table) WHERE $predicate",
-                ),
-                prefix,
-            )
-        end
         _delete_keys!(
             store.write_connection,
             store.quoted_table,
@@ -1072,7 +1303,8 @@ function _flush_to_db!(
             end
             _append_table!(store.write_connection, "item_data") do appender
                 for (location, entry) in appends
-                    DuckDB.append(appender, entry.item_id)
+                    DuckDB.append(appender, entry.item_key)
+                    DuckDB.append(appender, entry.stage)
                     DuckDB.append(appender, location[1])
                     DuckDB.append(appender, location[2])
                     DuckDB.end_row(appender)
@@ -1121,11 +1353,8 @@ function clear!(store::AbstractDiskStore)::Nothing
     try
         _require_writable(store)
         empty!(store.queued)
-        _clear_queued_prefixes!(store)
         store.queued_rows = 0
-        # An in-flight prefix delete must finish before the wipe, or it would erase rows written
-        # into the fresh table after this clear.
-        while !isempty(store.writing) || _writing_prefixes_pending(store)
+        while !isempty(store.writing)
             wait(store.flush_condition)
             _require_writable(store)
         end

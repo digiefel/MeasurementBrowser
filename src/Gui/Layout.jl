@@ -578,7 +578,7 @@ function _run_browser(
         end
         _save_project_view_if_changed!(state)
         render_cache_rebuild_modal(state)
-        render_collection_parameters_modal(state)
+        render_collection_metadata_modal(state)
     end
 end
 

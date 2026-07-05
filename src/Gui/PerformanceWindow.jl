@@ -250,7 +250,7 @@ function _render_memory_tab(state::BrowserState)::Nothing
         ig.Separator()
         ig.Text("Index: $(length(index.items)) items in " *
                 "$(length(index.hierarchy.index)) collections")
-        ig.Text("Stats held: $(length(index.item_stats))   " *
+        ig.Text("Metadata held: $(length(index.item_metadata))   " *
                 "Analysis errors: $(length(index.analysis_errors))")
     end
     return nothing

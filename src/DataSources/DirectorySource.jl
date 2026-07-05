@@ -19,7 +19,7 @@ mutable struct DirectorySource <: AbstractDataSource
     root_path::String
     recursive::Bool
     metadata_file::Union{Nothing,String}
-    collection_parameter_entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
+    collection_metadata_entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
     has_metadata::Bool
     metadata_lock::ReentrantLock
     watcher_task::Union{Nothing,Task}
@@ -130,7 +130,7 @@ end
 
 function collect_source_files(source::DirectorySource)::Vector{SourceFile}
     source_files = SourceFile[]
-    metadata_path = collection_parameter_file_path(source)
+    metadata_path = collection_metadata_file_path(source)
     if source.recursive
         for (root, _, names) in walkdir(source.root_path)
             append_source_files!(source_files, root, names, metadata_path)
@@ -183,7 +183,7 @@ function parse_metadata_value(text::AbstractString)::Any
     return value
 end
 
-function load_collection_parameter_entries(
+function load_collection_metadata_entries(
     path::AbstractString,
 )::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
     lines = readlines(path)
@@ -192,95 +192,105 @@ function load_collection_parameter_entries(
     length(header) >= 2 ||
         throw(ArgumentError(
             "Invalid DirectorySource metadata file '$path': expected a path column and " *
-            "at least one parameter column",
+            "at least one metadata column",
         ))
-    parameter_names = header[2:end]
+    metadata_names = header[2:end]
     entries = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
     for line in Iterators.drop(lines, 1)
         isempty(strip(line)) && continue
         cells = split(line, ',')
         path_text = strip(first(cells))
         isempty(path_text) && continue
-        parameters = Dict{Symbol,Any}()
-        for (offset, name) in enumerate(parameter_names)
+        metadata = Dict{Symbol,Any}()
+        for (offset, name) in enumerate(metadata_names)
             index = offset + 1
             index > length(cells) && continue
             value = parse_metadata_value(cells[index])
-            value === nothing || (parameters[Symbol(strip(name))] = value)
+            value === nothing || (metadata[Symbol(strip(name))] = value)
         end
-        entries[Tuple(filter(!isempty, split(path_text, '/')))] = parameters
+        entries[Tuple(filter(!isempty, split(path_text, '/')))] = metadata
     end
     return entries
 end
 
-function collection_parameter_file_path(source::DirectorySource)::Union{Nothing,String}
+function collection_metadata_file_path(source::DirectorySource)::Union{Nothing,String}
     source.metadata_file === nothing && return nothing
     return normpath(joinpath(source.root_path, source.metadata_file))
 end
 
-function has_collection_parameter_file(source::DirectorySource)::Bool
-    path = collection_parameter_file_path(source)
-    return path !== nothing && isfile(path)
-end
-
-function load_collection_parameters!(source::DirectorySource)::Bool
-    path = collection_parameter_file_path(source)
+function load_collection_metadata!(source::DirectorySource)::Bool
+    path = collection_metadata_file_path(source)
     present = path !== nothing && isfile(path)
     entries = present ?
-        load_collection_parameter_entries(path::String) :
+        load_collection_metadata_entries(path::String) :
         Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}()
     return lock(source.metadata_lock) do
         changed = source.has_metadata != present ||
-            source.collection_parameter_entries != entries
-        source.collection_parameter_entries = entries
+            source.collection_metadata_entries != entries
+        source.collection_metadata_entries = entries
         source.has_metadata = present
         changed
     end
 end
 
-function matching_collection_parameters(
+function matching_collection_metadata(
     entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
     location::AbstractVector{<:AbstractString},
 )::Dict{Symbol,Any}
     merged = Dict{Symbol,Any}()
     for width in eachindex(location)
         for start in 1:(length(location) - width + 1)
-            parameters = get(
+            metadata = get(
                 entries,
                 Tuple(location[start:(start + width - 1)]),
                 nothing,
             )
-            parameters === nothing || merge!(merged, parameters)
+            metadata === nothing || merge!(merged, metadata)
         end
     end
     return merged
 end
 
-# Collection parameters have one lifecycle owner: `open_source` loads them and the watcher is the
+# Collection metadata has one lifecycle owner: `open_source` loads it and the watcher is the
 # only refresher afterwards. Discovery must not consume a pending metadata change, or the watcher
 # would observe "no change" and the update would never be published.
 Projects.source_items(source::DirectorySource)::Vector{SourceFile} =
     collect_source_files(source)
 
-function Projects.collection_parameters(
+function Projects.collection_metadata(
     source::DirectorySource,
     collection_path::AbstractVector{<:AbstractString},
 )::Dict{Symbol,Any}
     return lock(source.metadata_lock) do
-        matching_collection_parameters(source.collection_parameter_entries, collection_path)
+        matching_collection_metadata(source.collection_metadata_entries, collection_path)
     end
 end
 
-Projects.has_collection_parameters(source::DirectorySource)::Bool =
+Projects.has_collection_metadata(source::DirectorySource)::Bool =
     lock(source.metadata_lock) do
         source.has_metadata
     end
+
+# The single metadata.txt file is the source's one collection-metadata input; its fingerprint keys
+# every collection that the file assigns metadata to, so a reopen diff can invalidate exactly those
+# subtrees. An absent file contributes no fingerprints.
+function Projects.collection_metadata_fingerprints(source::DirectorySource)::Dict{String,Any}
+    path = collection_metadata_file_path(source)
+    (path === nothing || !isfile(path)) && return Dict{String,Any}()
+    print = file_fingerprint(path)
+    return lock(source.metadata_lock) do
+        Dict{String,Any}(
+            join(segments, "/") => print
+            for segments in keys(source.collection_metadata_entries)
+        )
+    end
+end
 
 function Projects.open_source(source::DirectorySource)::DirectorySource
     isdir(source.root_path) || throw(ArgumentError(
         "Cannot open DirectorySource '$(source.root_path)': directory does not exist",
     ))
-    load_collection_parameters!(source)
+    load_collection_metadata!(source)
     source.watcher_closed[] = false
     return source
 end
@@ -292,7 +302,7 @@ function Projects.watch_source(
     source.watcher_task === nothing || error(
         "DirectorySource '$(source.root_path)' is already being watched",
     )
-    path = collection_parameter_file_path(source)
+    path = collection_metadata_file_path(source)
     # No configured metadata file means nothing can change: the source is static.
     path === nothing && return nothing
     task = Base.Threads.@spawn begin
@@ -303,7 +313,7 @@ function Projects.watch_source(
             # A malformed file is an expected state, not a watcher death: report it as a value and
             # keep polling so a corrected file recovers on the next tick.
             changed = try
-                load_collection_parameters!(source)
+                load_collection_metadata!(source)
             catch error
                 errored = true
                 on_change(SourceError(sprint(showerror, error)))
@@ -315,7 +325,7 @@ function Projects.watch_source(
             on_change(SourceChanges(
                 AbstractDataSourceItem[],
                 String[];
-                parameters_changed=changed,
+                metadata_changed=changed,
             ))
         end
     end

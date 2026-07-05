@@ -22,15 +22,21 @@ mutable struct ItemRecipe
     read::Function
     entries::Function
     process::Union{Nothing,Function}
-    stats::Union{Nothing,Function}
+    analyze::Union{Nothing,Function}
     label::Union{Nothing,Function}
 end
 
-"""One registered cross-item, collection-scoped stat."""
-struct CollectionStatRecipe
-    kinds::Vector{Symbol}
-    group_by::Function
-    compute_stats::Function
+"""
+One registered collection recipe for a kind.
+
+`process(items)` rewrites each member (one output per input, same ids) and may change per-item data
+or metadata. `analyze(items)` folds the post-process members into a `Dict{Symbol,Any}` attached to
+the collection node only.
+"""
+struct CollectionRecipe
+    kind::Symbol
+    process::Union{Nothing,Function}
+    analyze::Union{Nothing,Function}
 end
 
 """
@@ -59,7 +65,7 @@ mutable struct SourceItemProfile
     read_seconds::Float64
     entries_seconds::Float64
     process_seconds::Float64
-    stats_seconds::Float64
+    analyze_seconds::Float64
     total_seconds::Float64
     thread_ids::Set{Int}
 end
@@ -77,7 +83,7 @@ mutable struct KindProfileRow
     read_seconds::Float64
     entries_seconds::Float64
     process_seconds::Float64
-    stats_seconds::Float64
+    analyze_seconds::Float64
     total_seconds::Float64
 end
 
@@ -95,7 +101,7 @@ struct SourceProfileRow
     read_seconds::Float64
     entries_seconds::Float64
     process_seconds::Float64
-    stats_seconds::Float64
+    analyze_seconds::Float64
     total_seconds::Float64
     thread_ids::Vector{Int}
 end
@@ -110,7 +116,7 @@ mutable struct Project
     name::String
     description::String
     recipes::Vector{ItemRecipe}
-    collection_stats::Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}
+    collections::Dict{Symbol,CollectionRecipe}
     plots::Dict{Symbol,Dict{String,PlotRecipe}}
     # Transient timing for the latest scan, surfaced in the performance window. One row per source
     # item keeps the profile useful without retaining every expanded data-item event.
@@ -137,21 +143,21 @@ abstract type AbstractDataSourceItem end
 """
 One source-owned change batch.
 
-Sources report physical source-item replacements/removals and source-provided parameter changes
-through the same update contract. An empty item batch with `parameters_changed=true` updates
+Sources report physical source-item replacements/removals and source-provided metadata changes
+through the same update contract. An empty item batch with `metadata_changed=true` updates
 existing logical items without reinterpreting their source items.
 """
 struct SourceChanges{S<:AbstractDataSourceItem}
     upserts::Vector{S}
     removals::Vector{String}
-    parameters_changed::Bool
+    metadata_changed::Bool
 end
 
 SourceChanges(
     upserts::Vector{S},
     removals::Vector{String};
-    parameters_changed::Bool=false,
-) where {S<:AbstractDataSourceItem} = SourceChanges(upserts, removals, parameters_changed)
+    metadata_changed::Bool=false,
+) where {S<:AbstractDataSourceItem} = SourceChanges(upserts, removals, metadata_changed)
 
 """
 One recoverable source failure reported through the watch contract.
@@ -235,11 +241,8 @@ function kind end
 """Canonical tree placement of an item, as nested collection names (`Vector{String}`)."""
 function collection end
 
-"""Parsed acquisition parameters of an item (`Dict{Symbol,Any}`)."""
-function parameters end
-
-"""Computed statistics of an item (`Dict{Symbol,Any}`)."""
-function stats end
+"""Metadata of an item (`Dict{Symbol,Any}`): parsed parameters, computed values, provenance merged."""
+function metadata end
 
 """The materialized data carried by an item (also reachable as `item.data`)."""
 function item_data end
@@ -252,18 +255,35 @@ cacheable(::AbstractDataItem)::Bool = false
 
 fingerprint(::AbstractDataItem) = nothing
 
-"""Optional fold over one collection node's data-less item handles."""
-function collection_stats end
+"""Optional rewrite of a collection's members (one output per input). Internal workspace hook."""
+function process_collection end
 
-"""Collection parameters contributed by a source for one collection path."""
-collection_parameters(::AbstractDataSource, ::AbstractVector{<:AbstractString})::Dict{Symbol,Any} =
+"""Optional fold over a collection's members into collection-node metadata. Internal workspace hook."""
+function analyze_collection end
+
+"""Collection metadata contributed by a source for one collection path."""
+collection_metadata(::AbstractDataSource, ::AbstractVector{<:AbstractString})::Dict{Symbol,Any} =
     Dict{Symbol,Any}()
 
-"""Whether a source supplied collection parameters for this scan."""
-has_collection_parameters(::AbstractDataSource)::Bool = false
+"""Whether a source supplied collection metadata for this scan."""
+has_collection_metadata(::AbstractDataSource)::Bool = false
 
-"""Per-item stats computed after indexing. Internal workspace hook."""
-function compute_item_stats end
+"""
+Fingerprints of a source's collection-metadata inputs, keyed by collection path key.
+
+Sources expose these so a reopen can diff which collections' metadata changed while closed. The
+default is empty: a source with no external metadata inputs never invalidates on reopen.
+"""
+collection_metadata_fingerprints(::AbstractDataSource)::Dict{String,Any} = Dict{String,Any}()
+
+"""Per-item analysis metadata computed after indexing. Internal workspace hook."""
+function analyze_item end
+
+"""Whether one item kind has a registered collection `process` stage."""
+function has_collection_process end
+
+"""Whether one item kind has a registered collection `analyze` stage."""
+function has_collection_analysis end
 
 # ---------------------------------------------------------------------------
 # Interface functions

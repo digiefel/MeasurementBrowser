@@ -27,11 +27,10 @@ function _event_driven_project(name::AbstractString; process_delay::Real=0.0)
             data.sum = data.x .+ data.y
             return DataItem(item, data)
         end,
-        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
     )
-    register_collection_stat!(project;
-        kinds=[:table],
-        compute_stats=items -> Dict{Symbol,Any}(:members => length(items)),
+    register_collection_analysis!(project, :table;
+        analyze=items -> Dict{Symbol,Any}(:members => length(items)),
     )
     register_plot!(project, :table; label="Sum",
         setup=(_ws, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
@@ -59,11 +58,11 @@ end
         @test workspace.scan.state in (:done, :unchanged)
         @test length(workspace.index.items) == 3
         @test isempty(workspace.index.analysis_errors)
-        # Background processing ran item stats and collection stats purely on completion events.
-        @test all(stats -> stats[:rows] == 2, values(workspace.index.item_stats))
-        @test length(workspace.index.item_stats) == 3
+        # Background processing ran item and collection analysis purely on completion events.
+        @test all(md -> md[:rows] == 2, values(workspace.index.item_metadata))
+        @test length(workspace.index.item_metadata) == 3
         node = workspace.index.hierarchy.index[("run",)]
-        @test node.stats[:members] == 3
+        @test node.analysis[:members] == 3
     finally
         MeasurementBrowser.close_workspace!(workspace)
     end
@@ -137,12 +136,12 @@ end
             kind=:cycle,
             collection=["run"],
             label=file.filename,
-            parameters=Dict{Symbol,Any}(
+            metadata=Dict{Symbol,Any}(
                 :cycle => parse(Int, match(r"\d+", file.filename).match)),
             data=data,
         )],
-        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
-        label=item -> "cycle $(item.parameters[:cycle])",
+        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        label=item -> "cycle $(item.metadata[:cycle])",
     )
     workspace = MeasurementBrowser.open_workspace(
         project, test_source(project, dir); background_processing=true)
@@ -185,7 +184,7 @@ function _process_running(workspace)::Bool
     graph = workspace.work
     return lock(graph.lock) do
         any(
-            node -> node.key.kind === MeasurementBrowser.Workspace.PROCESS_ITEM &&
+            node -> node.key.kind === MeasurementBrowser.Workspace.ITEM_PROCESS &&
                 node.state === :running,
             values(graph.nodes),
         )

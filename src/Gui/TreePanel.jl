@@ -89,7 +89,7 @@ function _render_hierarchy_tree_panel(
     workspace = state.workspace
     root = workspace isa Workspace.Workspace ? workspace.index.hierarchy.root : nothing
     parameter_keys = workspace isa Workspace.Workspace ?
-        workspace.index.collection_parameter_keys :
+        workspace.index.collection_metadata_keys :
         Symbol[]
     selected_collections, _, _ = _project_visible_selection(state)
 
@@ -305,8 +305,8 @@ function _render_hierarchy_tree_panel(
 
             for (i, k) in enumerate(parameter_keys)
                 ig.TableSetColumnIndex(i)
-                if haskey(node.parameters, k)
-                    ig.Text(string(node.parameters[k]))
+                if haskey(node.metadata, k)
+                    ig.Text(string(node.metadata[k]))
                 elseif is_leaf
                     ig.TextDisabled("--")
                 end

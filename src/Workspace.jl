@@ -10,8 +10,9 @@ import ..Cache:
     CacheResultKind,
     CacheResultStatus,
     CacheDB,
-    COLLECTION_STATS_RESULT,
-    ITEM_STATS_RESULT,
+    COLLECTION_ANALYSIS_RESULT,
+    COLLECTION_PROCESS_RESULT,
+    ITEM_ANALYSIS_RESULT,
     PROCESSING_RESULT,
     ProjectCacheSchemaError,
     ProjectCacheIdentity,
@@ -24,23 +25,24 @@ import ..Cache:
     cache_pending_counts,
     clear_cache_index!,
     close_cache_db!,
-    delete_collection_stats!,
+    delete_collection_metadata!,
     delete_source_item!,
-    invalidate_item_results!,
     load_cache_index,
     open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
+    query_items,
     read_item_data,
     record_cache_phase!,
-    result_input_fingerprint,
     reset_build_metrics!,
     set_cache_memory_limit!,
     start_cache!,
     stop_cache!,
+    store_collection_metadata_fingerprints!,
+    store_collection_metadata!,
+    store_collection_process_result!,
     store_interpreted!,
-    store_item_stats!,
-    store_collection_stats!,
+    store_item_metadata!,
     store_processed!,
     store_result_failure!,
     wait_condition_deadline,
@@ -55,12 +57,12 @@ import ..ItemIndex:
     SourceItemInterpretation,
     SourceScan,
     check_cancel,
-    clear_node_stats!,
+    clear_node_analysis!,
     collection_path_key,
     collection_path_tuple,
     edit_changed_structure,
     edit_hierarchy,
-    effective_parameters,
+    effective_metadata,
     effective_record,
     finish_edit!,
     insert_record!,
@@ -69,6 +71,7 @@ import ..ItemIndex:
     interpret_source_item,
     remove_records!,
     with_cancel
+import ..Projects
 import ..Projects:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -76,12 +79,16 @@ import ..Projects:
     Project,
     SourceChanges,
     SourceError,
+    analyze_collection,
+    analyze_item,
     close_source!,
-    collection_stats,
-    compute_item_stats,
+    collection_metadata_fingerprints,
+    has_collection_analysis,
+    has_collection_process,
+    process_collection,
     cacheable,
     fingerprint,
-    has_collection_parameters,
+    has_collection_metadata,
     id,
     item_data,
     process,
@@ -91,8 +98,8 @@ import ..Projects:
     reset_scan_profile!,
     scan_profile_summary,
     source_id,
-    source_item_id,
     source_items,
+    source_item_id,
     source_label,
     source_open_options,
     watch_source
@@ -115,8 +122,10 @@ The progressively populated item index for one open source.
 mutable struct WorkspaceIndex
     hierarchy::Hierarchy
     items::Dict{String,ItemRecord}
-    item_stats::Dict{String,Dict{Symbol,Any}}
-    collection_parameter_keys::Vector{Symbol}
+    # The computed metadata layers per item (analyze output merged with any collection-process
+    # overwrite); the entries layer stays on the record.
+    item_metadata::Dict{String,Dict{Symbol,Any}}
+    collection_metadata_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
     # Published item ids per source item, so per-publish lookups avoid scanning every item.
@@ -124,10 +133,11 @@ mutable struct WorkspaceIndex
 end
 
 @enum WorkKind begin
-    INTERPRET_SOURCE
-    PROCESS_ITEM
-    ITEM_STATS
-    COLLECTION_STATS
+    SOURCE_INTERPRET
+    ITEM_PROCESS
+    ITEM_ANALYZE
+    COLLECTION_PROCESS
+    COLLECTION_ANALYZE
 end
 
 """Stable identity of one result-producing operation."""
@@ -279,7 +289,7 @@ function Workspace(
     cache::Bool=true,
     background_processing::Bool=false,
 )::Workspace{S} where {S<:AbstractDataSource}
-    hierarchy = Hierarchy(source_id(source), has_collection_parameters(source))
+    hierarchy = Hierarchy(source_id(source), has_collection_metadata(source))
     identity = project_cache_identity(project_name(project), source)
     profiler = Profiling.ProfileSession(
         profile_internal, profile_cpu, profile_output, crash_trace)

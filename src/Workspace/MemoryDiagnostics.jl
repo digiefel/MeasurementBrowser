@@ -7,7 +7,7 @@ struct WorkspaceMemorySnapshot
     rss_minus_gc_live_bytes::Int64
     index_items::Int64
     index_collections::Int64
-    item_stats::Int64
+    item_metadata::Int64
     analysis_errors::Int64
     processing_jobs::Int64
     pending_writes::Int64
@@ -34,7 +34,7 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
         max(Int64(0), rss_bytes - gc_live_bytes),
         Int64(length(workspace.index.items)),
         Int64(length(hierarchy.index)),
-        Int64(length(workspace.index.item_stats)),
+        Int64(length(workspace.index.item_metadata)),
         Int64(length(workspace.index.analysis_errors)),
         processing.jobs,
         Int64(staged.items),

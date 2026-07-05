@@ -39,7 +39,7 @@ end
 Interpret every logical data item produced by one source item.
 
 The source item is read only by `data_items`. Each result is normalized to a package `DataItem` with
-effective parameters. Processing and statistics belong to the workspace work graph.
+effective metadata. Processing and analysis belong to the workspace work graph.
 """
 function interpret_source_item(
     project::Project,
@@ -80,8 +80,8 @@ function interpret_source_item(
         record = ItemRecord(handle; source_item)
         records[index] = record
         interpreted_items[index] = DataItem(
-            ItemRecord(record; parameters=_effective_parameters(
-                source, record.collection, record.parameters)),
+            ItemRecord(record; metadata=_effective_metadata(
+                source, record.collection, record.metadata)),
             item_data(handle),
         )
     end

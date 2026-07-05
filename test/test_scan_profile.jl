@@ -20,7 +20,7 @@ function _profile_project()
             label=file.filename,
             data=data,
         )],
-        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
     )
     return project
 end
@@ -41,7 +41,7 @@ end
                 collection=["dev", splitext(file.filename)[1]],
                 data=data,
             )],
-            stats=item -> Dict{Symbol,Any}(:area_um2 => item.parameters[:area_um2]),
+            analyze=item -> Dict{Symbol,Any}(:area_um2 => item.metadata[:area_um2]),
         )
 
         workspace = MB.open_workspace(
@@ -50,22 +50,22 @@ end
         try
             wait_workspace_idle!(workspace)
             record = only(workspace.index.hierarchy.all_items)
-            @test workspace.index.item_stats[record.id][:area_um2] == 42
+            @test workspace.index.item_metadata[record.id][:area_um2] == 42
         finally
             MB.close_workspace!(workspace)
         end
 
-        # The metadata file changed while the workspace was closed: cached derived results are
-        # stale by input fingerprint and must be recomputed with the new effective parameters.
+        # The metadata file changed while the workspace was closed: the reopen source-fingerprint
+        # diff marks the affected collection's items stale and recomputes them.
         write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,43\n")
         reopened = MB.open_workspace(
             project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(reopened)
             record = only(reopened.index.hierarchy.all_items)
-            @test MB.ItemIndex.effective_parameters(
+            @test MB.ItemIndex.effective_metadata(
                 reopened.index.hierarchy, record)[:area_um2] == 43
-            @test reopened.index.item_stats[record.id][:area_um2] == 43
+            @test reopened.index.item_metadata[record.id][:area_um2] == 43
         finally
             MB.close_workspace!(reopened)
             rm(dirname(identity.cache_path); force=true, recursive=true)
@@ -98,7 +98,7 @@ end
         @test row.read_seconds >= 0
         @test row.entries_seconds >= 0
         @test row.process_seconds >= 0
-        @test row.stats_seconds >= 0
+        @test row.analyze_seconds >= 0
         @test row.total_seconds >= row.read_seconds
 
         source_rows = MB.scan_source_profile(project)
@@ -168,10 +168,10 @@ end
                 label=file.filename,
                 data=data,
             )],
-            stats=function (item)
+            analyze=function (item)
                 return Dict{Symbol,Any}(
                     :rows => nrow(item.data),
-                    :area_um2 => item.parameters[:area_um2],
+                    :area_um2 => item.metadata[:area_um2],
                 )
             end,
         )
@@ -184,8 +184,8 @@ end
             @test workspace.scan.state == :done
             @test isempty(workspace.index.analysis_errors)
             ok = only(workspace.index.hierarchy.all_items)
-            @test workspace.index.item_stats[ok.id][:rows] == 1
-            @test workspace.index.item_stats[ok.id][:area_um2] == 42
+            @test workspace.index.item_metadata[ok.id][:rows] == 1
+            @test workspace.index.item_metadata[ok.id][:area_um2] == 42
         finally
             MB.close_workspace!(workspace)
         end
@@ -195,9 +195,9 @@ end
         try
             wait_workspace_idle!(reopened)
             ok = only(reopened.index.hierarchy.all_items)
-            effective = MB.ItemIndex.effective_parameters(reopened.index.hierarchy, ok)
+            effective = MB.ItemIndex.effective_metadata(reopened.index.hierarchy, ok)
             @test effective[:area_um2] == 42
-            @test reopened.index.item_stats[ok.id][:area_um2] == 42
+            @test reopened.index.item_metadata[ok.id][:area_um2] == 42
         finally
             MB.close_workspace!(reopened)
         end
@@ -229,7 +229,7 @@ end
                 return [DataItem(
                     kind=:table,
                     collection=["dev", name],
-                    parameters=name == "b" ? Dict{Symbol,Any}(:scale => 20) :
+                    metadata=name == "b" ? Dict{Symbol,Any}(:scale => 20) :
                         Dict{Symbol,Any}(),
                     data=data,
                 )]
@@ -237,10 +237,10 @@ end
             process=function (item)
                 name = last(item.collection)
                 Threads.atomic_add!(processes[name], 1)
-                scale = get(item.parameters, :scale, 1)
+                scale = get(item.metadata, :scale, 1)
                 return DataItem(item, DataFrame(y=item.data.x .* scale))
             end,
-            stats=item -> Dict{Symbol,Any}(:maximum => maximum(item.data.y)),
+            analyze=item -> Dict{Symbol,Any}(:maximum => maximum(item.data.y)),
         )
 
         workspace = MB.open_workspace(
@@ -260,7 +260,7 @@ end
 
             write(metadata_path, "collection_path,scale\ndev/a,3\ndev/b,5\n")
             @test Base.timedwait(
-                () -> workspace.index.hierarchy.index[("dev", "a")].parameters[:scale] == 3,
+                () -> workspace.index.hierarchy.index[("dev", "a")].metadata[:scale] == 3,
                 5,
             ) === :ok
             records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
@@ -277,7 +277,7 @@ end
             write(metadata_path, "collection_path,scale\ndev/b,5\n")
             @test Base.timedwait(
                 () -> !haskey(
-                    workspace.index.hierarchy.index[("dev", "a")].parameters,
+                    workspace.index.hierarchy.index[("dev", "a")].metadata,
                     :scale,
                 ),
                 5,
@@ -292,7 +292,7 @@ end
             write(metadata_path, "collection_path,scale\ndev/a,4\ndev/b,5\n")
             @test Base.timedwait(
                 () -> get(
-                    workspace.index.hierarchy.index[("dev", "a")].parameters,
+                    workspace.index.hierarchy.index[("dev", "a")].metadata,
                     :scale,
                     nothing,
                 ) == 4,
@@ -337,7 +337,7 @@ end
                     push!(items, DataItem(
                         kind=:table,
                         collection=["expanded"],
-                        parameters=Dict{Symbol,Any}(:part => part),
+                        metadata=Dict{Symbol,Any}(:part => part),
                         data=DataFrame(x=data.x[mask], y=data.y[mask]),
                     ))
                 end
@@ -351,7 +351,7 @@ end
                     sum=item.data.x .+ item.data.y,
                 ),
             ),
-            stats=item -> Dict{Symbol,Any}(
+            analyze=item -> Dict{Symbol,Any}(
                 :rows => nrow(item.data),
                 :sum_max => maximum(item.data.sum),
             ),
@@ -366,7 +366,7 @@ end
             @test read_count[] == 1
             records = workspace.index.hierarchy.all_items
             @test length(records) == 100
-            @test all(record -> workspace.index.item_stats[record.id][:rows] == 10, records)
+            @test all(record -> workspace.index.item_metadata[record.id][:rows] == 10, records)
 
             loaded = MB.Workspace.materialize_items(workspace, records)
             @test length(loaded) == 100
@@ -396,7 +396,7 @@ end
             end,
             entries=(file, data) -> [DataItem(
                 kind=:table, collection=[splitext(file.filename)[1]], data=data)],
-            stats=function (item)
+            analyze=function (item)
                 item.collection == ["f2"] && error("persistent f2 analysis failure")
                 return Dict{Symbol,Any}(:rows => nrow(item.data))
             end,
@@ -446,7 +446,7 @@ end
             @test ws3.cache.status.new_source_items == 0
             changed = only(
                 r for r in ws3.index.hierarchy.all_items if r.collection == ["f3"])
-            @test ws3.index.item_stats[changed.id][:rows] == 7
+            @test ws3.index.item_metadata[changed.id][:rows] == 7
             @test haskey(ws3.index.analysis_errors, failed_item_id)
             MB.close_workspace!(ws3)
 

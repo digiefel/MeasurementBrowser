@@ -30,13 +30,13 @@ function build_csv_stress_project(items_per_file::Int)::MB.Project
                 kind=:table,
                 collection=["stress"],
                 label="$(file.filename) item $item_index",
-                parameters=Dict{Symbol,Any}(:item_index => item_index),
+                metadata=Dict{Symbol,Any}(:item_index => item_index),
                 data=data,
                 id=file.filepath * "#table_$item_index",
             )
             for item_index in 1:items_per_file
         ],
-        stats=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
     )
     return project
 end

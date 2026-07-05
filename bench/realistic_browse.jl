@@ -223,7 +223,7 @@ function generate_data(root::String)
 end
 
 # --------------------------------------------------------------------------------------------------
-# Project: three kinds mirroring the real read/entries/process/stats/plot shape
+# Project: three kinds mirroring the real read/entries/process/analyze/plot shape
 # --------------------------------------------------------------------------------------------------
 
 _collection(file) = [splitpath(dirname(file.filepath))[end-1], splitpath(dirname(file.filepath))[end]]
@@ -238,7 +238,7 @@ function build_project(; plots::Bool=true)
             label=file.filename, data=data, id=file.filepath * "#kind1")],
         process = item -> MB.DataItem(item, transform(item.data, [:voltage, :current] =>
             ByRow((v, i) -> iszero(v) ? 0.0 : i / v) => :conductance)),
-        stats   = item -> Dict{Symbol,Any}(:imax => maximum(abs, item.data.current)),
+        analyze = item -> Dict{Symbol,Any}(:imax => maximum(abs, item.data.current)),
         label   = item -> "K1 $(item.label)")
 
     MB.register_item!(project, :kind2;
@@ -246,7 +246,7 @@ function build_project(; plots::Bool=true)
         read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
         entries = (file, data) -> [MB.DataItem(; kind=:kind2, collection=_collection(file),
             label=file.filename, data=data, id=file.filepath * "#kind2")],
-        stats   = item -> Dict{Symbol,Any}(:cmean => mean(item.data.cap)),
+        analyze = item -> Dict{Symbol,Any}(:cmean => mean(item.data.cap)),
         label   = item -> "K2 $(item.label)")
 
     # The fatigue-style kind: one file → one item per cycle (where item count explodes).
@@ -255,12 +255,12 @@ function build_project(; plots::Bool=true)
         read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
         entries = (file, data) -> [
             MB.DataItem(; kind=:kind3, collection=_collection(file),
-                label=string(file.filename, " cycle ", c), parameters=Dict{Symbol,Any}(:cycle => c),
+                label=string(file.filename, " cycle ", c), metadata=Dict{Symbol,Any}(:cycle => c),
                 data=(@view data[data.cycle .== c, :]), id=string(file.filepath, "#kind3,cycle=", c))
             for c in sort(unique(data.cycle))],
         process = item -> MB.DataItem(item, transform(item.data, [:voltage, :current] =>
             ByRow((v, i) -> v * i) => :power)),
-        stats   = item -> Dict{Symbol,Any}(:pmax => maximum(abs, item.data.current)),
+        analyze = item -> Dict{Symbol,Any}(:pmax => maximum(abs, item.data.current)),
         label   = item -> "K3 $(item.label)")
 
     plots || return project
@@ -313,16 +313,16 @@ function _active_work_count(ws, kinds::Tuple)::Int
 end
 
 _processing_active(ws)::Bool =
-    _active_work_count(ws, (MB.Workspace.PROCESS_ITEM, MB.Workspace.ITEM_STATS)) > 0 ||
+    _active_work_count(ws, (MB.Workspace.ITEM_PROCESS, MB.Workspace.ITEM_ANALYZE)) > 0 ||
     MB.Workspace.cache_has_pending_writes(ws.cache.db)
 
 _analysis_active(ws)::Bool =
-    _active_work_count(ws, (MB.Workspace.COLLECTION_STATS,)) > 0
+    _active_work_count(ws, (MB.Workspace.COLLECTION_ANALYZE,)) > 0
 
 """Collect up to 64 already-processed item ids of `kind`."""
 function _ready_ids(ws, kind::Symbol)
     ready = String[]
-    for id in keys(ws.index.item_stats)
+    for id in keys(ws.index.item_metadata)
         rec = get(ws.index.items, id, nothing)
         rec === nothing && continue
         rec.kind === kind && push!(ready, id)
@@ -371,7 +371,7 @@ mutable struct MemorySample
     rss_minus_gc_live_bytes::Int64
     index_items::Int64
     index_collections::Int64
-    item_stats::Int64
+    item_metadata::Int64
     analysis_errors::Int64
     processing_jobs::Int64
     pending_writes::Int64
@@ -400,7 +400,7 @@ function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
         snapshot.rss_minus_gc_live_bytes,
         snapshot.index_items,
         snapshot.index_collections,
-        snapshot.item_stats,
+        snapshot.item_metadata,
         snapshot.analysis_errors,
         snapshot.processing_jobs,
         snapshot.pending_writes,
@@ -413,7 +413,7 @@ end
 function _records_of_kind(ws, kind::Symbol)::Vector{MB.ItemIndex.ItemRecord}
     records = MB.ItemIndex.ItemRecord[
         record for record in values(ws.index.items)
-        if record.kind === kind && haskey(ws.index.item_stats, record.id)
+        if record.kind === kind && haskey(ws.index.item_metadata, record.id)
     ]
     sort!(records; by=record -> record.id)
     return records
@@ -685,7 +685,7 @@ function run_benchmark()
         if !ENGINE_ONLY
             rng = MersenneTwister(1)
             for kind in kinds, _ in 1:AFTER_BUILD_PLOTS
-                ids = [id for id in keys(ws.index.item_stats)
+                ids = [id for id in keys(ws.index.item_metadata)
                        if (r = get(ws.index.items, id, nothing); r !== nothing && r.kind === kind)]
                 isempty(ids) && continue
                 k = rand(rng, 1:min(4, length(ids)))
@@ -698,7 +698,7 @@ function run_benchmark()
         completed, queued, _active = MB.Workspace.work_counts(ws)
         collection_nodes = lock(ws.work.lock) do
             count(
-                node -> node.key.kind === MB.Workspace.COLLECTION_STATS &&
+                node -> node.key.kind === MB.Workspace.COLLECTION_ANALYZE &&
                     node.state in (:ready, :failed),
                 values(ws.work.nodes),
             )
@@ -716,8 +716,8 @@ function run_benchmark()
             interpreted_writes=metrics.interpreted_writes[],
             processed_write_ns=metrics.processed_write_ns[],
             processed_writes=metrics.processed_writes[],
-            stats_write_ns=metrics.stats_write_ns[],
-            stats_writes=metrics.stats_writes[],
+            metadata_write_ns=metrics.metadata_write_ns[],
+            metadata_writes=metrics.metadata_writes[],
             rss_start_bytes,
             rss_peak_bytes,
             rss_end_bytes,
@@ -823,7 +823,7 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
 
     open(joinpath(outdir, "memory_samples.csv"), "w") do io
         println(io, "elapsed_s,rss_bytes,gc_live_bytes,gc_allocated_bytes," *
-            "rss_minus_gc_live_bytes,index_items,index_collections,item_stats,analysis_errors," *
+            "rss_minus_gc_live_bytes,index_items,index_collections,item_metadata,analysis_errors," *
             "processing_jobs,pending_writes,pending_write_rows,selected_queue,background_waiting")
         for sample in stats.memory_samples
             @printf(io, "%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
@@ -834,7 +834,7 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
                 sample.rss_minus_gc_live_bytes,
                 sample.index_items,
                 sample.index_collections,
-                sample.item_stats,
+                sample.item_metadata,
                 sample.analysis_errors,
                 sample.processing_jobs,
                 sample.pending_writes,
@@ -902,13 +902,13 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
         end
     end
 
-    write_calls = stats.interpreted_writes + stats.processed_writes + stats.stats_writes
-    write_ns = stats.interpreted_write_ns + stats.processed_write_ns + stats.stats_write_ns
+    write_calls = stats.interpreted_writes + stats.processed_writes + stats.metadata_writes
+    write_ns = stats.interpreted_write_ns + stats.processed_write_ns + stats.metadata_write_ns
     mean_write_ms = write_calls == 0 ? 0.0 : write_ns / write_calls / 1e6
     if REQUIRE_SATURATION
         stats.interpreted_writes > 0 || error("Benchmark did not exercise interpreted writes")
         stats.processed_writes > 0 || error("Benchmark did not exercise processed writes")
-        stats.stats_writes > 0 || error("Benchmark did not exercise stats writes")
+        stats.metadata_writes > 0 || error("Benchmark did not exercise metadata writes")
         saturation.estimated_rows >= CACHE_ROW_CEILING || error(
             "Processed-writer saturation selected only $(saturation.estimated_rows) rows, " *
             "below the cache row ceiling $CACHE_ROW_CEILING",
@@ -1034,8 +1034,8 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
         stats.processed_writes,
         stats.processed_write_ns / max(stats.processed_writes, 1) / 1e6,
         stats.processed_items / max(stats.processed_writes, 1))
-    tee_printf("  stats       %6d calls  mean %7.2f ms\n", stats.stats_writes,
-        stats.stats_write_ns / max(stats.stats_writes, 1) / 1e6)
+    tee_printf("  stats       %6d calls  mean %7.2f ms\n", stats.metadata_writes,
+        stats.metadata_write_ns / max(stats.metadata_writes, 1) / 1e6)
     tee_printf("  combined mean %7.2f ms\n", mean_write_ms)
 
     tee_println("\nProcessed-writer saturation:")
@@ -1057,9 +1057,9 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
         tee_printf("  peak sample: GC live %.1f MiB  RSS-GC-live %.1f MiB\n",
             peak_sample.gc_live_bytes / 1024^2,
             peak_sample.rss_minus_gc_live_bytes / 1024^2)
-        tee_printf("  index counts: items %d  stats %d  collections %d  errors %d\n",
+        tee_printf("  index counts: items %d  metadata %d  collections %d  errors %d\n",
             peak_sample.index_items,
-            peak_sample.item_stats,
+            peak_sample.item_metadata,
             peak_sample.index_collections,
             peak_sample.analysis_errors)
         tee_printf("  queue counts: jobs %d  pending writes %d (%d rows)  selected %d  background waiting %d\n",
