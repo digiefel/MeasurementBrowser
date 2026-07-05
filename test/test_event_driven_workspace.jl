@@ -180,16 +180,30 @@ function _settles(predicate::Function; timeout::Real=5.0)::Bool
     return predicate()
 end
 
+"""Whether any processing callback is currently running (not merely queued)."""
+function _process_running(workspace)::Bool
+    graph = workspace.work
+    return lock(graph.lock) do
+        any(
+            node -> node.key.kind === MeasurementBrowser.Workspace.PROCESS_ITEM &&
+                node.state === :running,
+            values(graph.nodes),
+        )
+    end
+end
+
 @testset "aborting profile prep settles scan state" begin
     dir = _event_driven_dir(3)
-    project = _event_driven_project(basename(dir); process_delay=0.2)
+    project = _event_driven_project(basename(dir); process_delay=1.0)
     workspace = MeasurementBrowser.open_workspace(
         project, test_source(project, dir);
         background_processing=true, profile_internal=true)
     try
+        # A running (uncancellable) processing callback holds the workspace busy, so the profile
+        # prep is still pending — not already restarted — when the stop below aborts it.
+        @test _settles(() -> _process_running(workspace))
         MeasurementBrowser.Workspace.start_internal_profile!(workspace)
         @test workspace.profiler.state === :preparing
-        sleep(0.1)
         MeasurementBrowser.Workspace.stop_internal_profile!(workspace)
         @test workspace.profiler.state === :idle
         @test _settles(() -> !MeasurementBrowser.Workspace.source_scan_running(workspace))

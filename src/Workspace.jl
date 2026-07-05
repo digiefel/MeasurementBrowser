@@ -38,8 +38,6 @@ import ..Cache:
     set_cache_memory_limit!,
     start_cache!,
     stop_cache!,
-    store_interpreted_data!,
-    store_interpreted_records!,
     store_interpreted!,
     store_item_stats!,
     store_collection_stats!,
@@ -60,6 +58,7 @@ import ..ItemIndex:
     clear_node_stats!,
     collection_path_key,
     collection_path_tuple,
+    edit_changed_structure,
     edit_hierarchy,
     effective_parameters,
     effective_record,
@@ -120,6 +119,8 @@ mutable struct WorkspaceIndex
     collection_parameter_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{String,String}
+    # Published item ids per source item, so per-publish lookups avoid scanning every item.
+    items_by_source::Dict{String,Vector{String}}
 end
 
 @enum WorkKind begin
@@ -321,6 +322,7 @@ function Workspace(
             Symbol[],
             nothing,
             Dict{String,String}(),
+            Dict{String,Vector{String}}(),
         ),
         WorkspaceSelection(),
         WorkspaceCache(identity, cache_db, disk_error, nothing, :load),

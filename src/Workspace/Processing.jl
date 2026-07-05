@@ -394,6 +394,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
             workspace.project, workspace.source, source_item, workspace.profiler)
         store_interpreted!(
             workspace.cache.db,
+            source_item,
             interpretation.records,
             interpretation.interpreted_items,
         )
@@ -411,10 +412,8 @@ function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
         workspace.cache.db, [record]; stage=:interpreted))
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
     process_started = time_ns()
-    input = DataItem(
-        effective_record(workspace.index.hierarchy, record),
-        item_data(interpreted),
-    )
+    materialized_record = effective_record(workspace.index.hierarchy, record)
+    input = DataItem(materialized_record, item_data(interpreted))
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=record.kind,
         source_id=record.source_item_id,
@@ -424,7 +423,11 @@ function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
     end
     record_scan_phase!(workspace.project, record.source_item_id, record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
-    return (item=DataItem(input, item_data(processed)), cacheable=cacheable(processed))
+    return (
+        item=DataItem(input, item_data(processed)),
+        record=materialized_record,
+        cacheable=cacheable(processed),
+    )
 end
 
 """Run item statistics from the already-published processed result."""
@@ -493,9 +496,12 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                 error("Cannot interpret removed source item '$(key.entity)'")
             interpretation = interpret_source_item(
                 workspace.project, workspace.source, source_item, workspace.profiler)
+            # The worker persists what it computed before publication: cache writes are part of
+            # the work, so publication stays pure in-memory state under the publish lock.
             if work_node_current(workspace, node)
-                store_interpreted_data!(
+                store_interpreted!(
                     workspace.cache.db,
+                    source_item,
                     interpretation.records,
                     interpretation.interpreted_items,
                 )
@@ -506,7 +512,14 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                 get(workspace.index.items, key.entity, nothing)
             end
             record === nothing && error("Cannot process removed item '$(key.entity)'")
-            run_processing(workspace, record)
+            processing = run_processing(workspace, record)
+            # The payload store can block on write backpressure for whole flush cycles; running it
+            # here throttles processing production without stalling any publication. It must land
+            # before the node publishes as :ready, because late joiners then read the cache.
+            if work_node_current(workspace, node)
+                store_processed!(workspace.cache.db, processing.record, processing.item)
+            end
+            processing
         elseif key.kind === ITEM_STATS
             record = lock(workspace.work.lock) do
                 get(workspace.index.items, key.entity, nothing)

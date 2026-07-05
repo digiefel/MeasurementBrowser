@@ -198,10 +198,9 @@ cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
 
 """Return records currently published for one source item."""
 function source_item_records(index::WorkspaceIndex, source_item_id_value::String)::Vector{ItemRecord}
-    return ItemRecord[
-        record for record in values(index.items)
-        if record.source_item_id == source_item_id_value
-    ]
+    ids = get(index.items_by_source, source_item_id_value, nothing)
+    ids === nothing && return ItemRecord[]
+    return ItemRecord[index.items[id] for id in ids if haskey(index.items, id)]
 end
 
 """Return collection keys touched by records and their ancestors."""
@@ -316,6 +315,7 @@ function remove_source_item_output!(
         delete!(workspace.index.analysis_errors, record.id)
     end
     delete!(workspace.index.analysis_errors, source_item_id_value)
+    delete!(workspace.index.items_by_source, source_item_id_value)
     filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
     isempty(old_records) && return old_records, invalidated
     edit = edit_hierarchy(workspace.index.hierarchy)
@@ -324,7 +324,7 @@ function remove_source_item_output!(
         clear_node_stats!(edit, collection_path_tuple(key))
     end
     workspace.index.hierarchy = finish_edit!(edit, workspace.source)
-    refresh_collection_parameter_keys!(workspace.index)
+    edit_changed_structure(edit) && refresh_collection_parameter_keys!(workspace.index)
     return old_records, invalidated
 end
 
@@ -364,6 +364,12 @@ function publish_source_item_records!(
         workspace.index.items[record.id] = record
         isempty(record.stats) || (workspace.index.item_stats[record.id] = copy(record.stats))
     end
+    if isempty(records)
+        delete!(workspace.index.items_by_source, source_item_id_value)
+    else
+        workspace.index.items_by_source[source_item_id_value] =
+            String[record.id for record in records]
+    end
     filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
     invalidated = unique([old_keys; new_keys])
     edit = edit_hierarchy(workspace.index.hierarchy)
@@ -373,36 +379,32 @@ function publish_source_item_records!(
         clear_node_stats!(edit, collection_path_tuple(key))
     end
     workspace.index.hierarchy = finish_edit!(edit, workspace.source)
-    refresh_collection_parameter_keys!(workspace.index)
+    edit_changed_structure(edit) && refresh_collection_parameter_keys!(workspace.index)
     return old_records, invalidated
 end
 
 """
 Submit one source-change batch to the work graph and remove deleted published output. Cache
-mutations go to `deferred`, run by the caller after the publish lock is released.
+deletes are buffered mutations, so ordering against re-interpretation is kept by the buffers:
+a delete enqueued here always precedes the rows a later interpretation appends.
 """
 function apply_source_changes!(
     workspace::Workspace,
     changes::SourceChanges,
     fingerprints::AbstractDict{String},
     status::Union{Nothing,ProjectCacheStatus},
-    deferred::Vector{Function},
 )::Bool
     changed = false
     for removed in changes.removals
         old_records, invalidated = remove_source_item_output!(workspace, removed)
-        push!(deferred, () -> begin
-            delete_source_item!(workspace.cache.db, removed, old_records)
-            delete_collection_stats!(workspace.cache.db, invalidated)
-        end)
+        delete_source_item!(workspace.cache.db, removed, old_records)
+        delete_collection_stats!(workspace.cache.db, invalidated)
         mark_collection_stats_missing!(workspace, invalidated)
         lock(workspace.work.lock) do
             delete!(workspace.work.source_items, removed)
         end
         changed = true
     end
-    # Upsert cache deletes stay inline: they must land before the item's interpretation is
-    # enqueued, or a fast re-interpretation could publish fresh rows the stale delete then eats.
     isempty(changes.upserts) || lock(workspace.work.lock) do
         for source_item in changes.upserts
             source_item_id_value = source_item_id(source_item)
@@ -647,10 +649,12 @@ function replace_item_index!(
 )::Nothing
     items = Dict{String,ItemRecord}()
     sizehint!(items, length(hierarchy.all_items))
+    items_by_source = Dict{String,Vector{String}}()
     parameter_keys = Set{Symbol}()
     for item in hierarchy.all_items
         haskey(items, item.id) && error("Duplicate item id generated during scan: $(item.id)")
         items[item.id] = item
+        push!(get!(() -> String[], items_by_source, item.source_item_id), item.id)
     end
     for node in values(hierarchy.index)
         union!(parameter_keys, keys(node.parameters))
@@ -671,6 +675,7 @@ function replace_item_index!(
         sort!(collect(parameter_keys); by=String),
         workspace.index.source,
         workspace.index.analysis_errors,
+        items_by_source,
     )
     return nothing
 end
@@ -892,18 +897,17 @@ function enqueue_ready_collection_stats!(
     return nothing
 end
 
-# In both publish functions, waiter wakeup must happen before any call that can throw, so blocked
-# `request_processed_items` callers are never left waiting on a `take!` that will not resolve.
 """
-Apply one successful work completion to the WorkspaceIndex; cache mutations are appended to
-`deferred` and run by the caller after the publish lock is released.
+Apply one successful work completion to the WorkspaceIndex.
+
+Runs under the publish lock and stays cheap: the worker already persisted its own payload before
+completing, and every cache mutation reachable from here is a non-blocking buffered enqueue.
 """
 function publish_work_success!(
     workspace::Workspace,
     node::WorkNode,
     result,
-    deferred::Vector{Function},
-)::Bool
+)::Nothing
     key = node.key
     if key.kind === INTERPRET_SOURCE
         records = result.records::Vector{ItemRecord}
@@ -913,11 +917,8 @@ function publish_work_success!(
         ) begin
             publish_source_item_records!(workspace, key.entity, records)
         end
-        # Stale cached collection stats are fingerprint-guarded on load, so deleting them after
-        # the lock is released cannot resurrect them.
-        push!(deferred, () -> delete_collection_stats!(workspace.cache.db, invalidated))
+        delete_collection_stats!(workspace.cache.db, invalidated)
         mark_collection_stats_missing!(workspace, invalidated)
-        push!(deferred, () -> store_interpreted_records!(workspace.cache.db, records))
         # One lock acquisition for the whole batch: the per-record calls re-enter it cheaply, and
         # each newly queued node wakes exactly one worker instead of the pool per record.
         lock(workspace.work.lock) do
@@ -931,51 +932,38 @@ function publish_work_success!(
                 workspace.background_processing && enqueue_processing!(workspace, record)
             end
         end
-        return true
     elseif key.kind === PROCESS_ITEM
-        record = workspace.index.items[key.entity]
-        materialized_record = effective_record(workspace.index.hierarchy, record)
-        # Item stats read the processed payload from the cache, so the node registers now (blocked
-        # on this still-running PROCESS node, keeping the workspace visibly busy) and becomes
-        # runnable only when the deferred store finishes the node. The store itself can block on
-        # write backpressure for whole flush cycles — it must never run under the publish lock.
-        enqueue_item_stats!(workspace, record)
-        push!(deferred, () -> begin
-            store_processed!(workspace.cache.db, materialized_record, result.item)
-            waiters = finish_work_node!(workspace, node, :ready)
-            loaded = DataItem(materialized_record, item_data(result.item))
-            for waiter in waiters
-                put!(waiter, ProcessingResult(loaded, nothing))
-            end
-        end)
-        return false
+        # The worker stored the processed payload before completing, so item stats become runnable
+        # the moment this node finishes and late joiners reading the cache always find the data.
+        record = get(workspace.index.items, key.entity, nothing)
+        record === nothing || enqueue_item_stats!(workspace, record)
     elseif key.kind === ITEM_STATS
         record = workspace.index.items[key.entity]
         stats = metadata_dict(result)
         workspace.index.item_stats[key.entity] = stats
-        stats_record = effective_record(workspace.index.hierarchy, record)
-        push!(deferred, () -> store_item_stats!(workspace.cache.db, stats_record, stats))
+        store_item_stats!(
+            workspace.cache.db,
+            effective_record(workspace.index.hierarchy, record),
+            stats,
+        )
         enqueue_ready_collection_stats!(
             workspace,
             affected_collection_keys([record]),
         )
-        return true
     else
         path = collection_path_tuple(key.entity)
         hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
-        hierarchy_node === nothing && return false
+        hierarchy_node === nothing && return nothing
         empty!(hierarchy_node.stats)
         merge!(hierarchy_node.stats, metadata_dict(result))
-        stored_stats = copy(hierarchy_node.stats)
-        input_fingerprint = collection_input_fingerprint(workspace, path)
-        push!(deferred, () -> store_collection_stats!(
+        store_collection_stats!(
             workspace.cache.db,
             key.entity,
-            input_fingerprint,
-            stored_stats,
-        ))
-        return true
+            collection_input_fingerprint(workspace, path),
+            hierarchy_node.stats,
+        )
     end
+    return nothing
 end
 
 """Apply one failed work completion to WorkspaceIndex and ProjectCache."""
@@ -1044,26 +1032,19 @@ function publish_work_completion!(
     revision::UInt64,
     result,
 )::Nothing
-    # Cache mutations collected under the publish lock run after it is released: they only touch
-    # the self-locked cache stores, and keeping their flush waits and DuckDB statements inside the
-    # publish lock serialized every worker behind one publisher.
-    deferred = Function[]
     lock(workspace.publish_lock) do
         node = current_completion_node(workspace, key, revision)
         node === nothing && return
         if result isa CapturedException
             publish_work_failure!(workspace, node, result)
         else
-            publish_work_success!(workspace, node, result, deferred)
-            key.kind === PROCESS_ITEM || finish_work_node!(workspace, node, :ready)
+            publish_work_success!(workspace, node, result)
+            waiters = finish_work_node!(workspace, node, :ready)
+            item = key.kind === PROCESS_ITEM ? result.item : nothing
+            for waiter in waiters
+                put!(waiter, ProcessingResult(item, nothing))
+            end
         end
-        finish_publish!(workspace)
-    end
-    isempty(deferred) && return nothing
-    foreach(operation -> operation(), deferred)
-    # Deferred operations can finish nodes (PROCESS completes in its store operation), so idle
-    # observers and a pending profile restart must be re-notified after they run.
-    lock(workspace.publish_lock) do
         finish_publish!(workspace)
     end
     return nothing
@@ -1135,14 +1116,12 @@ function publish_source_changes!(
     fingerprints::AbstractDict{String},
     status::ProjectCacheStatus,
 )::Nothing
-    deferred = Function[]
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
-        apply_source_changes!(workspace, changes, fingerprints, status, deferred)
+        apply_source_changes!(workspace, changes, fingerprints, status)
         workspace.cache_state = :ready
         finish_publish!(workspace)
     end
-    foreach(operation -> operation(), deferred)
     return nothing
 end
 
@@ -1151,17 +1130,15 @@ function publish_source_event!(
     workspace::Workspace,
     changes::SourceChanges,
 )::Nothing
-    deferred = Function[]
     lock(workspace.publish_lock) do
         workspace.closed && return
         workspace.source_error = ""
         fingerprints = workspace.index.source === nothing ?
             Dict{String,Any}() :
             workspace.index.source.source_item_fingerprints
-        apply_source_changes!(workspace, changes, fingerprints, nothing, deferred)
+        apply_source_changes!(workspace, changes, fingerprints, nothing)
         finish_publish!(workspace)
     end
-    foreach(operation -> operation(), deferred)
     return nothing
 end
 

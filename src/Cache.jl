@@ -14,9 +14,14 @@ import ..ItemIndex:
     emit_progress
 import ..Projects:
     AbstractDataItem,
+    AbstractDataSourceItem,
     cacheable,
+    fingerprint,
     item_data,
     source_id,
+    source_item_id,
+    source_item_path,
+    source_item_timestamp,
     source_label
 import ..Profiling
 using ..Profiling: @profile_span, ProfileAttributes

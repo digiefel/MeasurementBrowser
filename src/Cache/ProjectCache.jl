@@ -419,14 +419,24 @@ end
 # The domain write/read surface over the generic stores: pipeline stages and `ItemRecord`s map onto
 # RowStore rows and TabularFamilyStore batches. The stores know none of this; they buffer typed rows.
 
-"""Store one source item's lightweight interpreted records. Item data is stored separately."""
-function store_interpreted_records!(cache::CacheDB, records::Vector{ItemRecord})::Nothing
+"""
+Store one source item's interpretation index rows: its identity row plus each record's rows.
+
+The identity row belongs to the interpretation, not to its records: a source item that interprets
+into zero records still persists its fingerprint, so a reopen recognizes it as unchanged instead of
+rediscovering it as new.
+"""
+function store_interpreted_records!(
+    cache::CacheDB,
+    source_item::AbstractDataSourceItem,
+    records::Vector{ItemRecord},
+)::Nothing
     started = time_ns()
+    id = source_item_id(source_item)
+    hex, hash = _encode_fingerprint(fingerprint(source_item))
+    append!(cache.source_items, id, SourceItemRow(
+        id, hex, hash, source_item_path(source_item), source_item_timestamp(source_item)))
     for record in records
-        hex, hash = _encode_fingerprint(record.source_item_fingerprint)
-        append!(cache.source_items, record.source_item_id,
-            SourceItemRow(record.source_item_id, hex, hash,
-                record.source_item_path, record.source_item_timestamp))
         append!(cache.items, record.id,
             ItemRow(record.id, record.source_item_id, record.item_label, String(record.kind),
                 record.collection, _serialize_hex(record.item_fingerprint)))
@@ -465,9 +475,9 @@ function store_interpreted_data!(
 end
 
 """Store one source item's interpreted result: records to disk-backed buffers, payloads to memory."""
-function store_interpreted!(cache::AbstractCacheDB, records::Vector{ItemRecord},
-        data::Vector{<:AbstractDataItem})::Nothing
-    store_interpreted_records!(cache, records)
+function store_interpreted!(cache::AbstractCacheDB, source_item::AbstractDataSourceItem,
+        records::Vector{ItemRecord}, data::Vector{<:AbstractDataItem})::Nothing
+    store_interpreted_records!(cache, source_item, records)
     store_interpreted_data!(cache, records, data)
     return nothing
 end
@@ -564,7 +574,9 @@ function store_collection_stats!(
 end
 
 """Memory cache has no durable record tables; records are published to `WorkspaceIndex`."""
-store_interpreted_records!(::MemoryCacheDB, ::Vector{ItemRecord})::Nothing = nothing
+store_interpreted_records!(
+    ::MemoryCacheDB, ::AbstractDataSourceItem, ::Vector{ItemRecord},
+)::Nothing = nothing
 
 store_result_failure!(
     ::MemoryCacheDB, ::CacheResultKey, ::AbstractString, ::AbstractString, ::AbstractString,
@@ -691,7 +703,8 @@ function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{
         (cache.source_items, cache.items, cache.metadata, cache.failures,
          cache.result_states, cache.payload)
         lock(buffer.flush_condition) do
-            items += length(buffer.queued) + length(buffer.writing)
+            items += length(buffer.queued) + length(buffer.writing) +
+                _pending_prefix_count(buffer)
             rows += buffer.queued_rows + buffer.writing_rows
         end
     end

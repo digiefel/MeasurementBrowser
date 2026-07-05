@@ -608,6 +608,10 @@ mutable struct HierarchyEdit
     children_dirty::Set{CollectionPath}
     created::Vector{CollectionPath}
     pruned::Bool
+    # Item-list changes accumulate here; `finish_edit!` builds the replacement `all_items` in one
+    # pass so the original hierarchy's vector is never touched.
+    removed_ids::Set{String}
+    inserted::Vector{ItemRecord}
 end
 
 _clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
@@ -619,12 +623,17 @@ _clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
     copy(node.stats),
 )
 
-"""Begin a copy-on-write edit; the original hierarchy is never mutated."""
+"""
+Begin a copy-on-write edit; the original hierarchy, including its `all_items`, is never mutated.
+
+During the edit `all_items` is borrowed read-only from the original; `finish_edit!` replaces it
+when item lists changed, so untouched edits share the vector and changed ones pay one pass.
+"""
 function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
     return HierarchyEdit(
         Hierarchy(
             _clone_node(hierarchy.root),
-            copy(hierarchy.all_items),
+            hierarchy.all_items,
             hierarchy.source_id,
             copy(hierarchy.index),
             hierarchy.has_collection_parameters,
@@ -635,8 +644,13 @@ function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
         Set{CollectionPath}(),
         CollectionPath[],
         false,
+        Set{String}(),
+        ItemRecord[],
     )
 end
+
+"""Whether an edit created or pruned collection nodes (as opposed to only moving items)."""
+edit_changed_structure(edit::HierarchyEdit)::Bool = !isempty(edit.created) || edit.pruned
 
 _node_at(hierarchy::Hierarchy, path::CollectionPath)::Union{Nothing,HierarchyNode} =
     path === () ? hierarchy.root : get(hierarchy.index, path, nothing)
@@ -680,7 +694,7 @@ function insert_record!(edit::HierarchyEdit, record::ItemRecord)::Nothing
     end
     node = editable_node!(edit, leaf_path)
     push!(node.items, record)
-    push!(hierarchy.all_items, record)
+    push!(edit.inserted, record)
     push!(edit.items_dirty, leaf_path)
     return nothing
 end
@@ -690,7 +704,8 @@ function remove_records!(edit::HierarchyEdit, records::Vector{ItemRecord})::Noth
     isempty(records) && return nothing
     hierarchy = edit.hierarchy
     ids = Set(record.id for record in records)
-    filter!(record -> !(record.id in ids), hierarchy.all_items)
+    union!(edit.removed_ids, ids)
+    filter!(record -> !(record.id in ids), edit.inserted)
     for path in unique(Tuple(record.collection) for record in records)
         node = editable_node!(edit, path)
         filter!(item -> !(item.id in ids), node.items)
@@ -733,7 +748,19 @@ function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarch
         node = _node_at(hierarchy, path)
         node === nothing || sort_children!(node)
     end
-    return hierarchy
+    isempty(edit.removed_ids) && isempty(edit.inserted) && return hierarchy
+    all_items = ItemRecord[
+        record for record in hierarchy.all_items if !(record.id in edit.removed_ids)
+    ]
+    append!(all_items, edit.inserted)
+    return Hierarchy(
+        hierarchy.root,
+        all_items,
+        hierarchy.source_id,
+        hierarchy.index,
+        hierarchy.has_collection_parameters,
+        hierarchy.skipped_count,
+    )
 end
 
 include("ItemIndex/Scanning.jl")

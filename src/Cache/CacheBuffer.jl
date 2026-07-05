@@ -113,6 +113,10 @@ mutable struct RowStore{K,R} <: AbstractDiskStore{K,R}
     flush_condition::Base.Threads.Condition
     queued::Dict{K,BufferMutation{R}}
     writing::Dict{K,BufferMutation{R}}
+    # Pending key-prefix deletes, flushed before the batch's row mutations. Kept separate from the
+    # keyed dicts because one prefix covers unknown disk keys; reads overlay them in queue order.
+    queued_prefixes::Vector{Tuple}
+    writing_prefixes::Vector{Tuple}
     queued_rows::Int
     writing_rows::Int
     row_limit::Union{Nothing,Int}
@@ -150,6 +154,8 @@ function RowStore{K,R}(
         Base.Threads.Condition(),
         Dict{K,BufferMutation{R}}(),
         Dict{K,BufferMutation{R}}(),
+        Tuple[],
+        Tuple[],
         0,
         0,
         row_limit,
@@ -430,7 +436,43 @@ function _key_starts_with(key::Tuple, prefix::Tuple)::Bool
         all(index -> key[index] == prefix[index], eachindex(prefix))
 end
 
-"""Delete rows whose leading key columns match `prefix`, including queued buffer rows."""
+# Prefix deletes exist only on RowStore; the other stores answer the generic flush/clear/read
+# machinery through these no-op hooks.
+_pending_prefix_count(::AbstractDiskStore)::Int = 0
+_pending_prefix_count(store::RowStore)::Int =
+    length(store.queued_prefixes) + length(store.writing_prefixes)
+_queued_prefixes_pending(::AbstractDiskStore)::Bool = false
+_queued_prefixes_pending(store::RowStore)::Bool = !isempty(store.queued_prefixes)
+_writing_prefixes_pending(::AbstractDiskStore)::Bool = false
+_writing_prefixes_pending(store::RowStore)::Bool = !isempty(store.writing_prefixes)
+_clear_queued_prefixes!(::AbstractDiskStore)::Nothing = nothing
+_clear_queued_prefixes!(store::RowStore)::Nothing = (empty!(store.queued_prefixes); nothing)
+_swap_prefixes!(::AbstractDiskStore)::Nothing = nothing
+function _swap_prefixes!(store::RowStore)::Nothing
+    store.writing_prefixes = store.queued_prefixes
+    store.queued_prefixes = Tuple[]
+    return nothing
+end
+_finish_writing_prefixes!(::AbstractDiskStore)::Nothing = nothing
+_finish_writing_prefixes!(store::RowStore)::Nothing = (store.writing_prefixes = Tuple[]; nothing)
+
+"""Drop buffered rows matching one queued prefix delete from a logical read view."""
+function _apply_prefixes!(rows::Dict{K,R}, prefixes::Vector{Tuple})::Nothing where {K,R}
+    isempty(prefixes) && return nothing
+    filter!(
+        pair -> !any(prefix -> _key_starts_with(pair.first, prefix), prefixes),
+        rows,
+    )
+    return nothing
+end
+
+"""
+Queue one delete of every row whose leading key columns match `prefix`.
+
+A buffered mutation like any other: matching rows queued so far are dropped immediately, disk rows
+are deleted by the next flush before that batch's appends land, and reads overlay the pending
+prefix. Never blocks on in-flight flushes, so it is safe under publish-side locks.
+"""
 function delete_by_key_prefix!(
     store::RowStore{K,R},
     prefix::Tuple,
@@ -440,35 +482,13 @@ function delete_by_key_prefix!(
             "key prefix length $(length(prefix)) does not match table " *
             "'$(store.table_name)' with $(length(store.key_columns)) key columns",
         ))
-    lock(store.flush_condition)
-    try
+    lock(store.flush_condition) do
         _require_writable(store)
-        while !isempty(store.writing)
-            wait(store.flush_condition)
-            _require_writable(store)
-        end
         for key in collect(keys(store.queued))
             _key_starts_with(key, prefix) && _set_queued!(store, key, nothing)
         end
-        predicate = join(
-            (
-                "$(store.quoted_key_columns[index]) = ?"
-                for index in eachindex(prefix)
-            ),
-            " AND ",
-        )
-        _transaction(store.write_connection) do
-            DBInterface.execute(
-                DBInterface.prepare(
-                    store.write_connection,
-                    "DELETE FROM $(store.quoted_table) WHERE $predicate",
-                ),
-                prefix,
-            )
-        end
+        push!(store.queued_prefixes, prefix)
         notify(store.flush_condition)
-    finally
-        unlock(store.flush_condition)
     end
     return nothing
 end
@@ -576,8 +596,11 @@ function wait_condition_deadline(condition::Base.Threads.Condition, deadline::Fl
     return time() < deadline
 end
 
+_queue_empty(store::AbstractDiskStore)::Bool =
+    isempty(store.queued) && !_queued_prefixes_pending(store)
+
 function _flush_due(store::AbstractDiskStore, now::Float64)::Bool
-    isempty(store.queued) && return false
+    _queue_empty(store) && return false
     at_capacity = store.row_limit !== nothing && store.queued_rows >= store.row_limit
     return store.closing || at_capacity ||
         now - store.last_flush >= CACHE_BUFFER_FLUSH_INTERVAL
@@ -622,8 +645,8 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
     while true
         writing = lock(store.flush_condition) do
             while !_flush_due(store, time())
-                store.closing && isempty(store.queued) && return nothing
-                if isempty(store.queued)
+                store.closing && _queue_empty(store) && return nothing
+                if _queue_empty(store)
                     # No queued rows means no flush deadline; sleep until an append notifies.
                     wait(store.flush_condition)
                 else
@@ -635,6 +658,7 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
             end
             store.writing = store.queued
             store.writing_rows = store.queued_rows
+            _swap_prefixes!(store)
             store.queued = Dict{K,BufferMutation{R}}()
             store.queued_rows = 0
             store.last_flush = time()
@@ -656,6 +680,7 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
         lock(store.flush_condition) do
             store.writing = Dict{K,BufferMutation{R}}()
             store.writing_rows = 0
+            _finish_writing_prefixes!(store)
             notify(store.flush_condition)
         end
     end
@@ -708,7 +733,12 @@ function Base.read(store::RowStore{K,R})::Dict{K,R} where {K,R}
         stable = lock(store.flush_condition) do
             _require_open(store)
             store.writing === writing && store.queued === queued || return false
+            # Pending prefix deletes apply between the eras they separate: writing-era prefixes
+            # precede the writing batch's surviving mutations, queued-era prefixes cover both the
+            # disk rows and anything the in-flight flush is about to commit.
+            _apply_prefixes!(rows, store.writing_prefixes)
             _overlay!(rows, store.writing)
+            _apply_prefixes!(rows, store.queued_prefixes)
             _overlay!(rows, store.queued)
             true
         end
@@ -898,6 +928,21 @@ function _flush_to_db!(
         end
     end
     _transaction(store.write_connection) do
+        # Prefix deletes precede the batch's row mutations: every matching row queued before the
+        # prefix was dropped at queue time, so everything appended below survives it.
+        for prefix in store.writing_prefixes
+            predicate = join(
+                ("$(store.quoted_key_columns[index]) = ?" for index in eachindex(prefix)),
+                " AND ",
+            )
+            DBInterface.execute(
+                DBInterface.prepare(
+                    store.write_connection,
+                    "DELETE FROM $(store.quoted_table) WHERE $predicate",
+                ),
+                prefix,
+            )
+        end
         _delete_keys!(
             store.write_connection,
             store.quoted_table,
@@ -1076,8 +1121,11 @@ function clear!(store::AbstractDiskStore)::Nothing
     try
         _require_writable(store)
         empty!(store.queued)
+        _clear_queued_prefixes!(store)
         store.queued_rows = 0
-        while !isempty(store.writing)
+        # An in-flight prefix delete must finish before the wipe, or it would erase rows written
+        # into the fresh table after this clear.
+        while !isempty(store.writing) || _writing_prefixes_pending(store)
             wait(store.flush_condition)
             _require_writable(store)
         end
