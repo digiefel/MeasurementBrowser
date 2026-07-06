@@ -382,9 +382,15 @@ end
 
 function Base.read(store::WideRowStore{K})::Dict{K,MetadataDict} where {K}
     while true
-        writing, queued, vtypes = lock(store.flush_condition) do
+        writing, queued, vtypes, disk_columns = lock(store.flush_condition) do
             _require_open(store)
-            (store.writing, store.queued, copy(store.column_vtypes))
+            # Only decode flushed columns from disk; pending names live in queued/writing.
+            (
+                store.writing,
+                store.queued,
+                copy(store.column_vtypes),
+                setdiff(store.column_order, store.pending_columns),
+            )
         end
         rows = Dict{K,MetadataDict}()
         lock(store.read_lock) do
@@ -392,7 +398,8 @@ function Base.read(store::WideRowStore{K})::Dict{K,MetadataDict} where {K}
                 store.read_connection, "SELECT * FROM $(store.quoted_table)")
                 raw_key = getproperty(database_row, store.key_column)
                 dict = MetadataDict()
-                for (name, vtype) in vtypes
+                for name in disk_columns
+                    vtype = vtypes[name]
                     raw = getproperty(database_row, name)
                     ismissing(raw) && continue
                     dict[name] = _decode_wide_value(vtype, raw)

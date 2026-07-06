@@ -129,6 +129,20 @@ end
     end
 end
 
+@testset "wide cache read uses only committed columns from disk" begin
+    _with_wide_cache("WidePendingColumns") do cache
+        store = cache.source_item_metadata
+        WIDE.edit!(store, Int64(1), WIDE_INDEX.MetadataDict(
+            :timestamp => DateTime(2026, 1, 1), :V_base => 1.0))
+        # `:cycle` is registered in memory but not ALTER TABLE'd until the next flush.
+        WIDE.edit!(store, Int64(2), WIDE_INDEX.MetadataDict(:cycle => Int64(3)))
+        loaded = read(store)
+        @test loaded[Int64(1)][:V_base] == 1.0
+        @test !haskey(loaded[Int64(1)], :cycle)
+        @test loaded[Int64(2)][:cycle] == Int64(3)
+    end
+end
+
 @testset "wide cache widens under concurrent reads" begin
     _with_wide_cache("WideConcurrent") do cache
         store = cache.analyzed_collection_metadata
