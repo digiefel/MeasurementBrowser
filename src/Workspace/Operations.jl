@@ -238,9 +238,16 @@ Diff cached source metadata against the open source; update changed cache rows.
 
 Returns items whose work should be invalidated. Cache `read` is the baseline (disk plus buffer
 overlay). Rows absent from the baseline are persisted without invalidation.
+
+Reconciles the whole index by default. Pass `collections` (a set of collection path keys) to diff
+only those collections and skip the whole-index item pass: the streaming publish path uses this,
+because interpret workers already persist each item's metadata and the caller invalidates the
+touched collections' work itself. Diffing every collection and item on every publish is what makes
+an otherwise linear scan quadratic.
 """
 function reconcile_source_metadata_cache!(
     workspace::Workspace;
+    collections::Union{Nothing,Vector{String}}=nothing,
     refresh_hierarchy::Bool=false,
 )::Vector{ItemRecord}
     old_hierarchy = nothing
@@ -264,38 +271,44 @@ function reconcile_source_metadata_cache!(
     if cachedb isa CacheDB
         stale = ItemRecord[]
         baseline_collections = read(cachedb.source_collection_metadata)
-        for path in keys(workspace.index.hierarchy.index)
-            key = collection_path_key(collect(path))
-            current = metadata_dict(collection_metadata(workspace.source, collect(path)))
+        collection_paths = collections === nothing ?
+            [collect(path) for path in keys(workspace.index.hierarchy.index)] :
+            [collect(collection_path_tuple(key)) for key in unique(collections)]
+        for path in collection_paths
+            key = collection_path_key(path)
+            current = metadata_dict(collection_metadata(workspace.source, path))
             old = get(baseline_collections, key, nothing)
             if old === nothing
                 isempty(current) && continue
                 edit_source_collection_metadata!(cachedb, key, current)
             elseif !isequal(old, current)
-                prefix = collect(path)
                 append!(stale, ItemRecord[
                     record for record in workspace.index.hierarchy.all_items
-                    if length(prefix) <= length(record.collection) &&
-                       record.collection[1:length(prefix)] == prefix
+                    if length(path) <= length(record.collection) &&
+                       record.collection[1:length(path)] == path
                 ])
                 edit_source_collection_metadata!(cachedb, key, current)
             end
         end
 
-        key_to_id = Dict(row.item_key => row.id for row in values(read(cachedb.items)))
-        id_to_key = Dict(id => key for (key, id) in key_to_id)
-        baseline_items = read(cachedb.source_item_metadata)
-        for record in values(workspace.index.items)
-            item_key = get(id_to_key, record.id, nothing)
-            item_key === nothing && continue
-            current = record.metadata
-            old = get(baseline_items, item_key, nothing)
-            if old === nothing
-                isempty(current) && continue
-                edit_source_item_metadata!(cachedb, item_key, current)
-            elseif !isequal(old, current)
-                push!(stale, record)
-                edit_source_item_metadata!(cachedb, item_key, current)
+        # Item metadata is reconciled only on a whole-index pass; the scoped publish path relies on
+        # interpret workers having persisted each item's row already.
+        if collections === nothing
+            key_to_id = Dict(row.item_key => row.id for row in values(read(cachedb.items)))
+            id_to_key = Dict(id => key for (key, id) in key_to_id)
+            baseline_items = read(cachedb.source_item_metadata)
+            for record in values(workspace.index.items)
+                item_key = get(id_to_key, record.id, nothing)
+                item_key === nothing && continue
+                current = record.metadata
+                old = get(baseline_items, item_key, nothing)
+                if old === nothing
+                    isempty(current) && continue
+                    edit_source_item_metadata!(cachedb, item_key, current)
+                elseif !isequal(old, current)
+                    push!(stale, record)
+                    edit_source_item_metadata!(cachedb, item_key, current)
+                end
             end
         end
         return unique(stale)
@@ -964,7 +977,7 @@ function publish_work_success!(
                 workspace.background_processing && enqueue_processing!(workspace, record)
             end
         end
-        reconcile_source_metadata_cache!(workspace)
+        reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
         # runnable the moment this node finishes and late joiners reading the cache find the data.

@@ -310,8 +310,11 @@ Freshness is derived from source data, not from stored per-result claims. When t
 loaded, every persisted result seeds a completed node in the workspace work graph at counter revision
 1; `reconcile_source_metadata_cache!` then diffs `source_collection_metadata` and `source_item_metadata`
 (cache `read`, including buffer overlay) against the open source and invalidates stale work before
-seeding completes. At runtime the work graph is the single freshness authority — readers consult it
-and then read payloads raw; `result_states` is only written, never re-read, until the next load.
+seeding completes. During streaming interpretation the same call is scoped to the batch's touched
+collections (`collections=`) and skips the whole-index item pass — interpret workers already wrote
+those item rows — so publication stays O(batch) instead of re-diffing the whole index each time. At
+runtime the work graph is the single freshness authority — readers consult it and then read payloads
+raw; `result_states` is only written, never re-read, until the next load.
 
 ## Source changes
 
