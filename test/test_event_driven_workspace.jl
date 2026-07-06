@@ -243,6 +243,52 @@ end
     end
 end
 
+@testset "workspace_status survives concurrent analysis_errors mutations" begin
+    dir = _event_driven_dir(1)
+    project = _event_driven_project(basename(dir))
+    workspace = MeasurementBrowser.open_workspace(
+        project, test_source(project, dir); background_processing=true)
+    try
+        MeasurementBrowser.Workspace.wait_workspace_idle!(workspace; timeout=30)
+        lock(workspace.publish_lock) do
+            workspace.index.analysis_errors["a"] = "one"
+            workspace.index.analysis_errors["b"] = "two"
+        end
+        status = MeasurementBrowser.Workspace.workspace_status(workspace)
+        @test status.errors == ["a" => "one", "b" => "two"]
+
+        failures = Base.Threads.Atomic{Int}(0)
+        done = Base.Threads.Atomic{Bool}(false)
+        writer = Threads.@spawn while !done[]
+            i = rand(1:100)
+            lock(workspace.publish_lock) do
+                workspace.index.analysis_errors["k$i"] = "v$i"
+            end
+            lock(workspace.work.lock) do
+                for key in collect(keys(workspace.index.analysis_errors))[1:min(3, end)]
+                    delete!(workspace.index.analysis_errors, key)
+                end
+            end
+            yield()
+        end
+        reader = Threads.@spawn while !done[]
+            try
+                MeasurementBrowser.Workspace.workspace_status(workspace)
+            catch
+                Base.Threads.atomic_add!(failures, 1)
+            end
+            yield()
+        end
+        sleep(0.5)
+        done[] = true
+        fetch(writer)
+        fetch(reader)
+        @test failures[] == 0
+    finally
+        MeasurementBrowser.close_workspace!(workspace)
+    end
+end
+
 @testset "full API produces a plot without polling" begin
     dir = _event_driven_dir(2)
     project = _event_driven_project(basename(dir))

@@ -1,6 +1,10 @@
 """Fold a workspace's job and cache state into the watcher-facing [`WorkspaceStatus`](@ref)."""
 function workspace_status(workspace::Workspace)::WorkspaceStatus
-    errors = sort!(collect(workspace.index.analysis_errors); by=first)
+    errors = lock(workspace.publish_lock) do
+        lock(workspace.work.lock) do
+            sort!(Pair{String,String}[k => v for (k, v) in workspace.index.analysis_errors]; by=first)
+        end
+    end
     scan = workspace.scan
 
     # Active work: one live line, determinate bar when totals are known.
