@@ -157,7 +157,6 @@ The internal metadata record for one logical item discovered inside one source i
 struct ItemRecord
     id::String
     source_item_id::String
-    source_item_fingerprint::Any
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
     item_label::String
@@ -173,7 +172,6 @@ Construct an item record while normalizing its string fields.
 function ItemRecord(;
     id::AbstractString,
     source_item_id::AbstractString,
-    source_item_fingerprint=nothing,
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
     item_label::AbstractString,
@@ -187,7 +185,6 @@ function ItemRecord(;
     return ItemRecord(
         record_id,
         String(source_item_id),
-        source_item_fingerprint,
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
         String(item_label),
@@ -205,7 +202,6 @@ function ItemRecord(
     record::ItemRecord;
     id::AbstractString=record.id,
     source_item_id::AbstractString=record.source_item_id,
-    source_item_fingerprint=record.source_item_fingerprint,
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
     item_label::AbstractString=record.item_label,
@@ -217,7 +213,6 @@ function ItemRecord(
     return ItemRecord(;
         id,
         source_item_id,
-        source_item_fingerprint,
         source_item_path,
         source_item_timestamp,
         item_label,
@@ -307,7 +302,6 @@ function ItemRecord(
         String(label)
     return ItemRecord(;
         source_item_id=source_item_id(source_item),
-        source_item_fingerprint=fingerprint(source_item),
         source_item_path=source_item_path(source_item),
         source_item_timestamp=source_item_timestamp(source_item),
         id=Projects.id(item),
@@ -372,8 +366,6 @@ The authoritative result of one completed source scan.
 struct SourceScan
     source_id::String
     source_label::String
-    source_item_fingerprints::Dict{String,Any}
-    collection_metadata_fingerprints::Dict{String,Any}
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
 end
@@ -381,15 +373,11 @@ end
 """Construct a successful scan with no recorded analysis failures."""
 function SourceScan(
     source::AbstractDataSource,
-    source_item_fingerprints::Dict{String,Any},
-    collection_metadata_fingerprints::Dict{String,Any},
     hierarchy::Hierarchy,
 )::SourceScan
     return SourceScan(
         source_id(source),
         source_label(source),
-        source_item_fingerprints,
-        collection_metadata_fingerprints,
         hierarchy,
         ItemFailure[],
     )

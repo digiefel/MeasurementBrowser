@@ -296,16 +296,11 @@ function invalidate_records_work!(workspace::Workspace, changed::Vector{ItemReco
 end
 
 """Refresh the authoritative published source snapshot from current index state."""
-function refresh_workspace_source!(
-    workspace::Workspace,
-    fingerprints::AbstractDict{String},
-)::Nothing
+function refresh_workspace_source!(workspace::Workspace)::Nothing
     metadata_fingerprints = Dict{String,Any}(collection_metadata_fingerprints(workspace.source))
     workspace.index.source = SourceScan(
         source_id(workspace.source),
         source_label(workspace.source),
-        Dict{String,Any}(fingerprints),
-        metadata_fingerprints,
         workspace.index.hierarchy,
         ItemFailure[],
     )
@@ -402,7 +397,6 @@ a delete enqueued here always precedes the rows a later interpretation appends.
 function apply_source_changes!(
     workspace::Workspace,
     changes::SourceChanges,
-    fingerprints::AbstractDict{String},
     status::Union{Nothing,ProjectCacheStatus},
 )::Bool
     changed = false
@@ -433,7 +427,7 @@ function apply_source_changes!(
         end
     end
     changes.metadata_changed && (changed = apply_collection_metadata_changes!(workspace) || changed)
-    refresh_workspace_source!(workspace, fingerprints)
+    refresh_workspace_source!(workspace)
     status === nothing || (workspace.cache.status = status)
     return changed
 end
@@ -496,28 +490,29 @@ function scan_source!(
                     source_items(workspace.source)
                 end
             end
-            current = Dict(source_item_id(item) => fingerprint(item) for item in discovered)
-            previous = cached === nothing ?
-                Dict{String,Any}() :
-                copy(cached.source.source_item_fingerprints)
+            # The cache's `source_items` table is the sole home of previous-session fingerprints;
+            # a memory-only cache holds nothing, so every discovered item re-interprets.
+            previous = _load_source_item_fingerprints(cachedb)
+            current = Dict{String,Any}()
             upserts = AbstractDataSourceItem[]
+            seen = Set{String}()
             for item in discovered
                 id_value = source_item_id(item)
+                push!(seen, id_value)
+                current_fingerprint = fingerprint(item)
+                current[id_value] = current_fingerprint
                 # A `nothing` fingerprint means the source cannot prove the item is unchanged,
                 # so it is always re-read.
-                if !haskey(previous, id_value) || current[id_value] === nothing ||
-                   !isequal(previous[id_value], current[id_value])
+                if !haskey(previous, id_value) || current_fingerprint === nothing ||
+                   !isequal(previous[id_value], current_fingerprint)
                     push!(upserts, item)
                 end
             end
-            present = Set(keys(current))
-            removals = String[id for id in keys(previous) if !(id in present)]
+            removals = String[id for id in keys(previous) if !(id in seen)]
             # Reopen replays missed collection-metadata edits from the source-exposed fingerprints:
             # a changed subtree marks its items' and collections' results stale, exactly as an
             # in-session metadata change would.
-            previous_metadata = cached === nothing ?
-                Dict{String,Any}() :
-                copy(cached.source.collection_metadata_fingerprints)
+            previous_metadata = _load_collection_metadata_fingerprints(cachedb)
             current_metadata = Dict{String,Any}(
                 collection_metadata_fingerprints(workspace.source))
             changed_collections = String[
@@ -527,8 +522,11 @@ function scan_source!(
             ]
             isempty(changed_collections) ||
                 invalidate_changed_metadata!(workspace, scan_id, changed_collections)
-            stale = count(id -> haskey(previous, id) && !isequal(previous[id], current[id]), keys(current))
-            new_items = count(id -> !haskey(previous, id), keys(current))
+            stale = count(
+                id_value -> haskey(previous, id_value) && !isequal(previous[id_value], current[id_value]),
+                keys(current),
+            )
+            new_items = count(id_value -> !haskey(previous, id_value), keys(current))
             status = ProjectCacheStatus(
                 length(current),
                 length(previous),
@@ -546,7 +544,6 @@ function scan_source!(
                     workspace,
                     scan_id,
                     SourceChanges(upserts, removals; metadata_changed=false),
-                    current,
                     status,
                 )
             end
@@ -650,33 +647,6 @@ function export_internal_profile!(
     return Profiling.export!(workspace.profiler, path)
 end
 
-"""
-Status of a cache that now mirrors `source` exactly.
-
-Every source item is cached; `fresh` counts those without an analysis error. Relative to the cache
-that was loaded before this scan, `new`/`stale`/`deleted` count the source items that were added,
-re-read because their fingerprint changed, and removed — the work an incremental reopen actually did.
-"""
-function _post_write_status(
-    identity::ProjectCacheIdentity,
-    source::SourceScan,
-    cached::Union{Nothing,ProjectCacheIndex},
-)::ProjectCacheStatus
-    current = source.source_item_fingerprints
-    total = length(current)
-    errors = length(ProjectCacheIndex(identity, source).analysis_errors)
-    fresh = total - errors
-    if cached === nothing
-        return ProjectCacheStatus(total, total, fresh, 0, total, 0, errors)
-    end
-    previous = cached.source.source_item_fingerprints
-    new_items = count(id -> !haskey(previous, id), keys(current))
-    stale = count(
-        id -> haskey(previous, id) && !isequal(previous[id], current[id]), keys(current))
-    deleted = count(id -> !haskey(current, id), keys(previous))
-    return ProjectCacheStatus(total, total, fresh, stale, new_items, deleted, errors)
-end
-
 """Replace the workspace item index with one complete hierarchy."""
 function replace_item_index!(
     workspace::Workspace,
@@ -740,15 +710,10 @@ function apply_cache_index!(
     workspace.index.source = SourceScan(
         index.source.source_id,
         index.source.source_label,
-        index.source.source_item_fingerprints,
-        index.source.collection_metadata_fingerprints,
         hierarchy,
         index.source.analysis_failures,
     )
 
-    cached_items = length(index.source.source_item_fingerprints)
-    workspace.cache.status = ProjectCacheStatus(
-        cached_items, cached_items, 0, 0, 0, 0, length(index.analysis_errors))
     workspace.index.analysis_errors = copy(index.analysis_errors)
     seed_cached_work_nodes!(workspace, index)
     for state in values(index.result_states)
@@ -1176,12 +1141,11 @@ function publish_source_changes!(
     workspace::Workspace,
     scan_id::Int,
     changes::SourceChanges,
-    fingerprints::AbstractDict{String},
     status::ProjectCacheStatus,
 )::Nothing
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
-        apply_source_changes!(workspace, changes, fingerprints, status)
+        apply_source_changes!(workspace, changes, status)
         workspace.cache_state = :ready
         finish_publish!(workspace)
     end
@@ -1196,10 +1160,7 @@ function publish_source_event!(
     lock(workspace.publish_lock) do
         workspace.closed && return
         workspace.source_error = ""
-        fingerprints = workspace.index.source === nothing ?
-            Dict{String,Any}() :
-            workspace.index.source.source_item_fingerprints
-        apply_source_changes!(workspace, changes, fingerprints, nothing)
+        apply_source_changes!(workspace, changes, nothing)
         finish_publish!(workspace)
     end
     return nothing

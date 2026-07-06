@@ -48,7 +48,6 @@ end
 struct ItemRecord                    # internal metadata record (never seen by source/project code)
     # source-item identity — which discovered unit produced this, and how to reload it
     source_item_id::String
-    source_item_fingerprint::Any            # nothing → not persistently cacheable
     source_item_path::Union{String,Nothing}
     source_item_timestamp::Union{DateTime,Nothing}
     # logical item identity + metadata
@@ -72,20 +71,22 @@ once on the `SourceScan`. A record carries only the source-*item* identity it ne
 
 ## Scan Result
 
-The completed scan is source-neutral. It stores source-level identity once, source-item fingerprints
-for invalidation, and the hierarchy of `ItemRecord`s. No records are stored on the public
-`SourceFile`:
+The completed scan is source-neutral. It stores source-level identity once and the hierarchy of
+`ItemRecord`s. No records are stored on the public `SourceFile`:
 
 ```julia
 struct SourceScan                     # the result of one full scan, source-neutral
     source_id::String
     source_label::String
-    source_item_fingerprints::Dict{String,Any}
-    collection_metadata_fingerprints::Dict{String,Any}   # source-metadata inputs, for reopen diffs
     hierarchy::Hierarchy
     analysis_failures::Vector{ItemFailure}
 end
 ```
+
+Source-item fingerprints (for reopen invalidation) and collection-metadata input fingerprints live
+only in the cache: the `source_items` table and the `collection_metadata_fingerprints` meta row,
+respectively. `scan_source!` loads both directly from the cache at reopen instead of carrying them on
+`SourceScan`; a memory-only cache holds neither, so every discovered item re-interprets.
 
 ## Hierarchy
 

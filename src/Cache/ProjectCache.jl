@@ -929,6 +929,7 @@ end
 
 store_collection_metadata_fingerprints!(::MemoryCacheDB, ::AbstractDict{String})::Nothing = nothing
 
+"""Load the previously persisted collection-metadata input fingerprints, or empty when there are none."""
 function _load_collection_metadata_fingerprints(cache::CacheDB)::Dict{String,Any}
     connection = DBInterface.connect(cache.db)
     try
@@ -943,6 +944,24 @@ function _load_collection_metadata_fingerprints(cache::CacheDB)::Dict{String,Any
     end
 end
 
+"""A memory-only cache never persists collection-metadata fingerprints across sessions."""
+_load_collection_metadata_fingerprints(::MemoryCacheDB)::Dict{String,Any} = Dict{String,Any}()
+
+"""
+Load the previously persisted source-item fingerprints from the `source_items` table, keyed by
+source-item id. A memory-only cache holds nothing across sessions, so every discovered item
+re-interprets — this is the sole home for that identity now that `SourceScan` no longer carries it.
+"""
+function _load_source_item_fingerprints(cache::CacheDB)::Dict{String,Any}
+    fingerprints = Dict{String,Any}()
+    for row in values(read(cache.source_items))
+        fingerprints[row.id] = _deserialize_hex(row.fingerprint_hex)
+    end
+    return fingerprints
+end
+
+_load_source_item_fingerprints(::MemoryCacheDB)::Dict{String,Any} = Dict{String,Any}()
+
 """Reconstruct the full `SourceScan` stored in one DuckDB cache (entries-layer metadata only)."""
 function _load_source_scan(
     cache::CacheDB,
@@ -956,11 +975,9 @@ function _load_source_scan(
     failure_rows = read(cache.failures)
 
     all_source_ids = String[String(id) for id in keys(source_rows)]
-    fingerprints = Dict{String,Any}()
     locations = Dict{String,Tuple{Union{Nothing,String},Union{Nothing,DateTime}}}()
     failures = ItemFailure[]
     for row in values(source_rows)
-        fingerprints[row.id] = _deserialize_hex(row.fingerprint_hex)
         locations[row.id] = (row.path, row.timestamp)
     end
     for row in values(failure_rows)
@@ -973,7 +990,6 @@ function _load_source_scan(
         push!(records, ItemRecord(;
             id=row.id,
             source_item_id=row.source_item_id,
-            source_item_fingerprint=get(fingerprints, row.source_item_id, nothing),
             source_item_path=path,
             source_item_timestamp=timestamp,
             item_label=row.item_label,
@@ -1002,8 +1018,6 @@ function _load_source_scan(
     return SourceScan(
         identity.source_id,
         identity.source_label,
-        fingerprints,
-        _load_collection_metadata_fingerprints(cache),
         hierarchy,
         failures,
     )

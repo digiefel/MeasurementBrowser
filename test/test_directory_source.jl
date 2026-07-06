@@ -47,7 +47,7 @@ end
         workspace = _open_settled(project, MBD.DirectorySource(dir))
         try
             # Hidden files and sidecars are never source items.
-            @test length(workspace.index.source.source_item_fingerprints) == 2
+            @test workspace.cache.status.total_source_items == 2
             hierarchy = workspace.index.hierarchy
             @test hierarchy.has_collection_metadata
             root_node = hierarchy.index[("test", "root")]
@@ -73,7 +73,7 @@ end
 
         shallow = _open_settled(TEST_PROJECT, MBD.DirectorySource(dir; recursive=false))
         try
-            @test length(shallow.index.source.source_item_fingerprints) == 1
+            @test shallow.cache.status.total_source_items == 1
             @test only(shallow.index.hierarchy.all_items).item_label == "Table root"
         finally
             MBD.close_workspace!(shallow)

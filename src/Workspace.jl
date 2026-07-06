@@ -28,6 +28,8 @@ import ..Cache:
     delete_collection_metadata!,
     delete_source_item!,
     load_cache_index,
+    _load_collection_metadata_fingerprints,
+    _load_source_item_fingerprints,
     open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
