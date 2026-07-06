@@ -239,7 +239,7 @@ Diff cached source metadata against the open source; update changed cache rows.
 Returns items whose work should be invalidated. Cache `read` is the baseline (disk plus buffer
 overlay). Rows absent from the baseline are persisted without invalidation.
 """
-function apply_source_metadata_changes!(
+function reconcile_source_metadata_cache!(
     workspace::Workspace;
     refresh_hierarchy::Bool=false,
 )::Vector{ItemRecord}
@@ -435,7 +435,7 @@ Submit one source-change batch to the work graph and remove deleted published ou
 deletes are buffered mutations, so ordering against re-interpretation is kept by the buffers:
 a delete enqueued here always precedes the rows a later interpretation appends.
 """
-function apply_source_changes!(
+function ingest_source_changes!(
     workspace::Workspace,
     changes::SourceChanges,
     status::Union{Nothing,ProjectCacheStatus},
@@ -468,7 +468,7 @@ function apply_source_changes!(
         end
     end
     if changes.metadata_changed
-        stale = apply_source_metadata_changes!(workspace; refresh_hierarchy=true)
+        stale = reconcile_source_metadata_cache!(workspace; refresh_hierarchy=true)
         isempty(stale) || invalidate_records_work!(workspace, stale)
         changed = changed || !isempty(stale)
     end
@@ -746,7 +746,7 @@ function apply_cache_index!(
     )
 
     workspace.index.analysis_errors = copy(index.analysis_errors)
-    stale = apply_source_metadata_changes!(workspace)
+    stale = reconcile_source_metadata_cache!(workspace)
     seed_cached_work_nodes!(workspace, index; skip=Set(record.id for record in stale))
     isempty(stale) || invalidate_records_work!(workspace, stale)
     for state in values(index.result_states)
@@ -785,7 +785,7 @@ end
 Seed work graph completion nodes from a loaded cache index, each at counter revision 1.
 
 Reopen validity is derived from position downstream of unchanged sources, not from a stored per-result
-claim: everything seeds valid here, and `apply_source_metadata_changes!` bumps stale work before
+claim: everything seeds valid here, and `reconcile_source_metadata_cache!` bumps stale work before
 nodes are seeded from the loaded index.
 """
 function seed_cached_work_nodes!(
@@ -964,7 +964,7 @@ function publish_work_success!(
                 workspace.background_processing && enqueue_processing!(workspace, record)
             end
         end
-        apply_source_metadata_changes!(workspace)
+        reconcile_source_metadata_cache!(workspace)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
         # runnable the moment this node finishes and late joiners reading the cache find the data.
@@ -1155,7 +1155,7 @@ function publish_source_changes!(
 )::Nothing
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
-        apply_source_changes!(workspace, changes, status)
+        ingest_source_changes!(workspace, changes, status)
         workspace.cache_state = :ready
         finish_publish!(workspace)
     end
@@ -1170,7 +1170,7 @@ function publish_source_event!(
     lock(workspace.publish_lock) do
         workspace.closed && return
         workspace.source_error = ""
-        apply_source_changes!(workspace, changes, nothing)
+        ingest_source_changes!(workspace, changes, nothing)
         finish_publish!(workspace)
     end
     return nothing

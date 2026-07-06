@@ -51,7 +51,7 @@ struct SourceChanges{S<:AbstractDataSourceItem}
 end
 ```
 
-`apply_source_changes!` is the only source-mutation entry point. A rescan discovers a snapshot,
+`ingest_source_changes!` is the only source-mutation entry point. A rescan discovers a snapshot,
 compares IDs and fingerprints with the current source snapshot, and submits one `SourceChanges`
 batch. A future watcher submits singleton or batched changes through the same function.
 

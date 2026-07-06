@@ -80,7 +80,7 @@ function measure(n::Int)::Dict{String,Float64}
         Dict(
             "status_refresh" => @belapsed(MB.Workspace.workspace_status($ws)),
             "items_panel" => @belapsed(MB.Browser._items_of_selected_collections($state)),
-            "metadata_publish" => @belapsed(MB.Workspace.apply_source_metadata_changes!($ws)),
+            "metadata_publish" => @belapsed(MB.Workspace.reconcile_source_metadata_cache!($ws)),
         )
     end
 end
