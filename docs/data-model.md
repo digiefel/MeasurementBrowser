@@ -83,10 +83,10 @@ struct SourceScan                     # the result of one full scan, source-neut
 end
 ```
 
-Source-item fingerprints (for reopen invalidation) and collection-metadata input fingerprints live
-only in the cache: the `source_items` table and the `collection_metadata_fingerprints` meta row,
-respectively. `scan_source!` loads both directly from the cache at reopen instead of carrying them on
-`SourceScan`; a memory-only cache holds neither, so every discovered item re-interprets.
+Source-item fingerprints (for reopen invalidation) live only in the cache `source_items` table.
+`scan_source!` loads them directly at reopen; a memory-only cache holds none, so every discovered
+item re-interprets. Collection-metadata freshness at reopen diffs cached `source_collection_metadata` against current
+`collection_metadata(source, path)` for each hierarchy path.
 
 ## Hierarchy
 

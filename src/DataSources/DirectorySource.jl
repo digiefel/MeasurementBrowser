@@ -271,21 +271,6 @@ Projects.has_collection_metadata(source::DirectorySource)::Bool =
         source.has_metadata
     end
 
-# The single metadata.txt file is the source's one collection-metadata input; its fingerprint keys
-# every collection that the file assigns metadata to, so a reopen diff can invalidate exactly those
-# subtrees. An absent file contributes no fingerprints.
-function Projects.collection_metadata_fingerprints(source::DirectorySource)::Dict{String,Any}
-    path = collection_metadata_file_path(source)
-    (path === nothing || !isfile(path)) && return Dict{String,Any}()
-    print = file_fingerprint(path)
-    return lock(source.metadata_lock) do
-        Dict{String,Any}(
-            join(segments, "/") => print
-            for segments in keys(source.collection_metadata_entries)
-        )
-    end
-end
-
 function Projects.open_source(source::DirectorySource)::DirectorySource
     isdir(source.root_path) || throw(ArgumentError(
         "Cannot open DirectorySource '$(source.root_path)': directory does not exist",

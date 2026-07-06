@@ -268,14 +268,6 @@ collection_metadata(::AbstractDataSource, ::AbstractVector{<:AbstractString})::D
 """Whether a source supplied collection metadata for this scan."""
 has_collection_metadata(::AbstractDataSource)::Bool = false
 
-"""
-Fingerprints of a source's collection-metadata inputs, keyed by collection path key.
-
-Sources expose these so a reopen can diff which collections' metadata changed while closed. The
-default is empty: a source with no external metadata inputs never invalidates on reopen.
-"""
-collection_metadata_fingerprints(::AbstractDataSource)::Dict{String,Any} = Dict{String,Any}()
-
 """Per-item analysis metadata computed after indexing. Internal workspace hook."""
 function analyze_item end
 

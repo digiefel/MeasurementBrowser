@@ -55,8 +55,8 @@ end
             MB.close_workspace!(workspace)
         end
 
-        # The metadata file changed while the workspace was closed: the reopen source-fingerprint
-        # diff marks the affected collection's items stale and recomputes them.
+        # The metadata file changed while the workspace was closed: reopen diffs
+        # source_collection_metadata and recomputes affected items.
         write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,43\n")
         reopened = MB.open_workspace(
             project, test_source(project, dir); background_processing=true)

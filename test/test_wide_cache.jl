@@ -22,7 +22,7 @@ end
 
 @testset "wide cache round-trips typed values" begin
     _with_wide_cache("WideRoundTrip") do cache
-        store = cache.collection_metadata
+        store = cache.analyzed_collection_metadata
         WIDE.edit!(store, "c1", WIDE_INDEX.MetadataDict(
             :polarity => :positive,
             :day => Date(2026, 7, 5),
@@ -47,7 +47,7 @@ end
 
 @testset "wide cache drops missing keys on reload" begin
     _with_wide_cache("WideMissing") do cache
-        store = cache.collection_metadata
+        store = cache.analyzed_collection_metadata
         WIDE.edit!(store, "c1", WIDE_INDEX.MetadataDict(:present => 1, :absent => missing))
         loaded = read(store)["c1"]
         @test loaded[:present] == 1
@@ -57,7 +57,7 @@ end
 
 @testset "wide cache conflict surfaces as a dropped key" begin
     _with_wide_cache("WideConflict") do cache
-        store = cache.collection_metadata
+        store = cache.analyzed_collection_metadata
         # Kind A registers :polarity as Float64.
         dropped_a = WIDE.edit!(store, "a", WIDE_INDEX.MetadataDict(:polarity => 1.0, :extra => 2))
         @test isempty(dropped_a)
@@ -131,7 +131,7 @@ end
 
 @testset "wide cache widens under concurrent reads" begin
     _with_wide_cache("WideConcurrent") do cache
-        store = cache.collection_metadata
+        store = cache.analyzed_collection_metadata
         stop = Base.Threads.Atomic{Bool}(false)
         reader = Base.Threads.@spawn while !stop[]
             read(store)

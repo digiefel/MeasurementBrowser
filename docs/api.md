@@ -62,7 +62,6 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `close_source!(source)::Nothing` | yes | release files, sockets, tasks, sessions, streams |
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
 | `collection_metadata(source, collection_path)::Dict{Symbol,Any}` | no (→ `Dict()`) | source-provided collection metadata for a path |
-| `collection_metadata_fingerprints(source)::Dict{String,Any}` | no (→ `Dict()`) | fingerprints of collection-metadata inputs, keyed by collection key, for reopen diffs |
 | `process_collection(project, source, collection, items)::Vector{<:AbstractDataItem}` | no | background rewrite of a collection's members (one output per input) |
 | `analyze_collection(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | background fold of a collection's members into node metadata |
 | `watch_source(source, on_change)` | no (→ `nothing`) | report `SourceChanges` batches; `nothing` means static |

@@ -228,17 +228,16 @@ These are named operations, not a general connection callback. There is no `with
 
 The fixed DuckDB stores are:
 
-- `meta` — schema version, project and source identity, and the source's collection-metadata
-  fingerprints;
+- `meta` — schema version, project and source identity;
 - `source_items` — source-item ID, fingerprint, path, and timestamp;
 - `items` — data-less logical-item records, their source ownership, and each item's integer `item_key`
   surrogate;
-- `item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
+- `source_item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
   `ItemRecord.metadata`;
-- `item_effective_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
-  layers), keyed by `item_key`; this is the query surface, and reload restores the computed layers for
-  items whose governing result is valid;
-- `collection_metadata` — collection `analyze` output per collection, keyed by collection key;
+- `source_collection_metadata` — source `collection_metadata` per path, keyed by collection key;
+- `analyzed_item_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
+  layers), keyed by `item_key`; this is the query surface;
+- `analyzed_collection_metadata` — collection `analyze` output per collection, keyed by collection key;
 - `wide_columns` — the registry naming each wide table's columns and their logical type;
 - `item_failures` — source interpretation and logical-item failures published with the index;
 - `result_states` — independent processing, item-analysis, collection-process, and collection-analysis
@@ -251,7 +250,8 @@ Queued and running work is not persisted. It belongs to the work dependency grap
 
 ### Wide metadata tables
 
-`item_metadata`, `item_effective_metadata`, and `collection_metadata` are wide, dynamically-widened
+`source_item_metadata`, `source_collection_metadata`, `analyzed_item_metadata`, and
+`analyzed_collection_metadata` are wide, dynamically-widened
 typed tables: one row per entity, one bare column per metadata name (`max_current DOUBLE`,
 `polarity VARCHAR`). A new name is registered on first write — the flush adds the column with
 `ALTER TABLE ADD COLUMN` and a `wide_columns` row in the same transaction. The first type registered
@@ -286,7 +286,7 @@ does not alter member item metadata.
 ### Query surface
 
 `query_items(cache, predicate)` returns item ids whose delivered metadata satisfies a SQL predicate,
-over a view `items LEFT JOIN item_effective_metadata USING (item_key)`. The view is recreated only
+over a view `items LEFT JOIN analyzed_item_metadata USING (item_key)`. The view is recreated only
 when the effective-metadata column signature changes. Queries read committed DB state, so a value
 written within the buffer flush window may not appear yet.
 
@@ -308,10 +308,10 @@ types.
 
 Freshness is derived from source data, not from stored per-result claims. When the cache index is
 loaded, every persisted result seeds a completed node in the workspace work graph at counter revision
-1; the scan's source-fingerprint diff then bumps and re-marks whatever is downstream of a changed
-source item or changed collection-metadata input. At runtime the work graph is the single freshness
-authority — readers consult it and then read payloads raw; `result_states` is only written, never
-re-read, until the next load.
+1; `apply_source_metadata_changes!` then diffs `source_collection_metadata` and `source_item_metadata`
+(cache `read`, including buffer overlay) against the open source and invalidates stale work before
+seeding completes. At runtime the work graph is the single freshness authority — readers consult it
+and then read payloads raw; `result_states` is only written, never re-read, until the next load.
 
 ## Source changes
 

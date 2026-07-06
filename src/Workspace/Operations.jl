@@ -234,37 +234,80 @@ function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
 end
 
 """
-Reapply source collection metadata, bumping and re-marking only items whose merged values changed.
+Diff cached source metadata against the open source; update changed cache rows.
 
-The per-record diff is the event filter: an item whose effective metadata is unchanged keeps its
-results. Changed items bump their work keys' revisions (discarding stale completions) and re-enqueue;
-recompute overwrites the cache rows, so nothing invalidates the cache here.
+Returns items whose work should be invalidated. Cache `read` is the baseline (disk plus buffer
+overlay). Rows absent from the baseline are persisted without invalidation.
 """
-function apply_collection_metadata_changes!(workspace::Workspace)::Bool
-    old_hierarchy = workspace.index.hierarchy
-    records = sort!(
-        collect(values(workspace.index.items));
-        by=record -> (record.source_item_id, record.id),
-    )
-    old_metadata = Dict(
-        record.id => effective_metadata(old_hierarchy, record) for record in records
-    )
-    new_hierarchy = Hierarchy(records, workspace.source, old_hierarchy.skipped_count)
-    changed = ItemRecord[
-        record for record in records
-        if old_metadata[record.id] != effective_metadata(new_hierarchy, record)
-    ]
-    old_node_analysis = Dict(path => copy(node.analysis) for (path, node) in old_hierarchy.index)
-    for (path, analysis) in old_node_analysis
-        node = get(new_hierarchy.index, path, nothing)
-        node === nothing || merge!(node.analysis, analysis)
+function apply_source_metadata_changes!(
+    workspace::Workspace;
+    refresh_hierarchy::Bool=false,
+)::Vector{ItemRecord}
+    old_hierarchy = nothing
+    if refresh_hierarchy
+        old_hierarchy = workspace.index.hierarchy
+        records = sort!(
+            collect(values(workspace.index.items));
+            by=record -> (record.source_item_id, record.id),
+        )
+        new_hierarchy = Hierarchy(records, workspace.source, old_hierarchy.skipped_count)
+        old_node_analysis = Dict(path => copy(node.analysis) for (path, node) in old_hierarchy.index)
+        for (path, analysis) in old_node_analysis
+            node = get(new_hierarchy.index, path, nothing)
+            node === nothing || merge!(node.analysis, analysis)
+        end
+        workspace.index.hierarchy = new_hierarchy
+        refresh_collection_metadata_keys!(workspace.index)
     end
-    workspace.index.hierarchy = new_hierarchy
-    refresh_collection_metadata_keys!(workspace.index)
 
-    isempty(changed) && return false
-    invalidate_records_work!(workspace, changed)
-    return true
+    cachedb = workspace.cache.db
+    if cachedb isa CacheDB
+        stale = ItemRecord[]
+        baseline_collections = read(cachedb.source_collection_metadata)
+        for path in keys(workspace.index.hierarchy.index)
+            key = collection_path_key(collect(path))
+            current = metadata_dict(collection_metadata(workspace.source, collect(path)))
+            old = get(baseline_collections, key, nothing)
+            if old === nothing
+                isempty(current) && continue
+                edit_source_collection_metadata!(cachedb, key, current)
+            elseif !isequal(old, current)
+                prefix = collect(path)
+                append!(stale, ItemRecord[
+                    record for record in workspace.index.hierarchy.all_items
+                    if length(prefix) <= length(record.collection) &&
+                       record.collection[1:length(prefix)] == prefix
+                ])
+                edit_source_collection_metadata!(cachedb, key, current)
+            end
+        end
+
+        key_to_id = Dict(row.item_key => row.id for row in values(read(cachedb.items)))
+        id_to_key = Dict(id => key for (key, id) in key_to_id)
+        baseline_items = read(cachedb.source_item_metadata)
+        for record in values(workspace.index.items)
+            item_key = get(id_to_key, record.id, nothing)
+            item_key === nothing && continue
+            current = record.metadata
+            old = get(baseline_items, item_key, nothing)
+            if old === nothing
+                isempty(current) && continue
+                edit_source_item_metadata!(cachedb, item_key, current)
+            elseif !isequal(old, current)
+                push!(stale, record)
+                edit_source_item_metadata!(cachedb, item_key, current)
+            end
+        end
+        return unique(stale)
+    end
+
+    old_hierarchy === nothing && return ItemRecord[]
+    records = collect(values(workspace.index.items))
+    return unique(ItemRecord[
+        record for record in records
+        if effective_metadata(old_hierarchy, record) !=
+           effective_metadata(workspace.index.hierarchy, record)
+    ])
 end
 
 """
@@ -297,14 +340,12 @@ end
 
 """Refresh the authoritative published source snapshot from current index state."""
 function refresh_workspace_source!(workspace::Workspace)::Nothing
-    metadata_fingerprints = Dict{String,Any}(collection_metadata_fingerprints(workspace.source))
     workspace.index.source = SourceScan(
         source_id(workspace.source),
         source_label(workspace.source),
         workspace.index.hierarchy,
         ItemFailure[],
     )
-    store_collection_metadata_fingerprints!(workspace.cache.db, metadata_fingerprints)
     return nothing
 end
 
@@ -426,7 +467,11 @@ function apply_source_changes!(
             changed = true
         end
     end
-    changes.metadata_changed && (changed = apply_collection_metadata_changes!(workspace) || changed)
+    if changes.metadata_changed
+        stale = apply_source_metadata_changes!(workspace; refresh_hierarchy=true)
+        isempty(stale) || invalidate_records_work!(workspace, stale)
+        changed = changed || !isempty(stale)
+    end
     refresh_workspace_source!(workspace)
     status === nothing || (workspace.cache.status = status)
     return changed
@@ -509,19 +554,6 @@ function scan_source!(
                 end
             end
             removals = String[id for id in keys(previous) if !(id in seen)]
-            # Reopen replays missed collection-metadata edits from the source-exposed fingerprints:
-            # a changed subtree marks its items' and collections' results stale, exactly as an
-            # in-session metadata change would.
-            previous_metadata = _load_collection_metadata_fingerprints(cachedb)
-            current_metadata = Dict{String,Any}(
-                collection_metadata_fingerprints(workspace.source))
-            changed_collections = String[
-                key for key in union(keys(previous_metadata), keys(current_metadata))
-                if !isequal(
-                    get(previous_metadata, key, nothing), get(current_metadata, key, nothing))
-            ]
-            isempty(changed_collections) ||
-                invalidate_changed_metadata!(workspace, scan_id, changed_collections)
             stale = count(
                 id_value -> haskey(previous, id_value) && !isequal(previous[id_value], current[id_value]),
                 keys(current),
@@ -698,8 +730,7 @@ function apply_cache_index!(
         index.source.hierarchy.skipped_count,
     )
     replace_item_index!(workspace, hierarchy)
-    # The cache restores the computed metadata layer for every item; the source-fingerprint diff in
-    # scan_source! then invalidates the ones downstream of changed sources or changed metadata.
+    # The cache restores the computed metadata layer; source-table diff before seed skips stale work.
     workspace.index.item_metadata = Dict{String,Dict{Symbol,Any}}(
         id => copy(dict) for (id, dict) in index.item_metadata)
     for (path, cached_node) in index.source.hierarchy.index
@@ -715,7 +746,9 @@ function apply_cache_index!(
     )
 
     workspace.index.analysis_errors = copy(index.analysis_errors)
-    seed_cached_work_nodes!(workspace, index)
+    stale = apply_source_metadata_changes!(workspace)
+    seed_cached_work_nodes!(workspace, index; skip=Set(record.id for record in stale))
+    isempty(stale) || invalidate_records_work!(workspace, stale)
     for state in values(index.result_states)
         CacheResultStatus(state.status) === RESULT_FAILED || continue
         kind = CacheResultKind(state.kind)
@@ -752,12 +785,13 @@ end
 Seed work graph completion nodes from a loaded cache index, each at counter revision 1.
 
 Reopen validity is derived from position downstream of unchanged sources, not from a stored per-result
-claim: everything seeds valid here, and `scan_source!`'s source-fingerprint diff bumps and re-marks
-whatever changed while the workspace was closed.
+claim: everything seeds valid here, and `apply_source_metadata_changes!` bumps stale work before
+nodes are seeded from the loaded index.
 """
 function seed_cached_work_nodes!(
     workspace::Workspace,
-    index::ProjectCacheIndex,
+    index::ProjectCacheIndex;
+    skip::Set{String}=Set{String}(),
 )::Nothing
     records = Dict(record.id => record for record in workspace.index.hierarchy.all_items)
     for (result_key, state) in index.result_states
@@ -765,6 +799,7 @@ function seed_cached_work_nodes!(
         kind = result_key.kind
         if kind === PROCESSING_RESULT || kind === ITEM_ANALYSIS_RESULT
             haskey(records, result_key.entity) || continue
+            result_key.entity in skip && continue
             seed_work_node!(
                 workspace,
                 WorkKey(kind === PROCESSING_RESULT ? ITEM_PROCESS : ITEM_ANALYZE,
@@ -783,32 +818,6 @@ function seed_cached_work_nodes!(
                 work_state,
             )
         end
-    end
-    return nothing
-end
-
-"""
-Invalidate the results of items and collections under changed collection-metadata subtrees at reopen.
-
-The changed collection keys name the metadata rows the source reassigned while closed; every item at
-or below one of those paths, and every ancestor collection, has its work bumped and re-marked so the
-event graph recomputes them, matching an in-session metadata change.
-"""
-function invalidate_changed_metadata!(
-    workspace::Workspace,
-    scan_id::Int,
-    changed_collections::Vector{String},
-)::Nothing
-    lock(workspace.publish_lock) do
-        scan_id == workspace.scan.id || return
-        prefixes = Vector{String}[collect(collection_path_tuple(key))
-            for key in changed_collections]
-        affected_records = ItemRecord[
-            record for record in workspace.index.hierarchy.all_items
-            if any(prefix -> length(prefix) <= length(record.collection) &&
-                record.collection[1:length(prefix)] == prefix, prefixes)
-        ]
-        invalidate_records_work!(workspace, affected_records)
     end
     return nothing
 end
@@ -955,6 +964,7 @@ function publish_work_success!(
                 workspace.background_processing && enqueue_processing!(workspace, record)
             end
         end
+        apply_source_metadata_changes!(workspace)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
         # runnable the moment this node finishes and late joiners reading the cache find the data.

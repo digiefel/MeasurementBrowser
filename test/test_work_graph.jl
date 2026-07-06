@@ -135,7 +135,7 @@ end
                 "device-A",
                 Dict(:mean => 1.0, :count => 2),
             )
-            @test read(cache.collection_metadata)["device-A"][:mean] == 1.0
+            @test read(cache.analyzed_collection_metadata)["device-A"][:mean] == 1.0
             @test haskey(
                 read(cache.result_states),
                 (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), "device-A"),
@@ -143,7 +143,7 @@ end
 
             CACHE.delete_collection_metadata!(cache, ["device-A"])
 
-            @test !haskey(read(cache.collection_metadata), "device-A")
+            @test !haskey(read(cache.analyzed_collection_metadata), "device-A")
             @test !haskey(
                 read(cache.result_states),
                 (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), "device-A"),
