@@ -166,7 +166,7 @@ function _render_project_tab!(state::BrowserState)::Nothing
         source_items = sum(row.source_items for row in scan_rows)
         items_total  = sum(row.items for row in scan_rows)
         ig.Text(@sprintf("Last scan: %d source items, %d items", source_items, items_total))
-        ig.TextDisabled("Total = elapsed per source item; process/stats = summed item work.")
+        ig.TextDisabled("Total = elapsed per source item; process/analyze = summed item work.")
 
         ig.Spacing()
         ig.TextUnformatted("Per-kind summary")

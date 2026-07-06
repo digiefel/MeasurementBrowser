@@ -79,10 +79,10 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
 end
 
 const SCAN_KIND_PROFILE_COLUMNS = String[
-    "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries", "Process", "Stats",
+    "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries", "Process", "Analyze",
 ]
 const SCAN_SOURCE_PROFILE_COLUMNS = String[
-    "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries", "Process", "Stats",
+    "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries", "Process", "Analyze",
     "Threads",
 ]
 """Render the per-kind summary for the latest source scan."""
@@ -99,7 +99,7 @@ function _render_scan_kind_table(
             column == 5 ? row.detect_seconds :
             column == 6 ? row.read_seconds :
             column == 7 ? row.entries_seconds :
-            column == 8 ? row.process_seconds : row.stats_seconds
+            column == 8 ? row.process_seconds : row.analyze_seconds
         return @sprintf("%.1f ms", 1000 * seconds)
     end
     render_data_grid!(
@@ -124,7 +124,7 @@ function _render_scan_source_table(
             column == 5 ? row.detect_seconds :
             column == 6 ? row.read_seconds :
             column == 7 ? row.entries_seconds :
-            column == 8 ? row.process_seconds : row.stats_seconds
+            column == 8 ? row.process_seconds : row.analyze_seconds
         return @sprintf("%.2f ms", 1000 * seconds)
     end
     cell_link(row::Int, column::Int)::Union{Nothing,String} =
