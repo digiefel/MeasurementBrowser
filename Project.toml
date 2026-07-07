@@ -32,7 +32,7 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [compat]
 BetterFileWatching = "1.0.0"
-CImGui = "6.1.0"
+CImGui = "8.0"
 CancellationTokens = "2.3.0"
 DBInterface = "2.6.1"
 DuckDB = "1.5.2"
