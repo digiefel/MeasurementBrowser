@@ -221,15 +221,10 @@ end
 function _render_cache_controls!(state::BrowserState)::Nothing
     workspace = state.workspace
     status = current_status(state)
-    ig.TextColored(status_color(status.level), status.label)
-    ig.TextWrapped(status.detail)
-    status.progress === nothing || ig.ProgressBar(status.progress, (-1, 0))
-    _render_stage_counts!(status)
 
     workspace isa Workspace.Workspace || return nothing
     identity = workspace.cache.identity
     if identity isa ProjectCacheIdentity
-        ig.Separator()
         alt_held = unsafe_load(ig.GetIO().KeyAlt)
         label = alt_held ? "Cache" : "Source"
         shown = alt_held ? "DuckDB" : identity.source_label
@@ -238,6 +233,15 @@ function _render_cache_controls!(state::BrowserState)::Nothing
         ig.Text("$label: $shown")
         ig.SameLine()
         _copy_path_button("copy_$(lowercase(label))", path, tooltip)
+    end
+
+    if status.progress === nothing
+        ig.TextWrapped(status.detail)
+    end
+    _render_stage_counts!(status)
+    if status.progress !== nothing
+        ig.ProgressBar(status.progress, (-1, 0))
+        ig.TextWrapped(status.detail)
     end
 
     if !isempty(status.errors)
@@ -303,32 +307,45 @@ function _render_stage_counts!(status::WorkspaceStatus)::Nothing
     _stage_count_cell("$(counts.sources_found) Sources", [
         "$(counts.sources_found) $(counts.source_noun) found",
         "$(counts.sources_pending) pending interpretation",
-    ])
+    ]; align=:left)
     _stage_count_cell("$(cache.interpreted_items) entries", [
         "$(cache.interpreted_items) items interpreted and cached",
-    ])
+    ]; align=:center)
     _stage_count_cell("$(cache.analyzed) analyzed", [
         "$(cache.processed) processed",
         # Item analysis can be cached before a processed payload is stored when background
         # processing is off; the cache reports each stage independently.
         "$(cache.analyzed) analyzed",
-    ])
+    ]; align=:center)
     stage_failures = cache.failed_interpret + cache.failed_process +
         cache.failed_analyze + cache.failed_collection
-    issues = max(stage_failures, length(status.errors))
-    _stage_count_cell("$(issues) issues", [
+    extra_analyze_issues = max(length(status.errors) - stage_failures, 0)
+    analyze_issues = cache.failed_analyze + extra_analyze_issues
+    issues = cache.failed_interpret + cache.failed_process + analyze_issues +
+        cache.failed_collection
+    issue_word = issues == 1 ? "issue" : "issues"
+    _stage_count_cell("$(issues) $issue_word", [
         "$(cache.failed_interpret) interpret",
         "$(cache.failed_process) process",
-        "$(cache.failed_analyze) analyze",
+        "$analyze_issues analyze",
         "$(cache.failed_collection) collection",
-        "$(length(status.errors)) listed issues",
-    ])
+    ]; align=:right)
     ig.EndTable()
     return nothing
 end
 
-function _stage_count_cell(label::AbstractString, tooltip::Vector{String})::Nothing
+function _stage_count_cell(
+    label::AbstractString,
+    tooltip::Vector{String};
+    align::Symbol,
+)::Nothing
     ig.TableNextColumn()
+    if align !== :left
+        text_width = ig.CalcTextSize(label).x
+        avail = ig.GetContentRegionAvail().x
+        offset = align === :right ? max(avail - text_width, 0) : max((avail - text_width) / 2, 0)
+        ig.SetCursorPosX(ig.GetCursorPosX() + offset)
+    end
     ig.TextUnformatted(label)
     if ig.BeginItemTooltip()
         for row in tooltip
