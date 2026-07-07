@@ -5,8 +5,10 @@ authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 
 [deps]
 Annotations = "ae6ca758-ef8f-47cf-869f-33c684d5c66b"
+BetterFileWatching = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+CancellationTokens = "2e8d271d-f2e2-407b-a864-17eb2156783e"
 DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
@@ -29,7 +31,9 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [compat]
+BetterFileWatching = "1.0.0"
 CImGui = "6.1.0"
+CancellationTokens = "2.3.0"
 DBInterface = "2.6.1"
 DuckDB = "1.5.2"
 GLFW = "3.4.4"
