@@ -84,6 +84,27 @@ end
     end
 end
 
+@testset "status counts refresh after blocking materialize" begin
+    dir = _event_driven_dir(1)
+    project = _event_driven_project(basename(dir))
+    workspace = MeasurementBrowser.open_workspace(
+        project, test_source(project, dir); background_processing=false)
+    try
+        MeasurementBrowser.Workspace.wait_workspace_idle!(workspace; timeout=30)
+        MeasurementBrowser.Workspace.refresh_status!(workspace)
+        @test workspace.status.counts.cache.processed == 0
+
+        records = collect(values(workspace.index.items))
+        MeasurementBrowser.Workspace.materialize_items(workspace, records)
+        MeasurementBrowser.Workspace.wait_workspace_idle!(workspace; timeout=30)
+        MeasurementBrowser.Workspace.refresh_status!(workspace)
+        @test workspace.status.counts.cache.processed == 1
+        @test workspace.status.counts.cache.analyzed == 1
+    finally
+        MeasurementBrowser.close_workspace!(workspace)
+    end
+end
+
 @testset "wait_workspace_idle! timeout returns while work runs" begin
     dir = _event_driven_dir(2)
     project = _event_driven_project(basename(dir); process_delay=1.0)

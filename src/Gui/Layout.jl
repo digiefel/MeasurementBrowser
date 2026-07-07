@@ -68,7 +68,7 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
         ig.TextUnformatted(status.detail)
         ig.EndTooltip()
     end
-    ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Always)
+    ig.SetNextWindowSize((460, 420), ig.ImGuiCond_Always)
     if ig.BeginPopup("cache_toolbar_popup")
         _render_cache_controls!(state)
         ig.EndPopup()
@@ -228,8 +228,11 @@ function _render_cache_controls!(state::BrowserState)::Nothing
     if identity isa ProjectCacheIdentity
         ig.Separator()
         ig.Text("Source: $(identity.source_label)")
-        ig.TextWrapped("Source ID: $(identity.source_id)")
-        ig.TextWrapped("File: $(identity.cache_path)")
+        ig.SameLine()
+        _copy_path_button("Copy source", identity.source_id)
+        ig.Text("Cache: $(basename(identity.cache_path))")
+        ig.SameLine()
+        _copy_path_button("Copy cache", identity.cache_path)
     end
 
     if !isempty(status.errors)
@@ -237,6 +240,7 @@ function _render_cache_controls!(state::BrowserState)::Nothing
         ig.TextColored((1.0, 0.35, 0.35, 1.0), "Source Item Errors")
         ig.TextDisabled("Select a source item to show its items")
         shown = min(length(status.errors), 20)
+        ig.BeginChild("##cache_errors", (0.0f0, 120.0f0), true)
         for index in 1:shown
             source_item_id, message = status.errors[index]
             ig.PushID(source_item_id)
@@ -253,6 +257,7 @@ function _render_cache_controls!(state::BrowserState)::Nothing
             ig.PopID()
             index < shown && ig.Separator()
         end
+        ig.EndChild()
         length(status.errors) > shown &&
             ig.TextDisabled("$(length(status.errors) - shown) more file errors")
     end
@@ -265,6 +270,17 @@ function _render_cache_controls!(state::BrowserState)::Nothing
         rebuild_cache!(workspace)
     end
     rebuild_disabled && ig.EndDisabled()
+    return nothing
+end
+
+function _copy_path_button(label::AbstractString, path::AbstractString)::Nothing
+    if ig.Button(label)
+        ig.SetClipboardText(String(path))
+    end
+    if ig.BeginItemTooltip()
+        ig.TextUnformatted(path)
+        ig.EndTooltip()
+    end
     return nothing
 end
 

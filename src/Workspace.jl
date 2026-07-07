@@ -294,6 +294,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     publish_lock::ReentrantLock
     idle_condition::Base.Threads.Condition
     status::WorkspaceStatus
+    status_dirty::Base.Threads.Atomic{Bool}
     closed::Bool
 end
 
@@ -374,6 +375,7 @@ function Workspace(
         publish_lock,
         Base.Threads.Condition(publish_lock),
         WorkspaceStatus(),
+        Base.Threads.Atomic{Bool}(true),
         false,
     )
     start_cache!(cache_db)

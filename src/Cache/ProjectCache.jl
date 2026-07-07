@@ -235,6 +235,7 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     items::Set{String}
     failures::Dict{Tuple{String,String},String}
     result_states::Dict{Tuple{Int8,String},CachedResultState}
+    lock::ReentrantLock
     profiler::Profiling.ProfileSession
 end
 
@@ -374,6 +375,7 @@ function open_memory_cache_db(
         Set{String}(),
         Dict{Tuple{String,String},String}(),
         Dict{Tuple{Int8,String},CachedResultState}(),
+        ReentrantLock(),
         profiler,
     )
 end
@@ -513,9 +515,11 @@ function store_interpreted_records!(
     records::Vector{ItemRecord},
     ::Vector{<:AbstractDataItem},
 )::Vector{String}
-    push!(cache.source_items, source_item_id(source_item))
-    for record in records
-        push!(cache.items, record.id)
+    lock(cache.lock) do
+        push!(cache.source_items, source_item_id(source_item))
+        for record in records
+            push!(cache.items, record.id)
+        end
     end
     return String[]
 end
@@ -568,13 +572,15 @@ function store_processed!(
 )::Nothing
     if stage === :processed
         append!(cache.processed_memory, record.id, item)
-        cache.result_states[(Int8(PROCESSING_RESULT), record.id)] = CachedResultState(
-            Int8(PROCESSING_RESULT),
-            record.id,
-            Int8(RESULT_READY),
-            record.source_item_id,
-            nothing,
-        )
+        lock(cache.lock) do
+            cache.result_states[(Int8(PROCESSING_RESULT), record.id)] = CachedResultState(
+                Int8(PROCESSING_RESULT),
+                record.id,
+                Int8(RESULT_READY),
+                record.source_item_id,
+                nothing,
+            )
+        end
     elseif stage === :collection_processed
         append!(cache.collection_processed_memory, record.id, item)
     end
@@ -663,9 +669,11 @@ function store_result_failure!(
 )::Nothing
     entity_value = String(entity)
     source_id = String(source_item_id)
-    cache.failures[(entity_value, source_id)] = String(message)
-    cache.result_states[(Int8(kind), entity_value)] = CachedResultState(
-        Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+    lock(cache.lock) do
+        cache.failures[(entity_value, source_id)] = String(message)
+        cache.result_states[(Int8(kind), entity_value)] = CachedResultState(
+            Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+    end
     return nothing
 end
 
@@ -675,32 +683,40 @@ function store_source_item_failure!(
     message::AbstractString,
 )::Nothing
     source_id = String(source_item_id)
-    cache.failures[(source_id, source_id)] = String(message)
+    lock(cache.lock) do
+        cache.failures[(source_id, source_id)] = String(message)
+    end
     return nothing
 end
 
 function store_item_metadata!(cache::MemoryCacheDB, record::ItemRecord, ::AbstractDict)::Vector{String}
-    cache.result_states[(Int8(ITEM_ANALYSIS_RESULT), record.id)] = CachedResultState(
-        Int8(ITEM_ANALYSIS_RESULT),
-        record.id,
-        Int8(RESULT_READY),
-        record.source_item_id,
-        nothing,
-    )
+    lock(cache.lock) do
+        cache.result_states[(Int8(ITEM_ANALYSIS_RESULT), record.id)] = CachedResultState(
+            Int8(ITEM_ANALYSIS_RESULT),
+            record.id,
+            Int8(RESULT_READY),
+            record.source_item_id,
+            nothing,
+        )
+    end
     return String[]
 end
 
 function store_collection_metadata!(cache::MemoryCacheDB, collection_key::AbstractString, ::AbstractDict)::Vector{String}
     entity = String(collection_key)
-    cache.result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = CachedResultState(
-        Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    lock(cache.lock) do
+        cache.result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = CachedResultState(
+            Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    end
     return String[]
 end
 
 function store_collection_process_result!(cache::MemoryCacheDB, collection_key::AbstractString)::Nothing
     entity = String(collection_key)
-    cache.result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = CachedResultState(
-        Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    lock(cache.lock) do
+        cache.result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = CachedResultState(
+            Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    end
     return nothing
 end
 
@@ -749,16 +765,21 @@ function delete_source_item!(
     source_item_id::AbstractString,
     old_records::Vector{ItemRecord},
 )::Nothing
-    delete!(cache.source_items, String(source_item_id))
-    delete!(cache.failures, (String(source_item_id), String(source_item_id)))
+    source_id = String(source_item_id)
+    lock(cache.lock) do
+        delete!(cache.source_items, source_id)
+        delete!(cache.failures, (source_id, source_id))
+    end
     for record in old_records
         delete!(cache.interpreted, record.id)
         delete!(cache.processed_memory, record.id)
         delete!(cache.collection_processed_memory, record.id)
-        delete!(cache.items, record.id)
-        delete!(cache.failures, (record.id, String(source_item_id)))
-        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
-        delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+        lock(cache.lock) do
+            delete!(cache.items, record.id)
+            delete!(cache.failures, (record.id, source_id))
+            delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+            delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+        end
     end
     return nothing
 end
@@ -782,8 +803,10 @@ function delete_collection_metadata!(
 )::Nothing
     for collection_key in unique(collection_keys)
         key = String(collection_key)
-        delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), key))
-        delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), key))
+        lock(cache.lock) do
+            delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), key))
+            delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), key))
+        end
     end
     return nothing
 end
@@ -817,12 +840,14 @@ function cache_stage_summary(cache::CacheDB)::CacheStageSummary
 end
 
 function cache_stage_summary(cache::MemoryCacheDB)::CacheStageSummary
-    return _cache_stage_summary(
-        cache.source_items,
-        cache.items,
-        cache.failures,
-        cache.result_states,
-    )
+    return lock(cache.lock) do
+        _cache_stage_summary(
+            copy(cache.source_items),
+            copy(cache.items),
+            copy(cache.failures),
+            copy(cache.result_states),
+        )
+    end
 end
 
 function _cache_stage_summary(source_items, items, failures, states)::CacheStageSummary
@@ -1022,10 +1047,12 @@ function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
     clear!(cachedb.interpreted)
     clear!(cachedb.processed_memory)
     clear!(cachedb.collection_processed_memory)
-    empty!(cachedb.source_items)
-    empty!(cachedb.items)
-    empty!(cachedb.failures)
-    empty!(cachedb.result_states)
+    lock(cachedb.lock) do
+        empty!(cachedb.source_items)
+        empty!(cachedb.items)
+        empty!(cachedb.failures)
+        empty!(cachedb.result_states)
+    end
     return nothing
 end
 

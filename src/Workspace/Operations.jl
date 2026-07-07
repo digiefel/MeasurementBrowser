@@ -1072,6 +1072,7 @@ function finish_publish!(workspace::Workspace)::Nothing
         )
         scan_source!(workspace; rebuild=true)
     end
+    workspace.status_dirty[] = true
     notify(workspace.idle_condition; all=true)
     return nothing
 end
@@ -1210,7 +1211,8 @@ Display-only: the engine publishes without it, and idle frames keep reading the 
 """
 function refresh_status!(workspace::Workspace)::Nothing
     # Cache write flushes are display-only; avoid publish_lock + status rebuild every frame.
-    (engine_work_running(workspace) || workspace.status.busy) &&
+    dirty = Base.Threads.atomic_xchg!(workspace.status_dirty, false)
+    (dirty || engine_work_running(workspace) || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))
     return nothing
 end
