@@ -176,6 +176,7 @@ function cancel_scan!(workspace::Workspace)::Nothing
         job.state === :discovering || return
         Base.Threads.atomic_xchg!(job.cancel_token, true)
         job.state = :canceling
+        workspace.status_dirty[] = true
     end
     return nothing
 end
@@ -555,6 +556,7 @@ function scan_source!(
         workspace.index.source = nothing
         empty!(workspace.index.analysis_errors)
         job.cancel_token = Base.Threads.Atomic{Bool}(false)
+        workspace.status_dirty[] = true
         (job.id, job.cancel_token)
     end
     task = Base.Threads.@spawn begin
@@ -577,7 +579,10 @@ function scan_source!(
                 with_cancel(() -> cancel_token[]) do
                     source_items(
                         workspace.source;
-                        on_progress=count -> (job.discovered[] = count),
+                        on_progress=count -> begin
+                            job.discovered[] = count
+                            workspace.status_dirty[] = true
+                        end,
                     )
                 end
             end
@@ -1204,15 +1209,9 @@ function publish_scan_end!(
     return nothing
 end
 
-"""
-Rebuild the GUI-facing status snapshot when work is or was just running.
-
-Display-only: the engine publishes without it, and idle frames keep reading the cached value.
-"""
+"""Rebuild the GUI-facing status snapshot after engine publications or discovery progress."""
 function refresh_status!(workspace::Workspace)::Nothing
-    # Cache write flushes are display-only; avoid publish_lock + status rebuild every frame.
     dirty = Base.Threads.atomic_xchg!(workspace.status_dirty, false)
-    (dirty || engine_work_running(workspace) || workspace.status.busy) &&
-        (workspace.status = workspace_status(workspace))
+    dirty && (workspace.status = workspace_status(workspace))
     return nothing
 end

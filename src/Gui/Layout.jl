@@ -61,6 +61,8 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
     if ig.Button("Cache: $(status.label)")
         ig.OpenPopup("cache_toolbar_popup")
     end
+    button_min = ig.GetItemRectMin()
+    button_max = ig.GetItemRectMax()
     ig.PopStyleColor()
     ig.PopStyleColor()
     ig.PopStyleColor()
@@ -68,7 +70,8 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
         ig.TextUnformatted(status.detail)
         ig.EndTooltip()
     end
-    ig.SetNextWindowSize((460, 420), ig.ImGuiCond_Always)
+    ig.SetNextWindowPos((button_min.x, button_max.y), ig.ImGuiCond_Always)
+    ig.SetNextWindowSize((460, 0), ig.ImGuiCond_Always)
     if ig.BeginPopup("cache_toolbar_popup")
         _render_cache_controls!(state)
         ig.EndPopup()
@@ -227,12 +230,14 @@ function _render_cache_controls!(state::BrowserState)::Nothing
     identity = workspace.cache.identity
     if identity isa ProjectCacheIdentity
         ig.Separator()
-        ig.Text("Source: $(identity.source_label)")
+        alt_held = unsafe_load(ig.GetIO().KeyAlt)
+        label = alt_held ? "Cache" : "Source"
+        shown = alt_held ? "DuckDB" : identity.source_label
+        path = alt_held ? identity.cache_path : identity.source_id
+        tooltip = alt_held ? "Copy cache database path" : "Copy source path"
+        ig.Text("$label: $shown")
         ig.SameLine()
-        _copy_path_button("Copy source", identity.source_id)
-        ig.Text("Cache: $(basename(identity.cache_path))")
-        ig.SameLine()
-        _copy_path_button("Copy cache", identity.cache_path)
+        _copy_path_button("copy_$(lowercase(label))", path, tooltip)
     end
 
     if !isempty(status.errors)
@@ -273,11 +278,16 @@ function _render_cache_controls!(state::BrowserState)::Nothing
     return nothing
 end
 
-function _copy_path_button(label::AbstractString, path::AbstractString)::Nothing
-    if ig.Button(label)
+function _copy_path_button(
+    id::AbstractString,
+    path::AbstractString,
+    tooltip::AbstractString,
+)::Nothing
+    if ig.Button("⧉##$id", (24, 24))
         ig.SetClipboardText(String(path))
     end
     if ig.BeginItemTooltip()
+        ig.TextUnformatted(tooltip)
         ig.TextUnformatted(path)
         ig.EndTooltip()
     end

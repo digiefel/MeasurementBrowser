@@ -26,6 +26,8 @@ import ..Cache:
     cache_has_pending_writes,
     cache_pending_counts,
     clear_cache_index!,
+    clear_cached_result_state!,
+    clear_cached_source_state!,
     close_cache_db!,
     delete_collection_metadata!,
     delete_source_item!,
@@ -237,8 +239,8 @@ A single snapshot of everything a watcher needs to show about a workspace's back
 
 This is the stable contract between the engine and any watcher (the GUI today, scripts and workflows
 later): watchers read `WorkspaceStatus` and nothing else about jobs, progress, or the cache. It is
-recomputed only when [`refresh_status!`](@ref) observes active or just-stopped work, so an idle
-render loop reads a cached value instead of rebuilding strings every frame.
+recomputed only after engine publications and discovery progress, so an idle render loop reads a
+cached value instead of rebuilding strings every frame.
 
 - `level` drives the watcher's color/emphasis: `:none`, `:busy`, `:fresh`, `:stale`, `:missing`,
   `:error`.

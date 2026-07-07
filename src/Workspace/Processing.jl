@@ -44,24 +44,10 @@ function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     cachedb = workspace.cache.db
     entity = String(key.entity)
     if key.kind === SOURCE_INTERPRET
-        if cachedb isa CacheDB
-            delete!(cachedb.source_items, entity)
-            delete!(cachedb.failures, (entity, entity))
-        else
-            lock(cachedb.lock) do
-                delete!(cachedb.source_items, entity)
-                delete!(cachedb.failures, (entity, entity))
-            end
-        end
+        clear_cached_source_state!(cachedb, entity)
         return nothing
     end
-    if cachedb isa CacheDB
-        delete!(cachedb.result_states, (Int8(_work_key_cache_kind(key)), entity))
-    else
-        lock(cachedb.lock) do
-            delete!(cachedb.result_states, (Int8(_work_key_cache_kind(key)), entity))
-        end
-    end
+    clear_cached_result_state!(cachedb, _work_key_cache_kind(key), entity)
     return nothing
 end
 
