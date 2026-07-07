@@ -38,27 +38,7 @@ from persisted cache tables. Item analysis can be cached before a processed payl
 background processing is off, so the analyzed count may temporarily exceed processed; this is a
 current engine wrinkle, not a GUI invariant.
 
-There is no manual incremental scan button. Directory sources are watched continuously. The popup
-keeps only Build Cache / Rebuild Cache for explicit full rebuilds, and the Project menu has no
-Rescan item.
-
-Compact cache popup shape:
-
-```text
-Fresh
-Cache is current.
-[ progress, only while busy ]
-
-12 Sources | 12 entries | 4 analyzed | 0 failures
-
-Source: sample-run        [Copy source]
-Cache: cache.duckdb       [Copy cache]
-
-[Build Cache / Rebuild Cache]
-```
-
-The full source id and cache path are not printed in the popup body. The copy buttons copy those
-paths and their tooltips show the full value.
+Directory sources are watched continuously.
 
 ## Panels
 
