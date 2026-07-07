@@ -242,8 +242,8 @@ function _render_cache_controls!(state::BrowserState)::Nothing
 
     if !isempty(status.errors)
         ig.Separator()
-        ig.TextColored((1.0, 0.35, 0.35, 1.0), "Source Item Errors")
-        ig.TextDisabled("Select a source item to show its items")
+        ig.TextColored((1.0, 0.35, 0.35, 1.0), "Cache Issues")
+        ig.TextDisabled("Select an issue to show related items")
         shown = min(length(status.errors), 20)
         ig.BeginChild("##cache_errors", (0.0f0, 120.0f0), true)
         for index in 1:shown
@@ -283,7 +283,7 @@ function _copy_path_button(
     path::AbstractString,
     tooltip::AbstractString,
 )::Nothing
-    if ig.Button("⧉##$id", (24, 24))
+    if ig.SmallButton("⧉##$id")
         ig.SetClipboardText(String(path))
     end
     if ig.BeginItemTooltip()
@@ -313,13 +313,15 @@ function _render_stage_counts!(status::WorkspaceStatus)::Nothing
         # processing is off; the cache reports each stage independently.
         "$(cache.analyzed) analyzed",
     ])
-    failures = cache.failed_interpret + cache.failed_process +
+    stage_failures = cache.failed_interpret + cache.failed_process +
         cache.failed_analyze + cache.failed_collection
-    _stage_count_cell("$(failures) failures", [
+    issues = max(stage_failures, length(status.errors))
+    _stage_count_cell("$(issues) issues", [
         "$(cache.failed_interpret) interpret",
         "$(cache.failed_process) process",
         "$(cache.failed_analyze) analyze",
         "$(cache.failed_collection) collection",
+        "$(length(status.errors)) listed issues",
     ])
     ig.EndTable()
     return nothing

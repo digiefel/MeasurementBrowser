@@ -83,6 +83,13 @@ end
         node = workspace.index.hierarchy.index[("fatigue",)]
         @test node.analysis[:members] == 3
         @test all(item -> !haskey(item.metadata, :members), loaded)
+
+        conflict = "metadata :events expected Int64, got Bool; value dropped"
+        @test_logs (:warn, r"Workspace metadata conflict") begin
+            MBP.Workspace.publish_metadata_conflicts!(
+                workspace, "manual-conflict", :test, [conflict])
+        end
+        @test workspace.index.analysis_errors["manual-conflict"] == conflict
     finally
         MBP.close_workspace!(workspace)
     end

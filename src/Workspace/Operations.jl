@@ -929,8 +929,7 @@ function publish_work_success!(
         end
         delete_collection_metadata!(workspace.cache.db, invalidated)
         enqueue_dependent_subtree!(workspace, records; collection_keys=invalidated)
-        isempty(result.conflicts) ||
-            (workspace.index.analysis_errors[key.entity] = join(result.conflicts, "; "))
+        publish_metadata_conflicts!(workspace, key.entity, key.kind, result.conflicts)
         reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
@@ -960,8 +959,7 @@ function publish_work_success!(
         empty!(hierarchy_node.analysis)
         merge!(hierarchy_node.analysis, analysis)
         dropped = store_collection_metadata!(workspace.cache.db, key.entity, analysis)
-        isempty(dropped) ||
-            (workspace.index.analysis_errors[key.entity] = join(dropped, "; "))
+        publish_metadata_conflicts!(workspace, key.entity, key.kind, dropped)
     end
     return nothing
 end
@@ -978,8 +976,25 @@ function publish_item_metadata_layer!(
     workspace.index.item_metadata[record.id] = Dict{Symbol,Any}(computed)
     dropped = store_item_metadata!(
         workspace.cache.db, record, delivered_metadata(workspace, record))
-    isempty(dropped) && return nothing
-    workspace.index.analysis_errors[record.id] = join(dropped, "; ")
+    publish_metadata_conflicts!(workspace, record.id, ITEM_ANALYZE, dropped)
+    return nothing
+end
+
+function publish_metadata_conflicts!(
+    workspace::Workspace,
+    entity::AbstractString,
+    stage,
+    conflicts::Vector{String},
+)::Nothing
+    isempty(conflicts) && return nothing
+    message = join(conflicts, "; ")
+    workspace.index.analysis_errors[String(entity)] = message
+    @warn(
+        "Workspace metadata conflict",
+        entity=String(entity),
+        stage=stage,
+        message=message,
+    )
     return nothing
 end
 
