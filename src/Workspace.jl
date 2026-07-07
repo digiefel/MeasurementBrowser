@@ -10,6 +10,7 @@ import ..Cache:
     CacheResultKind,
     CacheResultStatus,
     CacheDB,
+    CacheStageSummary,
     COLLECTION_ANALYSIS_RESULT,
     COLLECTION_PROCESS_RESULT,
     ITEM_ANALYSIS_RESULT,
@@ -20,6 +21,7 @@ import ..Cache:
     ProjectCacheStatus,
     RESULT_FAILED,
     RESULT_READY,
+    cache_stage_summary,
     cache_built,
     cache_has_pending_writes,
     cache_pending_counts,
@@ -45,6 +47,7 @@ import ..Cache:
     store_item_metadata!,
     store_processed!,
     store_result_failure!,
+    store_source_item_failure!,
     edit_source_collection_metadata!,
     edit_source_item_metadata!,
     wait_condition_deadline,
@@ -103,6 +106,7 @@ import ..Projects:
     source_id,
     source_items,
     source_item_id,
+    source_item_noun,
     source_label,
     source_open_options,
     watch_source
@@ -115,9 +119,10 @@ mutable struct WorkspaceJob
     state::Symbol
     error::String
     cancel_token::Union{Nothing,Base.Threads.Atomic{Bool}}
+    discovered::Base.Threads.Atomic{Int}
 end
 
-WorkspaceJob()::WorkspaceJob = WorkspaceJob(0, :idle, "", nothing)
+WorkspaceJob()::WorkspaceJob = WorkspaceJob(0, :idle, "", nothing, Base.Threads.Atomic{Int}(0))
 
 """
 The progressively populated item index for one open source.
@@ -216,6 +221,17 @@ mutable struct WorkspaceCache
     operation::Symbol
 end
 
+"""Counts row shown by status watchers."""
+struct WorkspaceStageCounts
+    source_noun::String
+    sources_found::Int
+    sources_pending::Int
+    cache::CacheStageSummary
+end
+
+WorkspaceStageCounts()::WorkspaceStageCounts =
+    WorkspaceStageCounts("source items", 0, 0, CacheStageSummary())
+
 """
 A single snapshot of everything a watcher needs to show about a workspace's background work.
 
@@ -227,10 +243,11 @@ render loop reads a cached value instead of rebuilding strings every frame.
 - `level` drives the watcher's color/emphasis: `:none`, `:busy`, `:fresh`, `:stale`, `:missing`,
   `:error`.
 - `label` is a short word for a button or chip ("Building", "Fresh", "Errors").
-- `detail` is the one merged human line — the live activity while `busy`, otherwise a cache summary.
+- `detail` is the one merged human line: the live activity while `busy`, otherwise a short state.
 - `busy` is true while any scan, analysis, or cache work runs.
 - `progress` is a determinate fraction when counts are known, or `nothing` for an indeterminate or
   absent bar.
+- `counts` carries the cache/source numbers shown by status watchers.
 - `errors` lists source-item failures as `id => first message line`, streamed as they occur.
 """
 struct WorkspaceStatus
@@ -239,11 +256,14 @@ struct WorkspaceStatus
     detail::String
     busy::Bool
     progress::Union{Nothing,Float32}
+    counts::WorkspaceStageCounts
     errors::Vector{Pair{String,String}}
 end
 
 WorkspaceStatus() =
-    WorkspaceStatus(:none, "Opening", "Opening the source…", true, nothing, Pair{String,String}[])
+    WorkspaceStatus(
+        :none, "Opening", "Opening the source…", true, nothing,
+        WorkspaceStageCounts(), Pair{String,String}[])
 
 
 """

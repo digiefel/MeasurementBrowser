@@ -26,10 +26,8 @@ using ..Cache: ProjectCacheIdentity
 import ..Workspace
 using ..Workspace:
     WorkspaceStatus,
-    cancel_scan!,
     refresh_status!,
     rebuild_cache!,
-    scan_source!,
     source_scan_running
 
 """Brighten or darken an ImGui button color by `delta` per RGB channel, clamped to [0, 1]."""
@@ -51,7 +49,7 @@ end
 current_status(state::BrowserState)::WorkspaceStatus =
     state.workspace isa Workspace.Workspace ? state.workspace.status :
     WorkspaceStatus(:none, "No Project", "Open a project folder to build a cache.",
-        false, nothing, Pair{String,String}[])
+        false, nothing, Workspace.WorkspaceStageCounts(), Pair{String,String}[])
 
 """Render the cache status button and its control popup, colored by the workspace status."""
 function _render_cache_toolbar_button!(state::BrowserState)::Nothing
@@ -179,22 +177,6 @@ function render_menu_bar(state::BrowserState)::Nothing
                 ig.EndMenu()
             end
 
-            has_root = workspace isa Workspace.Workspace
-            source_rescan_running =
-                has_root && source_scan_running(workspace)
-            rescan_label = source_rescan_running ? "Cancel Rescan" : "Rescan"
-            can_rescan = has_root
-            !can_rescan && ig.BeginDisabled()
-            if ig.MenuItem(rescan_label)
-                if source_rescan_running
-                    cancel_scan!(workspace)
-                else
-                    @info "Rescanning source: $(source_label(workspace.source))"
-                    scan_source!(workspace)
-                end
-            end
-            !can_rescan && ig.EndDisabled()
-
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, state.show_project_window)
                 state.show_project_window = !state.show_project_window
@@ -239,6 +221,7 @@ function _render_cache_controls!(state::BrowserState)::Nothing
     ig.TextColored(status_color(status.level), status.label)
     ig.TextWrapped(status.detail)
     status.progress === nothing || ig.ProgressBar(status.progress, (-1, 0))
+    _render_stage_counts!(status)
 
     workspace isa Workspace.Workspace || return nothing
     identity = workspace.cache.identity
@@ -276,16 +259,55 @@ function _render_cache_controls!(state::BrowserState)::Nothing
 
     ig.Separator()
     scan_running = source_scan_running(workspace)
-    scan_label = scan_running ? "Cancel Scan" : "Scan Source"
-    if ig.Button(scan_label, (-1, 0))
-        scan_running ? cancel_scan!(workspace) : scan_source!(workspace)
-    end
     rebuild_disabled = scan_running || !(workspace.index.source isa SourceScan)
     rebuild_disabled && ig.BeginDisabled()
     if ig.Button(status.level === :missing ? "Build Cache" : "Rebuild Cache", (-1, 0))
         rebuild_cache!(workspace)
     end
     rebuild_disabled && ig.EndDisabled()
+    return nothing
+end
+
+function _render_stage_counts!(status::WorkspaceStatus)::Nothing
+    counts = status.counts
+    cache = counts.cache
+    flags = ig.ImGuiTableFlags_SizingStretchSame
+    ig.BeginTable("stage_counts", 4, flags) || return nothing
+    ig.TableNextRow()
+    _stage_count_cell("$(counts.sources_found) Sources", [
+        "$(counts.sources_found) $(counts.source_noun) found",
+        "$(counts.sources_pending) pending interpretation",
+    ])
+    _stage_count_cell("$(cache.interpreted_items) entries", [
+        "$(cache.interpreted_items) items interpreted and cached",
+    ])
+    _stage_count_cell("$(cache.analyzed) analyzed", [
+        "$(cache.processed) processed",
+        # Item analysis can be cached before a processed payload is stored when background
+        # processing is off; the cache reports each stage independently.
+        "$(cache.analyzed) analyzed",
+    ])
+    failures = cache.failed_interpret + cache.failed_process +
+        cache.failed_analyze + cache.failed_collection
+    _stage_count_cell("$(failures) failures", [
+        "$(cache.failed_interpret) interpret",
+        "$(cache.failed_process) process",
+        "$(cache.failed_analyze) analyze",
+        "$(cache.failed_collection) collection",
+    ])
+    ig.EndTable()
+    return nothing
+end
+
+function _stage_count_cell(label::AbstractString, tooltip::Vector{String})::Nothing
+    ig.TableNextColumn()
+    ig.TextUnformatted(label)
+    if ig.BeginItemTooltip()
+        for row in tooltip
+            ig.TextUnformatted(row)
+        end
+        ig.EndTooltip()
+    end
     return nothing
 end
 

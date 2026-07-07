@@ -542,6 +542,7 @@ function scan_source!(
         job.id += 1
         job.state = :discovering
         job.error = ""
+        job.discovered[] = 0
         workspace.cache_state = :loading
         workspace.cache_error = ""
         workspace.cache.operation = rebuild ? :rebuild : :update
@@ -574,7 +575,10 @@ function scan_source!(
             write_meta_header!(cachedb)
             discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
                 with_cancel(() -> cancel_token[]) do
-                    source_items(workspace.source)
+                    source_items(
+                        workspace.source;
+                        on_progress=count -> (job.discovered[] = count),
+                    )
                 end
             end
             # The cache's `source_items` table is the sole home of previous-session fingerprints;
@@ -999,6 +1003,13 @@ function publish_work_failure!(
         delete_collection_metadata!(workspace.cache.db, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
+        store_source_item_failure!(workspace.cache.db, key.entity, message)
+        @error(
+            "Source interpretation failed",
+            source_item=key.entity,
+            stage=key.kind,
+            exception=(failure.ex, failure.processed_bt),
+        )
     else
         source_item_id_value = record === nothing ? "" : record.source_item_id
         store_result_failure!(
@@ -1009,6 +1020,12 @@ function publish_work_failure!(
             message,
         )
         workspace.index.analysis_errors[key.entity] = message
+        @warn(
+            "Workspace work failed",
+            entity=key.entity,
+            stage=key.kind,
+            exception=(failure.ex, failure.processed_bt),
+        )
         key.kind === ITEM_ANALYZE && record !== nothing &&
             enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
     end

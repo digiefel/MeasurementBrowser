@@ -23,13 +23,24 @@ The workspace owns the source, item index, selected collection and item identiti
 work graph, and source-scan/cache state. Those values must not be copied into browser state.
 
 The GUI reads background-work state through one snapshot, `workspace.status` (a `WorkspaceStatus`):
-its level (color), short label, one merged detail line, busy flag, optional progress fraction, and the
-live error list. `poll_workspace!` recomputes that snapshot only when something changes or work is
-active, so idle frames are allocation-free, and the GUI never reaches into the scan/analysis/cache
-internals directly. This is the stable contract: the cache's internals can change without touching the
-UI as long as it still produces the same status. Scanning submits source changes to the work graph;
-`poll_workspace!` publishes completed work and folds progress, failures, and cache state into the
-snapshot.
+its level (color), short label, one detail line, busy flag, optional progress fraction, cache/source
+counts, and the live error list. `poll_workspace!` recomputes that snapshot only when something
+changes or work is active, so idle frames are allocation-free, and the GUI never reaches into the
+scan/analysis/cache internals directly. This is the stable contract: the cache's internals can change
+without touching the UI as long as it still produces the same status. Source changes enter through
+the startup scan or the source watcher; completed work folds progress, failures, and cache state into
+the snapshot.
+
+The cache popup shows one progress bar plus four fixed count cells: Sources, entries, analyzed, and
+failures. Tooltips are multi-row and read only from `WorkspaceStatus`. Sources use the source-owned
+noun, so `DirectorySource` says "source files". Entry, processed, analyzed, and failure counts come
+from persisted cache tables. Item analysis can be cached before a processed payload is stored when
+background processing is off, so the analyzed count may temporarily exceed processed; this is a
+current engine wrinkle, not a GUI invariant.
+
+There is no manual incremental scan button. Directory sources are watched continuously. The popup
+keeps only Build Cache / Rebuild Cache for explicit full rebuilds, and the Project menu has no
+Rescan item.
 
 ## Panels
 

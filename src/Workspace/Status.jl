@@ -15,65 +15,83 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
         workspace.status.errors
     end
     scan = workspace.scan
+    counts = workspace_stage_counts(workspace)
+    calm_level = workspace.status.level in (:none, :busy) ? :fresh : workspace.status.level
+    calm_label = workspace.status.label in ("Opening", "Caching", "Scanning") ? "Fresh" :
+        workspace.status.label
 
     # Active work: one live line, determinate bar when totals are known.
     if scan.state == :discovering
-        label = workspace.cache.operation === :rebuild ? "Rebuilding" :
-                workspace.cache.operation === :build ? "Building" : "Scanning"
+        noun = source_item_noun(workspace.source)
         return WorkspaceStatus(
-            :busy, label, "Finding source items…", true, nothing, errors)
+            calm_level,
+            calm_label,
+            @sprintf("Finding %s… (%d found)", noun, counts.sources_found),
+            true,
+            nothing,
+            counts,
+            errors,
+        )
     elseif scan.state == :canceling
-        return WorkspaceStatus(:busy, "Canceling", "Canceling…", true, nothing, errors)
+        return WorkspaceStatus(
+            calm_level, "Canceling", "Canceling…", true, nothing, counts, errors)
     end
     completed, total, active = work_counts(workspace)
     if active > 0
         progress = total > 0 ? Float32(clamp(completed / total, 0, 1)) : nothing
         return WorkspaceStatus(
-            :busy,
-            "Caching",
+            calm_level,
+            calm_label,
             @sprintf("Processing %d/%d tasks", completed, total),
             true,
             progress,
+            counts,
             errors,
         )
     end
 
     # Settled: a single merged summary line, no bar.
     workspace.cache.identity === nothing && return WorkspaceStatus(
-        :none, "No Project", "Open a project folder to build a cache.", false, nothing, errors)
+        :none, "No Project", "Open a project folder to build a cache.",
+        false, nothing, counts, errors)
     scan.state == :error && return WorkspaceStatus(
-        :error, "Scan Error", scan.error, false, nothing, errors)
+        :error, "Scan Error", scan.error, false, nothing, counts, errors)
     isempty(workspace.source_error) || return WorkspaceStatus(
-        :error, "Source Error", workspace.source_error, false, nothing, errors)
+        :error, "Source Error", workspace.source_error, false, nothing, counts, errors)
     workspace.cache_state == :error && return WorkspaceStatus(
-        :error, "Cache Error", workspace.cache_error, false, nothing, errors)
+        :error, "Cache Error", workspace.cache_error, false, nothing, counts, errors)
     workspace.cache_state == :missing && return WorkspaceStatus(
         :missing, "Cache Missing", "No cache has been built for this project yet.",
-        false, nothing, errors)
+        false, nothing, counts, errors)
     scan.state == :canceled && return WorkspaceStatus(
-        :none, "Canceled", "The last scan was canceled.", false, nothing, errors)
+        :none, "Canceled", "The last scan was canceled.", false, nothing, counts, errors)
 
     status = workspace.cache.status
     status isa ProjectCacheStatus || return WorkspaceStatus(
-        :none, "Idle", "No cache loaded.", false, nothing, errors)
-    item_count = length(workspace.index.items)
+        :none, "Idle", "No cache loaded.", false, nothing, counts, errors)
     if !isempty(errors) || status.error_source_items > 0
-        failed = max(length(errors), status.error_source_items)
-        return WorkspaceStatus(:error, "Errors",
-            @sprintf("%d source item(s) failed · %d items cached", failed, item_count),
-            false, nothing, errors)
+        return WorkspaceStatus(
+            :error, "Errors", "Some work failed.", false, nothing, counts, errors)
     elseif !(workspace.index.source isa SourceScan)
         return WorkspaceStatus(:fresh, "Loaded",
-            @sprintf("%d source items cached (source not checked)", status.cached_source_items),
-            false, nothing, errors)
+            "Cache loaded; source not checked.", false, nothing, counts, errors)
     end
     # A settled successful scan has ingested every difference it found, so the cache mirrors the
     # source; the scan's stale/new/deleted counts describe the work it did, not pending work.
-    changed = status.stale_source_items + status.new_source_items + status.deleted_source_items
-    detail = changed > 0 ?
-        @sprintf("%d source items · %d items cached · last scan: %d stale · %d new · %d deleted",
-            status.total_source_items, item_count, status.stale_source_items,
-            status.new_source_items, status.deleted_source_items) :
-        @sprintf("%d source items · %d items cached", status.total_source_items, item_count)
-    return WorkspaceStatus(:fresh, "Fresh", detail, false, nothing, errors)
+    return WorkspaceStatus(:fresh, "Fresh", "Cache is current.", false, nothing, counts, errors)
+end
+
+function workspace_stage_counts(workspace::Workspace)::WorkspaceStageCounts
+    cache_counts = cache_stage_summary(workspace.cache.db)
+    status = workspace.cache.status
+    found = status isa ProjectCacheStatus ? status.total_source_items :
+        cache_counts.cached_sources + cache_counts.failed_interpret
+    workspace.scan.state === :discovering && (found = max(found, workspace.scan.discovered[]))
+    done = cache_counts.cached_sources + cache_counts.failed_interpret
+    return WorkspaceStageCounts(
+        source_item_noun(workspace.source),
+        found,
+        max(found - done, 0),
+        cache_counts,
+    )
 end

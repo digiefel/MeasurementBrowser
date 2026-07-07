@@ -160,3 +160,34 @@ end
         end
     end
 end
+
+@testset "cache stage summary follows persisted stage rows" begin
+    mktempdir() do dir
+        write_test_source(joinpath(dir, "a.csv"))
+        workspace = MeasurementBrowser.open_workspace(
+            TEST_PROJECT,
+            MeasurementBrowser.DirectorySource(dir);
+            background_processing=true,
+        )
+        try
+            MeasurementBrowser.Workspace.wait_workspace_idle!(workspace)
+            summary = CACHE.cache_stage_summary(workspace.cache.db)
+            @test summary.cached_sources == 1
+            @test summary.interpreted_items == 1
+            @test summary.processed == 1
+            @test summary.analyzed == 1
+
+            source_item_id = only(keys(workspace.index.items_by_source))
+            records = MeasurementBrowser.Workspace.source_item_records(
+                workspace.index, source_item_id)
+            CACHE.delete_source_item!(workspace.cache.db, source_item_id, records)
+            summary = CACHE.cache_stage_summary(workspace.cache.db)
+            @test summary.cached_sources == 0
+            @test summary.interpreted_items == 0
+            @test summary.processed == 0
+            @test summary.analyzed == 0
+        finally
+            MeasurementBrowser.close_workspace!(workspace)
+        end
+    end
+end

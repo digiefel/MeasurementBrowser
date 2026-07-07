@@ -107,6 +107,23 @@ struct ProjectCacheStatus
     error_source_items::Int
 end
 
+"""Persisted cache counts surfaced through workspace status."""
+struct CacheStageSummary
+    cached_sources::Int
+    interpreted_items::Int
+    processed::Int
+    analyzed::Int
+    collection_processed::Int
+    collection_analyzed::Int
+    failed_interpret::Int
+    failed_process::Int
+    failed_analyze::Int
+    failed_collection::Int
+end
+
+CacheStageSummary()::CacheStageSummary =
+    CacheStageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
 # Storage rows (field names are the table columns; `R(database_row)` is the pure decoder)
 
 struct SourceItemRow
@@ -215,6 +232,7 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     processed_memory::MemoryStore{String,AbstractDataItem}
     collection_processed_memory::MemoryStore{String,AbstractDataItem}
     source_items::Set{String}
+    items::Set{String}
     failures::Dict{Tuple{String,String},String}
     result_states::Dict{Tuple{Int8,String},CachedResultState}
     profiler::Profiling.ProfileSession
@@ -352,6 +370,7 @@ function open_memory_cache_db(
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        Set{String}(),
         Set{String}(),
         Dict{Tuple{String,String},String}(),
         Dict{Tuple{Int8,String},CachedResultState}(),
@@ -495,6 +514,9 @@ function store_interpreted_records!(
     ::Vector{<:AbstractDataItem},
 )::Vector{String}
     push!(cache.source_items, source_item_id(source_item))
+    for record in records
+        push!(cache.items, record.id)
+    end
     return String[]
 end
 
@@ -569,6 +591,21 @@ function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
     return nothing
 end
 
+"""Persist one failed source interpretation."""
+function store_source_item_failure!(
+    cache::CacheDB,
+    source_item_id::AbstractString,
+    message::AbstractString,
+)::Nothing
+    source_id = String(source_item_id)
+    append!(
+        cache.failures,
+        (source_id, source_id),
+        FailureRow(source_id, source_id, String(message)),
+    )
+    return nothing
+end
+
 """Format wide-column type conflicts as the messages the failure channels surface."""
 _conflict_messages(dropped::Vector{WideConflict})::Vector{String} = String[
     "metadata :$name expected $(_vtype_julia(registered)), got $(_vtype_julia(incoming)); " *
@@ -629,6 +666,16 @@ function store_result_failure!(
     cache.failures[(entity_value, source_id)] = String(message)
     cache.result_states[(Int8(kind), entity_value)] = CachedResultState(
         Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+    return nothing
+end
+
+function store_source_item_failure!(
+    cache::MemoryCacheDB,
+    source_item_id::AbstractString,
+    message::AbstractString,
+)::Nothing
+    source_id = String(source_item_id)
+    cache.failures[(source_id, source_id)] = String(message)
     return nothing
 end
 
@@ -708,6 +755,7 @@ function delete_source_item!(
         delete!(cache.interpreted, record.id)
         delete!(cache.processed_memory, record.id)
         delete!(cache.collection_processed_memory, record.id)
+        delete!(cache.items, record.id)
         delete!(cache.failures, (record.id, String(source_item_id)))
         delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
         delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
@@ -758,6 +806,50 @@ end
 
 cache_pending_counts(::MemoryCacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}} =
     (items=0, rows=0)
+
+"""Return persisted stage counts owned by the cache layer."""
+function cache_stage_summary(cache::CacheDB)::CacheStageSummary
+    source_items = read(cache.source_items)
+    items = read(cache.items)
+    failures = read(cache.failures)
+    states = read(cache.result_states)
+    return _cache_stage_summary(source_items, items, failures, states)
+end
+
+function cache_stage_summary(cache::MemoryCacheDB)::CacheStageSummary
+    return _cache_stage_summary(
+        cache.source_items,
+        cache.items,
+        cache.failures,
+        cache.result_states,
+    )
+end
+
+function _cache_stage_summary(source_items, items, failures, states)::CacheStageSummary
+    ready(kind::CacheResultKind)::Int = count(
+        state -> CacheResultKind(state.kind) === kind &&
+            CacheResultStatus(state.status) === RESULT_READY,
+        values(states),
+    )
+    failed(kind::CacheResultKind)::Int = count(
+        state -> CacheResultKind(state.kind) === kind &&
+            CacheResultStatus(state.status) === RESULT_FAILED,
+        values(states),
+    )
+    failed_interpret = count(key -> first(key) == last(key), keys(failures))
+    return CacheStageSummary(
+        length(source_items),
+        length(items),
+        ready(PROCESSING_RESULT),
+        ready(ITEM_ANALYSIS_RESULT),
+        ready(COLLECTION_PROCESS_RESULT),
+        ready(COLLECTION_ANALYSIS_RESULT),
+        failed_interpret,
+        failed(PROCESSING_RESULT),
+        failed(ITEM_ANALYSIS_RESULT),
+        failed(COLLECTION_PROCESS_RESULT) + failed(COLLECTION_ANALYSIS_RESULT),
+    )
+end
 
 """Whether any cache store has queued or writing mutations."""
 function cache_has_pending_writes(cache::AbstractCacheDB)::Bool
@@ -930,6 +1022,10 @@ function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
     clear!(cachedb.interpreted)
     clear!(cachedb.processed_memory)
     clear!(cachedb.collection_processed_memory)
+    empty!(cachedb.source_items)
+    empty!(cachedb.items)
+    empty!(cachedb.failures)
+    empty!(cachedb.result_states)
     return nothing
 end
 
