@@ -533,7 +533,11 @@ function _run_browser(
         end
         state.performance.frame += 1
         workspace = state.workspace
-        workspace isa Workspace.Workspace && refresh_status!(workspace)
+        if workspace isa Workspace.Workspace
+            _time!(state, :refresh_status) do
+                refresh_status!(workspace)
+            end
+        end
         if exit_after_frames !== nothing && state.performance.frame >= exit_after_frames
             _shutdown_background_jobs!(state)
             return :imgui_exit_loop
@@ -554,31 +558,39 @@ function _run_browser(
             end
             return nothing
         end
-        dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
-        if setup_layout[]
-            setup_layout[] = false
-            _setup_docking_layout!(dockspace_id)
+        _time!(state, :frame_ui) do
+            dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
+            if setup_layout[]
+                setup_layout[] = false
+                _setup_docking_layout!(dockspace_id)
+            end
+            render_selection_window(state)
+            _time!(state, :project_window) do
+                render_project_window(state)
+            end
+            _time!(state, :info) do
+                render_info_window(state)
+            end
+            _time!(state, :table_inspector) do
+                render_table_inspector_window(state)
+            end
+            _time!(state, :plot) do
+                render_plot_window(state)
+            end
+            _time!(state, :extra_plots) do
+                render_additional_plot_windows(state)
+            end
+            _time!(state, :perf_window) do
+                render_perf_window(state)
+            end
+            _time!(state, :persist_view) do
+                _save_project_view_if_changed!(state)
+            end
+            _time!(state, :modals) do
+                render_cache_rebuild_modal(state)
+                render_collection_metadata_modal(state)
+            end
         end
-        render_selection_window(state)
-        render_project_window(state)
-        _time!(state, :info) do
-            render_info_window(state)
-        end
-        _time!(state, :table_inspector) do
-            render_table_inspector_window(state)
-        end
-        _time!(state, :plot) do
-            render_plot_window(state)
-        end
-        _time!(state, :extra_plots) do
-            render_additional_plot_windows(state)
-        end
-        _time!(state, :perf_window) do
-            render_perf_window(state)
-        end
-        _save_project_view_if_changed!(state)
-        render_cache_rebuild_modal(state)
-        render_collection_metadata_modal(state)
     end
 end
 

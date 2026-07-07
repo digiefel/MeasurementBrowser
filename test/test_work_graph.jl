@@ -14,36 +14,42 @@ const CACHE = MeasurementBrowser.Cache
     collection = WORK.WorkKey(WORK.COLLECTION_ANALYZE, "device-A")
 
     lock(graph.lock) do
-        WORK.replace_work_node!(
-            graph,
-            WORK.WorkNode(process_key, UInt64(1), :failed, 0, WORK.WorkKey[], Channel{Any}[], 0),
-        )
-        blocked_item_analyze = WORK.WorkNode(
-            item_a, UInt64(1), :waiting, 1, WORK.WorkKey[process_key], Channel{Any}[], 0)
-        WORK.replace_work_node!(graph, blocked_item_analyze)
-        @test !WORK.dependencies_ready(graph, blocked_item_analyze)
-
-        graph.nodes[process_key].state = :ready
-        @test WORK.dependencies_ready(graph, blocked_item_analyze)
-
-        graph.nodes[item_a].state = :ready
-        WORK.replace_work_node!(
-            graph,
-            WORK.WorkNode(item_b, UInt64(1), :missing, 0, WORK.WorkKey[], Channel{Any}[], 0),
-        )
-        collection_node = WORK.WorkNode(
-            collection, UInt64(1), :waiting, 1, WORK.WorkKey[item_a, item_b],
+        process_node = WORK.WorkNode(
+            process_key, UInt16(1), :running, 0, Set{WORK.WorkKey}(), UInt64(0),
             Channel{Any}[], 0)
-        WORK.replace_work_node!(graph, collection_node)
+        graph.nodes[process_key] = process_node
 
-        WORK.wake_ready_dependents!(graph, item_a)
-        @test collection_node.state === :waiting
-        @test isempty(graph.queue)
+        blocked_item_analyze = WORK.WorkNode(
+            item_a, UInt16(1), :waiting, 1, Set{WORK.WorkKey}(), UInt64(0),
+            Channel{Any}[], 0)
+        WORK.seed_node_dependencies!(graph, blocked_item_analyze, WORK.WorkKey[process_key])
+        graph.nodes[item_a] = blocked_item_analyze
+        @test blocked_item_analyze.pending == 1
+        @test item_a in process_node.dependents
+        @test !WORK.dependencies_ready(blocked_item_analyze)
 
-        graph.nodes[item_b].state = :failed
-        WORK.wake_ready_dependents!(graph, item_b)
+        WORK.wake_ready_dependents!(graph, process_node)
+        delete!(graph.nodes, process_key)
+        @test blocked_item_analyze.pending == 0
+        @test WORK.dependencies_ready(blocked_item_analyze)
+        WORK.queue_ready_node!(graph, blocked_item_analyze)
+        @test blocked_item_analyze.state === :queued
+        blocked_item_analyze.state = :waiting
+        blocked_item_analyze.pending = 0
+        empty!(graph.queue)
+
+        collection_node = WORK.WorkNode(
+            collection, UInt16(1), :waiting, 1, Set{WORK.WorkKey}(), UInt64(0),
+            Channel{Any}[], 0)
+        WORK.seed_node_dependencies!(graph, collection_node, WORK.WorkKey[item_a, item_b])
+        graph.nodes[collection] = collection_node
+        @test collection_node.pending == 1
+
+        WORK.wake_ready_dependents!(graph, blocked_item_analyze)
+        delete!(graph.nodes, item_a)
+        @test collection_node.pending == 0
         @test collection_node.state === :queued
-        @test graph.queue == Dict(1 => [(collection, UInt64(1))])
+        @test graph.queue == Dict(1 => [(collection, UInt16(1))])
         @test WORK.pop_queued_node!(graph) === collection_node
         @test collection_node.state === :running
         @test WORK.pop_queued_node!(graph) === nothing

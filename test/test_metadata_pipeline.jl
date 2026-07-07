@@ -69,7 +69,7 @@ end
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            workspace.index.hierarchy.all_items; by=record -> record.metadata[:cycle])
+            MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = MBP.Workspace.materialize_items(workspace, records)
         loaded = sort(loaded; by=item -> item.metadata[:cycle])
 
@@ -107,7 +107,7 @@ end
         project, test_source(project, dir); background_processing=true)
     try
         wait_workspace_idle!(workspace)
-        record = only(workspace.index.hierarchy.all_items)
+        record = only(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy))
         @test workspace.index.item_metadata[record.id][:events] == 4
 
         # Re-register analyze with a different key, then re-run the item's analyze stage: its output
@@ -134,6 +134,28 @@ end
     end
 end
 
+@testset "memory cache collection-process delivery after idle" begin
+    dir = _fatigue_dir([2, 3, 5])
+    project = _pipeline_project(basename(dir))
+    workspace = MBP.open_workspace(
+        project, test_source(project, dir); background_processing=true, cache=false)
+    try
+        wait_workspace_idle!(workspace)
+        @test workspace.cache.db isa MBP.Cache.MemoryCacheDB
+        @test isempty(workspace.index.analysis_errors)
+
+        records = sort(
+            MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+        loaded = MBP.Workspace.materialize_items(workspace, records)
+        loaded = sort(loaded; by=item -> item.metadata[:cycle])
+
+        @test [item.metadata[:cumulative] for item in loaded] == [2, 5, 10]
+        @test [item.data.cumulative[1] for item in loaded] == [2, 5, 10]
+    finally
+        MBP.close_workspace!(workspace)
+    end
+end
+
 @testset "collection-process failure delivers processed payloads with the error surfaced" begin
     dir = _fatigue_dir([1, 2])
     project = _pipeline_project(basename(dir); fail_process=true)
@@ -142,7 +164,7 @@ end
     try
         wait_workspace_idle!(workspace)
         records = sort(
-            workspace.index.hierarchy.all_items; by=record -> record.metadata[:cycle])
+            MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = MBP.Workspace.materialize_items(workspace, records)
         # The fold failed, so members deliver their :processed payloads (no cumulative column).
         @test length(loaded) == 2

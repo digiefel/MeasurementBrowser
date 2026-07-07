@@ -139,21 +139,12 @@ source_scan_running(workspace::Workspace)::Bool =
 cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_state in (:loading, :writing, :canceling)
 
-analysis_work_running(workspace::Workspace)::Bool =
-    work_kind_running(workspace, COLLECTION_PROCESS) ||
-    work_kind_running(workspace, COLLECTION_ANALYZE)
-
-"""Whether any item is waiting for or running processing, or its result is still being written."""
-function processing_work_running(workspace::Workspace)::Bool
-    return work_kind_running(workspace, ITEM_PROCESS) ||
-        work_kind_running(workspace, ITEM_ANALYZE) ||
-        cache_has_pending_writes(workspace.cache.db)
-end
-
 """Whether the scan or any queued or running work-graph node is still in flight."""
 function engine_work_running(workspace::Workspace)::Bool
-    _, _, active = work_counts(workspace)
-    return active > 0 || source_scan_running(workspace) || cache_work_running(workspace)
+    return source_scan_running(workspace) || cache_work_running(workspace) ||
+        lock(workspace.work.lock) do
+            workspace.work.active > 0
+        end
 end
 
 """
@@ -283,7 +274,7 @@ function reconcile_source_metadata_cache!(
                 edit_source_collection_metadata!(cachedb, key, current)
             elseif !isequal(old, current)
                 append!(stale, ItemRecord[
-                    record for record in workspace.index.hierarchy.all_items
+                    record for record in all_items(workspace.index.hierarchy)
                     if length(path) <= length(record.collection) &&
                        record.collection[1:length(path)] == path
                 ])
@@ -324,30 +315,68 @@ function reconcile_source_metadata_cache!(
 end
 
 """
-Bump and re-mark the work of a set of records and their collections after their inputs changed.
+Bump and re-enqueue the work of a set of records and their collections after their inputs changed.
 
-Shared by the in-session metadata event and the reopen source-metadata diff: each record's process
-and analyze results are bumped off their prior revisions (a still-:ready ITEM_PROCESS would answer
-from a stale payload), and the ancestor collections' process/analyze results are marked stale.
+Shared by the in-session metadata event and the reopen source-metadata diff: the full dependent
+subtree is enqueued immediately so live nodes gate delivery while fresh work runs.
 """
 function invalidate_records_work!(workspace::Workspace, changed::Vector{ItemRecord})::Nothing
-    affected = affected_collection_keys(changed)
+    for record in changed
+        delete!(workspace.index.item_metadata, record.id)
+        delete!(workspace.index.analysis_errors, record.id)
+    end
+    enqueue_dependent_subtree!(workspace, changed)
+    return nothing
+end
+
+"""
+Invalidate one record's process/analyze steps and every affected collection step, scheduling their
+recomputation only when background processing is enabled.
+
+Invalidation, source removal, and interpret failure all fan out through this helper. The stale cache
+result-state is always cleared so the next read (on-demand or background) recomputes; the fresh work
+is only enqueued when `background_processing` is on. Without it, processing stays selection-driven and
+a live scan interprets the tree without eagerly processing or analyzing every item.
+"""
+function enqueue_dependent_subtree!(
+    workspace::Workspace,
+    records::Vector{ItemRecord};
+    collection_keys::Vector{String}=affected_collection_keys(records),
+    priority::Int=2,
+)::Nothing
+    background = workspace.background_processing
+    for collection_key in unique(collection_keys)
+        path = collection_path_tuple(collection_key)
+        hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
+        hierarchy_node === nothing && continue
+        empty!(hierarchy_node.analysis)
+    end
     lock(workspace.work.lock) do
-        for record in changed
-            delete!(workspace.index.item_metadata, record.id)
-            delete!(workspace.index.analysis_errors, record.id)
-            bump_work_missing!(workspace, WorkKey(ITEM_PROCESS, record.id))
-            bump_work_missing!(
-                workspace, WorkKey(ITEM_ANALYZE, record.id);
-                dependencies=WorkKey[WorkKey(ITEM_PROCESS, record.id)])
-            workspace.background_processing && enqueue_processing!(workspace, record)
+        for record in records
+            process_key = WorkKey(ITEM_PROCESS, record.id)
+            analyze_key = WorkKey(ITEM_ANALYZE, record.id)
+            clear_work_result_state!(workspace, process_key)
+            clear_work_result_state!(workspace, analyze_key)
+            background || continue
+            enqueue_work!(
+                workspace, process_key, bump_revision!(workspace.work, process_key);
+                priority,
+            )
+            enqueue_work!(
+                workspace, analyze_key, bump_revision!(workspace.work, analyze_key);
+                priority,
+                dependencies=WorkKey[process_key],
+            )
+        end
+        if background
+            enqueue_collection_work!(workspace, collection_keys; supersede=true)
+        else
+            for collection_key in unique(collection_keys)
+                clear_work_result_state!(workspace, WorkKey(COLLECTION_PROCESS, collection_key))
+                clear_work_result_state!(workspace, WorkKey(COLLECTION_ANALYZE, collection_key))
+            end
         end
     end
-    for key in affected
-        node = get(workspace.index.hierarchy.index, collection_path_tuple(key), nothing)
-        node === nothing || empty!(node.analysis)
-    end
-    mark_collection_work_missing!(workspace, affected)
     return nothing
 end
 
@@ -458,7 +487,7 @@ function ingest_source_changes!(
         old_records, invalidated = remove_source_item_output!(workspace, removed)
         delete_source_item!(workspace.cache.db, removed, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
-        mark_collection_work_missing!(workspace, invalidated)
+        enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         lock(workspace.work.lock) do
             delete!(workspace.work.source_items, removed)
         end
@@ -648,9 +677,7 @@ function start_internal_profile!(workspace::Workspace)::Nothing
     # finish_publish!: a completion landing in between would either strand the profiler in
     # :preparing forever or let the cancels kill the freshly restarted profiled rebuild.
     lock(workspace.publish_lock) do
-        busy = source_scan_running(workspace) || processing_work_running(workspace) ||
-            analysis_work_running(workspace) || cache_work_running(workspace)
-        if busy
+        if engine_work_running(workspace)
             profiler.state = :preparing
             workspace.profile_restart_pending = true
             cancel_scan!(workspace)
@@ -698,10 +725,10 @@ function replace_item_index!(
     hierarchy::Hierarchy,
 )::Nothing
     items = Dict{String,ItemRecord}()
-    sizehint!(items, length(hierarchy.all_items))
+    sizehint!(items, length(all_items(hierarchy)))
     items_by_source = Dict{String,Vector{String}}()
     metadata_keys = Set{Symbol}()
-    for item in hierarchy.all_items
+    for item in all_items(hierarchy)
         haskey(items, item.id) && error("Duplicate item id generated during scan: $(item.id)")
         items[item.id] = item
         push!(get!(() -> String[], items_by_source, item.source_item_id), item.id)
@@ -710,7 +737,7 @@ function replace_item_index!(
         union!(metadata_keys, keys(node.metadata))
     end
     item_metadata = Dict{String,Dict{Symbol,Any}}()
-    for item in hierarchy.all_items
+    for item in all_items(hierarchy)
         previous = get(workspace.index.item_metadata, item.id, nothing)
         previous === nothing || (item_metadata[item.id] = previous)
     end
@@ -726,6 +753,16 @@ function replace_item_index!(
     return nothing
 end
 
+"""Whether one loaded cache row is `RESULT_READY`."""
+function cache_index_ready(
+    index::ProjectCacheIndex,
+    kind::CacheResultKind,
+    entity::AbstractString,
+)::Bool
+    state = get(index.result_states, CacheResultKey(kind, String(entity)), nothing)
+    state !== nothing && CacheResultStatus(state.status) === RESULT_READY
+end
+
 """Surface the cached index as an instant, independent first view, before the fresh scan refines it."""
 function apply_cache_index!(
     workspace::Workspace,
@@ -738,7 +775,7 @@ function apply_cache_index!(
     # The cache owns item-local records only. Rebuild the hierarchy with the open source's current
     # metadata so cached and memory-only startup produce the same effective inputs.
     hierarchy = Hierarchy(
-        index.source.hierarchy.all_items,
+        all_items(index.source.hierarchy),
         workspace.source,
         index.source.hierarchy.skipped_count,
     )
@@ -760,125 +797,33 @@ function apply_cache_index!(
 
     workspace.index.analysis_errors = copy(index.analysis_errors)
     stale = reconcile_source_metadata_cache!(workspace)
-    seed_cached_work_nodes!(workspace, index; skip=Set(record.id for record in stale))
     isempty(stale) || invalidate_records_work!(workspace, stale)
     for state in values(index.result_states)
         CacheResultStatus(state.status) === RESULT_FAILED || continue
-        kind = CacheResultKind(state.kind)
-        key = WorkKey(
-            kind === PROCESSING_RESULT ? ITEM_PROCESS :
-            kind === ITEM_ANALYSIS_RESULT ? ITEM_ANALYZE :
-            kind === COLLECTION_PROCESS_RESULT ? COLLECTION_PROCESS : COLLECTION_ANALYZE,
-            state.entity,
-        )
-        valid = lock(workspace.work.lock) do
-            node = get(workspace.work.nodes, key, nothing)
-            node !== nothing && node.state === :failed
-        end
-        valid || continue
         workspace.index.analysis_errors[state.entity] =
             something(state.message, "cached work failed")
     end
     if workspace.background_processing
-        missing_analysis = lock(workspace.work.lock) do
-            ItemRecord[
-                record for record in workspace.index.hierarchy.all_items
-                if !haskey(workspace.work.nodes, WorkKey(ITEM_ANALYZE, record.id))
-            ]
+        for record in all_items(workspace.index.hierarchy)
+            cache_index_ready(index, PROCESSING_RESULT, record.id) ||
+                enqueue_processing!(workspace, record)
+            cache_index_ready(index, ITEM_ANALYSIS_RESULT, record.id) ||
+                enqueue_item_analysis!(workspace, record)
         end
-        for record in missing_analysis
-            enqueue_processing!(workspace, record)
-            enqueue_item_analysis!(workspace, record)
-        end
-    end
-    return nothing
-end
-
-"""
-Seed work graph completion nodes from a loaded cache index, each at counter revision 1.
-
-Reopen validity is derived from position downstream of unchanged sources, not from a stored per-result
-claim: everything seeds valid here, and `reconcile_source_metadata_cache!` bumps stale work before
-nodes are seeded from the loaded index.
-"""
-function seed_cached_work_nodes!(
-    workspace::Workspace,
-    index::ProjectCacheIndex;
-    skip::Set{String}=Set{String}(),
-)::Nothing
-    records = Dict(record.id => record for record in workspace.index.hierarchy.all_items)
-    for (result_key, state) in index.result_states
-        work_state = CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
-        kind = result_key.kind
-        if kind === PROCESSING_RESULT || kind === ITEM_ANALYSIS_RESULT
-            haskey(records, result_key.entity) || continue
-            result_key.entity in skip && continue
-            seed_work_node!(
-                workspace,
-                WorkKey(kind === PROCESSING_RESULT ? ITEM_PROCESS : ITEM_ANALYZE,
-                    result_key.entity),
-                UInt64(1),
-                work_state,
-            )
-        else
-            path = collection_path_tuple(result_key.entity)
-            haskey(workspace.index.hierarchy.index, path) || continue
-            seed_work_node!(
-                workspace,
-                WorkKey(kind === COLLECTION_PROCESS_RESULT ? COLLECTION_PROCESS :
-                    COLLECTION_ANALYZE, result_key.entity),
-                UInt64(1),
-                work_state,
-            )
+        for (path, hierarchy_node) in workspace.index.hierarchy.index
+            isempty(hierarchy_node.items) && continue
+            collection_key = collection_path_key(collect(String, path))
+            member_kinds = unique(record.kind for record in hierarchy_node.items)
+            if any(k -> has_collection_process(workspace.project, k), member_kinds) &&
+                    !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key)
+                enqueue_collection_work!(workspace, [collection_key]; supersede=false)
+            elseif any(k -> has_collection_analysis(workspace.project, k), member_kinds) &&
+                    !cache_index_ready(index, COLLECTION_ANALYSIS_RESULT, collection_key)
+                enqueue_collection_work!(workspace, [collection_key]; supersede=false)
+            end
         end
     end
     return nothing
-end
-
-"""Mark invalidated collection graph nodes stale by bumping their process/analyze revisions."""
-function mark_collection_work_missing!(
-    workspace::Workspace,
-    collection_keys::Vector{String},
-)::Nothing
-    for collection_key in unique(collection_keys)
-        path = collection_path_tuple(collection_key)
-        haskey(workspace.index.hierarchy.index, path) || continue
-        bump_work_missing!(workspace, WorkKey(COLLECTION_PROCESS, collection_key))
-        bump_work_missing!(workspace, WorkKey(COLLECTION_ANALYZE, collection_key))
-    end
-    return nothing
-end
-
-"""Return the current node if the completion revision still owns the result."""
-function current_completion_node(
-    workspace::Workspace,
-    key::WorkKey,
-    revision::UInt64,
-)::Union{Nothing,WorkNode}
-    return lock(workspace.work.lock) do
-        node = get(workspace.work.nodes, key, nothing)
-        node === nothing && return nothing
-        node.revision == revision && node.state === :running || return nothing
-        return node
-    end
-end
-
-"""Finish a current work node and wake selected waiters."""
-function finish_work_node!(
-    workspace::Workspace,
-    node::WorkNode,
-    state::Symbol,
-)::Vector{Channel{Any}}
-    return lock(workspace.work.lock) do
-        current = get(workspace.work.nodes, node.key, nothing)
-        current === node || return Channel{Any}[]
-        node.state = state
-        workspace.work.completed += 1
-        wake_ready_dependents!(workspace.work, node.key)
-        waiters = copy(node.waiters)
-        empty!(node.waiters)
-        waiters
-    end
 end
 
 """Queue item analysis after processing succeeds."""
@@ -895,40 +840,56 @@ function enqueue_item_analysis!(workspace::Workspace, record::ItemRecord)::Nothi
 end
 
 """
-Queue a collection's terminal work when all member item-analyze nodes are terminal.
+Enqueue process/analyze work for a set of collections, gated on their members' item-analyze nodes.
 
 A collection with a registered `process` recipe queues COLLECTION_PROCESS; its COLLECTION_ANALYZE
-then depends on that node, else directly on the member ITEM_ANALYZE nodes.
+then depends on that node, else directly on the member ITEM_ANALYZE nodes. Cached result rows are
+cleared so a fresh fold recomputes. `supersede` picks the revision policy — the one axis that
+separates the two callers: `false` joins existing work at its current revision (a member finished, or
+reopen gap-fill); `true` bumps to a fresh revision to replace work running on stale inputs
+(invalidation).
 """
-function enqueue_ready_collection_work!(
+function enqueue_collection_work!(
     workspace::Workspace,
-    collection_keys::Vector{String},
+    collection_keys;
+    supersede::Bool,
 )::Nothing
-    for collection_key in collection_keys
+    revision(key) = supersede ?
+        bump_revision!(workspace.work, key) : current_revision(workspace.work, key)
+    for collection_key in unique(collection_keys)
         path = collection_path_tuple(collection_key)
-        node = get(workspace.index.hierarchy.index, path, nothing)
-        node === nothing && continue
-        isempty(node.items) && continue
-        member_kinds = unique(record.kind for record in node.items)
-        member_analyze = WorkKey[WorkKey(ITEM_ANALYZE, record.id) for record in node.items]
+        hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
+        hierarchy_node === nothing && continue
+        isempty(hierarchy_node.items) && continue
+        member_kinds = unique(record.kind for record in hierarchy_node.items)
+        member_analyze = WorkKey[
+            WorkKey(ITEM_ANALYZE, record.id) for record in hierarchy_node.items]
         has_process = any(k -> has_collection_process(workspace.project, k), member_kinds)
         has_analyze = any(k -> has_collection_analysis(workspace.project, k), member_kinds)
+        process_key = WorkKey(COLLECTION_PROCESS, collection_key)
+        analyze_key = WorkKey(COLLECTION_ANALYZE, collection_key)
+        if !supersede
+            process_done = !has_process ||
+                cache_work_status(workspace, process_key) === :ready
+            analyze_done = !has_analyze ||
+                cache_work_status(workspace, analyze_key) === :ready
+            already_live = lock(workspace.work.lock) do
+                get(workspace.work.nodes, process_key, nothing) !== nothing ||
+                get(workspace.work.nodes, analyze_key, nothing) !== nothing
+            end
+            process_done && analyze_done && !already_live && continue
+        end
         if has_process
-            process_key = WorkKey(COLLECTION_PROCESS, collection_key)
+            supersede && clear_work_result_state!(workspace, process_key)
             enqueue_work!(
-                workspace,
-                process_key,
-                current_revision(workspace.work, process_key);
-                priority=1,
-                dependencies=member_analyze,
+                workspace, process_key, revision(process_key);
+                priority=1, dependencies=member_analyze,
             )
         end
         has_analyze || continue
-        analyze_key = WorkKey(COLLECTION_ANALYZE, collection_key)
+        supersede && clear_work_result_state!(workspace, analyze_key)
         enqueue_work!(
-            workspace,
-            analyze_key,
-            current_revision(workspace.work, analyze_key);
+            workspace, analyze_key, revision(analyze_key);
             priority=1,
             dependencies=has_process ?
                 WorkKey[WorkKey(COLLECTION_PROCESS, collection_key)] : member_analyze,
@@ -958,35 +919,22 @@ function publish_work_success!(
             publish_source_item_records!(workspace, key.entity, records)
         end
         delete_collection_metadata!(workspace.cache.db, invalidated)
-        mark_collection_work_missing!(workspace, invalidated)
+        enqueue_dependent_subtree!(workspace, records; collection_keys=invalidated)
         isempty(result.conflicts) ||
             (workspace.index.analysis_errors[key.entity] = join(result.conflicts, "; "))
-        # One lock acquisition for the whole batch: the per-record calls re-enter it cheaply, and
-        # each newly queued node wakes exactly one worker instead of the pool per record.
-        lock(workspace.work.lock) do
-            for record in records
-                # Re-interpretation replaced the source data and deleted the old payloads, so the
-                # item's process and analyze results are stale: bump both off their prior revisions
-                # (a still-:ready ITEM_PROCESS would otherwise answer from a deleted payload).
-                bump_work_missing!(workspace, WorkKey(ITEM_PROCESS, record.id))
-                bump_work_missing!(
-                    workspace,
-                    WorkKey(ITEM_ANALYZE, record.id);
-                    dependencies=WorkKey[WorkKey(ITEM_PROCESS, record.id)],
-                )
-                workspace.background_processing && enqueue_processing!(workspace, record)
-            end
-        end
         reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
         # runnable the moment this node finishes and late joiners reading the cache find the data.
         record = get(workspace.index.items, key.entity, nothing)
-        record === nothing || enqueue_item_analysis!(workspace, record)
+        if record !== nothing
+            clear_work_result_state!(workspace, WorkKey(ITEM_ANALYZE, record.id))
+            enqueue_item_analysis!(workspace, record)
+        end
     elseif key.kind === ITEM_ANALYZE
         record = workspace.index.items[key.entity]
         publish_item_metadata_layer!(workspace, record, metadata_dict(result))
-        enqueue_ready_collection_work!(workspace, affected_collection_keys([record]))
+        enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
     elseif key.kind === COLLECTION_PROCESS
         # Members' rewritten payloads and metadata were persisted worker-side; publish their layers.
         for output in result.outputs
@@ -1036,42 +984,37 @@ function publish_work_failure!(
     if is_job_cancelled(failure.ex)
         # Cancellation is not an analysis error: finish the node and answer waiters with the
         # cancellation, but record nothing in the index or the cache failure results.
-        waiters = finish_work_node!(workspace, node, :failed)
+        waiters = finish_work_node!(workspace, node)
         for waiter in waiters
             put!(waiter, ProcessingResult(nothing, failure))
         end
         return false
     end
     message = sprint(showerror, failure.ex)
+    record = key.kind in (ITEM_PROCESS, ITEM_ANALYZE) ?
+        get(workspace.index.items, key.entity, nothing) : nothing
     if key.kind === SOURCE_INTERPRET
         old_records, invalidated = remove_source_item_output!(workspace, key.entity)
         delete_source_item!(workspace.cache.db, key.entity, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
-        mark_collection_work_missing!(workspace, invalidated)
+        enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
-        finish_work_node!(workspace, node, :failed)
-        return true
+    else
+        source_item_id_value = record === nothing ? "" : record.source_item_id
+        store_result_failure!(
+            workspace.cache.db,
+            _work_key_cache_kind(key),
+            key.entity,
+            source_item_id_value,
+            message,
+        )
+        workspace.index.analysis_errors[key.entity] = message
+        key.kind === ITEM_ANALYZE && record !== nothing &&
+            enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
     end
-    source_item_id_value = ""
-    record = key.kind in (ITEM_PROCESS, ITEM_ANALYZE) ?
-        get(workspace.index.items, key.entity, nothing) : nothing
-    record === nothing || (source_item_id_value = record.source_item_id)
-    store_result_failure!(
-        workspace.cache.db,
-        key.kind === ITEM_PROCESS ? PROCESSING_RESULT :
-        key.kind === ITEM_ANALYZE ? ITEM_ANALYSIS_RESULT :
-        key.kind === COLLECTION_PROCESS ? COLLECTION_PROCESS_RESULT : COLLECTION_ANALYSIS_RESULT,
-        key.entity,
-        source_item_id_value,
-        message,
-    )
-    workspace.index.analysis_errors[key.entity] = message
-    waiters = finish_work_node!(workspace, node, :failed)
+    waiters = finish_work_node!(workspace, node)
     for waiter in waiters
         put!(waiter, ProcessingResult(nothing, failure))
-    end
-    if key.kind === ITEM_ANALYZE && record !== nothing
-        enqueue_ready_collection_work!(workspace, affected_collection_keys([record]))
     end
     return true
 end
@@ -1079,18 +1022,17 @@ end
 """Commit one finished work revision the moment its worker completes; stale revisions are ignored."""
 function publish_work_completion!(
     workspace::Workspace,
-    key::WorkKey,
-    revision::UInt64,
+    node::WorkNode,
     result,
 )::Nothing
+    key = node.key
     lock(workspace.publish_lock) do
-        node = current_completion_node(workspace, key, revision)
-        node === nothing && return
+        work_node_current(workspace, node) || return
         if result isa CapturedException
             publish_work_failure!(workspace, node, result)
         else
             publish_work_success!(workspace, node, result)
-            waiters = finish_work_node!(workspace, node, :ready)
+            waiters = finish_work_node!(workspace, node)
             item = key.kind === ITEM_PROCESS ? result.item : nothing
             for waiter in waiters
                 put!(waiter, ProcessingResult(item, nothing))
@@ -1250,7 +1192,8 @@ Rebuild the GUI-facing status snapshot when work is or was just running.
 Display-only: the engine publishes without it, and idle frames keep reading the cached value.
 """
 function refresh_status!(workspace::Workspace)::Nothing
-    (workspace_busy(workspace) || workspace.status.busy) &&
+    # Cache write flushes are display-only; avoid publish_lock + status rebuild every frame.
+    (engine_work_running(workspace) || workspace.status.busy) &&
         (workspace.status = workspace_status(workspace))
     return nothing
 end

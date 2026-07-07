@@ -42,13 +42,13 @@ end
         updated = HE_INDEX.finish_edit!(edit, source)
 
         # The original tree is untouched: full contract for concurrent readers.
-        @test length(original.all_items) == 3
+        @test length(MeasurementBrowser.ItemIndex.all_items(original)) == 3
         @test haskey(original.index, ("dev-A", "run-2"))
         @test [child.name for child in original.index[("dev-A",)].children] ==
             ["run-2", "run-10"]
 
         # The updated tree reflects the edit: empty nodes pruned, new node in sorted position.
-        @test length(updated.all_items) == 2
+        @test length(MeasurementBrowser.ItemIndex.all_items(updated)) == 2
         @test !haskey(updated.index, ("dev-A", "run-2"))
         @test !haskey(updated.index, ("dev-A", "run-10"))
         @test [child.name for child in updated.index[("dev-A",)].children] == ["run-3"]

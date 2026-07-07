@@ -275,9 +275,9 @@ collection-analysis outcomes (success — including empty — or failure), each 
 message)`. Non-cacheable processed success remains memory-only.
 
 `result_states` carries no per-result input fingerprint: a result's validity is derived from its
-position downstream of unchanged sources, not from a stored claim. At reopen every persisted result
-seeds a completed work node; the source-fingerprint diff then bumps and re-marks whatever changed
-while the workspace was closed.
+position downstream of unchanged sources, not from a stored claim. At reopen the cache index
+restores hierarchy and metadata; missing `RESULT_READY` rows are gap-filled by enqueueing live work,
+and the source-metadata diff invalidates whatever changed while the workspace was closed.
 
 These outcomes are independent. Processing failure prevents item analysis for that item, but an
 item-analysis failure does not erase a successfully processed payload. Collection-analysis failure
@@ -307,14 +307,14 @@ still has a pointer and schema, so it reconstructs as an empty value with the co
 types.
 
 Freshness is derived from source data, not from stored per-result claims. When the cache index is
-loaded, every persisted result seeds a completed node in the workspace work graph at counter revision
-1; `reconcile_source_metadata_cache!` then diffs `source_collection_metadata` and `source_item_metadata`
-(cache `read`, including buffer overlay) against the open source and invalidates stale work before
-seeding completes. During streaming interpretation the same call is scoped to the batch's touched
-collections (`collections=`) and skips the whole-index item pass — interpret workers already wrote
-those item rows — so publication stays O(batch) instead of re-diffing the whole index each time. At
-runtime the work graph is the single freshness authority — readers consult it and then read payloads
-raw; `result_states` is only written, never re-read, until the next load.
+loaded, `result_states` restores which steps already finished; the work graph holds only live jobs
+and gap-fills any missing step. `reconcile_source_metadata_cache!` then diffs
+`source_collection_metadata` and `source_item_metadata` (cache `read`, including buffer overlay)
+against the open source and invalidates stale work. During streaming interpretation the same call is
+scoped to the batch's touched collections (`collections=`) and skips the whole-index item pass —
+interpret workers already wrote those item rows — so publication stays O(batch) instead of
+re-diffing the whole index each time. At runtime delivery consults live nodes, then `result_states`,
+then enqueues work; payloads are read only after a row is current.
 
 ## Source changes
 

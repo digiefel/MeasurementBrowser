@@ -49,7 +49,7 @@ end
         identity = workspace.cache.identity
         try
             wait_workspace_idle!(workspace)
-            record = only(workspace.index.hierarchy.all_items)
+            record = only(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy))
             @test workspace.index.item_metadata[record.id][:area_um2] == 42
         finally
             MB.close_workspace!(workspace)
@@ -62,7 +62,7 @@ end
             project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(reopened)
-            record = only(reopened.index.hierarchy.all_items)
+            record = only(MeasurementBrowser.ItemIndex.all_items(reopened.index.hierarchy))
             @test MB.ItemIndex.effective_metadata(
                 reopened.index.hierarchy, record)[:area_um2] == 43
             @test reopened.index.item_metadata[record.id][:area_um2] == 43
@@ -183,7 +183,7 @@ end
 
             @test workspace.scan.state == :done
             @test isempty(workspace.index.analysis_errors)
-            ok = only(workspace.index.hierarchy.all_items)
+            ok = only(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy))
             @test workspace.index.item_metadata[ok.id][:rows] == 1
             @test workspace.index.item_metadata[ok.id][:area_um2] == 42
         finally
@@ -194,7 +194,7 @@ end
             project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(reopened)
-            ok = only(reopened.index.hierarchy.all_items)
+            ok = only(MeasurementBrowser.ItemIndex.all_items(reopened.index.hierarchy))
             effective = MB.ItemIndex.effective_metadata(reopened.index.hierarchy, ok)
             @test effective[:area_um2] == 42
             @test reopened.index.item_metadata[ok.id][:area_um2] == 42
@@ -250,7 +250,7 @@ end
         )
         try
             wait_workspace_idle!(workspace)
-            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            records = sort(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
             MB.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test [counter[] for counter in values(reads)] == [1, 1]
@@ -263,7 +263,7 @@ end
                 () -> workspace.index.hierarchy.index[("dev", "a")].metadata[:scale] == 3,
                 5,
             ) === :ok
-            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            records = sort(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
             loaded = MB.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
 
@@ -282,7 +282,7 @@ end
                 ),
                 5,
             ) === :ok
-            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            records = sort(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
             MB.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test processes["a"][] == 3
@@ -298,7 +298,7 @@ end
                 ) == 4,
                 5,
             ) === :ok
-            records = sort(workspace.index.hierarchy.all_items; by=record -> record.item_label)
+            records = sort(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
             MB.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test processes["a"][] == 4
@@ -364,7 +364,7 @@ end
 
             @test workspace.scan.state == :done
             @test read_count[] == 1
-            records = workspace.index.hierarchy.all_items
+            records = MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy)
             @test length(records) == 100
             @test all(record -> workspace.index.item_metadata[record.id][:rows] == 10, records)
 
@@ -414,11 +414,11 @@ end
         ws1 = run_scan!()
         identity = ws1.cache.identity
         @test read_count[] == 5
-        @test length(ws1.index.hierarchy.all_items) == 5
+        @test length(MeasurementBrowser.ItemIndex.all_items(ws1.index.hierarchy)) == 5
         @test ws1.cache.status.new_source_items == 5
         failed_item_id = only(
             record.id
-            for record in ws1.index.hierarchy.all_items
+            for record in MeasurementBrowser.ItemIndex.all_items(ws1.index.hierarchy)
             if record.collection == ["f2"]
         )
         @test haskey(ws1.index.analysis_errors, failed_item_id)
@@ -430,7 +430,7 @@ end
             Threads.atomic_xchg!(read_count, 0)
             ws2 = run_scan!()
             @test read_count[] == 0
-            @test length(ws2.index.hierarchy.all_items) == 5
+            @test length(MeasurementBrowser.ItemIndex.all_items(ws2.index.hierarchy)) == 5
             @test ws2.cache.status.new_source_items == 0
             @test ws2.cache.status.stale_source_items == 0
             @test ws2.cache.status.deleted_source_items == 0
@@ -445,7 +445,7 @@ end
             @test ws3.cache.status.stale_source_items == 1
             @test ws3.cache.status.new_source_items == 0
             changed = only(
-                r for r in ws3.index.hierarchy.all_items if r.collection == ["f3"])
+                r for r in MeasurementBrowser.ItemIndex.all_items(ws3.index.hierarchy) if r.collection == ["f3"])
             @test ws3.index.item_metadata[changed.id][:rows] == 7
             @test haskey(ws3.index.analysis_errors, failed_item_id)
             MB.close_workspace!(ws3)
@@ -456,7 +456,7 @@ end
             ws4 = run_scan!()
             @test read_count[] == 1
             @test ws4.cache.status.new_source_items == 1
-            @test length(ws4.index.hierarchy.all_items) == 6
+            @test length(MeasurementBrowser.ItemIndex.all_items(ws4.index.hierarchy)) == 6
             MB.close_workspace!(ws4)
 
             # Deleting a file reads nothing and drops its records.
@@ -465,7 +465,7 @@ end
             ws5 = run_scan!()
             @test read_count[] == 0
             @test ws5.cache.status.deleted_source_items == 1
-            @test length(ws5.index.hierarchy.all_items) == 5
+            @test length(MeasurementBrowser.ItemIndex.all_items(ws5.index.hierarchy)) == 5
             MB.close_workspace!(ws5)
         finally
             rm(dirname(identity.cache_path); force=true, recursive=true)

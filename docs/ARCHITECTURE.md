@@ -52,20 +52,27 @@ revisions, atomically publishes replacement records into `WorkspaceIndex`, sends
 writes/deletes to `ProjectCache`, queues follow-up work, and notifies the idle condition. Nothing
 polls: the engine progresses on completion events alone, blocking callers
 (`request_processed_items`, `wait_workspace_idle!`) sleep until a publication wakes them, and the
-GUI frame only calls `refresh_status!` to rebuild the display snapshot. The graph owns work state only:
-work identities, revisions (per-key counters bumped by events), priority, running/queued/failed/ready
-state, and waiters. `WorkspaceIndex` owns completed records, hierarchy, metadata, failures, and
-selections. The five work kinds — `SOURCE_INTERPRET`, `ITEM_PROCESS`, `ITEM_ANALYZE`,
-`COLLECTION_PROCESS`, `COLLECTION_ANALYZE` — run on one fixed long-lived pool. When background
-processing is enabled, background and selected work share the same work node; selection only raises
-priority and joins the existing revision. Memory-only cache sessions never schedule unselected
-background processing.
+GUI frame only calls `refresh_status!` to rebuild the display snapshot. The graph holds only live
+jobs (`:waiting`, `:queued`, `:running`): each node tracks who waits on it (`dependents`) and how
+many dependencies remain (`pending`). Finished work lives in the cache `result_states` ledger (or
+interpret/source tables for `SOURCE_INTERPRET`). `WorkspaceIndex` owns completed records,
+hierarchy, metadata, failures, and selections. The five work kinds — `SOURCE_INTERPRET`,
+`ITEM_PROCESS`, `ITEM_ANALYZE`, `COLLECTION_PROCESS`, `COLLECTION_ANALYZE` — run on one fixed
+long-lived pool. Processing is selection-driven by default: a live scan interprets every source item
+(so the tree fills) but only interprets — `ITEM_PROCESS`, `ITEM_ANALYZE`, and collection work are
+scheduled on demand when items are requested (`request_processed_items`). `background_processing`
+opts into eagerly processing and analyzing every item as it is interpreted; background and selected
+work then share the same work node, and selection only raises priority and joins the existing
+revision. Either way, interpret-time invalidation always clears stale `result_states` rows so the
+next read recomputes. Memory-only cache sessions never schedule unselected background processing on
+reopen gap-fill (they have no persisted index to fill from).
 Collection-node work runs afterward from published item-analysis results.
 The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
-When a view needs item data, it asks the work graph for the selected records. A valid processed stage
-loads from the cache. Otherwise the processing job loads interpreted data from the in-memory
-interpreted store or reuses the normal `data_items` path as source fallback, then runs `process`.
+When a view needs item data, delivery consults the live graph then the cache: a live node blocks
+until it publishes; a `RESULT_READY` row loads the payload; absence enqueues work. Otherwise the
+processing job loads interpreted data from the in-memory interpreted store or reuses the normal
+`data_items` path as source fallback, then runs `process`.
 Each materialized item carries `item.data`.
 GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 

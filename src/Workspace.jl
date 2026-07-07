@@ -58,6 +58,7 @@ import ..ItemIndex:
     MetadataDict,
     SourceItemInterpretation,
     SourceScan,
+    all_items,
     check_cancel,
     clear_node_analysis!,
     collection_path_key,
@@ -148,29 +149,30 @@ struct WorkKey
     entity::String
 end
 
-"""One revision of a result-producing operation."""
+"""One revision of a live background job (`:waiting`, `:queued`, or `:running` only)."""
 mutable struct WorkNode
     key::WorkKey
-    revision::UInt64
+    revision::UInt16
     state::Symbol
     priority::Int
-    dependencies::Vector{WorkKey}
+    dependents::Set{WorkKey}
+    pending::UInt64
     waiters::Vector{Channel{Any}}
     queued_ns::UInt64
 end
 
-"""Workspace-owned dependency state and scheduling queue (FIFO buckets keyed by priority)."""
+"""Workspace-owned live job graph and scheduling queue (FIFO buckets keyed by priority)."""
 mutable struct WorkDependencyGraph
     lock::ReentrantLock
     condition::Base.Threads.Condition
     nodes::Dict{WorkKey,WorkNode}
-    dependents::Dict{WorkKey,Set{WorkKey}}
-    queue::Dict{Int,Vector{Tuple{WorkKey,UInt64}}}
+    queue::Dict{Int,Vector{Tuple{WorkKey,UInt16}}}
     source_items::Dict{String,AbstractDataSourceItem}
     source_locks::Dict{String,ReentrantLock}
     workers::Vector{Task}
     total::Int
     completed::Int
+    active::Int
     source_batch::Int
     source_batch_open::Bool
     closed::Bool
@@ -182,11 +184,11 @@ function WorkDependencyGraph()::WorkDependencyGraph
         work_lock,
         Base.Threads.Condition(work_lock),
         Dict{WorkKey,WorkNode}(),
-        Dict{WorkKey,Set{WorkKey}}(),
-        Dict{Int,Vector{Tuple{WorkKey,UInt64}}}(),
+        Dict{Int,Vector{Tuple{WorkKey,UInt16}}}(),
         Dict{String,AbstractDataSourceItem}(),
         Dict{String,ReentrantLock}(),
         Task[],
+        0,
         0,
         0,
         0,
@@ -343,7 +345,7 @@ function Workspace(
         "",
         "",
         WorkDependencyGraph(),
-        cache_db isa CacheDB && background_processing,
+        background_processing,
         open_options,
         Task[],
         metrics,

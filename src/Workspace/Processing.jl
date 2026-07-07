@@ -4,22 +4,74 @@ struct ProcessingResult
     failure::Union{Nothing,CapturedException}
 end
 
-"""
-Bump one work key's monotonic revision counter and return the new value.
-
-Freshness propagates through the work graph, not through input hashes: an event bumps the key's
-counter, which discards stale in-flight completions and dedups enqueues. A key with no node yet
-starts at revision 1.
-"""
-function bump_revision!(graph::WorkDependencyGraph, key::WorkKey)::UInt64
-    node = get(graph.nodes, key, nothing)
-    return node === nothing ? UInt64(1) : node.revision + UInt64(1)
+"""Map one work key to its cache `result_states` kind."""
+function _work_key_cache_kind(key::WorkKey)::CacheResultKind
+    return key.kind === ITEM_PROCESS ? PROCESSING_RESULT :
+        key.kind === ITEM_ANALYZE ? ITEM_ANALYSIS_RESULT :
+        key.kind === COLLECTION_PROCESS ? COLLECTION_PROCESS_RESULT : COLLECTION_ANALYSIS_RESULT
 end
 
-"""Return one work key's current revision, or 1 when no node exists yet."""
-function current_revision(graph::WorkDependencyGraph, key::WorkKey)::UInt64
+"""
+Return `:ready`, `:failed`, or `:absent` for one finished work key.
+
+Finished work lives in the cache ledger; live jobs are detected via `haskey(work.nodes, key)`.
+"""
+function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
+    cachedb = workspace.cache.db
+    entity = String(key.entity)
+    memory = !(cachedb isa CacheDB)
+    if key.kind === SOURCE_INTERPRET
+        failures = memory ? cachedb.failures : read(cachedb.failures)
+        haskey(failures, (entity, entity)) && return :failed
+        items = memory ? cachedb.source_items : read(cachedb.source_items)
+        return (items isa Set ? entity in items : haskey(items, entity)) ? :ready : :absent
+    end
+    kind = _work_key_cache_kind(key)
+    states = memory ? cachedb.result_states : read(cachedb.result_states)
+    state = get(states, (Int8(kind), entity), nothing)
+    state === nothing && return :absent
+    return CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
+end
+
+"""Drop one work key's finished-state ledger row so invalidation must rerun it."""
+function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
+    cachedb = workspace.cache.db
+    entity = String(key.entity)
+    if key.kind === SOURCE_INTERPRET
+        delete!(cachedb.source_items, entity)
+        delete!(cachedb.failures, (entity, entity))
+        return nothing
+    end
+    delete!(cachedb.result_states, (Int8(_work_key_cache_kind(key)), entity))
+    return nothing
+end
+
+"""Bump one work key's monotonic revision and return the new value."""
+function bump_revision!(graph::WorkDependencyGraph, key::WorkKey)::UInt16
     node = get(graph.nodes, key, nothing)
-    return node === nothing ? UInt64(1) : node.revision
+    return node === nothing ? UInt16(1) : node.revision + UInt16(1)
+end
+
+"""Return one work key's current revision, or 1 when no live node exists."""
+function current_revision(graph::WorkDependencyGraph, key::WorkKey)::UInt16
+    node = get(graph.nodes, key, nothing)
+    return node === nothing ? UInt16(1) : node.revision
+end
+
+"""Register reverse edges and count live unmet dependencies for one new node."""
+function seed_node_dependencies!(
+    graph::WorkDependencyGraph,
+    node::WorkNode,
+    dependencies::Vector{WorkKey},
+)::Nothing
+    node.pending = 0
+    for dependency in dependencies
+        dependency_node = get(graph.nodes, dependency, nothing)
+        dependency_node === nothing && continue
+        push!(dependency_node.dependents, node.key)
+        node.pending += 1
+    end
+    return nothing
 end
 
 """Start one work-conserving worker pool shared by every work kind."""
@@ -53,10 +105,11 @@ function cancel_waiting_work!(workspace::Workspace)::Nothing
     graph = workspace.work
     canceled = WorkNode[]
     lock(graph.lock) do
-        for node in values(graph.nodes)
+        for node in collect(values(graph.nodes))
             node.state in (:queued, :waiting) || continue
-            node.state = :missing
-            append!(canceled, [node])
+            node.state === :queued && (graph.active -= 1)
+            delete!(graph.nodes, node.key)
+            push!(canceled, node)
         end
         empty!(graph.queue)
         notify(graph.condition; all=true)
@@ -78,155 +131,78 @@ function reset_work_graph!(workspace::Workspace)::Nothing
         any(node -> node.state in (:queued, :running), values(graph.nodes)) &&
             error("Cannot reset the work graph while work is active")
         empty!(graph.nodes)
-        empty!(graph.dependents)
         empty!(graph.queue)
         empty!(graph.source_items)
         empty!(graph.source_locks)
         graph.total = 0
         graph.completed = 0
+        graph.active = 0
         graph.source_batch = 0
         graph.source_batch_open = false
     end
     return nothing
 end
 
-work_state_terminal(state::Symbol)::Bool = state in (:ready, :failed)
-
-function dependency_ready_for(kind::WorkKind, dependency::WorkNode)::Bool
-    kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) &&
-        return work_state_terminal(dependency.state)
-    return dependency.state === :ready
-end
-
-function dependencies_ready(graph::WorkDependencyGraph, node::WorkNode)::Bool
-    return all(node.dependencies) do dependency_key
-        dependency = get(graph.nodes, dependency_key, nothing)
-        dependency !== nothing && dependency_ready_for(node.key.kind, dependency)
-    end
-end
-
-function remove_dependency_edges!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
-    for dependency in node.dependencies
-        dependents = get(graph.dependents, dependency, nothing)
-        dependents === nothing && continue
-        delete!(dependents, node.key)
-        isempty(dependents) && delete!(graph.dependents, dependency)
-    end
-    return nothing
-end
-
-function set_dependencies!(
-    graph::WorkDependencyGraph,
-    node::WorkNode,
-    dependencies::Vector{WorkKey},
-)::Nothing
-    remove_dependency_edges!(graph, node)
-    node.dependencies = dependencies
-    for dependency in dependencies
-        push!(get!(() -> Set{WorkKey}(), graph.dependents, dependency), node.key)
-    end
-    return nothing
-end
-
-function replace_work_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
-    previous = get(graph.nodes, node.key, nothing)
-    previous === nothing || remove_dependency_edges!(graph, previous)
-    graph.nodes[node.key] = node
-    set_dependencies!(graph, node, node.dependencies)
-    return nothing
-end
+dependencies_ready(node::WorkNode)::Bool = node.pending == UInt64(0)
 
 """Append one queue entry to its priority bucket."""
 function push_queue_entry!(
     graph::WorkDependencyGraph,
     priority::Int,
-    entry::Tuple{WorkKey,UInt64},
+    entry::Tuple{WorkKey,UInt16},
 )::Nothing
-    push!(get!(() -> Tuple{WorkKey,UInt64}[], graph.queue, priority), entry)
+    push!(get!(() -> Tuple{WorkKey,UInt16}[], graph.queue, priority), entry)
     return nothing
 end
 
 function queue_ready_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
+    node.state === :queued && return nothing
     node.state = :queued
+    graph.active += 1
     node.queued_ns = time_ns()
     push_queue_entry!(graph, node.priority, (node.key, node.revision))
-    # One queued node needs one worker. Waking the whole pool here made every bulk enqueue a
-    # thundering herd serialized behind the caller's locks.
     notify(graph.condition; all=false)
     return nothing
 end
 
-function wake_ready_dependents!(graph::WorkDependencyGraph, dependency_key::WorkKey)::Nothing
-    for dependent_key in collect(get(graph.dependents, dependency_key, Set{WorkKey}()))
+"""Decrement dependents' pending counters and queue any that become ready."""
+function wake_ready_dependents!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
+    for dependent_key in node.dependents
         dependent = get(graph.nodes, dependent_key, nothing)
         dependent === nothing && continue
-        dependent.state === :waiting || continue
-        dependencies_ready(graph, dependent) || continue
-        queue_ready_node!(graph, dependent)
+        dependent.pending -= 1
+        dependent.pending == 0 &&
+            dependent.state === :waiting &&
+            queue_ready_node!(graph, dependent)
     end
     return nothing
 end
 
-"""Bump one work key's revision and record it missing without queuing it (event-driven staleness)."""
-function bump_work_missing!(
-    workspace::Workspace,
-    key::WorkKey;
-    dependencies::Vector{WorkKey}=WorkKey[],
-)::Nothing
-    graph = workspace.work
-    lock(graph.lock) do
-        revision = bump_revision!(graph, key)
-        replace_work_node!(graph, WorkNode(
-            key,
-            revision,
-            :missing,
-            0,
-            dependencies,
-            Channel{Any}[],
-            0,
-        ))
+"""Remove one finished live node and wake its dependents."""
+function finish_work_node!(workspace::Workspace, node::WorkNode)::Vector{Channel{Any}}
+    return lock(workspace.work.lock) do
+        current = get(workspace.work.nodes, node.key, nothing)
+        current === node || return Channel{Any}[]
+        node.state in (:queued, :running) && (workspace.work.active -= 1)
+        wake_ready_dependents!(workspace.work, node)
+        delete!(workspace.work.nodes, node.key)
+        workspace.work.completed += 1
+        waiters = copy(node.waiters)
+        empty!(node.waiters)
+        waiters
     end
-    return nothing
-end
-
-"""Seed a completed work revision loaded from a fresh cache index."""
-function seed_work_node!(
-    workspace::Workspace,
-    key::WorkKey,
-    revision::UInt64,
-    state::Symbol,
-)::Nothing
-    state in (:ready, :failed) ||
-        throw(ArgumentError("cached work state must be :ready or :failed, got $state"))
-    graph = workspace.work
-    lock(graph.lock) do
-        node = get(graph.nodes, key, nothing)
-        if node === nothing || node.revision != revision || node.state ∉ (:queued, :running)
-            replace_work_node!(graph, WorkNode(
-                key,
-                revision,
-                state,
-                0,
-                WorkKey[],
-                Channel{Any}[],
-                0,
-            ))
-        end
-        wake_ready_dependents!(graph, key)
-    end
-    return nothing
 end
 
 """
 Queue one work revision once, promoting it when its requested priority increases.
 
-A closed graph drops the request: in-flight completions publishing during shutdown may legitimately
-try to queue follow-up work, which shutdown discards. An attached waiter fails immediately.
+Re-enqueue replaces the node with a fresh revision and re-seeds `pending`/`dependents` from
+`dependencies`; it never patches an existing node in place.
 """
 function enqueue_work!(
     workspace::Workspace,
     key::WorkKey,
-    revision::UInt64;
+    revision::UInt16;
     priority::Int,
     dependencies::Vector{WorkKey}=WorkKey[],
     waiter::Union{Nothing,Channel{Any}}=nothing,
@@ -239,53 +215,41 @@ function enqueue_work!(
             return nothing
         end
         node = get(graph.nodes, key, nothing)
-        if node !== nothing && node.revision == revision && node.state in (:ready, :failed)
-            # Terminal at this revision: no future publish fires waiters attached now. Answer the
-            # waiter immediately — an empty success means "already published, read the cache".
-            if waiter !== nothing
-                failure = node.state === :failed ?
-                    CapturedException(ErrorException(get(
-                        workspace.index.analysis_errors, key.entity, "work failed")), Any[]) :
-                    nothing
-                put!(waiter, ProcessingResult(nothing, failure))
-            end
+        if node !== nothing && node.revision == revision && node.state === :queued &&
+                priority > node.priority
+            node.priority = priority
+            push_queue_entry!(graph, priority, (key, revision))
+            waiter === nothing || push!(node.waiters, waiter)
             return node
         end
         if node === nothing || node.revision != revision
-            state = :waiting
+            if node !== nothing
+                # Superseding a still-live revision reuses its work slot: the old revision never
+                # completes, so counting the replacement as new work would leave total > completed
+                # forever and make the progress denominator drift up as invalidations pile in.
+                node.state in (:queued, :running) && (graph.active -= 1)
+                previous_waiters = node.waiters
+            else
+                previous_waiters = Channel{Any}[]
+                graph.total += 1
+            end
             node = WorkNode(
                 key,
                 revision,
-                state,
+                :waiting,
                 priority,
-                dependencies,
-                Channel{Any}[],
+                Set{WorkKey}(),
+                UInt64(0),
+                previous_waiters,
                 time_ns(),
             )
-            replace_work_node!(graph, node)
-            dependencies_ready(graph, node) && queue_ready_node!(graph, node)
-            graph.total += 1
-        elseif node.state === :missing
-            node.priority = priority
-            set_dependencies!(graph, node, dependencies)
-            node.queued_ns = time_ns()
-            if dependencies_ready(graph, node)
-                queue_ready_node!(graph, node)
-            else
-                node.state = :waiting
-            end
-            graph.total += 1
+            graph.nodes[key] = node
+            seed_node_dependencies!(graph, node, dependencies)
+            dependencies_ready(node) && queue_ready_node!(graph, node)
         elseif node.state === :waiting
             node.priority = max(node.priority, priority)
-            set_dependencies!(graph, node, dependencies)
-            if dependencies_ready(graph, node)
-                queue_ready_node!(graph, node)
-            end
-        elseif node.state === :queued && priority > node.priority
-            # Promote by re-queuing at the higher priority; the stale lower-bucket entry is
-            # skipped on take because the node is no longer :queued by the time it surfaces.
-            node.priority = priority
-            push_queue_entry!(graph, priority, (key, revision))
+            seed_node_dependencies!(graph, node, dependencies)
+            dependencies_ready(node) && queue_ready_node!(graph, node)
         end
         waiter === nothing || push!(node.waiters, waiter)
         node
@@ -494,8 +458,6 @@ function run_collection_analysis(workspace::Workspace, key::String)::MetadataDic
         copy(node.items)
     end
     delivered = delivered_records(workspace, records)
-    # A member's kind decides its payload stage: a collection process rewrites only the payloads it
-    # changed, so rewritten members read `:collection_processed` and everything else `:processed`.
     payloads = Vector{Any}(nothing, length(delivered))
     rewritten = [
         index for index in eachindex(records)
@@ -535,8 +497,6 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                 error("Cannot interpret removed source item '$(key.entity)'")
             interpretation = interpret_source_item(
                 workspace.project, workspace.source, source_item, workspace.profiler)
-            # The worker persists what it computed before publication: cache writes are part of
-            # the work, so publication stays pure in-memory state under the publish lock.
             conflicts = String[]
             if work_node_current(workspace, node)
                 conflicts = store_interpreted!(
@@ -553,9 +513,6 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
             end
             record === nothing && error("Cannot process removed item '$(key.entity)'")
             processing = run_processing(workspace, record)
-            # The payload store can block on write backpressure for whole flush cycles; running it
-            # here throttles processing production without stalling any publication. It must land
-            # before the node publishes as :ready, because late joiners then read the cache.
             if work_node_current(workspace, node)
                 store_processed!(workspace.cache.db, processing.record, processing.item)
             end
@@ -568,7 +525,6 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
             run_item_analysis(workspace, record)
         elseif key.kind === COLLECTION_PROCESS
             processing = run_collection_process(workspace, key.entity)
-            # Persist rewritten payloads and each member's metadata worker-side before publication.
             if work_node_current(workspace, node)
                 by_id = Dict(record.id => record for record in processing.records)
                 for output in processing.outputs
@@ -586,7 +542,7 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
     catch error
         CapturedException(error, catch_backtrace())
     end
-    publish_work_completion!(workspace, key, node.revision, result)
+    publish_work_completion!(workspace, node, result)
     return nothing
 end
 
@@ -600,54 +556,22 @@ function work_worker!(workspace::Workspace)::Nothing
     end
 end
 
-"""Whether any current node of one kind is queued or running."""
-function work_kind_running(workspace::Workspace, kind::WorkKind)::Bool
-    return lock(workspace.work.lock) do
-        any(
-            node -> node.key.kind === kind && node.state in (:queued, :running),
-            values(workspace.work.nodes),
-        )
-    end
-end
-
-"""Return whether one work key's current revision has already published successfully."""
-function work_ready(workspace::Workspace, key::WorkKey)::Bool
-    return lock(workspace.work.lock) do
-        node = get(workspace.work.nodes, key, nothing)
-        node !== nothing && node.state === :ready
-    end
-end
-
 """Return completed, total, and active work counters for status/profiling."""
 function work_counts(workspace::Workspace)::Tuple{Int,Int,Int}
     return lock(workspace.work.lock) do
-        active = count(
-            node -> node.state in (:queued, :running),
-            values(workspace.work.nodes),
-        )
-        (workspace.work.completed, workspace.work.total, active)
+        (workspace.work.completed, workspace.work.total, workspace.work.active)
     end
 end
 
-"""Queue one item-processing revision and optionally attach a selected waiter."""
-function enqueue_processing!(
-    workspace::Workspace,
-    record::ItemRecord;
-    selected::Bool=false,
-)::Union{Nothing,Channel{Any}}
-    waiter = selected ? Channel{Any}(1) : nothing
-    enqueue_work!(
-        workspace,
-        WorkKey(ITEM_PROCESS, record.id),
-        current_revision(workspace.work, WorkKey(ITEM_PROCESS, record.id));
-        priority=selected ? 4 : 2,
-        waiter,
-    )
-    return waiter
+"""Queue one item's background processing at its current revision."""
+function enqueue_processing!(workspace::Workspace, record::ItemRecord)::Nothing
+    key = WorkKey(ITEM_PROCESS, record.id)
+    enqueue_work!(workspace, key, current_revision(workspace.work, key); priority=2)
+    return nothing
 end
 
 """
-The delivery gate for one record: the work node whose readiness makes the delivered payload current.
+The delivery gate for one record: the work key whose readiness makes the delivered payload current.
 
 Kinds with a registered collection `process` are gated on their collection's COLLECTION_PROCESS and
 read the `:collection_processed` payload (falling back to `:processed`); others gate on ITEM_PROCESS.
@@ -670,29 +594,44 @@ function _delivered_payload(workspace::Workspace, record::ItemRecord, mode::Symb
     return only(read_item_data(workspace.cache.db, [delivered]; stage=:processed))
 end
 
-"""Promote a collection-process gate and its member dependencies to selected priority, with a waiter."""
-function enqueue_collection_delivery!(
+"""
+Block until one work key is current: wait on a live node, read a ready cache row, or enqueue work.
+"""
+function ensure_uptodate!(
     workspace::Workspace,
-    gate::WorkKey,
-)::Union{Nothing,Channel{Any}}
-    path = collection_path_tuple(gate.entity)
-    node = get(workspace.index.hierarchy.index, path, nothing)
-    node === nothing && return nothing
-    lock(workspace.work.lock) do
-        for record in node.items
-            enqueue_work!(
-                workspace, WorkKey(ITEM_PROCESS, record.id),
-                current_revision(workspace.work, WorkKey(ITEM_PROCESS, record.id));
-                priority=4)
-        end
-    end
+    key::WorkKey;
+    dependencies::Vector{WorkKey}=WorkKey[],
+    priority::Int=2,
+)::ProcessingResult
     waiter = Channel{Any}(1)
-    enqueue_work!(
-        workspace, gate, current_revision(workspace.work, gate);
-        priority=3, waiter,
-        dependencies=WorkKey[WorkKey(ITEM_ANALYZE, record.id) for record in node.items],
+    should_wait = lock(workspace.work.lock) do
+        node = get(workspace.work.nodes, key, nothing)
+        node === nothing && return false
+        push!(node.waiters, waiter)
+        return true
+    end
+    if should_wait
+        result = take!(waiter)::ProcessingResult
+        return result
+    end
+    status = cache_work_status(workspace, key)
+    status === :ready && return ProcessingResult(nothing, nothing)
+    status === :failed && return ProcessingResult(
+        nothing,
+        CapturedException(
+            ErrorException(get(workspace.index.analysis_errors, key.entity, "work failed")),
+            Any[],
+        ),
     )
-    return waiter
+    enqueue_work!(
+        workspace,
+        key,
+        current_revision(workspace.work, key);
+        priority,
+        dependencies,
+        waiter,
+    )
+    return take!(waiter)::ProcessingResult
 end
 
 """Return processed items, joining and promoting shared work when required."""
@@ -704,36 +643,43 @@ function request_processed_items(
         ItemRecord(record; metadata=delivered_metadata(workspace, record)),
         item_data(item),
     )
-    # The work graph decides whether a stored result is current: only keys it has published as
-    # :ready read the cache; everything else joins or starts the work.
     loaded = Vector{AbstractDataItem}(undef, length(records))
-    waiters = Tuple{Int,Symbol,Channel{Any}}[]
     for (position, record) in pairs(records)
         gate, mode = delivery_gate(workspace, record)
-        if work_ready(workspace, gate)
-            payload = _delivered_payload(workspace, record, mode)
-            payload === nothing && error(
-                "Delivered data for item '$(record.id)' is missing from the cache")
-            loaded[position] = loaded_item(record, payload)
-        elseif mode === :collection
-            waiter = enqueue_collection_delivery!(workspace, gate)
-            push!(waiters, (position, :collection, waiter::Channel{Any}))
+        if mode === :collection
+            path = collection_path_tuple(gate.entity)
+            hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
+            hierarchy_node === nothing && error(
+                "Cannot deliver item '$(record.id)': collection '$(gate.entity)' is missing")
+            lock(workspace.work.lock) do
+                for member in hierarchy_node.items
+                    process_key = WorkKey(ITEM_PROCESS, member.id)
+                    get(workspace.work.nodes, process_key, nothing) === nothing && continue
+                    enqueue_work!(
+                        workspace,
+                        process_key,
+                        current_revision(workspace.work, process_key);
+                        priority=4,
+                    )
+                end
+            end
+            result = ensure_uptodate!(
+                workspace, gate;
+                priority=3,
+                dependencies=WorkKey[
+                    WorkKey(ITEM_ANALYZE, member.id) for member in hierarchy_node.items],
+            )
+            if result.failure !== nothing
+                is_job_cancelled(result.failure.ex) && throw(result.failure)
+            end
         else
-            waiter = enqueue_processing!(workspace, record; selected=true)
-            push!(waiters, (position, :item, waiter::Channel{Any}))
-        end
-    end
-    for (position, mode, waiter) in waiters
-        record = records[position]
-        result = take!(waiter)::ProcessingResult
-        # A failed collection process is terminal, not fatal: members still deliver their
-        # `:processed` payloads with the fold error surfaced. Item-stage failures do surface.
-        if result.failure !== nothing
-            (mode === :collection && !is_job_cancelled(result.failure.ex)) ||
+            result = ensure_uptodate!(workspace, gate; priority=4)
+            if result.failure !== nothing
                 throw(result.failure)
-        elseif mode === :item && result.item !== nothing
-            loaded[position] = result.item::AbstractDataItem
-            continue
+            elseif result.item !== nothing
+                loaded[position] = result.item::AbstractDataItem
+                continue
+            end
         end
         payload = _delivered_payload(workspace, record, mode)
         payload === nothing && error(

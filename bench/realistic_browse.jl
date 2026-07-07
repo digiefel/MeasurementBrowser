@@ -695,13 +695,15 @@ function run_benchmark()
                     probe.plot_ms, probe.bytes, probe.ready))
             end
         end
-        completed, queued, _active = MB.Workspace.work_counts(ws)
-        collection_nodes = lock(ws.work.lock) do
-            count(
-                node -> node.key.kind === MB.Workspace.COLLECTION_ANALYZE &&
-                    node.state in (:ready, :failed),
-                values(ws.work.nodes),
-            )
+        completed, total, active = MB.Workspace.work_counts(ws)
+        collection_nodes = count(ws.index.hierarchy.index) do (path, hierarchy_node)
+            isempty(hierarchy_node.items) && return false
+            collection_key = MB.ItemIndex.collection_path_key(collect(String, path))
+            member_kinds = unique(record.kind for record in hierarchy_node.items)
+            has_analyze = any(k -> MB.has_collection_analysis(ws.project, k), member_kinds)
+            has_analyze || return false
+            key = MB.Workspace.WorkKey(MB.Workspace.COLLECTION_ANALYZE, collection_key)
+            return MB.Workspace.cache_work_status(ws, key) === :ready
         end
         metrics = ws.metrics
         build_stats = (
@@ -710,7 +712,8 @@ function run_benchmark()
             analysis_seconds,
             processed_items=length(ws.index.items),
             completed_jobs=completed,
-            queued_items=queued,
+            total_jobs=total,
+            active_jobs=active,
             collection_nodes=collection_nodes,
             interpreted_write_ns=metrics.interpreted_write_ns[],
             interpreted_writes=metrics.interpreted_writes[],

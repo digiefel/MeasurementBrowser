@@ -149,7 +149,7 @@ end
         # Mimic the GUI: render labels continuously while stats publishes rebuild the hierarchy.
         failures = Base.Threads.Atomic{Int}(0)
         reader = Threads.@spawn while MeasurementBrowser.Workspace.engine_work_running(workspace)
-            for record in workspace.index.hierarchy.all_items
+            for record in MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy)
                 try
                     MeasurementBrowser.display_label(project, record)
                 catch

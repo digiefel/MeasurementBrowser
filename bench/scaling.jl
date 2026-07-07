@@ -5,7 +5,7 @@
 # For each item count it builds one workspace, then uses BenchmarkTools to time three real
 # operations — nothing internal is fabricated, only public/engine functions are called:
 #
-#   status_refresh    the watcher status fold the GUI polls every frame (Workspace.workspace_status)
+#   status_refresh    refresh_status! every GUI frame (workspace_busy + optional status rebuild)
 #   items_panel       the per-frame gather+sort the items panel runs (Browser._items_of_selected_collections)
 #   metadata_publish  the per-publish source-metadata diff a scan runs once per source item
 #
@@ -78,7 +78,8 @@ function measure(n::Int)::Dict{String,Float64}
         ws.selection.collection_paths = ["batch"]  # select the one collection, as the GUI would
         state = MB.Browser.BrowserState(workspace=ws)
         Dict(
-            "status_refresh" => @belapsed(MB.Workspace.workspace_status($ws)),
+            "status_refresh" => @belapsed(MB.Workspace.refresh_status!($ws)),
+            "workspace_busy" => @belapsed(MB.Workspace.workspace_busy($ws)),
             "items_panel" => @belapsed(MB.Browser._items_of_selected_collections($state)),
             "metadata_publish" => @belapsed(MB.Workspace.reconcile_source_metadata_cache!($ws)),
         )
@@ -100,15 +101,16 @@ end
 
 function main()
     println("scaling sweep over item counts: ", join(SIZES, ", "))
-    ms_by_op = Dict(op => Float64[] for op in ("status_refresh", "items_panel", "metadata_publish"))
+    ms_by_op = Dict(op => Float64[] for op in (
+        "status_refresh", "workspace_busy", "items_panel", "metadata_publish"))
     for n in SIZES
         times = measure(n)
         for (op, seconds) in times
             push!(ms_by_op[op], 1e3 * seconds)
         end
-        @printf("  n=%-6d  status=%.4f ms  items=%.4f ms  metadata=%.4f ms\n",
-            n, 1e3 * times["status_refresh"], 1e3 * times["items_panel"],
-            1e3 * times["metadata_publish"])
+        @printf("  n=%-6d  refresh=%.4f ms  busy=%.4f ms  items=%.4f ms  metadata=%.4f ms\n",
+            n, 1e3 * times["status_refresh"], 1e3 * times["workspace_busy"],
+            1e3 * times["items_panel"], 1e3 * times["metadata_publish"])
     end
 
     outdir = joinpath(@__DIR__, "results", format(now(), "yyyymmdd-HHMMSS") * "-scaling")
@@ -117,7 +119,7 @@ function main()
     open(csv, "w") do io
         println(io, "operation,exponent,r2," * join(("ms_n$n" for n in SIZES), ","))
         println("\noperation          exponent   r2")
-        for op in ("status_refresh", "items_panel", "metadata_publish")
+        for op in ("status_refresh", "workspace_busy", "items_panel", "metadata_publish")
             fit = power_law(Float64.(SIZES), ms_by_op[op])
             @printf("%-18s %6.2f   %.3f\n", op, fit.exponent, fit.r2)
             println(io, join(

@@ -348,16 +348,49 @@ HierarchyNode(name::String, kind::Symbol) =
         MetadataDict(),
     )
 
+const _AllItemsCache = Base.RefValue{Union{Nothing,Vector{ItemRecord}}}
+_lazy_all_items()::_AllItemsCache = _AllItemsCache(nothing)
+
 """
 The complete collection tree and its indexes for one source.
+
+`all_items` is a flat view over every record in the tree. It is materialized lazily and cached
+(`all_items_cache`) rather than rebuilt on every edit: the tree nodes own the records, and a
+progressive scan publishes thousands of single-item edits, so eagerly rebuilding an O(total)
+vector per publish is quadratic and floods the GC. Readers go through [`all_items`](@ref); the
+cache is left empty by edits and filled on first read.
 """
 struct Hierarchy
     root::HierarchyNode
-    all_items::Vector{ItemRecord}
+    all_items_cache::_AllItemsCache
     source_id::String
     index::Dict{Tuple{Vararg{String}},HierarchyNode}
     has_collection_metadata::Bool
     skipped_count::Int
+end
+
+"""Push every record under one node into `acc`, in tree order."""
+function _collect_items!(acc::Vector{ItemRecord}, node::HierarchyNode)::Nothing
+    append!(acc, node.items)
+    for child in node.children
+        _collect_items!(acc, child)
+    end
+    return nothing
+end
+
+"""
+Every record in the hierarchy as one flat vector, materialized on first read and cached.
+
+Published hierarchies never mutate their node `items` in place (edits clone touched nodes), so the
+cache stays valid for the life of the hierarchy object.
+"""
+function all_items(hierarchy::Hierarchy)::Vector{ItemRecord}
+    cached = hierarchy.all_items_cache[]
+    cached === nothing || return cached
+    items = ItemRecord[]
+    _collect_items!(items, hierarchy.root)
+    hierarchy.all_items_cache[] = items
+    return items
 end
 
 """
@@ -461,7 +494,7 @@ function Hierarchy(
 )::Hierarchy
     return Hierarchy(
         HierarchyNode("/", :root),
-        ItemRecord[],
+        _lazy_all_items(),
         source_id,
         Dict{Tuple{Vararg{String}},HierarchyNode}(),
         has_collection_metadata,
@@ -489,7 +522,7 @@ function insert_item!(
         parent = child
     end
     push!(parent.items, item)
-    push!(hierarchy.all_items, item)
+    hierarchy.all_items_cache[] = nothing
     return item
 end
 
@@ -587,10 +620,6 @@ mutable struct HierarchyEdit
     children_dirty::Set{CollectionPath}
     created::Vector{CollectionPath}
     pruned::Bool
-    # Item-list changes accumulate here; `finish_edit!` builds the replacement `all_items` in one
-    # pass so the original hierarchy's vector is never touched.
-    removed_ids::Set{String}
-    inserted::Vector{ItemRecord}
 end
 
 _clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
@@ -603,16 +632,16 @@ _clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
 )
 
 """
-Begin a copy-on-write edit; the original hierarchy, including its `all_items`, is never mutated.
+Begin a copy-on-write edit; the original hierarchy and its nodes are never mutated.
 
-During the edit `all_items` is borrowed read-only from the original; `finish_edit!` replaces it
-when item lists changed, so untouched edits share the vector and changed ones pay one pass.
+The edit clones only touched nodes and their ancestors; `all_items` is left lazy, so neither the
+original nor the result pays to rebuild the flat item view — it is derived from the tree on demand.
 """
 function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
     return HierarchyEdit(
         Hierarchy(
             _clone_node(hierarchy.root),
-            hierarchy.all_items,
+            _lazy_all_items(),
             hierarchy.source_id,
             copy(hierarchy.index),
             hierarchy.has_collection_metadata,
@@ -623,8 +652,6 @@ function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
         Set{CollectionPath}(),
         CollectionPath[],
         false,
-        Set{String}(),
-        ItemRecord[],
     )
 end
 
@@ -673,7 +700,6 @@ function insert_record!(edit::HierarchyEdit, record::ItemRecord)::Nothing
     end
     node = editable_node!(edit, leaf_path)
     push!(node.items, record)
-    push!(edit.inserted, record)
     push!(edit.items_dirty, leaf_path)
     return nothing
 end
@@ -683,8 +709,6 @@ function remove_records!(edit::HierarchyEdit, records::Vector{ItemRecord})::Noth
     isempty(records) && return nothing
     hierarchy = edit.hierarchy
     ids = Set(record.id for record in records)
-    union!(edit.removed_ids, ids)
-    filter!(record -> !(record.id in ids), edit.inserted)
     for path in unique(Tuple(record.collection) for record in records)
         node = editable_node!(edit, path)
         filter!(item -> !(item.id in ids), node.items)
@@ -727,19 +751,9 @@ function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarch
         node = _node_at(hierarchy, path)
         node === nothing || sort_children!(node)
     end
-    isempty(edit.removed_ids) && isempty(edit.inserted) && return hierarchy
-    all_items = ItemRecord[
-        record for record in hierarchy.all_items if !(record.id in edit.removed_ids)
-    ]
-    append!(all_items, edit.inserted)
-    return Hierarchy(
-        hierarchy.root,
-        all_items,
-        hierarchy.source_id,
-        hierarchy.index,
-        hierarchy.has_collection_metadata,
-        hierarchy.skipped_count,
-    )
+    # The tree now reflects every insert and prune; the flat item view is derived from it lazily,
+    # so an incremental publish no longer rebuilds an O(total) vector.
+    return hierarchy
 end
 
 include("ItemIndex/Scanning.jl")

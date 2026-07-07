@@ -99,7 +99,7 @@ function _render_hierarchy_tree_panel(
     selected_collection_path_set = workspace isa Workspace.Workspace ?
         Set(workspace.selection.collection_paths) :
         Set{String}()
-    all_collection_count = 0
+    all_collection_count = Ref(0)
     filter_active = ig.ImGuiTextFilter_IsActive(filter_tree)
 
     if root !== nothing
@@ -167,9 +167,12 @@ function _render_hierarchy_tree_panel(
             return total
         end
 
-        all_collection_count = count_leaf_nodes(root)
-        for child in children(root)
-            collect_visible_collections!(child, false)
+        _time!(state, :hierarchy_prep) do
+            all_collection_count[] = count_leaf_nodes(root)
+            for child in children(root)
+                collect_visible_collections!(child, false)
+            end
+            return nothing
         end
 
         visible_collection_keys = function ()
@@ -184,7 +187,7 @@ function _render_hierarchy_tree_panel(
         _render_selection_toolbar!(
             length(selected_collections),
             length(visible_collections),
-            all_collection_count,
+            all_collection_count[],
             filter_tree,
             () -> begin
                 workspace.selection.collection_paths = copy(visible_collection_keys())
@@ -353,7 +356,7 @@ function _render_hierarchy_tree_panel(
         ig.Text("No data loaded")
     end
 
-    isempty(visible_collections) && all_collection_count > 0 && ig.TextDisabled("No collections match filter")
+    isempty(visible_collections) && all_collection_count[] > 0 && ig.TextDisabled("No collections match filter")
     ig.EndChild()
 end
 
@@ -426,8 +429,18 @@ function _render_items_panel(
 
     selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
-    all_items = _items_of_selected_collections(state)
-    visible_items = _visible_items(state, workspace, all_items, filter_item)
+    all_items_ref = Ref{Vector{ItemRecord}}()
+    _time!(state, :items_panel) do
+        all_items_ref[] = _items_of_selected_collections(state)
+        return nothing
+    end
+    all_items = all_items_ref[]
+    visible_items_ref = Ref{Vector{ItemRecord}}()
+    _time!(state, :visible_items) do
+        visible_items_ref[] = _visible_items(state, workspace, all_items, filter_item)
+        return nothing
+    end
+    visible_items = visible_items_ref[]
     selected_id_set = Set(workspace.selection.item_ids)
     registry_ready = _tag_state_ready(state)
 

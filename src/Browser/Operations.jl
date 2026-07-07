@@ -3,7 +3,7 @@ using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using ..ItemIndex: collection_path_key
+using ..ItemIndex: collection_path_key, all_items
 using ..Cache: ProjectCacheSchemaError
 import ..Workspace
 using ..Workspace:
@@ -99,7 +99,7 @@ function select_source_item!(
     id = String(source_item_id)
     items = [
         item
-        for item in workspace.index.hierarchy.all_items
+        for item in all_items(workspace.index.hierarchy)
         if item.source_item_id == id
     ]
     isempty(items) && return false

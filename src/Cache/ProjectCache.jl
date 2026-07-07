@@ -213,6 +213,10 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     metrics::BuildMetrics
     interpreted::MemoryStore{String,AbstractDataItem}
     processed_memory::MemoryStore{String,AbstractDataItem}
+    collection_processed_memory::MemoryStore{String,AbstractDataItem}
+    source_items::Set{String}
+    failures::Dict{Tuple{String,String},String}
+    result_states::Dict{Tuple{Int8,String},CachedResultState}
     profiler::Profiling.ProfileSession
 end
 
@@ -347,6 +351,10 @@ function open_memory_cache_db(
         metrics,
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        Set{String}(),
+        Dict{Tuple{String,String},String}(),
+        Dict{Tuple{Int8,String},CachedResultState}(),
         profiler,
     )
 end
@@ -480,10 +488,15 @@ function store_interpreted!(cache::AbstractCacheDB, source_item::AbstractDataSou
     return conflicts
 end
 
-store_interpreted_records!(
-    ::MemoryCacheDB, ::AbstractDataSourceItem, ::Vector{ItemRecord},
+function store_interpreted_records!(
+    cache::MemoryCacheDB,
+    source_item::AbstractDataSourceItem,
+    records::Vector{ItemRecord},
     ::Vector{<:AbstractDataItem},
-)::Vector{String} = String[]
+)::Vector{String}
+    push!(cache.source_items, source_item_id(source_item))
+    return String[]
+end
 
 """
 Store one processed payload for a record at a payload stage (`:processed` or `:collection_processed`).
@@ -531,7 +544,18 @@ function store_processed!(
     item::AbstractDataItem;
     stage::Symbol=:processed,
 )::Nothing
-    stage === :processed && append!(cache.processed_memory, record.id, item)
+    if stage === :processed
+        append!(cache.processed_memory, record.id, item)
+        cache.result_states[(Int8(PROCESSING_RESULT), record.id)] = CachedResultState(
+            Int8(PROCESSING_RESULT),
+            record.id,
+            Int8(RESULT_READY),
+            record.source_item_id,
+            nothing,
+        )
+    elseif stage === :collection_processed
+        append!(cache.collection_processed_memory, record.id, item)
+    end
     return nothing
 end
 
@@ -593,13 +617,45 @@ function store_collection_process_result!(
     return nothing
 end
 
-store_result_failure!(
-    ::MemoryCacheDB, ::CacheResultKind, ::AbstractString, ::AbstractString, ::AbstractString,
-)::Nothing = nothing
-store_item_metadata!(::MemoryCacheDB, ::ItemRecord, ::AbstractDict)::Vector{String} = String[]
-store_collection_metadata!(::MemoryCacheDB, ::AbstractString, ::AbstractDict)::Vector{String} =
-    String[]
-store_collection_process_result!(::MemoryCacheDB, ::AbstractString)::Nothing = nothing
+function store_result_failure!(
+    cache::MemoryCacheDB,
+    kind::CacheResultKind,
+    entity::AbstractString,
+    source_item_id::AbstractString,
+    message::AbstractString,
+)::Nothing
+    entity_value = String(entity)
+    source_id = String(source_item_id)
+    cache.failures[(entity_value, source_id)] = String(message)
+    cache.result_states[(Int8(kind), entity_value)] = CachedResultState(
+        Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+    return nothing
+end
+
+function store_item_metadata!(cache::MemoryCacheDB, record::ItemRecord, ::AbstractDict)::Vector{String}
+    cache.result_states[(Int8(ITEM_ANALYSIS_RESULT), record.id)] = CachedResultState(
+        Int8(ITEM_ANALYSIS_RESULT),
+        record.id,
+        Int8(RESULT_READY),
+        record.source_item_id,
+        nothing,
+    )
+    return String[]
+end
+
+function store_collection_metadata!(cache::MemoryCacheDB, collection_key::AbstractString, ::AbstractDict)::Vector{String}
+    entity = String(collection_key)
+    cache.result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = CachedResultState(
+        Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    return String[]
+end
+
+function store_collection_process_result!(cache::MemoryCacheDB, collection_key::AbstractString)::Nothing
+    entity = String(collection_key)
+    cache.result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = CachedResultState(
+        Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    return nothing
+end
 
 """Write one source collection-metadata row."""
 function edit_source_collection_metadata!(cache::CacheDB, key::AbstractString, metadata::AbstractDict)::Nothing
@@ -646,9 +702,15 @@ function delete_source_item!(
     source_item_id::AbstractString,
     old_records::Vector{ItemRecord},
 )::Nothing
+    delete!(cache.source_items, String(source_item_id))
+    delete!(cache.failures, (String(source_item_id), String(source_item_id)))
     for record in old_records
         delete!(cache.interpreted, record.id)
         delete!(cache.processed_memory, record.id)
+        delete!(cache.collection_processed_memory, record.id)
+        delete!(cache.failures, (record.id, String(source_item_id)))
+        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+        delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
     end
     return nothing
 end
@@ -666,7 +728,17 @@ function delete_collection_metadata!(
     return nothing
 end
 
-delete_collection_metadata!(::MemoryCacheDB, ::Vector{String})::Nothing = nothing
+function delete_collection_metadata!(
+    cache::MemoryCacheDB,
+    collection_keys::Vector{String},
+)::Nothing
+    for collection_key in unique(collection_keys)
+        key = String(collection_key)
+        delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), key))
+        delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), key))
+    end
+    return nothing
+end
 
 """Aggregate staged durable keys and payload rows."""
 function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}}
@@ -697,7 +769,7 @@ end
 Read item data through the buffer for a stage (`:interpreted`, `:processed`, or
 `:collection_processed`). Returns a vector aligned to `records` of loaded items or `nothing` on a
 miss; the caller falls back to the source. Interpreted payloads are memory-only, so a memory miss is
-final. `:collection_processed` is disk-only (rewrites are DataFrames).
+final. `:collection_processed` is disk-backed on `CacheDB` and memory-backed on `MemoryCacheDB`.
 """
 function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
     stage in (:interpreted, :processed, :collection_processed) ||
@@ -708,9 +780,8 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
         return Any[read(cache.interpreted, record.id) for record in records]
     end
 
-    # Raw payload reads: at runtime the work graph decides whether a stored result is current
-    # (a `:ready` node at the record's revision), and stale payloads are deleted on invalidation.
-    # The `result_states` ledger is only read once, at load, to seed the graph.
+    # Raw payload reads: at runtime delivery consults the live graph, then reads committed payloads.
+    # The `result_states` ledger is authoritative for finished work between sessions.
     stage_code = _payload_stage_code(stage)
     loaded = Vector{Any}(undef, length(records))
     disk_keys = Tuple{Int64,Int8}[]
@@ -740,8 +811,13 @@ end
 function read_item_data(cache::MemoryCacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
     stage in (:interpreted, :processed, :collection_processed) ||
         throw(ArgumentError("unknown item-data cache stage '$stage'"))
-    stage === :collection_processed && return Any[nothing for _ in records]
-    store = stage === :interpreted ? cache.interpreted : cache.processed_memory
+    store = if stage === :interpreted
+        cache.interpreted
+    elseif stage === :collection_processed
+        cache.collection_processed_memory
+    else
+        cache.processed_memory
+    end
     return Any[read(store, record.id) for record in records]
 end
 
@@ -773,6 +849,7 @@ end
 function close_cache_db!(cachedb::MemoryCacheDB)::Nothing
     close!(cachedb.interpreted)
     close!(cachedb.processed_memory)
+    close!(cachedb.collection_processed_memory)
     return nothing
 end
 
@@ -852,6 +929,7 @@ end
 function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
     clear!(cachedb.interpreted)
     clear!(cachedb.processed_memory)
+    clear!(cachedb.collection_processed_memory)
     return nothing
 end
 
@@ -1051,7 +1129,7 @@ function load_cache_index(
         phase=:cache_load,
         total_source_items=1,
         processed_source_items=1,
-        loaded_items=length(index.source.hierarchy.all_items),
+        loaded_items=length(all_items(index.source.hierarchy)),
         skipped_source_items=index.source.hierarchy.skipped_count,
         current_source_item=index.identity.cache_path,
     )

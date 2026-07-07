@@ -59,7 +59,7 @@ MB.item_data(p::Photo) = p.data
     plot_kind = MB.RegisteredPlot{:photo,Symbol("Image")}
     try
         wait_workspace_idle!(workspace)
-        records = workspace.index.hierarchy.all_items
+        records = MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy)
         @test length(records) == 2
         @test all(r -> r.kind == :photo, records)
         @test Set(r.metadata[:exposure] for r in records) == Set([2.0, 4.0])

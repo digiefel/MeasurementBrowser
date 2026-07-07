@@ -10,6 +10,7 @@ import ..ItemIndex:
     MetadataDict,
     metadata_dict,
     insert_item!,
+    all_items,
     collection_path_tuple,
     emit_progress
 import ..Projects

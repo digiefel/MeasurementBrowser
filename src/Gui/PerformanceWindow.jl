@@ -672,7 +672,13 @@ function _render_frames_tab(state::BrowserState)::Nothing
     allocs  = performance.allocations
     if isempty(timings)
         ig.TextDisabled("No operation timings yet.")
-    elseif _begin_perf_table("operations", 6, 260.0f0)
+    else
+        ig.TextDisabled(
+            "Panel timings cover the Julia callback only; ImGui::Render() and OpenGL " *
+            "draw run afterward and are not included.",
+        )
+        ig.Spacing()
+        if _begin_perf_table("operations", 6, 260.0f0)
         ig.TableSetupScrollFreeze(0, 1)
         ig.TableSetupColumn("Operation", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
         ig.TableSetupColumn("n",         ig.ImGuiTableColumnFlags_WidthFixed,  40.0f0)
@@ -697,6 +703,7 @@ function _render_frames_tab(state::BrowserState)::Nothing
             ig.TableNextColumn(); _table_text(_fmt_bytes(last_alloc))
         end
         ig.EndTable()
+        end
     end
     if ig.Button("Clear timings")
         empty!(performance.timings)

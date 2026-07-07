@@ -1,9 +1,18 @@
 """Fold a workspace's job and cache state into the watcher-facing [`WorkspaceStatus`](@ref)."""
 function workspace_status(workspace::Workspace)::WorkspaceStatus
-    errors = lock(workspace.publish_lock) do
-        lock(workspace.work.lock) do
-            sort!(Pair{String,String}[k => v for (k, v) in workspace.index.analysis_errors]; by=first)
+    # Never wait on publish_lock here: a source-item publish or cache flush can hold it for 100ms+,
+    # and this runs every GUI frame. If a publish is mid-flight, reuse the last snapshot's errors —
+    # they change rarely, so a one-frame delay is invisible and keeps the frame from stalling.
+    errors = if trylock(workspace.publish_lock)
+        try
+            lock(workspace.work.lock) do
+                sort!(Pair{String,String}[k => v for (k, v) in workspace.index.analysis_errors]; by=first)
+            end
+        finally
+            unlock(workspace.publish_lock)
         end
+    else
+        workspace.status.errors
     end
     scan = workspace.scan
 
@@ -15,13 +24,14 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
             :busy, label, "Finding source items…", true, nothing, errors)
     elseif scan.state == :canceling
         return WorkspaceStatus(:busy, "Canceling", "Canceling…", true, nothing, errors)
-    elseif processing_work_running(workspace)
-        completed, total, _active = work_counts(workspace)
+    end
+    completed, total, active = work_counts(workspace)
+    if active > 0
         progress = total > 0 ? Float32(clamp(completed / total, 0, 1)) : nothing
         return WorkspaceStatus(
             :busy,
             "Caching",
-            @sprintf("Processing %d/%d items", completed, total),
+            @sprintf("Processing %d/%d tasks", completed, total),
             true,
             progress,
             errors,
