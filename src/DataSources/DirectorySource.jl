@@ -163,8 +163,8 @@ function parse_metadata_value(text::AbstractString)::Any
     value = strip(text)
     isempty(value) && return nothing
     lowercase_value = lowercase(value)
-    lowercase_value in ("true", "t", "yes", "y", "1") && return true
-    lowercase_value in ("false", "f", "no", "n", "0") && return false
+    lowercase_value in ("true", "t", "yes", "y") && return true
+    lowercase_value in ("false", "f", "no", "n") && return false
     for type in (Int, Float64)
         parsed = tryparse(type, value)
         parsed === nothing || return parsed
