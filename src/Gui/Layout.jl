@@ -595,14 +595,15 @@ function _run_browser(
 end
 
 """
-Open the browser on an already-opened workspace (see `open_workspace`). With `wait=false` the REPL
-stays interactive while the window runs; the returned task completes when the window closes.
+Open the browser on an already-opened workspace (see `open_workspace`). By default, blocks
+until the window closes in non-interactive sessions (`julia script.jl`) and returns immediately
+in the REPL so it stays interactive.
 """
 function open_browser(
     workspace::Workspace.Workspace;
     engine::Any=nothing,
     spawn::Int=1,
-    wait::Bool=true,
+    wait::Bool=!isinteractive(),
     window_start::Symbol=:normal,
 )
     prefs = _load_prefs()

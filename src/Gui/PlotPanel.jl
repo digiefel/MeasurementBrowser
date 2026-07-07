@@ -438,6 +438,12 @@ function ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
     flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoInputs |
             ig.ImGuiWindowFlags_NoBackground | ig.ImGuiWindowFlags_NoSavedSettings |
             ig.ImGuiWindowFlags_NoNav | ig.ImGuiWindowFlags_NoFocusOnAppearing
+    # Pin the hidden warmup window to the main viewport. Otherwise, with multi-viewport
+    # enabled, its off-screen position promotes it to its own platform window (a separate,
+    # shared GL context), where sampling Makie's FBO-backed texture makes the macOS GL
+    # driver report "unit 0 GLD_TEXTURE_INDEX_2D is unloadable". Staying in the main
+    # viewport keeps the warmup render in the main context.
+    ig.SetNextWindowViewport(unsafe_load(ig.GetMainViewport()).ID)
     ig.SetNextWindowPos((-10_000.0, -10_000.0), ig.ImGuiCond_Always)
     ig.SetNextWindowSize((8.0, 8.0), ig.ImGuiCond_Always)
     if ig.Begin("###plot_runtime_warmup", C_NULL, flags)
