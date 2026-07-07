@@ -176,6 +176,7 @@ function cancel_scan!(workspace::Workspace)::Nothing
         job.state === :discovering || return
         Base.Threads.atomic_xchg!(job.cancel_token, true)
         job.state = :canceling
+        workspace.status_dirty[] = true
     end
     return nothing
 end
@@ -542,6 +543,7 @@ function scan_source!(
         job.id += 1
         job.state = :discovering
         job.error = ""
+        job.discovered[] = 0
         workspace.cache_state = :loading
         workspace.cache_error = ""
         workspace.cache.operation = rebuild ? :rebuild : :update
@@ -554,6 +556,7 @@ function scan_source!(
         workspace.index.source = nothing
         empty!(workspace.index.analysis_errors)
         job.cancel_token = Base.Threads.Atomic{Bool}(false)
+        workspace.status_dirty[] = true
         (job.id, job.cancel_token)
     end
     task = Base.Threads.@spawn begin
@@ -574,7 +577,13 @@ function scan_source!(
             write_meta_header!(cachedb)
             discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
                 with_cancel(() -> cancel_token[]) do
-                    source_items(workspace.source)
+                    source_items(
+                        workspace.source;
+                        on_progress=count -> begin
+                            job.discovered[] = count
+                            workspace.status_dirty[] = true
+                        end,
+                    )
                 end
             end
             # The cache's `source_items` table is the sole home of previous-session fingerprints;
@@ -920,8 +929,7 @@ function publish_work_success!(
         end
         delete_collection_metadata!(workspace.cache.db, invalidated)
         enqueue_dependent_subtree!(workspace, records; collection_keys=invalidated)
-        isempty(result.conflicts) ||
-            (workspace.index.analysis_errors[key.entity] = join(result.conflicts, "; "))
+        publish_metadata_conflicts!(workspace, key.entity, key.kind, result.conflicts)
         reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
@@ -951,8 +959,7 @@ function publish_work_success!(
         empty!(hierarchy_node.analysis)
         merge!(hierarchy_node.analysis, analysis)
         dropped = store_collection_metadata!(workspace.cache.db, key.entity, analysis)
-        isempty(dropped) ||
-            (workspace.index.analysis_errors[key.entity] = join(dropped, "; "))
+        publish_metadata_conflicts!(workspace, key.entity, key.kind, dropped)
     end
     return nothing
 end
@@ -969,8 +976,25 @@ function publish_item_metadata_layer!(
     workspace.index.item_metadata[record.id] = Dict{Symbol,Any}(computed)
     dropped = store_item_metadata!(
         workspace.cache.db, record, delivered_metadata(workspace, record))
-    isempty(dropped) && return nothing
-    workspace.index.analysis_errors[record.id] = join(dropped, "; ")
+    publish_metadata_conflicts!(workspace, record.id, ITEM_ANALYZE, dropped)
+    return nothing
+end
+
+function publish_metadata_conflicts!(
+    workspace::Workspace,
+    entity::AbstractString,
+    stage,
+    conflicts::Vector{String},
+)::Nothing
+    isempty(conflicts) && return nothing
+    message = join(conflicts, "; ")
+    workspace.index.analysis_errors[String(entity)] = message
+    @warn(
+        "Workspace metadata conflict",
+        entity=String(entity),
+        stage=stage,
+        message=message,
+    )
     return nothing
 end
 
@@ -999,6 +1023,13 @@ function publish_work_failure!(
         delete_collection_metadata!(workspace.cache.db, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
+        store_source_item_failure!(workspace.cache.db, key.entity, message)
+        @error(
+            "Source interpretation failed",
+            source_item=key.entity,
+            stage=key.kind,
+            exception=(failure.ex, failure.processed_bt),
+        )
     else
         source_item_id_value = record === nothing ? "" : record.source_item_id
         store_result_failure!(
@@ -1009,6 +1040,12 @@ function publish_work_failure!(
             message,
         )
         workspace.index.analysis_errors[key.entity] = message
+        @warn(
+            "Workspace work failed",
+            entity=key.entity,
+            stage=key.kind,
+            exception=(failure.ex, failure.processed_bt),
+        )
         key.kind === ITEM_ANALYZE && record !== nothing &&
             enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
     end
@@ -1055,6 +1092,7 @@ function finish_publish!(workspace::Workspace)::Nothing
         )
         scan_source!(workspace; rebuild=true)
     end
+    workspace.status_dirty[] = true
     notify(workspace.idle_condition; all=true)
     return nothing
 end
@@ -1186,14 +1224,9 @@ function publish_scan_end!(
     return nothing
 end
 
-"""
-Rebuild the GUI-facing status snapshot when work is or was just running.
-
-Display-only: the engine publishes without it, and idle frames keep reading the cached value.
-"""
+"""Rebuild the GUI-facing status snapshot after engine publications or discovery progress."""
 function refresh_status!(workspace::Workspace)::Nothing
-    # Cache write flushes are display-only; avoid publish_lock + status rebuild every frame.
-    (engine_work_running(workspace) || workspace.status.busy) &&
-        (workspace.status = workspace_status(workspace))
+    dirty = Base.Threads.atomic_xchg!(workspace.status_dirty, false)
+    dirty && (workspace.status = workspace_status(workspace))
     return nothing
 end

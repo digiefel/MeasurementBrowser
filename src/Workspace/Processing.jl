@@ -21,13 +21,19 @@ function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
     entity = String(key.entity)
     memory = !(cachedb isa CacheDB)
     if key.kind === SOURCE_INTERPRET
-        failures = memory ? cachedb.failures : read(cachedb.failures)
+        if memory
+            return lock(cachedb.lock) do
+                haskey(cachedb.failures, (entity, entity)) && return :failed
+                entity in cachedb.source_items ? :ready : :absent
+            end
+        end
+        failures = read(cachedb.failures)
         haskey(failures, (entity, entity)) && return :failed
-        items = memory ? cachedb.source_items : read(cachedb.source_items)
-        return (items isa Set ? entity in items : haskey(items, entity)) ? :ready : :absent
+        return haskey(read(cachedb.source_items), entity) ? :ready : :absent
     end
     kind = _work_key_cache_kind(key)
-    states = memory ? cachedb.result_states : read(cachedb.result_states)
+    states = memory ? lock(() -> copy(cachedb.result_states), cachedb.lock) :
+        read(cachedb.result_states)
     state = get(states, (Int8(kind), entity), nothing)
     state === nothing && return :absent
     return CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
@@ -38,11 +44,10 @@ function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     cachedb = workspace.cache.db
     entity = String(key.entity)
     if key.kind === SOURCE_INTERPRET
-        delete!(cachedb.source_items, entity)
-        delete!(cachedb.failures, (entity, entity))
+        clear_cached_source_state!(cachedb, entity)
         return nothing
     end
-    delete!(cachedb.result_states, (Int8(_work_key_cache_kind(key)), entity))
+    clear_cached_result_state!(cachedb, _work_key_cache_kind(key), entity)
     return nothing
 end
 

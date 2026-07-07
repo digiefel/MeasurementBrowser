@@ -104,6 +104,12 @@ git-tree-sha1 = "9670d3febc2b6da60a0ae57846ba74670290653f"
 uuid = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 version = "1.8.0"
 
+[[deps.BetterFileWatching]]
+deps = ["CancellationTokens", "FileWatching"]
+git-tree-sha1 = "d1f0efad00cbc9fcdca7cb577cbf0e13d314443c"
+uuid = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
+version = "1.0.0"
+
 [[deps.BitIntegers]]
 deps = ["Random"]
 git-tree-sha1 = "091d591a060e43df1dd35faab3ca284925c48e46"
@@ -171,6 +177,12 @@ deps = ["Artifacts", "Bzip2_jll", "CompilerSupportLibraries_jll", "Fontconfig_jl
 git-tree-sha1 = "1fa950ebc3e37eccd51c6a8fe1f92f7d86263522"
 uuid = "83423d85-b0ee-5818-9007-b63ccbeb887a"
 version = "1.18.7+0"
+
+[[deps.CancellationTokens]]
+deps = ["Sockets"]
+git-tree-sha1 = "cecc5f23f2771aeb84182802727deca318d877ce"
+uuid = "2e8d271d-f2e2-407b-a864-17eb2156783e"
+version = "2.3.0"
 
 [[deps.ChainRulesCore]]
 deps = ["Compat", "LinearAlgebra"]
@@ -971,7 +983,7 @@ uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.9"
 
 [[deps.MeasurementBrowser]]
-deps = ["Annotations", "CImGui", "CSV", "DBInterface", "DataFrames", "Dates", "DuckDB", "FileWatching", "GLFW", "GLMakie", "InteractiveUtils", "JSON", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "Profile", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+deps = ["Annotations", "BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataFrames", "Dates", "DuckDB", "FileWatching", "GLFW", "GLMakie", "InteractiveUtils", "JSON", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "Profile", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = ".."
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"

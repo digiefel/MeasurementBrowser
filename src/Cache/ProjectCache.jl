@@ -107,6 +107,188 @@ struct ProjectCacheStatus
     error_source_items::Int
 end
 
+"""Persisted cache counts surfaced through workspace status."""
+struct CacheStageSummary
+    cached_sources::Int
+    interpreted_items::Int
+    processed::Int
+    analyzed::Int
+    collection_processed::Int
+    collection_analyzed::Int
+    failed_interpret::Int
+    failed_process::Int
+    failed_analyze::Int
+    failed_collection::Int
+end
+
+CacheStageSummary()::CacheStageSummary =
+    CacheStageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+
+mutable struct CacheStageLedger
+    summary::CacheStageSummary
+    source_items::Set{String}
+    items::Set{String}
+    failures::Set{Tuple{String,String}}
+    result_states::Dict{Tuple{Int8,String},CachedResultState}
+    lock::ReentrantLock
+end
+
+CacheStageLedger()::CacheStageLedger = CacheStageLedger(
+    CacheStageSummary(),
+    Set{String}(),
+    Set{String}(),
+    Set{Tuple{String,String}}(),
+    Dict{Tuple{Int8,String},CachedResultState}(),
+    ReentrantLock(),
+)
+
+function CacheStageLedger(source_items, items, failures, states)::CacheStageLedger
+    return CacheStageLedger(
+        _cache_stage_summary(source_items, items, failures, states),
+        Set{String}(String(id) for id in keys(source_items)),
+        Set{String}(String(id) for id in keys(items)),
+        Set{Tuple{String,String}}((String(first(key)), String(last(key))) for key in keys(failures)),
+        Dict{Tuple{Int8,String},CachedResultState}(
+            (Int8(first(key)), String(last(key))) => state for (key, state) in states),
+        ReentrantLock(),
+    )
+end
+
+function _stage_summary_delta(
+    summary::CacheStageSummary;
+    cached_sources::Int=0,
+    interpreted_items::Int=0,
+    processed::Int=0,
+    analyzed::Int=0,
+    collection_processed::Int=0,
+    collection_analyzed::Int=0,
+    failed_interpret::Int=0,
+    failed_process::Int=0,
+    failed_analyze::Int=0,
+    failed_collection::Int=0,
+)::CacheStageSummary
+    return CacheStageSummary(
+        summary.cached_sources + cached_sources,
+        summary.interpreted_items + interpreted_items,
+        summary.processed + processed,
+        summary.analyzed + analyzed,
+        summary.collection_processed + collection_processed,
+        summary.collection_analyzed + collection_analyzed,
+        summary.failed_interpret + failed_interpret,
+        summary.failed_process + failed_process,
+        summary.failed_analyze + failed_analyze,
+        summary.failed_collection + failed_collection,
+    )
+end
+
+function _stage_result_delta(
+    summary::CacheStageSummary,
+    state::CachedResultState,
+    sign::Int,
+)::CacheStageSummary
+    kind = CacheResultKind(state.kind)
+    status = CacheResultStatus(state.status)
+    if status === RESULT_READY
+        kind === PROCESSING_RESULT &&
+            return _stage_summary_delta(summary; processed=sign)
+        kind === ITEM_ANALYSIS_RESULT &&
+            return _stage_summary_delta(summary; analyzed=sign)
+        kind === COLLECTION_PROCESS_RESULT &&
+            return _stage_summary_delta(summary; collection_processed=sign)
+        kind === COLLECTION_ANALYSIS_RESULT &&
+            return _stage_summary_delta(summary; collection_analyzed=sign)
+    elseif status === RESULT_FAILED
+        kind === PROCESSING_RESULT &&
+            return _stage_summary_delta(summary; failed_process=sign)
+        kind === ITEM_ANALYSIS_RESULT &&
+            return _stage_summary_delta(summary; failed_analyze=sign)
+        kind in (COLLECTION_PROCESS_RESULT, COLLECTION_ANALYSIS_RESULT) &&
+            return _stage_summary_delta(summary; failed_collection=sign)
+    end
+    return summary
+end
+
+function _stage_ledger_source!(ledger::CacheStageLedger, id::AbstractString, present::Bool)::Nothing
+    source_id = String(id)
+    lock(ledger.lock) do
+        exists = source_id in ledger.source_items
+        if present && !exists
+            push!(ledger.source_items, source_id)
+            ledger.summary = _stage_summary_delta(ledger.summary; cached_sources=1)
+        elseif !present && exists
+            delete!(ledger.source_items, source_id)
+            ledger.summary = _stage_summary_delta(ledger.summary; cached_sources=-1)
+        end
+    end
+    return nothing
+end
+
+function _stage_ledger_item!(ledger::CacheStageLedger, id::AbstractString, present::Bool)::Nothing
+    item_id = String(id)
+    lock(ledger.lock) do
+        exists = item_id in ledger.items
+        if present && !exists
+            push!(ledger.items, item_id)
+            ledger.summary = _stage_summary_delta(ledger.summary; interpreted_items=1)
+        elseif !present && exists
+            delete!(ledger.items, item_id)
+            ledger.summary = _stage_summary_delta(ledger.summary; interpreted_items=-1)
+        end
+    end
+    return nothing
+end
+
+function _stage_ledger_failure!(
+    ledger::CacheStageLedger,
+    key::Tuple{String,String},
+    present::Bool,
+)::Nothing
+    lock(ledger.lock) do
+        exists = key in ledger.failures
+        delta = first(key) == last(key) ? 1 : 0
+        if present && !exists
+            push!(ledger.failures, key)
+            delta == 1 &&
+                (ledger.summary = _stage_summary_delta(ledger.summary; failed_interpret=1))
+        elseif !present && exists
+            delete!(ledger.failures, key)
+            delta == 1 &&
+                (ledger.summary = _stage_summary_delta(ledger.summary; failed_interpret=-1))
+        end
+    end
+    return nothing
+end
+
+function _stage_ledger_result!(
+    ledger::CacheStageLedger,
+    key::Tuple{Int8,String},
+    state::Union{Nothing,CachedResultState},
+)::Nothing
+    lock(ledger.lock) do
+        previous = get(ledger.result_states, key, nothing)
+        previous === nothing ||
+            (ledger.summary = _stage_result_delta(ledger.summary, previous, -1))
+        if state === nothing
+            delete!(ledger.result_states, key)
+        else
+            ledger.result_states[key] = state
+            ledger.summary = _stage_result_delta(ledger.summary, state, 1)
+        end
+    end
+    return nothing
+end
+
+function _reset_stage_ledger!(ledger::CacheStageLedger)::Nothing
+    lock(ledger.lock) do
+        empty!(ledger.source_items)
+        empty!(ledger.items)
+        empty!(ledger.failures)
+        empty!(ledger.result_states)
+        ledger.summary = CacheStageSummary()
+    end
+    return nothing
+end
+
 # Storage rows (field names are the table columns; `R(database_row)` is the pure decoder)
 
 struct SourceItemRow
@@ -201,6 +383,7 @@ mutable struct CacheDB <: AbstractCacheDB
     item_keys::Dict{String,Int64}
     next_item_key::Int64
     key_lock::ReentrantLock
+    stage_ledger::CacheStageLedger
     # The signature of the analyzed_item_metadata columns backing the query view; the view is
     # recreated only when it changes.
     query_view_signature::Vector{Symbol}
@@ -215,8 +398,11 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     processed_memory::MemoryStore{String,AbstractDataItem}
     collection_processed_memory::MemoryStore{String,AbstractDataItem}
     source_items::Set{String}
+    items::Set{String}
     failures::Dict{Tuple{String,String},String}
     result_states::Dict{Tuple{Int8,String},CachedResultState}
+    stage_ledger::CacheStageLedger
+    lock::ReentrantLock
     profiler::Profiling.ProfileSession
 end
 
@@ -272,28 +458,39 @@ function open_cache_db(
         finally
             DBInterface.close!(connection)
         end
+        source_items = RowStore{String,SourceItemRow}(db, "source_items", ("id",); profiler)
+        items = RowStore{String,ItemRow}(db, "items", ("id",); profiler)
+        failures = RowStore{Tuple{String,String},FailureRow}(
+            db, "item_failures", ("item_id", "source_item_id"); profiler)
+        result_states = RowStore{Tuple{Int8,String},CachedResultState}(
+            db, "result_states", ("kind", "entity"); profiler)
         payload = TabularFamilyStore(db; profiler, row_limit=CACHE_BUFFER_ROW_LIMIT)
         item_keys, next_item_key = _load_item_keys(db)
+        stage_ledger = CacheStageLedger(
+            read(source_items),
+            read(items),
+            read(failures),
+            read(result_states),
+        )
         return CacheDB(
             identity,
             db,
             metrics,
-            RowStore{String,SourceItemRow}(db, "source_items", ("id",); profiler),
-            RowStore{String,ItemRow}(db, "items", ("id",); profiler),
+            source_items,
+            items,
             WideRowStore{Int64}(db, "source_item_metadata", "item_key"; profiler),
             WideRowStore{String}(db, "source_collection_metadata", "collection_key"; profiler),
             WideRowStore{Int64}(db, "analyzed_item_metadata", "item_key"; profiler),
             WideRowStore{String}(db, "analyzed_collection_metadata", "collection_key"; profiler),
-            RowStore{Tuple{String,String},FailureRow}(
-                db, "item_failures", ("item_id", "source_item_id"); profiler),
-            RowStore{Tuple{Int8,String},CachedResultState}(
-                db, "result_states", ("kind", "entity"); profiler),
+            failures,
+            result_states,
             payload,
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             item_keys,
             next_item_key,
             ReentrantLock(),
+            stage_ledger,
             Symbol[],
             profiler,
         )
@@ -353,8 +550,11 @@ function open_memory_cache_db(
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
         MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
         Set{String}(),
+        Set{String}(),
         Dict{Tuple{String,String},String}(),
         Dict{Tuple{Int8,String},CachedResultState}(),
+        CacheStageLedger(),
+        ReentrantLock(),
         profiler,
     )
 end
@@ -443,12 +643,14 @@ function store_interpreted_records!(
     hex, hash = _encode_fingerprint(fingerprint(source_item))
     append!(cache.source_items, id, SourceItemRow(
         id, hex, hash, source_item_path(source_item), source_item_timestamp(source_item)))
+    _stage_ledger_source!(cache.stage_ledger, id, true)
     dropped = WideConflict[]
     for (record, _) in zip(records, effective)
         key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_id, record.item_label,
                 String(record.kind), record.collection, _serialize_hex(record.item_fingerprint)))
+        _stage_ledger_item!(cache.stage_ledger, record.id, true)
         append!(dropped, edit!(cache.source_item_metadata, key, record.metadata))
     end
     record_cache_phase!(
@@ -494,7 +696,16 @@ function store_interpreted_records!(
     records::Vector{ItemRecord},
     ::Vector{<:AbstractDataItem},
 )::Vector{String}
-    push!(cache.source_items, source_item_id(source_item))
+    lock(cache.lock) do
+        push!(cache.source_items, source_item_id(source_item))
+        for record in records
+            push!(cache.items, record.id)
+        end
+    end
+    _stage_ledger_source!(cache.stage_ledger, source_item_id(source_item), true)
+    for record in records
+        _stage_ledger_item!(cache.stage_ledger, record.id, true)
+    end
     return String[]
 end
 
@@ -522,18 +733,26 @@ function store_processed!(
             cache.metrics.processed_writes,
             started,
         )
-        stage === :processed && edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id),
-            CachedResultState(
+        if stage === :processed
+            state = CachedResultState(
                 Int8(PROCESSING_RESULT),
                 record.id,
                 Int8(RESULT_READY),
                 record.source_item_id,
                 nothing,
-            ))
+            )
+            edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id), state)
+            _stage_ledger_result!(
+                cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
+        end
     else
         delete!(cache.payload, (key, _payload_stage_code(stage)))
         stage === :processed && append!(cache.processed_memory, record.id, item)
-        stage === :processed && delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+        if stage === :processed
+            delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+            _stage_ledger_result!(
+                cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), nothing)
+        end
     end
     return nothing
 end
@@ -546,13 +765,18 @@ function store_processed!(
 )::Nothing
     if stage === :processed
         append!(cache.processed_memory, record.id, item)
-        cache.result_states[(Int8(PROCESSING_RESULT), record.id)] = CachedResultState(
-            Int8(PROCESSING_RESULT),
-            record.id,
-            Int8(RESULT_READY),
-            record.source_item_id,
-            nothing,
-        )
+        lock(cache.lock) do
+            state = CachedResultState(
+                Int8(PROCESSING_RESULT),
+                record.id,
+                Int8(RESULT_READY),
+                record.source_item_id,
+                nothing,
+            )
+            cache.result_states[(Int8(PROCESSING_RESULT), record.id)] = state
+            _stage_ledger_result!(
+                cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
+        end
     elseif stage === :collection_processed
         append!(cache.collection_processed_memory, record.id, item)
     end
@@ -563,9 +787,27 @@ end
 function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
         entity::AbstractString, source_item_id::AbstractString,
         message::AbstractString)::Nothing
-    edit!(cache.result_states, (Int8(kind), String(entity)),
-        CachedResultState(Int8(kind), String(entity), Int8(RESULT_FAILED),
-            String(source_item_id), String(message)))
+    entity_value = String(entity)
+    state = CachedResultState(Int8(kind), entity_value, Int8(RESULT_FAILED),
+        String(source_item_id), String(message))
+    edit!(cache.result_states, (Int8(kind), entity_value), state)
+    _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
+    return nothing
+end
+
+"""Persist one failed source interpretation."""
+function store_source_item_failure!(
+    cache::CacheDB,
+    source_item_id::AbstractString,
+    message::AbstractString,
+)::Nothing
+    source_id = String(source_item_id)
+    append!(
+        cache.failures,
+        (source_id, source_id),
+        FailureRow(source_id, source_id, String(message)),
+    )
+    _stage_ledger_failure!(cache.stage_ledger, (source_id, source_id), true)
     return nothing
 end
 
@@ -583,9 +825,11 @@ function store_item_metadata!(
     started = time_ns()
     key = item_key!(cache, record.id)
     dropped = edit!(cache.analyzed_item_metadata, key, metadata_dict(effective))
-    edit!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id),
-        CachedResultState(Int8(ITEM_ANALYSIS_RESULT), record.id, Int8(RESULT_READY),
-            record.source_item_id, nothing))
+    state = CachedResultState(Int8(ITEM_ANALYSIS_RESULT), record.id, Int8(RESULT_READY),
+        record.source_item_id, nothing)
+    edit!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+    _stage_ledger_result!(
+        cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
     record_cache_phase!(
         cache.metrics.metadata_write_ns,
         cache.metrics.metadata_writes,
@@ -600,9 +844,11 @@ function store_collection_metadata!(
 )::Vector{String}
     entity = String(collection_key)
     dropped = edit!(cache.analyzed_collection_metadata, entity, metadata_dict(analysis))
-    edit!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), entity),
-        CachedResultState(
-            Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing))
+    state = CachedResultState(
+        Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    edit!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
+    _stage_ledger_result!(
+        cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
     return _conflict_messages(dropped)
 end
 
@@ -611,9 +857,11 @@ function store_collection_process_result!(
     cache::CacheDB, collection_key::AbstractString,
 )::Nothing
     entity = String(collection_key)
-    edit!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), entity),
-        CachedResultState(
-            Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing))
+    state = CachedResultState(
+        Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    edit!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
+    _stage_ledger_result!(
+        cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
     return nothing
 end
 
@@ -626,34 +874,67 @@ function store_result_failure!(
 )::Nothing
     entity_value = String(entity)
     source_id = String(source_item_id)
-    cache.failures[(entity_value, source_id)] = String(message)
-    cache.result_states[(Int8(kind), entity_value)] = CachedResultState(
-        Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+    lock(cache.lock) do
+        cache.failures[(entity_value, source_id)] = String(message)
+        state = CachedResultState(
+            Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+        cache.result_states[(Int8(kind), entity_value)] = state
+        _stage_ledger_failure!(cache.stage_ledger, (entity_value, source_id), true)
+        _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
+    end
+    return nothing
+end
+
+function store_source_item_failure!(
+    cache::MemoryCacheDB,
+    source_item_id::AbstractString,
+    message::AbstractString,
+)::Nothing
+    source_id = String(source_item_id)
+    lock(cache.lock) do
+        cache.failures[(source_id, source_id)] = String(message)
+    end
+    _stage_ledger_failure!(cache.stage_ledger, (source_id, source_id), true)
     return nothing
 end
 
 function store_item_metadata!(cache::MemoryCacheDB, record::ItemRecord, ::AbstractDict)::Vector{String}
-    cache.result_states[(Int8(ITEM_ANALYSIS_RESULT), record.id)] = CachedResultState(
-        Int8(ITEM_ANALYSIS_RESULT),
-        record.id,
-        Int8(RESULT_READY),
-        record.source_item_id,
-        nothing,
-    )
+    lock(cache.lock) do
+        state = CachedResultState(
+            Int8(ITEM_ANALYSIS_RESULT),
+            record.id,
+            Int8(RESULT_READY),
+            record.source_item_id,
+            nothing,
+        )
+        cache.result_states[(Int8(ITEM_ANALYSIS_RESULT), record.id)] = state
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+    end
     return String[]
 end
 
 function store_collection_metadata!(cache::MemoryCacheDB, collection_key::AbstractString, ::AbstractDict)::Vector{String}
     entity = String(collection_key)
-    cache.result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = CachedResultState(
-        Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    lock(cache.lock) do
+        state = CachedResultState(
+            Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+        cache.result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = state
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
+    end
     return String[]
 end
 
 function store_collection_process_result!(cache::MemoryCacheDB, collection_key::AbstractString)::Nothing
     entity = String(collection_key)
-    cache.result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = CachedResultState(
-        Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+    lock(cache.lock) do
+        state = CachedResultState(
+            Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
+        cache.result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = state
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
+    end
     return nothing
 end
 
@@ -680,9 +961,11 @@ function delete_source_item!(
 )::Nothing
     source_id = String(source_item_id)
     delete!(cache.source_items, source_id)
+    _stage_ledger_source!(cache.stage_ledger, source_id, false)
     for record in old_records
         key = item_key!(cache, record.id)
         delete!(cache.items, record.id)
+        _stage_ledger_item!(cache.stage_ledger, record.id, false)
         delete!(cache.source_item_metadata, key)
         delete!(cache.analyzed_item_metadata, key)
         delete!(cache.payload, (key, PAYLOAD_STAGE_PROCESSED))
@@ -690,10 +973,16 @@ function delete_source_item!(
         delete!(cache.interpreted, record.id)
         delete!(cache.processed_memory, record.id)
         delete!(cache.failures, (record.id, source_id))
+        _stage_ledger_failure!(cache.stage_ledger, (record.id, source_id), false)
         delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), nothing)
         delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), nothing)
     end
     delete!(cache.failures, (source_id, source_id))
+    _stage_ledger_failure!(cache.stage_ledger, (source_id, source_id), false)
     return nothing
 end
 
@@ -702,15 +991,29 @@ function delete_source_item!(
     source_item_id::AbstractString,
     old_records::Vector{ItemRecord},
 )::Nothing
-    delete!(cache.source_items, String(source_item_id))
-    delete!(cache.failures, (String(source_item_id), String(source_item_id)))
+    source_id = String(source_item_id)
+    lock(cache.lock) do
+        delete!(cache.source_items, source_id)
+        delete!(cache.failures, (source_id, source_id))
+    end
+    _stage_ledger_source!(cache.stage_ledger, source_id, false)
+    _stage_ledger_failure!(cache.stage_ledger, (source_id, source_id), false)
     for record in old_records
         delete!(cache.interpreted, record.id)
         delete!(cache.processed_memory, record.id)
         delete!(cache.collection_processed_memory, record.id)
-        delete!(cache.failures, (record.id, String(source_item_id)))
-        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
-        delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+        lock(cache.lock) do
+            delete!(cache.items, record.id)
+            delete!(cache.failures, (record.id, source_id))
+            delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+            delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+        end
+        _stage_ledger_item!(cache.stage_ledger, record.id, false)
+        _stage_ledger_failure!(cache.stage_ledger, (record.id, source_id), false)
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), nothing)
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), nothing)
     end
     return nothing
 end
@@ -723,7 +1026,11 @@ function delete_collection_metadata!(
     for collection_key in unique(collection_keys)
         delete!(cache.analyzed_collection_metadata, collection_key)
         delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key), nothing)
         delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), collection_key))
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), collection_key), nothing)
     end
     return nothing
 end
@@ -734,8 +1041,14 @@ function delete_collection_metadata!(
 )::Nothing
     for collection_key in unique(collection_keys)
         key = String(collection_key)
-        delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), key))
-        delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), key))
+        lock(cache.lock) do
+            delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), key))
+            delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), key))
+        end
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), key), nothing)
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), key), nothing)
     end
     return nothing
 end
@@ -758,6 +1071,85 @@ end
 
 cache_pending_counts(::MemoryCacheDB)::NamedTuple{(:items, :rows),Tuple{Int,Int}} =
     (items=0, rows=0)
+
+"""Return persisted stage counts owned by the cache layer."""
+function cache_stage_summary(cache::AbstractCacheDB)::CacheStageSummary
+    return lock(cache.stage_ledger.lock) do
+        cache.stage_ledger.summary
+    end
+end
+
+"""Drop the cached interpretation ledger for one source item."""
+function clear_cached_source_state!(cache::CacheDB, source_item_id::AbstractString)::Nothing
+    source_id = String(source_item_id)
+    delete!(cache.source_items, source_id)
+    delete!(cache.failures, (source_id, source_id))
+    _stage_ledger_source!(cache.stage_ledger, source_id, false)
+    _stage_ledger_failure!(cache.stage_ledger, (source_id, source_id), false)
+    return nothing
+end
+
+function clear_cached_source_state!(cache::MemoryCacheDB, source_item_id::AbstractString)::Nothing
+    source_id = String(source_item_id)
+    lock(cache.lock) do
+        delete!(cache.source_items, source_id)
+        delete!(cache.failures, (source_id, source_id))
+    end
+    _stage_ledger_source!(cache.stage_ledger, source_id, false)
+    _stage_ledger_failure!(cache.stage_ledger, (source_id, source_id), false)
+    return nothing
+end
+
+"""Drop one cached work-result ledger row."""
+function clear_cached_result_state!(
+    cache::CacheDB,
+    kind::CacheResultKind,
+    entity::AbstractString,
+)::Nothing
+    key = (Int8(kind), String(entity))
+    delete!(cache.result_states, key)
+    _stage_ledger_result!(cache.stage_ledger, key, nothing)
+    return nothing
+end
+
+function clear_cached_result_state!(
+    cache::MemoryCacheDB,
+    kind::CacheResultKind,
+    entity::AbstractString,
+)::Nothing
+    key = (Int8(kind), String(entity))
+    lock(cache.lock) do
+        delete!(cache.result_states, key)
+    end
+    _stage_ledger_result!(cache.stage_ledger, key, nothing)
+    return nothing
+end
+
+function _cache_stage_summary(source_items, items, failures, states)::CacheStageSummary
+    ready(kind::CacheResultKind)::Int = count(
+        state -> CacheResultKind(state.kind) === kind &&
+            CacheResultStatus(state.status) === RESULT_READY,
+        values(states),
+    )
+    failed(kind::CacheResultKind)::Int = count(
+        state -> CacheResultKind(state.kind) === kind &&
+            CacheResultStatus(state.status) === RESULT_FAILED,
+        values(states),
+    )
+    failed_interpret = count(key -> first(key) == last(key), keys(failures))
+    return CacheStageSummary(
+        length(source_items),
+        length(items),
+        ready(PROCESSING_RESULT),
+        ready(ITEM_ANALYSIS_RESULT),
+        ready(COLLECTION_PROCESS_RESULT),
+        ready(COLLECTION_ANALYSIS_RESULT),
+        failed_interpret,
+        failed(PROCESSING_RESULT),
+        failed(ITEM_ANALYSIS_RESULT),
+        failed(COLLECTION_PROCESS_RESULT) + failed(COLLECTION_ANALYSIS_RESULT),
+    )
+end
 
 """Whether any cache store has queued or writing mutations."""
 function cache_has_pending_writes(cache::AbstractCacheDB)::Bool
@@ -915,6 +1307,7 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
         empty!(cachedb.item_keys)
         cachedb.next_item_key = Int64(1)
     end
+    _reset_stage_ledger!(cachedb.stage_ledger)
     connection = DBInterface.connect(cachedb.db)
     try
         DBInterface.execute(connection, "DELETE FROM meta")
@@ -930,6 +1323,13 @@ function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
     clear!(cachedb.interpreted)
     clear!(cachedb.processed_memory)
     clear!(cachedb.collection_processed_memory)
+    lock(cachedb.lock) do
+        empty!(cachedb.source_items)
+        empty!(cachedb.items)
+        empty!(cachedb.failures)
+        empty!(cachedb.result_states)
+    end
+    _reset_stage_ledger!(cachedb.stage_ledger)
     return nothing
 end
 

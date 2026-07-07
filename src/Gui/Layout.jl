@@ -26,10 +26,8 @@ using ..Cache: ProjectCacheIdentity
 import ..Workspace
 using ..Workspace:
     WorkspaceStatus,
-    cancel_scan!,
     refresh_status!,
     rebuild_cache!,
-    scan_source!,
     source_scan_running
 
 """Brighten or darken an ImGui button color by `delta` per RGB channel, clamped to [0, 1]."""
@@ -51,7 +49,7 @@ end
 current_status(state::BrowserState)::WorkspaceStatus =
     state.workspace isa Workspace.Workspace ? state.workspace.status :
     WorkspaceStatus(:none, "No Project", "Open a project folder to build a cache.",
-        false, nothing, Pair{String,String}[])
+        false, nothing, Workspace.WorkspaceStageCounts(), Pair{String,String}[])
 
 """Render the cache status button and its control popup, colored by the workspace status."""
 function _render_cache_toolbar_button!(state::BrowserState)::Nothing
@@ -63,6 +61,8 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
     if ig.Button("Cache: $(status.label)")
         ig.OpenPopup("cache_toolbar_popup")
     end
+    button_min = ig.GetItemRectMin()
+    button_max = ig.GetItemRectMax()
     ig.PopStyleColor()
     ig.PopStyleColor()
     ig.PopStyleColor()
@@ -70,7 +70,8 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
         ig.TextUnformatted(status.detail)
         ig.EndTooltip()
     end
-    ig.SetNextWindowSize((960, 560), ig.ImGuiCond_Always)
+    ig.SetNextWindowPos((button_min.x, button_max.y), ig.ImGuiCond_Always)
+    ig.SetNextWindowSize((460, 0), ig.ImGuiCond_Always)
     if ig.BeginPopup("cache_toolbar_popup")
         _render_cache_controls!(state)
         ig.EndPopup()
@@ -179,22 +180,6 @@ function render_menu_bar(state::BrowserState)::Nothing
                 ig.EndMenu()
             end
 
-            has_root = workspace isa Workspace.Workspace
-            source_rescan_running =
-                has_root && source_scan_running(workspace)
-            rescan_label = source_rescan_running ? "Cancel Rescan" : "Rescan"
-            can_rescan = has_root
-            !can_rescan && ig.BeginDisabled()
-            if ig.MenuItem(rescan_label)
-                if source_rescan_running
-                    cancel_scan!(workspace)
-                else
-                    @info "Rescanning source: $(source_label(workspace.source))"
-                    scan_source!(workspace)
-                end
-            end
-            !can_rescan && ig.EndDisabled()
-
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, state.show_project_window)
                 state.show_project_window = !state.show_project_window
@@ -236,24 +221,35 @@ end
 function _render_cache_controls!(state::BrowserState)::Nothing
     workspace = state.workspace
     status = current_status(state)
-    ig.TextColored(status_color(status.level), status.label)
-    ig.TextWrapped(status.detail)
-    status.progress === nothing || ig.ProgressBar(status.progress, (-1, 0))
 
     workspace isa Workspace.Workspace || return nothing
     identity = workspace.cache.identity
     if identity isa ProjectCacheIdentity
-        ig.Separator()
-        ig.Text("Source: $(identity.source_label)")
-        ig.TextWrapped("Source ID: $(identity.source_id)")
-        ig.TextWrapped("File: $(identity.cache_path)")
+        alt_held = unsafe_load(ig.GetIO().KeyAlt)
+        label = alt_held ? "Cache" : "Source"
+        shown = alt_held ? "DuckDB" : identity.source_label
+        path = alt_held ? identity.cache_path : identity.source_id
+        tooltip = alt_held ? "Copy cache database path" : "Copy source path"
+        ig.Text("$label: $shown")
+        ig.SameLine()
+        _copy_path_button("copy_$(lowercase(label))", path, tooltip)
+    end
+
+    if status.progress === nothing
+        ig.TextWrapped(status.detail)
+    end
+    _render_stage_counts!(status)
+    if status.progress !== nothing
+        ig.ProgressBar(status.progress, (-1, 0))
+        ig.TextWrapped(status.detail)
     end
 
     if !isempty(status.errors)
         ig.Separator()
-        ig.TextColored((1.0, 0.35, 0.35, 1.0), "Source Item Errors")
-        ig.TextDisabled("Select a source item to show its items")
+        ig.TextColored((1.0, 0.35, 0.35, 1.0), "Cache Issues")
+        ig.TextDisabled("Select an issue to show related items")
         shown = min(length(status.errors), 20)
+        ig.BeginChild("##cache_errors", (0.0f0, 120.0f0), true)
         for index in 1:shown
             source_item_id, message = status.errors[index]
             ig.PushID(source_item_id)
@@ -270,22 +266,93 @@ function _render_cache_controls!(state::BrowserState)::Nothing
             ig.PopID()
             index < shown && ig.Separator()
         end
+        ig.EndChild()
         length(status.errors) > shown &&
             ig.TextDisabled("$(length(status.errors) - shown) more file errors")
     end
 
     ig.Separator()
     scan_running = source_scan_running(workspace)
-    scan_label = scan_running ? "Cancel Scan" : "Scan Source"
-    if ig.Button(scan_label, (-1, 0))
-        scan_running ? cancel_scan!(workspace) : scan_source!(workspace)
-    end
     rebuild_disabled = scan_running || !(workspace.index.source isa SourceScan)
     rebuild_disabled && ig.BeginDisabled()
     if ig.Button(status.level === :missing ? "Build Cache" : "Rebuild Cache", (-1, 0))
         rebuild_cache!(workspace)
     end
     rebuild_disabled && ig.EndDisabled()
+    return nothing
+end
+
+function _copy_path_button(
+    id::AbstractString,
+    path::AbstractString,
+    tooltip::AbstractString,
+)::Nothing
+    if ig.SmallButton("⧉##$id")
+        ig.SetClipboardText(String(path))
+    end
+    if ig.BeginItemTooltip()
+        ig.TextUnformatted(tooltip)
+        ig.TextUnformatted(path)
+        ig.EndTooltip()
+    end
+    return nothing
+end
+
+function _render_stage_counts!(status::WorkspaceStatus)::Nothing
+    counts = status.counts
+    cache = counts.cache
+    flags = ig.ImGuiTableFlags_SizingStretchSame
+    ig.BeginTable("stage_counts", 4, flags) || return nothing
+    ig.TableNextRow()
+    _stage_count_cell("$(counts.sources_found) Sources", [
+        "$(counts.sources_found) $(counts.source_noun) found",
+        "$(counts.sources_pending) pending interpretation",
+    ]; align=:left)
+    _stage_count_cell("$(cache.interpreted_items) entries", [
+        "$(cache.interpreted_items) items interpreted and cached",
+    ]; align=:center)
+    _stage_count_cell("$(cache.analyzed) analyzed", [
+        "$(cache.processed) processed",
+        # Item analysis can be cached before a processed payload is stored when background
+        # processing is off; the cache reports each stage independently.
+        "$(cache.analyzed) analyzed",
+    ]; align=:center)
+    stage_failures = cache.failed_interpret + cache.failed_process +
+        cache.failed_analyze + cache.failed_collection
+    extra_analyze_issues = max(length(status.errors) - stage_failures, 0)
+    analyze_issues = cache.failed_analyze + extra_analyze_issues
+    issues = cache.failed_interpret + cache.failed_process + analyze_issues +
+        cache.failed_collection
+    issue_word = issues == 1 ? "issue" : "issues"
+    _stage_count_cell("$(issues) $issue_word", [
+        "$(cache.failed_interpret) interpret",
+        "$(cache.failed_process) process",
+        "$analyze_issues analyze",
+        "$(cache.failed_collection) collection",
+    ]; align=:right)
+    ig.EndTable()
+    return nothing
+end
+
+function _stage_count_cell(
+    label::AbstractString,
+    tooltip::Vector{String};
+    align::Symbol,
+)::Nothing
+    ig.TableNextColumn()
+    if align !== :left
+        text_width = ig.CalcTextSize(label).x
+        avail = ig.GetContentRegionAvail().x
+        offset = align === :right ? max(avail - text_width, 0) : max((avail - text_width) / 2, 0)
+        ig.SetCursorPosX(ig.GetCursorPosX() + offset)
+    end
+    ig.TextUnformatted(label)
+    if ig.BeginItemTooltip()
+        for row in tooltip
+            ig.TextUnformatted(row)
+        end
+        ig.EndTooltip()
+    end
     return nothing
 end
 

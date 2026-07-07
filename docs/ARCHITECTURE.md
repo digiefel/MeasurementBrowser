@@ -43,9 +43,10 @@ source item → data_items → interpreted data → process → analyze → coll
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-compares the discovered source-item ids and fingerprints with the published snapshot, and submits one
-`SourceChanges` batch to the workspace work graph. Source watchers submit the same batch type;
-`DirectorySource` uses it for metadata-file changes. Interpretation workers call
+compares the discovered source-item ids and fingerprints with the cache fingerprint table, and submits
+one `SourceChanges` batch to the workspace work graph. Source watchers submit the same batch type;
+`DirectorySource` watches the directory tree recursively and reports file creates, edits, renames,
+deletes, and metadata changes through that path. Interpretation workers call
 `data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish
 their own completions: each finishing worker takes the workspace publish lock, rejects stale
 revisions, atomically publishes replacement records into `WorkspaceIndex`, sends semantic record
@@ -58,9 +59,9 @@ many dependencies remain (`pending`). Finished work lives in the cache `result_s
 interpret/source tables for `SOURCE_INTERPRET`). `WorkspaceIndex` owns completed records,
 hierarchy, metadata, failures, and selections. The five work kinds — `SOURCE_INTERPRET`,
 `ITEM_PROCESS`, `ITEM_ANALYZE`, `COLLECTION_PROCESS`, `COLLECTION_ANALYZE` — run on one fixed
-long-lived pool. Processing is selection-driven by default: a live scan interprets every source item
-(so the tree fills) but only interprets — `ITEM_PROCESS`, `ITEM_ANALYZE`, and collection work are
-scheduled on demand when items are requested (`request_processed_items`). `background_processing`
+long-lived pool. Processing is selection-driven by default: a live scan interprets every changed
+source item (so the tree fills) but only interprets — `ITEM_PROCESS`, `ITEM_ANALYZE`, and collection
+work are scheduled on demand when items are requested (`request_processed_items`). `background_processing`
 opts into eagerly processing and analyzing every item as it is interpreted; background and selected
 work then share the same work node, and selection only raises priority and joins the existing
 revision. Either way, interpret-time invalidation always clears stale `result_states` rows so the
@@ -90,7 +91,8 @@ A source owns:
 
 - discovering source items
 - its own lifecycle and change watching
-- source-specific parameter input, such as `DirectorySource` loading and watching `metadata.txt`
+- source-specific vocabulary, such as the noun used for discovered source items
+- source-specific parameter input, such as `DirectorySource` loading `metadata.txt`
 
 A project/source implementation owns:
 

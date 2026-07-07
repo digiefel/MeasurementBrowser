@@ -3,6 +3,8 @@ using Test
 
 const MBD = MeasurementBrowser
 
+struct TestNounSource <: MBD.Projects.AbstractDataSource end
+
 """Open a memory-only workspace on `source` and wait for the build to settle."""
 function _open_settled(project, source)
     workspace = MBD.open_workspace(project, source; cache=false)
@@ -18,7 +20,9 @@ end
         write(joinpath(dir, ".hidden.csv"), "")
         write(
             joinpath(dir, "metadata.txt"),
-            "collection_path,wafer,area_um2\ntest,A,12.5\ntest/nested,B,99\n",
+            "collection_path,wafer,area_um2,zero,one,flag\n" *
+            "test,A,12.5,0,1,yes\n" *
+            "test/nested,B,99,0,1,no\n",
         )
         write(joinpath(dir, "tags.txt"), "ignored")
         write(joinpath(dir, "measurementbrowser.toml"), "ignored")
@@ -54,8 +58,14 @@ end
             nested_node = hierarchy.index[("test", "nested")]
             @test root_node.metadata[:wafer] == "A"
             @test root_node.metadata[:area_um2] == 12.5
+            @test root_node.metadata[:zero] === 0
+            @test root_node.metadata[:one] === 1
+            @test root_node.metadata[:flag] === true
             @test nested_node.metadata[:wafer] == "B"
             @test nested_node.metadata[:area_um2] == 99
+            @test nested_node.metadata[:zero] === 0
+            @test nested_node.metadata[:one] === 1
+            @test nested_node.metadata[:flag] === false
 
             metadata_by_label = Dict(
                 record.item_label =>
@@ -95,6 +105,8 @@ end
         custom = MBD.DirectorySource(dir; metadata_file="device_info.txt")
         MBD.open_source(custom)
         try
+            @test MBD.Projects.source_item_noun(custom) == "source files"
+            @test MBD.Projects.source_item_noun(TestNounSource()) == "source items"
             @test MBD.Projects.has_collection_metadata(custom)
             @test all(
                 file -> file.filepath != custom_path,
@@ -136,6 +148,27 @@ end
                 ) == "B",
                 5,
             ) === :ok
+        finally
+            MBD.close_workspace!(workspace)
+        end
+    end
+end
+
+@testset "directory watcher publishes file changes" begin
+    mktempdir() do dir
+        write_test_source(joinpath(dir, "a.csv"))
+        workspace = MBD.open_workspace(
+            TEST_PROJECT, MBD.DirectorySource(dir); cache=false)
+        try
+            wait_workspace_idle!(workspace)
+            @test length(workspace.index.items) == 1
+
+            new_path = joinpath(dir, "b.csv")
+            write_test_source(new_path, 10)
+            @test Base.timedwait(() -> length(workspace.index.items) == 2, 5) === :ok
+
+            rm(new_path)
+            @test Base.timedwait(() -> length(workspace.index.items) == 1, 5) === :ok
         finally
             MBD.close_workspace!(workspace)
         end
