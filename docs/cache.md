@@ -1,123 +1,371 @@
 # Source Cache
 
-Scanning a source is inherently slow: the engine must enumerate every source item, interpret each one
-into data items, and then compute analysis values. The tree is known before analysis finishes. The
-cache stores the result of that work so the previous tree can appear immediately while a new scan
-checks the source.
+Scanning a source is inherently slow. The package must discover source items, interpret each one into
+logical items, process their data, and compute statistics. The source cache stores reusable results
+from that work so a reopened workspace can publish its previous index immediately and avoid repeating
+work whose inputs have not changed.
 
-The source remains authoritative. The cache is generated package data, stored outside the source, and
-never exposed to source or project code.
+The cache is generated package data. Source files and project code remain the source of truth.
+Project code supplies interpretation, processing, and statistics; the package decides where and when
+their reusable outputs are stored. The cache may always be rebuilt, and its on-disk layout is an
+internal implementation detail.
 
-## Startup
+Opening a workspace does not discard an old cache by default. If the cache schema is out of date,
+the workspace stays usable with a memory-only cache for that session. Script callers can opt in with
+`open_workspace(...; rebuild=true)` to discard and rebuild the generated cache immediately. The
+browser shows the same stale-cache condition as a prompt and only discards the generated cache when
+the user chooses to rebuild.
 
-Opening a workspace starts cache loading and source scanning together.
+The cache does not schedule work and does not own the published workspace index. It reports which
+persisted results already exist. The work dependency graph decides what remains to be computed, and
+`WorkspaceIndex` owns the records, hierarchy, parameters, statistics, and failures shown by the
+application.
 
-Cache loading reads one compact index containing the previous `SourceScan`. It can populate the
-workspace index immediately with the previous hierarchy, parameters, stats, skipped-item count,
-fingerprints, and analysis failures.
+Cached item records carry the entries layer of their metadata only. Source-owned collection metadata
+is read from the open source and applied to restored records exactly as in a memory-only workspace.
 
-The scan independently streams current items into the same workspace index and eventually produces
-the authoritative `SourceScan`. Workspace analysis then fills per-item and collection stats in the
-background. The engine updates the cache after analysis, when source items were added, changed,
-deleted, or produced a different analysis result.
+## Vocabulary
 
-## Identity
+These terms have one meaning throughout the cache code:
 
-Cache identity is **source-based**, not root/project-based. Each source has one deterministic cache
-id derived from `source_id(source)`:
+- **Result store** — one independently buffered set of keyed values, such as source-item rows,
+  logical-item rows, metadata, result states, or processed payloads. Most result stores map to one
+  table; processed payloads span their pointer table, schema registry, and physical DataFrame tables.
+- **Buffer** — bounded memory in front of one result store. It owns pending mutation intent, reads,
+  capacity, its connections when disk-backed, and background flushing.
+- **Append, edit, or delete** — a mutation submitted to a buffer. Submission changes memory only and
+  normally returns without touching DuckDB.
+- **Flush** — one buffer snapshot being applied to its result store in one DuckDB transaction.
+- **Backpressure** — a disk-backed payload store waiting because its configured row limit is full.
+  Bookkeeping stores are unlimited, and memory-only stores drop an incoming value instead of waiting.
+- **Published data** — completed data in `WorkspaceIndex`. Buffered or persisted cache rows are not
+  themselves the published workspace.
 
-```text
-<source-label>-<source-id-digest>
+There is no separate producer/consumer framework. Package code submits semantic cache operations;
+`CacheDB` translates them into typed buffer mutations.
+
+## Ownership
+
+`ProjectCache.jl` owns everything specific to MeasurementBrowser's project cache:
+
+- `CacheDB` and the set of result stores it contains;
+- row types, keys, and cache result kinds;
+- the DuckDB schema, table names, and columns;
+- source-item deletion cascades;
+- cache identity and reconstruction of `ProjectCacheIndex`;
+- semantic operations used by Workspace.
+
+`CacheBuffer.jl` owns the fully generic `CacheBuffer{R}` mechanism:
+
+- keyed pending append, edit, and delete intent;
+- reset intent;
+- coalescing repeated mutations;
+- payload-row accounting and backpressure;
+- persistent read and write connections for a disk-backed buffer;
+- one background flush loop;
+- memory-first reads;
+- permanent closure.
+
+The generic buffer names no concrete row type, table, column, cache stage, or ProjectCache type, but it can generate the generic SQL for any payload.
+`CacheDB` owns the buffers and the DuckDB database handle, but it does not own a general-purpose
+connection.
+
+Workspace code uses semantic Cache operations. It never runs SQL, opens a DuckDB connection, names
+cache storage, accesses an individual buffer, or decides how a result is written.
+
+## One mechanism, two backing modes
+
+### Disk-backed buffers
+
+A disk-backed buffer opens one persistent read connection and one persistent write connection when it
+is constructed, then immediately launches its background flush loop. Reads and flushes may proceed
+concurrently because they never share a connection across tasks. There is no connection exposed to
+ProjectCache callers and no maintenance connection hidden behind a callback.
+
+Source items, logical items, metadata, failures, result states, and cacheable processed payloads are
+disk-backed.
+
+### Memory-only buffers
+
+Some item data is useful only as a short-lived input to downstream work:
+
+- interpreted item data waiting to be processed;
+- processed data that the project declares non-cacheable.
+
+These values use the same keyed buffer mechanism without a connection or flush task. They are never
+written to DuckDB. If an incoming value would exceed the configured row limit, it is not retained.
+A later miss causes the required upstream work to be performed again.
+
+This prevents interpretation from being throttled by processing and prevents non-cacheable processed
+data from becoming an unbounded Julia object cache.
+
+## Capacity and backpressure
+
+Capacity is counted directly in retained payload rows. ProjectCache supplies the row limit when it
+constructs each payload buffer and defines how that payload type reports its DataFrame row count.
+There is no estimated byte weight.
+
+Bookkeeping buffers have no row limit. They still report the number of pending keys for workspace
+status, but they never call the payload row-count operation and never backpressure.
+
+A disk-backed payload submission waits only when accepting it would exceed the row limit and another
+pending value can be flushed to make room. One oversized value is accepted when the buffer is
+otherwise empty and is made immediately eligible for flushing, so it cannot deadlock.
+
+A memory-only payload submission never waits. If replacing or adding the value would exceed its row
+limit, the incoming value is not retained.
+
+## Mutation intent
+
+The buffer exposes four mutation operations:
+
+```julia
+append!(buffer, key, row)
+edit!(buffer, key, row)
+delete!(buffer, key)
+reset!(buffer)
 ```
 
-Cache files live under:
+They update pending memory only. Repeated operations for one key coalesce to the final useful intent:
 
-```text
-DEPOT_PATH[1]/measurementbrowser/cache/<source-label>/<cache-id>.h5
-```
-
-Scan/index ownership is keyed by `source_id`. A cache is accepted only when the identity fields and
-the schema version match. For `DirectorySource`, `source_id` is the normalized root path.
-
-## Fingerprints and what they invalidate
-
-| Fingerprint | Scope | Missing (`=== nothing`) means |
-|---|---|---|
-| `fingerprint(item::AbstractDataSourceItem)` | records + payloads from one source item | skip persistent payload caching for that item's data |
-| `fingerprint(item::AbstractDataItem)` | one item's payload | skip persistent payload caching for that item |
-
-A changed `source_item_fingerprint` invalidates only the records and payloads derived from that source
-item. Item payloads are keyed by the full tuple:
-
-```text
-source_id + source_item_id + source_item_fingerprint + id + item_fingerprint
-```
-
-This generalizes the previous file-fingerprint behavior: for a file-backed source the source-item
-fingerprint is the file's `stat` fingerprint, so changing or deleting one file invalidates exactly its
-payloads while a non-file or live source (no fingerprints) simply runs without a persistent cache.
-
-## Contents
-
-The HDF5 file contains:
-
-| Entry | Purpose |
+| Pending sequence | Final pending operation |
 |---|---|
-| `schema_version` attribute | Rejects old cache layouts before deserialization |
-| `/index` | One uncompressed serialized `ProjectCacheIndex` for fast startup |
-| `/items/<source-item>/<item>` | Lazily cached payloads returned by the source's data load |
+| append followed by append or edit | append the latest value |
+| append followed by delete | no operation |
+| edit followed by edit | edit to the latest value |
+| edit followed by delete | delete |
+| delete followed by append or edit | edit or replace |
+| delete followed by delete | delete |
 
-`ProjectCacheIndex` contains the completed `SourceScan` and analysis errors grouped by source item.
+Preserving this distinction matters. A pure append batch can use DuckDB's bulk Appender. An edit to
+an ordinary keyed table can use a batched update, upsert, or merge without first deleting every row.
+A processed-payload replacement is different: its physical shape and row count may change, so its
+transaction removes the old physical rows before appending the replacement and its pointer.
 
-Payloads are grouped by source item, so changing or deleting one unit invalidates its payload group
-regardless of how many logical items it contains.
+`reset!` discards earlier pending operations, makes reads ignore committed rows, and marks the next
+flush to clear the complete result store before applying mutations submitted after the reset.
 
-## Annotations
+## Flushing
 
-> **TODO (source-agnostic storage, deferred):** annotations (`tags.txt`, `notes.txt`, `layout.txt`)
-> are currently stored **next to the cache**, keyed by `source_id`, rather than through a source-owned
-> storage capability. This gives non-filesystem sources somewhere to persist user-authored state. The
-> intended fix is to make annotation storage a source capability, so file-backed sources can expose
-> hand-editable source-root files while other sources can persist elsewhere.
+Each disk-backed buffer has one background loop. Pending work becomes flushable when:
 
-`DirectorySource` owns `metadata.txt` collection parameter input separately from the HDF5 cache; see
-[storage.md](storage.md).
+- the existing flush deadline is reached;
+- the payload row limit is reached;
+- the buffer is closing.
 
-## Freshness
+Continued submissions do not move the existing deadline. A flush snapshots the already-coalesced
+intent and calls one ProjectCache extension point:
 
-A cached source item matches the source only when its `source_item_fingerprint` and effective
-collection/item parameter state match (for a file fingerprint, normalized path + size + mtime). The
-final scan comparison reports:
+```julia
+_flush_to_db!(buffer, snapshot)
+```
 
-| Count | Meaning |
-|---|---|
-| fresh | cached source item matches the current scan and has no analysis error |
-| stale | fingerprint, effective parameters, or analysis result changed |
-| new | present only in the current scan |
-| deleted | present only in the cache |
-| errors | current source items whose analysis failed |
+The ProjectCache method inspects the whole snapshot and chooses the fewest suitable batched statements
+for that result store. It uses `buffer.write_connection` and performs exactly one transaction
+containing the snapshot's reset, appends, edits, and deletes. There are no separate append, edit, or
+delete flush hooks.
 
-Analysis failure does not remove items from the tree. It is stored as a valid cache difference so one
-failed source item cannot invalidate the rest.
+Submissions may continue while database I/O runs. After a successful commit, the buffer removes only
+the exact mutation revisions present in the snapshot. A newer mutation for the same key remains
+pending.
 
-## Updates
+Cache outputs are reproducible. If a background flush fails, the error is reported and that snapshot
+is discarded so the flush task remains alive and a blocked submission cannot wait forever. Missing
+outputs are recomputed when demanded. Cross-buffer crash atomicity and automated cache repair are
+separate concerns.
 
-A normal update uses the completed `SourceScan` already owned by the workspace. It never starts
-another scan. It replaces the compact index, preserves payloads for unchanged source-item
-fingerprints, and deletes payload groups for changed, deleted, or newly failing ones. Parameter-only
-changes update the index without discarding payloads. A rebuild replaces the whole HDF5 file. Index
-writing does not load item data; payloads are cached only when a caller requests them and both
-source-item and item fingerprints are available.
+## Reads
 
-## Item data
+The only generic read operations are:
 
-Item materialization loads payloads through the source's `load_data_item`. The workspace keeps
-loaded items in memory and the cache layer can persist payloads with sufficient source-item and item
-fingerprints.
+```julia
+read(buffer, key)
+read(buffer)
+```
 
-Before reading or writing a payload, the engine checks the current fingerprints against the in-memory
-cache index; stale payloads are never returned. A source item or item with a `nothing` fingerprint is
-loaded fresh every time and never persisted. The loaded cache index belongs to its workspace — there
-is no process-wide active cache. All HDF5 access uses one process-wide lock, so background cache
-updates cannot overlap plot reads or lazy payload writes.
-</content>
+ProjectCache supplies a result store's disk-reading behavior when it constructs the buffer. That
+behavior remains private to the buffer and cannot be called as a side-door disk read.
+
+A keyed read observes pending reset and mutation state before consulting DuckDB, then rechecks pending
+state after the database read. A complete read obtains committed rows and overlays pending
+appends and edits, removes pending deletes, or starts from an empty committed view while reset is
+pending.
+
+The full lookup order for disk-backed processed data is:
+
+```text
+pending buffer value → DuckDB value → required upstream work
+```
+
+For memory-only interpreted or processed data it is:
+
+```text
+pending buffer value → required upstream work
+```
+
+Loading `ProjectCacheIndex` reads data-less rows, processed-payload pointers, and result states. It
+does not materialize processed payload bodies merely to determine which work is already satisfied.
+
+## Lifecycle and connections
+
+A buffer is live when constructed. It is never started, stopped, paused, or restarted.
+
+`close!` is the only lifecycle transition. It rejects new operations, wakes the flush loop, drains the
+final snapshot, waits for the loop to finish, closes the owned read and write connections, and
+permanently closes the buffer. Repeated closure is an error.
+
+The tiny `meta` header is the only unbuffered data. ProjectCache uses explicit, short-lived
+connections for:
+
+- initial schema creation and validation before buffer construction;
+- reading, writing, or clearing the meta header;
+- the final checkpoint after every buffer has closed.
+
+These are named operations, not a general connection callback. There is no `with_reader`,
+`with_maintenance`, or equivalent escape hatch.
+
+## Stored state
+
+The fixed DuckDB stores are:
+
+- `meta` — schema version, project and source identity;
+- `source_items` — source-item ID, fingerprint, path, and timestamp;
+- `items` — data-less logical-item records, their source ownership, and each item's integer `item_key`
+  surrogate;
+- `source_item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
+  `ItemRecord.metadata`;
+- `source_collection_metadata` — source `collection_metadata` per path, keyed by collection key;
+- `analyzed_item_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
+  layers), keyed by `item_key`; this is the query surface;
+- `analyzed_collection_metadata` — collection `analyze` output per collection, keyed by collection key;
+- `wide_columns` — the registry naming each wide table's columns and their logical type;
+- `item_failures` — source interpretation and logical-item failures published with the index;
+- `result_states` — independent processing, item-analysis, collection-process, and collection-analysis
+  outcomes;
+- `item_data` — pointers to cacheable processed payloads, keyed by `(item_key, stage)`;
+- `dataframe_schemas` — the ordered user-column names belonging to each payload shape;
+- per-shape DataFrame tables — native rows of processed tabular payloads.
+
+Queued and running work is not persisted. It belongs to the work dependency graph.
+
+### Wide metadata tables
+
+`source_item_metadata`, `source_collection_metadata`, `analyzed_item_metadata`, and
+`analyzed_collection_metadata` are wide, dynamically-widened
+typed tables: one row per entity, one bare column per metadata name (`max_current DOUBLE`,
+`polarity VARCHAR`). A new name is registered on first write — the flush adds the column with
+`ALTER TABLE ADD COLUMN` and a `wide_columns` row in the same transaction. The first type registered
+for a name wins; a later mismatched write drops that one value and surfaces a graceful failure naming
+the key and types, while everything else in the write proceeds. `missing` is not stored — the key is
+simply absent after reload. Symbol/String and Date/DateTime share a SQL type, so the `wide_columns`
+registry is the only correct decoder.
+
+### The item-key surrogate
+
+Each logical item has one integer `item_key`, minted at interpretation and shared across the wide
+tables and the payload store. `open_cache_db` loads the committed `item_key`s from `items`; a rebuild
+resets them. Payloads are keyed by `(item_key, stage)`, where the stage is either the item's own
+`process` output or the collection `process` rewrite.
+
+### Persisted result state
+
+Successful empty analysis produces no metadata rows, so absence of metadata cannot mean "not
+computed." `result_states` therefore records processing, item-analysis, collection-process, and
+collection-analysis outcomes (success — including empty — or failure), each as `(kind, entity, status,
+message)`. Non-cacheable processed success remains memory-only.
+
+`result_states` carries no per-result input fingerprint: a result's validity is derived from its
+position downstream of unchanged sources, not from a stored claim. At reopen the cache index
+restores hierarchy and metadata; missing `RESULT_READY` rows are gap-filled by enqueueing live work,
+and the source-metadata diff invalidates whatever changed while the workspace was closed.
+
+These outcomes are independent. Processing failure prevents item analysis for that item, but an
+item-analysis failure does not erase a successfully processed payload. Collection-analysis failure
+does not alter member item metadata.
+
+### Query surface
+
+`query_items(cache, predicate)` returns item ids whose delivered metadata satisfies a SQL predicate,
+over a view `items LEFT JOIN analyzed_item_metadata USING (item_key)`. The view is recreated only
+when the effective-metadata column signature changes. Queries read committed DB state, so a value
+written within the buffer flush window may not appear yet.
+
+### Processed DataFrames
+
+Cacheable processed `AbstractDataFrame` values are stored in native DuckDB tables. One physical table
+is used for each ordered combination of user column names and element types. The shape's stable digest
+becomes an internal storage ID and table name; user text is never used directly as a table name.
+
+Each payload receives a compact integer sequence. Its `item_data` pointer and all physical rows share
+that sequence instead of repeating the logical item ID in every row. Two reserved internal columns
+store the sequence and the row order. User-derived identifiers are quoted, and the reserved internal
+prefix cannot collide with user columns.
+
+The pointer, schema registration when needed, and physical payload rows are committed in one
+transaction. A reader cannot observe a committed pointer without its payload. A zero-row DataFrame
+still has a pointer and schema, so it reconstructs as an empty value with the correct columns and
+types.
+
+Freshness is derived from source data, not from stored per-result claims. When the cache index is
+loaded, `result_states` restores which steps already finished; the work graph holds only live jobs
+and gap-fills any missing step. `reconcile_source_metadata_cache!` then diffs
+`source_collection_metadata` and `source_item_metadata` (cache `read`, including buffer overlay)
+against the open source and invalidates stale work. During streaming interpretation the same call is
+scoped to the batch's touched collections (`collections=`) and skips the whole-index item pass —
+interpret workers already wrote those item rows — so publication stays O(batch) instead of
+re-diffing the whole index each time. At runtime delivery consults live nodes, then `result_states`,
+then enqueues work; payloads are read only after a row is current.
+
+## Source changes
+
+ProjectCache exposes one semantic cascade for removing a source item:
+
+```julia
+delete_source_item!(cache, source_item_id, old_records)
+```
+
+It deletes each old record's item rows, wide-metadata rows, failures, result states, disk payloads,
+and memory-only values by `item_key`. It does not decide which collections are affected.
+
+The work dependency layer separately identifies affected collection paths and calls the semantic
+`delete_collection_metadata!(cache, collection_keys)` operation. A changed source is represented as
+buffered deletion of its old subtree followed by buffered stores for the replacement. Per-key
+coalescing turns retained keys into replacement edits before any database transaction is chosen.
+
+No maintenance cascade writes directly to DuckDB.
+
+## Cache identity
+
+Each project has one predictable cache file:
+
+```text
+DEPOT_PATH[1]/measurementbrowser/<project-name>/cache.duckdb
+```
+
+The project name must be one safe path component and is used unchanged. The meta header binds the file
+to the project name and `source_id(source)`. A cache belonging to a different source fails clearly
+instead of silently replacing valid data.
+
+Old schema migration is not supported by this refactor. An incompatible generated cache fails with a
+specific error and can be explicitly rebuilt from its source.
+
+DuckDB's buffer pool is configured when a cache is opened. `CACHE_MEMORY_LIMIT_MIB` controls the
+default for subsequently opened caches.
+
+## Concurrency assumptions
+
+DuckDB permits concurrent connections inside one process and append transactions do not conflict.
+Updates or deletes of the same rows can conflict.
+
+The cache avoids ambiguous ownership structurally:
+
+- each disk-backed result store has one owning buffer with separate persistent read and write
+  connections;
+- only that buffer mutates the store;
+- one flush contains the complete coalesced snapshot transaction;
+- payload pointer, schema, and physical-row mutations are coordinated by the single payload buffer;
+- fixed schema creation finishes before buffer connections are opened;
+- meta and checkpoint operations are explicit and do not run as alternate writers to buffered stores.
+
+The design does not depend on a hidden global writer, a maintenance connection, or callers waiting for
+buffers to flush before they can read the logical cache state.

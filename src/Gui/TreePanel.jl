@@ -44,7 +44,10 @@ function _item_matches_filter(
         return true
     end
     text = string(
-        display_label(workspace.project, item),
+        # Label callbacks are project callbacks: they receive the effective parameters, not the
+        # item-local subset the record stores.
+        display_label(workspace.project,
+            Workspace.effective_record(workspace.index.hierarchy, item)),
         "\n",
         item.item_label,
         "\n",
@@ -86,7 +89,7 @@ function _render_hierarchy_tree_panel(
     workspace = state.workspace
     root = workspace isa Workspace.Workspace ? workspace.index.hierarchy.root : nothing
     parameter_keys = workspace isa Workspace.Workspace ?
-        workspace.index.collection_parameter_keys :
+        workspace.index.collection_metadata_keys :
         Symbol[]
     selected_collections, _, _ = _project_visible_selection(state)
 
@@ -96,7 +99,7 @@ function _render_hierarchy_tree_panel(
     selected_collection_path_set = workspace isa Workspace.Workspace ?
         Set(workspace.selection.collection_paths) :
         Set{String}()
-    all_collection_count = 0
+    all_collection_count = Ref(0)
     filter_active = ig.ImGuiTextFilter_IsActive(filter_tree)
 
     if root !== nothing
@@ -164,9 +167,12 @@ function _render_hierarchy_tree_panel(
             return total
         end
 
-        all_collection_count = count_leaf_nodes(root)
-        for child in children(root)
-            collect_visible_collections!(child, false)
+        _time!(state, :hierarchy_prep) do
+            all_collection_count[] = count_leaf_nodes(root)
+            for child in children(root)
+                collect_visible_collections!(child, false)
+            end
+            return nothing
         end
 
         visible_collection_keys = function ()
@@ -181,7 +187,7 @@ function _render_hierarchy_tree_panel(
         _render_selection_toolbar!(
             length(selected_collections),
             length(visible_collections),
-            all_collection_count,
+            all_collection_count[],
             filter_tree,
             () -> begin
                 workspace.selection.collection_paths = copy(visible_collection_keys())
@@ -302,8 +308,8 @@ function _render_hierarchy_tree_panel(
 
             for (i, k) in enumerate(parameter_keys)
                 ig.TableSetColumnIndex(i)
-                if haskey(node.parameters, k)
-                    ig.Text(string(node.parameters[k]))
+                if haskey(node.metadata, k)
+                    ig.Text(string(node.metadata[k]))
                 elseif is_leaf
                     ig.TextDisabled("--")
                 end
@@ -350,7 +356,7 @@ function _render_hierarchy_tree_panel(
         ig.Text("No data loaded")
     end
 
-    isempty(visible_collections) && all_collection_count > 0 && ig.TextDisabled("No collections match filter")
+    isempty(visible_collections) && all_collection_count[] > 0 && ig.TextDisabled("No collections match filter")
     ig.EndChild()
 end
 
@@ -423,8 +429,18 @@ function _render_items_panel(
 
     selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
-    all_items = _items_of_selected_collections(state)
-    visible_items = _visible_items(state, workspace, all_items, filter_item)
+    all_items_ref = Ref{Vector{ItemRecord}}()
+    _time!(state, :items_panel) do
+        all_items_ref[] = _items_of_selected_collections(state)
+        return nothing
+    end
+    all_items = all_items_ref[]
+    visible_items_ref = Ref{Vector{ItemRecord}}()
+    _time!(state, :visible_items) do
+        visible_items_ref[] = _visible_items(state, workspace, all_items, filter_item)
+        return nothing
+    end
+    visible_items = visible_items_ref[]
     selected_id_set = Set(workspace.selection.item_ids)
     registry_ready = _tag_state_ready(state)
 
@@ -492,7 +508,8 @@ function _render_items_panel(
                                 tag_state, id, [dev_key; ancestor_keys])
                         end
                         if ig.Selectable(
-                            display_label(workspace.project, item),
+                            display_label(workspace.project,
+                                Workspace.effective_record(workspace.index.hierarchy, item)),
                             is_selected,
                             ig.ImGuiSelectableFlags_SpanAllColumns,
                         )

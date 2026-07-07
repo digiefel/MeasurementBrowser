@@ -3,7 +3,8 @@ using ..Projects:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using ..ItemIndex: collection_path_key
+using ..ItemIndex: collection_path_key, all_items
+using ..Cache: ProjectCacheSchemaError
 import ..Workspace
 using ..Workspace:
     close_workspace!,
@@ -24,6 +25,7 @@ function _open_project_path!(
     path::String;
     project::Union{Nothing,Project}=nothing,
     persist::Bool=true,
+    rebuild_cache::Bool=false,
 )::Nothing
     norm_path = _normalize_project_path(path)
     if project === nothing && state.project_locked
@@ -40,7 +42,15 @@ function _open_project_path!(
     else
         state.project_preference = project_name(project)
     end
-    _attach_workspace!(state, open_workspace(project, norm_path); persist)
+    previous_workspace = state.workspace
+    reopen_options = previous_workspace isa Workspace.Workspace ?
+        previous_workspace.open_options :
+        (;)
+    _attach_workspace!(
+        state,
+        open_workspace(project, norm_path; reopen_options..., rebuild=rebuild_cache);
+        persist,
+    )
     return nothing
 end
 
@@ -59,7 +69,7 @@ function _attach_workspace!(
     previous_workspace = state.workspace
     previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
         close_workspace!(previous_workspace)
-    state.plots = PlotState(debug=state.plots.debug)
+    state.plots = PlotState()
     state.workspace = workspace
     view = isempty(source_root) ? PersistedProjectView() : _load_project_view(source_root)
     project = project_name(workspace.project)
@@ -68,6 +78,13 @@ function _attach_workspace!(
     _load_tag_state_for_root!(state, _annotation_root(workspace))
     _apply_project_view!(state, view)
     state.saved_project_view = view
+    if workspace.cache.disk_error isa ProjectCacheSchemaError
+        state.cache_rebuild_modal = true
+        state.cache_rebuild_path = source_root
+        state.cache_rebuild_project = workspace.project
+        state.cache_rebuild_persist = persist
+        state.cache_rebuild_error = sprint(showerror, workspace.cache.disk_error)
+    end
     persist && !isempty(source_root) && _persist_preferences!(state; path=source_root)
     return nothing
 end
@@ -82,7 +99,7 @@ function select_source_item!(
     id = String(source_item_id)
     items = [
         item
-        for item in workspace.index.hierarchy.all_items
+        for item in all_items(workspace.index.hierarchy)
         if item.source_item_id == id
     ]
     isempty(items) && return false

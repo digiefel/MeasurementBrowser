@@ -1,3 +1,4 @@
+using Printf
 using GLMakie: Axis, Figure, lines!
 import GLMakie.Makie as Makie
 import CImGui as ig
@@ -8,23 +9,35 @@ using ..Projects:
     source_label
 using ..ItemIndex: ItemRecord
 import ..Workspace
+import ..Profiling
 using ..Visualization:
     PlotKind,
-    debug_plot,
     plot_data!,
     plot_kind_label,
     plot_kind_name,
     registered_plot_kinds,
     setup_plot
-using .MakieImguiIntegration: MakieFigure
+using .MakieImguiIntegration: MakieFigure, destroy_figure!
 
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
+
+"""Return the stable embedded-Makie id for one plot view."""
+function _plot_makie_id(plots::PlotState, view::PlotViewState)::String
+    return view === plots.main ? "item_plot" : "item_plot_$(replace(view.id, '/' => '_'))"
+end
+
+"""Release the Makie figure and embedded screen owned by one plot view."""
+function clear_plot_view!(plots::PlotState, view::PlotViewState)::Nothing
+    destroy_figure!(_plot_makie_id(plots, view))
+    view.figure = nothing
+    view.last_key = nothing
+    return nothing
+end
 
 """Discard rendered figures so every open plot is redrawn."""
 function clear_plot_views!(plots::PlotState)::Nothing
     for view in (plots.main, plots.windows...)
-        view.figure = nothing
-        view.last_key = nothing
+        clear_plot_view!(plots, view)
         view.error = ""
         view.export_error = ""
     end
@@ -32,9 +45,65 @@ function clear_plot_views!(plots::PlotState)::Nothing
 end
 
 """
+Arm a full profile of the next plot redraw.
+
+This is the programmatic hook behind the toolbar "Profile" button: set it, then trigger any redraw
+(switch items, toggle a plot kind) and the breakdown is printed to the console. Invalidating
+`last_key` forces the next frame to actually redraw rather than reuse the cached figure.
+"""
+function request_plot_profile!(state::BrowserState)::Nothing
+    state.profile_next_plot = true
+    plots = state.plots
+    for view in (plots.main, plots.windows...)
+        view.last_key = nothing
+    end
+    return nothing
+end
+
+"""Print one captured plot-redraw phase and CPU-sampling report."""
+function _print_plot_profile(
+    phases::NamedTuple,
+    profile::Union{Nothing,Profiling.SamplingProfile},
+)::Nothing
+    io = stdout
+    println(io, "\n======================= PLOT REDRAW PROFILE =======================")
+    @printf(io, "  load  (cache read + DataFrame rebuild)  %9.1f ms   %9.1f MiB\n",
+        phases.load_ms, phases.load_alloc / 1024^2)
+    @printf(io, "  setup (Makie figure + axes)             %9.1f ms   %9.1f MiB\n",
+        phases.setup_ms, phases.setup_alloc / 1024^2)
+    @printf(io, "  draw  (plot the data)                   %9.1f ms   %9.1f MiB\n",
+        phases.data_ms, phases.data_alloc / 1024^2)
+    @printf(io, "  TOTAL                                   %9.1f ms\n",
+        phases.load_ms + phases.setup_ms + phases.data_ms)
+
+    if profile !== nothing
+        secs_per_sample = profile.delay_seconds
+        total = max(profile.total_samples, 1)
+        println(io, "  ---- sampling hotspots (self time, all threads) ----")
+        profile.truncated && println(io, "  (sample buffer filled — result truncated)")
+        @printf(io, "  %6s %7s  %-32s %s\n", "self%", "ms", "function", "location")
+        shown = 0
+        for row in profile.rows
+            row.self_samples == 0 && continue
+            @printf(io, "  %5.1f%% %7.0f  %-32s %s:%d\n",
+                100 * row.self_samples / total, 1e3 * secs_per_sample * row.self_samples,
+                first(row.function_name, 32), basename(row.file), row.line)
+            shown += 1
+            shown >= 15 && break
+        end
+        @printf(io, "  (%d samples over %.2f s wall)\n",
+            profile.total_samples, secs_per_sample * profile.total_samples)
+    end
+    println(io, "===================================================================\n")
+    flush(io)
+    return nothing
+end
+
+"""
 Draw one plot and keep a short UI error when drawing fails.
 
 The console receives the complete exception together with the source, plot type, and source items.
+When `state.profile_next_plot` is set, this redraw is wrapped in Julia's sampling profiler.
 """
 function draw_plot_view!(
     state::BrowserState,
@@ -45,30 +114,65 @@ function draw_plot_view!(
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
     source = workspace.source
-    plots = state.plots
     started_ns = time_ns()
     draw_alloc = 0
+
+    # Arm Julia's bounded all-thread sampler for this one redraw if requested.
+    profiling = state.profile_next_plot
+    state.profile_next_plot = false
+    sampling = false
+    if profiling
+        try
+            Profiling.start_sampling!()
+            sampling = true
+        catch profile_err
+            @warn "Could not start plot profiling (a profile may already be running)" exception =
+                profile_err
+        end
+    end
+
     try
         figure = nothing
-        draw_alloc = @allocated begin
-            figure = if plots.debug
-                debug_plot(workspace, Workspace.materialize_items(workspace, records); plot_kind)
-            else
-                result = setup_plot(workspace, plot_kind, records)
-                plot_data!(workspace, plot_kind, records, result)
-                result
-            end
+        items = nothing
+        result = nothing
+        load_alloc = @allocated (items = Profiling.@profile_span workspace.profiler :plot :materialize Profiling.ProfileAttributes(
+            items=Int64(length(records)),
+        ) begin
+            Workspace.materialize_items(workspace, records)
+        end)
+        load_ns = time_ns()
+        setup_alloc = @allocated (result = Profiling.@profile_span workspace.profiler :plot :setup Profiling.ProfileAttributes(
+            items=Int64(length(records)),
+        ) begin
+            setup_plot(workspace, plot_kind, items)
+        end)
+        setup_ns = time_ns()
+        data_alloc = @allocated Profiling.@profile_span workspace.profiler :plot :draw Profiling.ProfileAttributes(
+            items=Int64(length(records)),
+        ) begin
+            plot_data!(workspace, plot_kind, items, result)
         end
+        data_ns = time_ns()
+        figure = result
         figure === nothing && error("Plot renderer returned no figure.")
-        _append_perf_sample!(
-            state,
-            :plot_draw,
-            (time_ns() - started_ns) / 1e6,
-            draw_alloc,
-        )
+        draw_alloc = load_alloc + setup_alloc + data_alloc
+        _append_perf_sample!(state, :plot_load, (load_ns - started_ns) / 1e6, load_alloc)
+        _append_perf_sample!(state, :plot_setup, (setup_ns - load_ns) / 1e6, setup_alloc)
+        _append_perf_sample!(state, :plot_data, (data_ns - setup_ns) / 1e6, data_alloc)
+        _append_perf_sample!(state, :plot_draw, (data_ns - started_ns) / 1e6, draw_alloc)
+        if profiling
+            captured = sampling ? Profiling.stop_sampling!() : nothing
+            sampling = false
+            captured === nothing || (state.performance.plot_sampling_profile = captured)
+            _print_plot_profile(
+                (load_ms=(load_ns - started_ns) / 1e6, load_alloc=load_alloc,
+                 setup_ms=(setup_ns - load_ns) / 1e6, setup_alloc=setup_alloc,
+                 data_ms=(data_ns - setup_ns) / 1e6, data_alloc=data_alloc),
+                captured)
+            state.show_performance_window = true
+        end
         view.figure = figure
         view.last_key = plot_key
-        view.debug = plots.debug
         view.error = ""
     catch err
         bt = catch_backtrace()
@@ -78,9 +182,8 @@ function draw_plot_view!(
             (time_ns() - started_ns) / 1e6,
             draw_alloc,
         )
-        view.figure = nothing
+        clear_plot_view!(state.plots, view)
         view.last_key = plot_key
-        view.debug = plots.debug
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
         view.error = "Plot failed: $summary. See the console for full details."
         item_context = join(
@@ -98,6 +201,8 @@ function draw_plot_view!(
             "Items: $(length(records))\n$item_context",
             exception=(err, bt),
         )
+    finally
+        profiling && sampling && Profiling.cancel_sampling!()
     end
     return nothing
 end
@@ -188,6 +293,15 @@ function render_plot_toolbar!(
     !can_export && ig.EndDisabled()
 
     ig.SameLine()
+    if ig.Button("Profile##plot_profile_$(view.id)")
+        request_plot_profile!(state)
+    end
+    if ig.BeginItemTooltip()
+        ig.TextUnformatted("Profile the next redraw and print the full breakdown to the console")
+        ig.EndTooltip()
+    end
+
+    ig.SameLine()
     if ig.Button("?##plot_help_$(view.id)")
         ig.OpenPopup("plot_help_popup_$(view.id)")
     end
@@ -212,16 +326,9 @@ function render_plot_body!(
     status::Symbol,
 )::Nothing
     plots = state.plots
-    if plots.debug
-        ig.TextColored((0.2, 0.8, 0.2, 1.0), "Debug Plot Mode")
-        ig.SameLine()
-        _helpmarker("Debug mode bypasses cache and reads source files directly.")
-    end
 
     if view.figure !== nothing
-        makie_id = view === plots.main ?
-            "item_plot" :
-            "item_plot_$(replace(view.id, '/' => '_'))"
+        makie_id = _plot_makie_id(plots, view)
         _time!(state, :makie_fig) do
             MakieFigure(
                 makie_id,
@@ -293,8 +400,7 @@ function render_plot_view!(
         view.last_key = nothing
     elseif view.plot_kind !== nothing && !(view.plot_kind in available)
         view.plot_kind = nothing
-        view.figure = nothing
-        view.last_key = nothing
+        clear_plot_view!(plots, view)
     end
 
     status = isempty(records) ?
@@ -306,7 +412,6 @@ function render_plot_view!(
             view.id,
             plot_kind_name(view.plot_kind),
             [record.id for record in records],
-            plots.debug,
         )
         view.last_key == plot_key ||
             draw_plot_view!(
@@ -316,9 +421,8 @@ function render_plot_view!(
                 records,
                 view.plot_kind,
             )
-    elseif view.live
-        view.figure = nothing
-        view.last_key = nothing
+    else
+        clear_plot_view!(plots, view)
     end
 
     render_plot_toolbar!(state, view, records, selected_records, available)
@@ -349,6 +453,8 @@ function ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
             auto_resize_x=false,
             auto_resize_y=false,
         )
+        destroy_figure!("_plot_runtime_warmup")
+        plots.warmup_figure = nothing
         plots.runtime_warmed = true
     end
     ig.End()
@@ -376,11 +482,14 @@ function render_additional_plot_windows(state::BrowserState)::Nothing
         open = Ref(true)
         window_id = replace(view.id, '/' => '_')
         if ig.Begin("Plot: $(view.title)###plot_window_$window_id", open)
-            view.debug == plots.debug || (view.last_key = nothing)
             render_plot_view!(state, view, selected)
         end
         ig.End()
-        open[] && push!(kept, view)
+        if open[]
+            push!(kept, view)
+        else
+            clear_plot_view!(plots, view)
+        end
     end
     plots.windows = kept
     return nothing

@@ -1,164 +1,132 @@
-# CLAUDE.md
+# Repository Guidelines
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-For the architectural model, read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) first — it is the
-current-state source of truth. This file is the operational quick-reference.
+For the full architectural model, when needed, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Commands
 
 ```bash
-# Install dependencies
-julia --project -e 'using Pkg; Pkg.instantiate()'
+# Run tests (when validation is needed — skip for doc-only / trivial edits)
+julia --project --threads=4 -e 'using Pkg; Pkg.test()'
 
-# Run tests
-julia --project -e 'using Pkg; Pkg.test()'
-
-# Precompile without launching UI
+# Precompile without launching UI 
 julia --project -e 'using Pkg; Pkg.precompile()'
+
+# Scaling sweep — compare scaling.csv (slow)
+julia --project=bench bench/scaling.jl [n1,n2,...]
+
+# Realistic browse — compare scorecard.csv + profile.json (very slow)
+julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
 ```
 
-`Annotations` (`src/Annotations`) is the only local subpackage; instantiate it too when its deps
-change: `julia --project=src/Annotations -e 'using Pkg; Pkg.instantiate()'`.
+Benchmark details: [bench/README.md](bench/README.md).
 
-There is no generic launcher script. The app is started from **project code**: define a project,
-open a workspace on a data root, and open the browser. See "Launching" below.
+There is no generic launcher script. Project scripts (outside this repo) call `define_project` and
+`register_*`, then `open_workspace(project, root)` and `open_browser(ws)`.
+
+## Purpose
+
+The direction is to turn this into the persistent interactive layer around a Julia data project —
+not a domain app and not a generic IDE, but the thing that makes “open the data, browse, plot,
+annotate, iterate on code, come back tomorrow” work without re-running scripts or holding the
+whole pipeline in your head. The package keeps owning everything stateful and expensive (watching
+sources, interpreting once, caching at multiple stages, background work with selection priority,
+rendering); project code stays thin script logic that shouldn’t know any of that machinery exists.
+The bet is on live work: files and project code can change while views stay attached via selections
+or rules, plots can be built while the cache is still filling, and the same operations should
+eventually be callable from the REPL as from the GUI so a saved workflow is just a replayable session,
+not exported figure code. Generic table/column visualizers and composable figures are the main
+product expansion; `register_plot!` per kind is the bootstrap, not the end state. Spatial
+navigation, tags, and notes are there to make the tree match how people actually think about
+devices on a chip, not to replace the tree. Broader “DataBrowser” generalization (non-DataFrame
+payloads, tree as a derived view) is a type-system widening on the same workspace model, not a
+pivot. Performance isn’t polish — if browse-while-building and warm reopen aren’t fast, none of the
+rest matters. What’s explicitly being left behind: figure-script export, browser-owned project
+state, bundled experiment projects in the core package, and compatibility layers that slow down
+getting to that live workspace. North star: [docs/plans/workspace-vision.md](docs/plans/workspace-vision.md).
+
+## Target applications
+
+Before pre-made domain projects ship with the app, MeasurementBrowser needs to be installable as a
+standalone executable (or equivalent distribution) that a user can launch without hand-assembling a
+Julia environment.
+
+The long-term plan is to develop bundled projects on top of this engine — each one a complete
+workflow for a technique, not just parsers and plot callbacks. The list below is the product
+direction: it shows what the platform must eventually support (multi-window layouts, interactive
+fitting, responsive updates while parameters change, and so on). Add to this list when a new
+application is scoped.
+
+- **Semiconductor / ferroelectric characterization** — IV, CV, PUND, fatigue, and related
+  measurements (this kind of work already lives outside this repo at 
+  /Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2).
+- **XPS analysis and fitting** — spectrum import, peak models, constraints, and every window needed
+  to fit data interactively, responsively, and flexibly (tools like CasaXPS do this poorly today).
+- **Ellipsometry analysis and fitting** — layered optical models, maps vs wavelength, live parameter
+  exploration; aim toward CompleteEASE-class capability.
+- **Further techniques** — this list will grow.
 
 ## Architecture
 
-MeasurementBrowser is a **project-agnostic** Julia GUI engine for browsing and analyzing
-item data. It combines GLMakie plotting with a CImGui UI. The package ships **no
-domain knowledge** — no item kinds, readers, analyzers, or plotters. All of that lives in
-*project code* (external scripts) registered through the project API. RuO2 ferroelectric/semiconductor
-work and the TASE project are projects built on top, not part of the package.
+Project scripts describe how to recognize files, parse them into items, and draw plots. The package
+handles directory scanning, background processing, DuckDB caching, the item tree, selection, and the
+browser UI. Project code should not touch cache files, background jobs, or UI state.
 
-### Modules (root `src/MeasurementBrowser.jl`, in include order)
+When a workspace opens, the package scans the data root, finds source files, and interprets each one
+into logical items using the project's registered callbacks. That work runs through a dependency
+graph with five stages: interpret the source file, process each item, analyze each item, then
+process and analyze at the collection level. Completed results are published into an index that
+the tree and plots read from. Work is event-driven — background workers finish tasks and publish
+updates; the GUI does not poll a job queue. If the user selects items that are still processing,
+that work gets higher priority. Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-| Module | File | Owns |
+To register a new measurement type, see [docs/api.md](docs/api.md). For IDs, collection paths, and
+the item tree, see [docs/data-model.md](docs/data-model.md). Recipe `detect` callbacks are tried in
+registration order; the first match wins, so register specific filename patterns before general ones.
+
+| Editing… | Look in… | Doc |
 |---|---|---|
-| `Projects` | `Projects.jl` | The low-level source contract (`AbstractDataSource`/`AbstractDataSourceItem`/`AbstractDataItem` + interface stubs), the `Project` recipe struct, and recipe types. Methods live in `Project.jl`. |
-| `ItemIndex` | `ItemIndex.jl` (+ `Scanning.jl`) | The internal `ItemRecord`, the concrete `DataItem`, the hierarchy, and source-neutral scanning. |
-| `DirectorySource` | `DataSources/DirectorySource.jl` | Directory traversal, `SourceFile`, file fingerprints, sidecar exclusion, timestamps, `metadata.txt`, and `open_workspace(project, root_path)`. |
-| `Cache` | `Cache.jl`, `Cache/ProjectCache.jl` | Source-identity-keyed HDF5 cache of the scan + item data. |
-| `Workspace` | `Workspace.jl` (+ `DataAccess.jl`, `Operations.jl`) | One open source: index, selection, loaded/cached data access, background jobs. |
-| `Visualization` | `Visualization.jl` | Plot engine; `RegistryPlot{Kind}` adapter bridging registered plots to source plot dispatch. |
-| `TableInspector` | `TableInspector.jl` | Tabular preview of a delimited file. |
-| (recipes) | `Project.jl` | `define_project`, the `register_*` functions, project-side source interpretation/loading methods, and serialization. |
-| `Browser` | `Browser.jl` (+ `Browser/*`, `Gui/*`) | CImGui frontend: tree/plot/table panels, state, persistence, tags, Makie embedding. |
+| `register_*`, item callbacks | `src/Project.jl`, `src/Projects.jl` | [api.md](docs/api.md) |
+| Scanning, item records, hierarchy | `src/ItemIndex/` | [data-model.md](docs/data-model.md) |
+| Directory traversal, `metadata.txt` | `src/DataSources/DirectorySource.jl` | [storage.md](docs/storage.md) |
+| DuckDB cache, writes, reopen | `src/Cache/` | [cache.md](docs/cache.md) |
+| Background work, loading item data | `src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Browser panels, plot embedding | `src/Browser/` | [gui.md](docs/gui.md) |
+| Profiling, benchmark traces | `src/Profiling.jl` | [profiling.md](docs/profiling.md) |
+| Tags, notes, spatial layout | `src/Annotations/` | [annotations.md](docs/annotations.md) |
 
-### Two-layer API
+`docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change
+behavior that affects the model, update the relevant doc in the same commit — do not copy
+architecture into this file.
 
-The engine is written against a **low-level source contract** (`AbstractDataSource` →
-`AbstractDataSourceItem` → `AbstractDataItem`; see [docs/api.md](docs/api.md)). The **high-level
-callback API** below (`define_project` + `register_*`) is a convenience on top of that contract:
-`DirectorySource` discovers files, and project methods interpret/load them. The callback API is the
-exported surface; the low-level types are internal for now (`MeasurementBrowser.name`), staged for a
-future submodule.
+## Working rules
 
-### Project API (high-level callback convenience)
-
-Project code builds a `Project` by mutation, pointing each registration at plain callbacks:
-
-```julia
-project = define_project("TASE"; description="…")
-
-register_item!(project, :iv;
-    detect  = file -> occursin("iv", lowercase(file.filename)),  # Bool; first match wins
-    read    = file -> DataFrame(...),                            # whole file, parsed once
-    entries = (file, data) -> [DataItem(kind=:iv, collection=[...], parameters=..., data=data)],
-    process = item -> DataItem(item, clean(item.data)),          # optional; default passthrough
-    stats   = item -> Dict{Symbol,Any}(...),                     # optional; background analysis
-    label   = item -> "…")                                       # optional
-
-register_collection_stat!(project; kinds=[:iv],                  # cross-item fold over a collection
-    compute_stats = group -> …)                                  # returns a Dict stored on the collection node
-
-register_plot!(project, :iv; label="I–V", setup=…, draw=…)       # one plot recipe per kind
-```
-
-The `entries` callback enumerates the items in a file and is where a single file expands into multiple
-entries (e.g. one item per fatigue cycle, distinguished by `parameters`). When an entry omits `id`,
-the directory adapter mints one from the source-item path, kind, and params. Entries attach the raw
-per-item payload as `item.data`; optional `process(item)` returns the item that stats and views
-receive, and optional `stats(item)` runs after indexing in workspace background analysis.
-`entries` returns the package's `DataItem` (the **recipe API**) — or, to go beyond it, a project's own
-`AbstractDataItem` subtype carrying typed fields and its data (the **type API**); the engine derives
-the internal record from either via the contract. Re-calling a `register_*` with the same key replaces
-the recipe in place, so editing and re-running a line updates a live project.
-
-### Data Flow
-
-1. **Scan:** `scan_source!` calls `source_items(source)` for the discovered units. For each unit,
-   `data_items(project, source, source_item)` interprets it into data items (the adapter applies the first
-   matching `detect`'s `read → entries`). The engine derives each item's internal `ItemRecord` via the
-   contract; per-source-item failures are recorded and scanning continues. The file-backed adapter
-   provides collection parameters from `metadata.txt`; the index inherits them through the hierarchy
-   and merges them into each record's effective `parameters`.
-2. **Analysis:** after the tree exists, a workspace background job materializes items with
-   `read → entries → process`, computes per-item `stats(item)`, then runs
-   `collection_stats(project, source, collection, items)` (the callback form is
-   `register_collection_stat!`) for collection nodes.
-3. **Cache:** the whole `SourceScan` is serialized into a source-id-keyed HDF5 cache; a fresh cache
-   restores the hierarchy quickly while scanning continues.
-4. **View:** for the selection, the engine reloads items via
-   `load_data_item(project, source, source_item_id, id)` (memory → cache → origin); each carries `item.data`.
-   Registered plots render through the internal plot dispatch, with
-   `setup(ws, items)` / `draw(ws, items, fig)` reading `item.data`.
-
-### Key Types (`ItemIndex.jl`, `Projects.jl`)
-
-- `AbstractDataSource` / `AbstractDataSourceItem` / `AbstractDataItem` — the low-level contract: a
-  source owns lifecycle + discovery (`source_items`), a source item is one discovered unit
-  (`data_items`, `load_data_item`), a data item is one logical browser object (`id`, `item_label`,
-  `kind`, `collection`, `parameters`, `stats`, `item_data`, + optional `process`/`cacheable`/
-  `fingerprint`). The engine is written against these, never a concrete type.
-- `DataItem <: AbstractDataItem` — the normal item the recipe API's `entries` produces: `kind`,
-  `collection`, `parameters`/`stats` dicts, and `data` (as `item.data`).
-- `SourceFile <: AbstractDataSourceItem` — the built-in file-backed source item: path, filename,
-  timestamp, fingerprint. A bare `SourceFile` has no universal `data_items`.
-- `ItemRecord` — **internal**, data-less record the hierarchy/scan/cache store: source-item identity
-  (`source_item_id`/label/fingerprint/path/timestamp), item identity (`id`, `item_label`,
-  `kind`), `collection`, `parameters`, `stats`, `item_fingerprint`. Never named
-  by source/project code, never a field of any item; the engine converts item ↔ record via the contract.
-- `SourceScan` — internal scan result (source-neutral; source-level identity lives once on the scan).
-  `Hierarchy` / `HierarchyNode` — the browsable collection tree.
-- `Project` / `ItemRecipe` / `CollectionStatRecipe` / `PlotRecipe` — the callback registry model;
-  `DirectorySource` supplies the built-in directory-backed source.
-
-## Launching
-
-```julia
-using MeasurementBrowser
-# … define_project + register_* …
-ws = open_workspace("/path/to/data"; project)   # or open_workspace(mysource) for a low-level source
-open_browser(ws)
-```
-
-Project scripts live outside the repo (e.g. the TASE_SNS and v2 RuO2 analysis projects). They add
-`MeasurementBrowser` as a dependency, register their item kinds, and launch the browser.
-
-## Coding Conventions
-
-- Julia 1.12; 4-space indentation; ~100-char lines
-- `snake_case` functions/variables, `UpperCamelCase` types, `ALL_CAPS` constants
-- Don't catch errors that should be fixed; let failures surface
-- Docstrings for public APIs; brief comments only where non-obvious
-- Short imperative commit messages matching existing history style
-- Pre-pre-alpha: prefer clean replacement over compatibility shims (see ARCHITECTURE.md engineering rules)
+Julia 1.12; 4-space indent; `snake_case` functions, `UpperCamelCase` types. Don't catch errors that
+should be fixed. Docstrings on public APIs. Pre-pre-alpha: replace cleanly, no compatibility shims.
+When code and docs disagree, fix the doc in the same commit.
 
 ## Testing
 
-Tests in `test/` with fixture CSVs under `test/fixtures/`. Projects under test are built inline with
-`define_project` + `register_*` (see `test/test_project.jl`, `test/test_scan_profile.jl`). For
-plot/GUI changes, assert metadata/labels and that figure creation doesn't error rather than
-pixel-perfect checks.
+When a change needs validation, run the full suite once:
+`julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
+harmless local edits. Fixtures in `test/fixtures/`; inline projects in `test/test_project.jl` and
+`test/test_scan_profile.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
+
+## Benchmarks
+
+Use `bench/` for performance work (`julia --project=bench`). Results persist under
+`bench/results/` (gitignored). See [bench/README.md](bench/README.md).
+
+- **scaling.jl** — times `status_refresh`, `items_panel`, and `metadata_publish` at increasing item
+  counts; writes `scaling.csv` with power-law exponents. Pass smaller size lists while iterating.
+- **realistic_browse.jl** — synthetic RuO2-shaped workload: scan while plotting, cache saturation,
+  warm reopen. Writes `scorecard.csv`, `profile.json` (Perfetto trace, on by default), and
+  supporting CSVs. Use `scale=0.1` to iterate.
+
+Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. Set `MB_PROFILE_INTERNAL=0`
+to skip the structured trace.
 
 ## Notes
 
-- UI requires an OpenGL-capable environment (GLMakie + CImGui).
-- Scanning large source trees is slow; point at a small subfolder or `test/` fixtures during
-  development.
-- **Detection order matters:** recipes are checked in registration order and the first `detect`
-  returning `true` wins — register more specific patterns (e.g. `pund_fatigue`) before general ones
-  (`pund`).
-- Docs split: `docs/*.md` are current-state reference; `docs/plans/*.md` are forward-looking design.
+- The UI needs OpenGL (GLMakie + CImGui).
+- Use `test/` fixtures or small subfolders during development — full tree scans are slow.

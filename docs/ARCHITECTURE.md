@@ -35,33 +35,52 @@ presentation tools.
 ## Core Flow
 
 ```
-                 ┌──────────────────────────────────────────────────────────┐
-AbstractDataSource│ scan          →  hierarchy  →  data       →  view        │
-(root, DB, stream)│ ----------       ----------    ----           ----        │
-                 │ source_items     build tree    load_data_item  Makie      │
-                 │ + data_items     per-leaf       (memory →       figure /   │
-                 │ per source item  items          cache → source) table      │
-                 └──────────────────────────────────────────────────────────┘
+source item → data_items → interpreted data → process → analyze → collection process/analyze → views
+                    │              │              │
+                    └─ ItemRecord  └─ DuckDB      └─ DuckDB + item metadata
 ```
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
 and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-interprets each unit with `data_items(project, source, source_item)`, records per-source-item
-failures, and builds the hierarchy described in [data-model.md](data-model.md). Per-item stats and
-collection-node stats run as workspace background analysis after the tree exists. The cache
-([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues in the
-background.
+compares the discovered source-item ids and fingerprints with the published snapshot, and submits one
+`SourceChanges` batch to the workspace work graph. Source watchers submit the same batch type;
+`DirectorySource` uses it for metadata-file changes. Interpretation workers call
+`data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish
+their own completions: each finishing worker takes the workspace publish lock, rejects stale
+revisions, atomically publishes replacement records into `WorkspaceIndex`, sends semantic record
+writes/deletes to `ProjectCache`, queues follow-up work, and notifies the idle condition. Nothing
+polls: the engine progresses on completion events alone, blocking callers
+(`request_processed_items`, `wait_workspace_idle!`) sleep until a publication wakes them, and the
+GUI frame only calls `refresh_status!` to rebuild the display snapshot. The graph holds only live
+jobs (`:waiting`, `:queued`, `:running`): each node tracks who waits on it (`dependents`) and how
+many dependencies remain (`pending`). Finished work lives in the cache `result_states` ledger (or
+interpret/source tables for `SOURCE_INTERPRET`). `WorkspaceIndex` owns completed records,
+hierarchy, metadata, failures, and selections. The five work kinds — `SOURCE_INTERPRET`,
+`ITEM_PROCESS`, `ITEM_ANALYZE`, `COLLECTION_PROCESS`, `COLLECTION_ANALYZE` — run on one fixed
+long-lived pool. Processing is selection-driven by default: a live scan interprets every source item
+(so the tree fills) but only interprets — `ITEM_PROCESS`, `ITEM_ANALYZE`, and collection work are
+scheduled on demand when items are requested (`request_processed_items`). `background_processing`
+opts into eagerly processing and analyzing every item as it is interpreted; background and selected
+work then share the same work node, and selection only raises priority and joins the existing
+revision. Either way, interpret-time invalidation always clears stale `result_states` rows so the
+next read recomputes. Memory-only cache sessions never schedule unselected background processing on
+reopen gap-fill (they have no persisted index to fill from).
+Collection-node work runs afterward from published item-analysis results.
+The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while scanning continues.
 
-When a view needs item data, the engine reloads the selected items via
-`load_data_item(project, source, source_item_id, id)` (memory → cache → source). Each item carries
-`item.data`. GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
+When a view needs item data, delivery consults the live graph then the cache: a live node blocks
+until it publishes; a `RESULT_READY` row loads the payload; absence enqueues work. Otherwise the
+processing job loads interpreted data from the in-memory interpreted store or reuses the normal
+`data_items` path as source fallback, then runs `process`.
+Each materialized item carries `item.data`.
+GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
 uses the built-in `DirectorySource <: AbstractDataSource`: the source walks a data root into
-`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries` during indexing and
-`read`/`process`/`stats` during background analysis or loading. Nothing downstream of the contract can
-tell a callback project from a hand-written project/source pair.
+`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`process`/`analyze`
+through the same engine. Nothing downstream can tell a callback project from a hand-written
+project/source pair.
 
 ## Ownership Boundaries
 
@@ -70,13 +89,14 @@ The most important boundary is between source meaning and package machinery.
 A source owns:
 
 - discovering source items
-- source-specific parameter input, such as `DirectorySource` loading `metadata.txt`
+- its own lifecycle and change watching
+- source-specific parameter input, such as `DirectorySource` loading and watching `metadata.txt`
 
 A project/source implementation owns:
 
 - interpreting each source item into logical data items
-- loading one item's data on demand (`load_data_item`)
-- computing per-item and per-collection stats
+- processing one interpreted item
+- computing per-item and per-collection metadata (item/collection `analyze`, collection `process`)
 - defining project-specific visualizers when generic ones are not enough
 
 The workspace owns:
@@ -86,12 +106,18 @@ The workspace owns:
 - selection identities
 - cache identity, freshness, storage, and repair
 - scanning, cache work, progress, errors, and cancellation
-- loaded items already materialized in memory
+- work dependency graph state and source fallback
 
 The browser owns windows, controls, filters, and temporary rendering state. Annotations store
 user-authored tags, notes, coordinates, and spatial positions (currently next to the cache, keyed by
 `source_id`; see [cache.md](cache.md)). Other package modules own generic visualizers, workflow
 persistence, and figure composition.
+
+The Performance window always exposes bounded project callback timings, plot timings, failures,
+memory, and rendering diagnostics. A workspace opened with internal profiling enabled also owns a
+manual structured trace session for engine spans, process counters, and optional CPU samples. Starting
+that session during a build first cancels and drains the current work, then records one clean rebuild.
+See [profiling.md](profiling.md). No diagnostic is persisted in the generated cache.
 
 Source code should not know whether data came from memory, cache, or the origin. Package code should
 not know the meaning of a source item beyond the contract methods it calls.
@@ -100,27 +126,27 @@ The package expresses that boundary through focused internal modules. `Projects`
 `AbstractDataItem` contract and the `Project` recipe type. `DataSources/DirectorySource.jl` owns the
 built-in directory source, `SourceFile`, file fingerprints, directory traversal, sidecar exclusion,
 and `metadata.txt` collection parameter input. `ItemIndex` owns the internal `ItemRecord`, the concrete
-`DataItem`, hierarchy construction, and scanning. `Cache` owns generated HDF5 state. `Workspace` owns
+`DataItem`, hierarchy construction, and scanning. `Cache` owns generated DuckDB state. `Workspace` owns
 one project/source pair, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and
 CImGui rendering. `MeasurementBrowser` exports the small high-level API while keeping most low-level
 source contract names internal.
 
 `open_workspace(project, source)` or `open_workspace(project, root_path)` creates that owner and
-immediately starts cache loading and scanning. Source code does not manage its cache, jobs, or browser
-state.
+opens the source, starts cache loading and scanning, and attaches its watcher. Source code does not
+manage its cache, jobs, or browser state.
 
 ## On-disk metadata
 
-Directory-backed collection parameters and annotations are lean text files (see [storage](storage.md)
+Directory-backed collection metadata and annotations are lean text files (see [storage](storage.md)
 for formats):
 
-- `metadata.txt` — `DirectorySource` source-root parameters with path-fragment matching.
+- `metadata.txt` — `DirectorySource` source-root collection metadata with path-fragment matching.
 - `tags.txt` — tag catalog and per-path assignments.
 
 `metadata.txt` belongs to `DirectorySource`; sources without that file simply have no collection
-parameters. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
-source still has somewhere to persist user-authored notes/tags/layout. The HDF5 cache itself is
+metadata. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
+source still has somewhere to persist user-authored notes/tags/layout. The DuckDB cache itself is
 generated and lives outside the source.
 
 ## Engineering Rules
@@ -147,7 +173,8 @@ Current-state reference docs:
 | [data-model.md](data-model.md) | You're touching source-file records, items, hierarchy traversal, or paths/IDs. |
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
-| [cache.md](cache.md) | You're touching HDF5 cache identity, loading, writing, status, or item data. |
+| [cache.md](cache.md) | You're touching DuckDB cache identity, loading, writing, status, or item data. |
+| [profiling.md](profiling.md) | You're measuring project callbacks, engine spans, build counters, CPU hotspots, or crash traces. |
 | [annotations.md](annotations.md) | You're touching annotations: coordinates, layout, tags, or notes. |
 
 Future-facing docs and roadmaps live under [plans/](plans/), separate from the current-state docs

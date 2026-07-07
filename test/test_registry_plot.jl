@@ -33,7 +33,7 @@ const MB = MeasurementBrowser
         setup=(workspace, items) -> Figure(),
         draw=function (workspace, items, figure)
             drew[] = length(items)
-            # Each item is an AbstractDataItem carrying its own materialized payload as `item.data`,
+            # Each item is an AbstractDataItem carrying its own materialized data as `item.data`,
             # and answering the contract accessors.
             @test all(it -> it isa MB.AbstractDataItem, items)
             @test all(it -> MB.item_data(it) === it.data, items)

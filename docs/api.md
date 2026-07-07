@@ -24,6 +24,7 @@ ws = open_workspace(project, "/path/to/data")       # high level: a project on a
 open_browser(ws)                                    # launch the CImGui browser on the workspace
 close_workspace!(ws)                                # stop background work and release the source
 select_items!(ws, items_or_records)                 # programmatic selection
+query_items(ws, "max_current > 1e-6 AND polarity = 'up'")  # item ids by a metadata SQL predicate
 ```
 
 Every workspace is associated with a `Project`; the first argument to `open_workspace` is always that
@@ -34,6 +35,12 @@ that owns labels, registered plots, and browser state.
 
 `select_items!` accepts indexed records, exact item ids, or loaded `AbstractDataItem` values whose
 ids are present in the current workspace.
+
+`query_items(ws, predicate)` returns the ids of items whose delivered metadata satisfies a SQL
+predicate. The columns are exactly the metadata names project callbacks emit (including inherited
+collection-metadata names). It reads committed cache state, so a value written in the last couple of
+seconds may not appear yet; a memory-only workspace returns an empty vector. Collection-only metadata
+is not item-queryable — push values down through a collection `process` to query them.
 
 ---
 
@@ -54,12 +61,19 @@ dataset root, a database query, an instrument session, a live stream, or a remot
 | `open_source(source)::AbstractDataSource` | yes | prepare resources; return the opened source (simple sources return themselves) |
 | `close_source!(source)::Nothing` | yes | release files, sockets, tasks, sessions, streams |
 | `source_items(source)::Vector{<:AbstractDataSourceItem}` | yes | scan and return the current discovered units |
-| `collection_stats(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | background cross-item fold over one collection node |
-| `watch_source(source, on_change)` | no (→ `nothing`) | future live-update hook; `nothing` means static |
+| `collection_metadata(source, collection_path)::Dict{Symbol,Any}` | no (→ `Dict()`) | source-provided collection metadata for a path |
+| `process_collection(project, source, collection, items)::Vector{<:AbstractDataItem}` | no | background rewrite of a collection's members (one output per input) |
+| `analyze_collection(project, source, collection, items)::Dict{Symbol,Any}` | no (→ `Dict()`) | background fold of a collection's members into node metadata |
+| `watch_source(source, on_change)` | no (→ `nothing`) | report `SourceChanges` batches; `nothing` means static |
+| `source_open_options(source)::NamedTuple` | no (→ `(;)`) | construction options replayed as `open_workspace` kwargs when reopening an equivalent source |
 
 `open_source` returns the opened source rather than mutating in place, so it carries no bang;
-`close_source!` mutates the source (releases its resources) and does. `source_items` and
-`collection_stats` are getters — they return values and never mutate their arguments.
+`close_source!` mutates the source (releases its resources) and does. `source_items` and the
+collection hooks are getters — they return values and never mutate their arguments.
+
+`SourceChanges` is the shared update contract for scans and watchers. It carries source-item
+upserts/removals plus `metadata_changed`; a metadata-only batch re-merges existing items without
+reinterpreting their source items.
 
 ### `AbstractDataSourceItem` — one discovered unit
 
@@ -72,14 +86,17 @@ data items.
 |---|---|---|
 | `source_item_id(item)::String` | yes | stable within `source_id(source)` |
 | `source_item_label(item)::String` | yes | user-facing label for progress / errors |
-| `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | interpret one unit into lightweight (data-less) logical items for indexing |
-| `load_data_item(project, source, source_item_id, id)::AbstractDataItem` | yes | reload one logical item later, with data available via `item_data` |
-| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | invalidates records/payloads from this source item |
+| `data_items(project, source, source_item)::Vector{<:AbstractDataItem}` | yes | read/interpret one unit into loaded logical items for processing, stats, and indexing |
+| `fingerprint(item::AbstractDataSourceItem)` | no (→ `nothing`) | stable change token for reusing records and cached item data; `nothing` forces re-interpretation |
 | `source_item_path(item)` | no (→ `nothing`) | filesystem path, when the unit has one |
 | `source_item_timestamp(item)` | no (→ `nothing`) | acquisition/modification time, when known |
 
-`data_items` enumerates and returns lightweight handles; `load_data_item` rebuilds one item with its
-payload attached. Both are getters (no bang). The package's built-in file-backed source item is
+`data_items` reads/interprets one source item and returns its loaded logical data items. Different
+source items run concurrently. Their items enter the workspace work graph, whose fixed workers may
+run sibling `process`/stats callbacks concurrently; those callbacks must therefore be safe for
+concurrent use. When interpreted data is absent, the package calls the same `data_items` path as
+source fallback.
+The package's built-in file-backed source item is
 `SourceFile` (below); a bare `SourceFile` has **no** universal `data_items` — the source decides what
 a file means.
 
@@ -94,12 +111,11 @@ The object the app indexes, selects, loads, inspects, and plots. Shared by both 
 | `item_label(item)::String` | yes | display title |
 | `kind(item)::Symbol` | yes | coarse UI/plot key — *not* the source of semantic truth |
 | `collection(item)::Vector{String}` | yes | canonical hierarchy path |
-| `parameters(item)::Dict{Symbol,Any}` | yes | item parameters; entry callbacks provide local params, indexed/loaded `DataItem`s carry effective params |
-| `stats(item)::Dict{Symbol,Any}` | yes | computed values, filled lazily after indexing when needed |
-| `item_data(item)` | yes | loaded payload consumed by views/plots (`nothing` on a data-less handle) |
+| `metadata(item)::Dict{Symbol,Any}` | yes | one dict; entry callbacks provide the seed, loaded `DataItem`s carry the delivered merge (inherited ⊕ entries ⊕ computed) |
+| `item_data(item)` | yes | loaded data consumed by processing/views; internal index handles carry no data |
 | `process(item)` | no (→ `item`) | optional transform returning the item views receive |
-| `cacheable(item)::Bool` | no (→ `false`) | opt into persistent payload caching |
-| `fingerprint(item::AbstractDataItem)` | no (→ `nothing`) | invalidates this item's cached payload |
+| `cacheable(item)::Bool` | no (→ `false`) | opt into persistent item-data caching |
+| `fingerprint(item::AbstractDataItem)` | no (→ `nothing`) | invalidates this item's cached data |
 
 ### A complete low-level source
 
@@ -131,12 +147,9 @@ source_item_id(f::PhotoFile)          = f.path
 source_item_label(f::PhotoFile)       = basename(f.path)
 fingerprint(f::PhotoFile) = f.fingerprint
 function data_items(::Project, ::PhotoDataset, f::PhotoFile)
-    m = read_photo_header(f.path)                                   # cheap, data-less
-    [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path, nothing)]
-end
-function load_data_item(::Project, ds::PhotoDataset, source_item_id, id)
-    m = read_photo_header(source_item_id)
-    Photo(id, m.label, m.collection, m.exposure, source_item_id, read_photo_matrix(source_item_id))
+    m = read_photo_header(f.path)
+    [Photo(stable_id(f.path, m), m.label, m.collection, m.exposure, f.path,
+        read_photo_matrix(f.path))]
 end
 
 # data item
@@ -144,8 +157,7 @@ id(p::Photo)    = p.id
 item_label(p::Photo) = p.label
 kind(::Photo)        = :photo
 collection(p::Photo) = p.collection
-parameters(p::Photo) = Dict{Symbol,Any}(:exposure => p.exposure)
-stats(p::Photo)      = Dict{Symbol,Any}()
+metadata(p::Photo)   = Dict{Symbol,Any}(:exposure => p.exposure)
 item_data(p::Photo)  = p.data
 
 project = define_project("Photos")
@@ -156,9 +168,9 @@ open_browser(ws)
 ### Plotting
 
 The external plot API is `register_plot!(project, kind; label, setup, draw)`. The workspace
-materializes selected records into loaded data items before invoking the callbacks, so
-`setup(workspace, items)` and `draw(workspace, items, figure)` receive loaded `AbstractDataItem`s and
-never internal records.
+materializes a selection once before invoking either callback, so `setup(workspace, items)` and
+`draw(workspace, items, figure)` receive the same loaded `AbstractDataItem`s and never internal
+records.
 
 `PlotKind`, `RegisteredPlot`, `setup_plot`, and `plot_data!` are engine internals used by the GUI to
 dispatch registered plot callbacks. A source-level plot hook belongs with the future low-level export,
@@ -179,30 +191,36 @@ project = define_project("MyProject"; description="…")
 register_item!(project, :iv;
     detect  = file -> endswith(file.filename, ".csv"),   # Bool; first matching recipe wins
     read    = file -> DataFrame(...),                    # whole file, parsed once
-    entries = (file, data) -> [DataItem(kind=:iv, collection=[dev], parameters=p, data=slice) for …],
-    process = item -> DataItem(item, clean(item.data)),  # optional; default passthrough
-    stats   = item -> Dict{Symbol,Any}(…),               # optional; computed after indexing
+    entries = (file, data) -> [DataItem(kind=:iv, collection=[dev], metadata=m, data=slice) for …],
+    process = item -> DataItem(item, clean(item.data)),  # optional; may change data or metadata
+    analyze = item -> Dict{Symbol,Any}(…),               # optional; merged over item metadata, new wins
     label   = item -> "…")                               # optional; display label
 
-register_collection_stat!(project; kinds=[:iv],          # cross-item fold over each collection node
-    compute_stats = group -> …)                          # returns a Dict stored on the node
+register_collection_analysis!(project, :iv;              # optional collection stages for a kind
+    process = items -> …,                                # rewrite members (one output per input)
+    analyze = items -> …)                                # fold members into collection-node metadata
 
 register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more plots per kind
 ```
 
 - **`entries(file, data)`** enumerates the items in one file, returning `Vector{<:AbstractDataItem}`
   — the package's `DataItem` (the **recipe API**) or your own subtype (the **type API**). It attaches
-  the raw per-item payload as `item.data`; optional `process(item)` returns the item that stats and
-  views receive. `stats(item)` runs in workspace background analysis, after the tree is already
-  populated. The adapter derives each internal record from the returned item and the
-  `SourceFile`. When a recipe entry does not provide an id, the adapter mints one from the
-  source-item path, kind, and `parameters`.
+  the raw per-item data as `item.data`; optional `process(item)` returns the item that later stages
+  and views receive. When one source expands into many tabular items, `item.data` may be a row view
+  such as `view(data, rows, :)`; the view keeps the parsed source table alive without copying its
+  columns. The workspace work graph owns those items until processing and any cache write finish.
+  Overlapping views share storage and sibling callbacks may run concurrently, so project callbacks
+  should treat them as read-only. Later cache materialization returns independent `DataFrame`s.
+  Records are streamed to the workspace as each source item finishes. The adapter derives each
+  internal record from the returned item and the `SourceFile`. When a recipe entry does not provide
+  an id, the adapter mints one from the source-item path, kind, and `metadata`.
   **Project code never constructs or names the internal record.**
-- **`register_collection_stat!`** is the high-level form of the source's `collection_stats` hook: its
-  `compute_stats` fold runs in background analysis over each collection node's items and the result
-  is stored on the node.
+- **`register_collection_analysis!`** is the high-level form of the source's collection hooks. Its
+  `process` rewrites the collection's members (one output per input, same ids) as the down-flow; its
+  `analyze` folds the post-process members into a dict stored on the collection node. Both are gated
+  on every member of the kind finishing its item stages.
 - **`register_plot!`** `setup(workspace, items)` returns the `Figure`; `draw(workspace, items, figure)`
-  fills it, each item carrying its payload as `item.data`. See
+  fills it, each item carrying its loaded data as `item.data`. See
   [plans/plotting-api-design.md](plans/plotting-api-design.md).
 
 ## Types you name

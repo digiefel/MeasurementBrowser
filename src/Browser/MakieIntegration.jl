@@ -19,7 +19,7 @@ mutable struct ImMakieFigure
     was_ctrl_left_click::Bool
 end
 
-const MAKIE_CONTEXT = Dict{ig.ImGuiID,ImMakieFigure}()
+const MAKIE_CONTEXT = Dict{String,ImMakieFigure}()
 
 """Destroy every Makie screen owned by the browser render context."""
 function destroy_context!()::Nothing
@@ -29,6 +29,15 @@ function destroy_context!()::Nothing
     end
 
     empty!(MAKIE_CONTEXT)
+    return nothing
+end
+
+"""Destroy the embedded Makie screen and figure owned by one plot id."""
+function destroy_figure!(title_id::String)::Nothing
+    imfigure = pop!(MAKIE_CONTEXT, title_id, nothing)
+    imfigure === nothing && return nothing
+    empty!(imfigure.figure)
+    GLMakie.destroy!(imfigure.screen)
     return nothing
 end
 
@@ -129,7 +138,7 @@ function MakieFigure(
     auto_resize_y::Bool=false,
 )::Bool
     ig.PushID(title_id)
-    id = ig.GetID(title_id)
+    id = title_id
 
     if haskey(MAKIE_CONTEXT, id)
         imf = MAKIE_CONTEXT[id]

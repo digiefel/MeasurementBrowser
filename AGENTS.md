@@ -1,63 +1,132 @@
 # Repository Guidelines
 
-## Product Goal
-MeasurementBrowser should be a better working environment than opening a Julia REPL and scripting
-the same project by hand. Without the app, a user would find files, load them, parse them, reshape
-or extract useful tables, compute values, and write figure code. The app exists to make that loop
-faster, easier to inspect, and less repetitive while preserving the same mental model.
-
-Project code should therefore stay close to the script a project maintainer would naturally write:
-identify the measurements in a source file, load the data for a measurement, and render or summarize
-that data. Project code should not know about cache files, background jobs, UI state, or package
-lifecycle details. The package owns those concerns so that project implementations remain small and
-focused on data interpretation and presentation.
-
-The long-term direction is a live measurement workspace with instant feedback. Source data should be
-watched continuously; new or changed files should appear without restarting the app; views should be
-able to stay attached to selections, devices, or matching rules as the project changes. Built-in
-visual inspection tools should cover common experimental tasks, and custom project code should extend
-those tools without replacing the package's shared browsing, caching, selection, composition, and
-reload behavior.
-
-The project boundary should stay simple enough to support hot reloading, interpretation, or
-out-of-process implementations later. Avoid designs that require project authors to understand the
-Julia package internals, compile-time wiring, cache storage, worker orchestration, or GUI machinery.
-The package should compete with the direct scripting loop by being faster and more interactive, not
-by asking the project author to adopt a larger framework.
-
-## Read The Docs First
-Treat `docs/ARCHITECTURE.md` as the entry point before touching code. It links to the focused docs
-for the data model, cache, GUI, storage, annotations, and figure scripts. Current-state docs describe
-how the app works now; `docs/plans/` describes intended changes. Do not copy structure summaries
-into this file when they belong in the docs.
-
-When a change affects documented structure, update the matching doc in the same commit. If the code
-and docs disagree, fix the disagreement instead of adding caveats or transition notes.
-
-## Working Rules
-Use Julia 1.12 style: 4-space indentation, `snake_case` functions and variables, `UpperCamelCase`
-types, and concise public docstrings with signatures and return types. Prefer small, explicit APIs.
-Project-facing functions should not expose cache controls, background-job controls, UI state, or
-other package machinery.
-
-Find simple, stable, idiomatic solutions. Refactor first when that makes the change smaller or more
-obvious. Do not keep compatibility paths, fallback behavior, or legacy symbols unless the user
-explicitly asks for them. Do not hide failures that should be fixed; surface errors clearly.
-
-Use `rg` for search. Use `apply_patch` for manual edits. Do not revert user changes or unrelated
-dirty files.
+For the full architectural model, when needed, see
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Commands
-Install the root package with `julia --project -e 'using Pkg; instantiate()'`. If you change
-`src/Annotations`, also instantiate that package's environment.
 
-When a change needs test validation, run the full suite once for that change with
-`julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip the full suite for
-doc-only, inspection-only, or harmless local edits where it would just slow iteration.
+```bash
+# Run tests (when validation is needed — skip for doc-only / trivial edits)
+julia --project --threads=4 -e 'using Pkg; Pkg.test()'
 
-Tests live in `test/`. Keep fixtures small and deterministic. For GUI or plotting changes, test the
-data, labels, and figure creation behavior that can be checked reliably without pixel-perfect image
-assertions.
+# Precompile without launching UI 
+julia --project -e 'using Pkg; Pkg.precompile()'
 
-Commits should be small, cohesive, and imperative. Mention behavior changes in the commit body when
-needed, and include the tests run.
+# Scaling sweep — compare scaling.csv (slow)
+julia --project=bench bench/scaling.jl [n1,n2,...]
+
+# Realistic browse — compare scorecard.csv + profile.json (very slow)
+julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
+```
+
+Benchmark details: [bench/README.md](bench/README.md).
+
+There is no generic launcher script. Project scripts (outside this repo) call `define_project` and
+`register_*`, then `open_workspace(project, root)` and `open_browser(ws)`.
+
+## Purpose
+
+The direction is to turn this into the persistent interactive layer around a Julia data project —
+not a domain app and not a generic IDE, but the thing that makes “open the data, browse, plot,
+annotate, iterate on code, come back tomorrow” work without re-running scripts or holding the
+whole pipeline in your head. The package keeps owning everything stateful and expensive (watching
+sources, interpreting once, caching at multiple stages, background work with selection priority,
+rendering); project code stays thin script logic that shouldn’t know any of that machinery exists.
+The bet is on live work: files and project code can change while views stay attached via selections
+or rules, plots can be built while the cache is still filling, and the same operations should
+eventually be callable from the REPL as from the GUI so a saved workflow is just a replayable session,
+not exported figure code. Generic table/column visualizers and composable figures are the main
+product expansion; `register_plot!` per kind is the bootstrap, not the end state. Spatial
+navigation, tags, and notes are there to make the tree match how people actually think about
+devices on a chip, not to replace the tree. Broader “DataBrowser” generalization (non-DataFrame
+payloads, tree as a derived view) is a type-system widening on the same workspace model, not a
+pivot. Performance isn’t polish — if browse-while-building and warm reopen aren’t fast, none of the
+rest matters. What’s explicitly being left behind: figure-script export, browser-owned project
+state, bundled experiment projects in the core package, and compatibility layers that slow down
+getting to that live workspace. North star: [docs/plans/workspace-vision.md](docs/plans/workspace-vision.md).
+
+## Target applications
+
+Before pre-made domain projects ship with the app, MeasurementBrowser needs to be installable as a
+standalone executable (or equivalent distribution) that a user can launch without hand-assembling a
+Julia environment.
+
+The long-term plan is to develop bundled projects on top of this engine — each one a complete
+workflow for a technique, not just parsers and plot callbacks. The list below is the product
+direction: it shows what the platform must eventually support (multi-window layouts, interactive
+fitting, responsive updates while parameters change, and so on). Add to this list when a new
+application is scoped.
+
+- **Semiconductor / ferroelectric characterization** — IV, CV, PUND, fatigue, and related
+  measurements (this kind of work already lives outside this repo at 
+  /Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2).
+- **XPS analysis and fitting** — spectrum import, peak models, constraints, and every window needed
+  to fit data interactively, responsively, and flexibly (tools like CasaXPS do this poorly today).
+- **Ellipsometry analysis and fitting** — layered optical models, maps vs wavelength, live parameter
+  exploration; aim toward CompleteEASE-class capability.
+- **Further techniques** — this list will grow.
+
+## Architecture
+
+Project scripts describe how to recognize files, parse them into items, and draw plots. The package
+handles directory scanning, background processing, DuckDB caching, the item tree, selection, and the
+browser UI. Project code should not touch cache files, background jobs, or UI state.
+
+When a workspace opens, the package scans the data root, finds source files, and interprets each one
+into logical items using the project's registered callbacks. That work runs through a dependency
+graph with five stages: interpret the source file, process each item, analyze each item, then
+process and analyze at the collection level. Completed results are published into an index that
+the tree and plots read from. Work is event-driven — background workers finish tasks and publish
+updates; the GUI does not poll a job queue. If the user selects items that are still processing,
+that work gets higher priority. Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+To register a new measurement type, see [docs/api.md](docs/api.md). For IDs, collection paths, and
+the item tree, see [docs/data-model.md](docs/data-model.md). Recipe `detect` callbacks are tried in
+registration order; the first match wins, so register specific filename patterns before general ones.
+
+| Editing… | Look in… | Doc |
+|---|---|---|
+| `register_*`, item callbacks | `src/Project.jl`, `src/Projects.jl` | [api.md](docs/api.md) |
+| Scanning, item records, hierarchy | `src/ItemIndex/` | [data-model.md](docs/data-model.md) |
+| Directory traversal, `metadata.txt` | `src/DataSources/DirectorySource.jl` | [storage.md](docs/storage.md) |
+| DuckDB cache, writes, reopen | `src/Cache/` | [cache.md](docs/cache.md) |
+| Background work, loading item data | `src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Browser panels, plot embedding | `src/Browser/` | [gui.md](docs/gui.md) |
+| Profiling, benchmark traces | `src/Profiling.jl` | [profiling.md](docs/profiling.md) |
+| Tags, notes, spatial layout | `src/Annotations/` | [annotations.md](docs/annotations.md) |
+
+`docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change
+behavior that affects the model, update the relevant doc in the same commit — do not copy
+architecture into this file.
+
+## Working rules
+
+Julia 1.12; 4-space indent; `snake_case` functions, `UpperCamelCase` types. Don't catch errors that
+should be fixed. Docstrings on public APIs. Pre-pre-alpha: replace cleanly, no compatibility shims.
+When code and docs disagree, fix the doc in the same commit.
+
+## Testing
+
+When a change needs validation, run the full suite once:
+`julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
+harmless local edits. Fixtures in `test/fixtures/`; inline projects in `test/test_project.jl` and
+`test/test_scan_profile.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
+
+## Benchmarks
+
+Use `bench/` for performance work (`julia --project=bench`). Results persist under
+`bench/results/` (gitignored). See [bench/README.md](bench/README.md).
+
+- **scaling.jl** — times `status_refresh`, `items_panel`, and `metadata_publish` at increasing item
+  counts; writes `scaling.csv` with power-law exponents. Pass smaller size lists while iterating.
+- **realistic_browse.jl** — synthetic RuO2-shaped workload: scan while plotting, cache saturation,
+  warm reopen. Writes `scorecard.csv`, `profile.json` (Perfetto trace, on by default), and
+  supporting CSVs. Use `scale=0.1` to iterate.
+
+Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. Set `MB_PROFILE_INTERNAL=0`
+to skip the structured trace.
+
+## Notes
+
+- The UI needs OpenGL (GLMakie + CImGui).
+- Use `test/` fixtures or small subfolders during development — full tree scans are slow.

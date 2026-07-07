@@ -6,7 +6,7 @@ submodules can name the concrete type). This file defines the methods: `define_p
 `register_*` functions, and the project's implementation of the engine interface (interpretation,
 data access, plotting, serialization).
 
-A project is built by mutation with `register_item!` / `register_collection_stat!` /
+A project is built by mutation with `register_item!` / `register_collection_analysis!` /
 `register_plot!`, each pointing at plain callbacks, which the engine then drives:
 
 Pipeline per item kind (fixed order, each fed the previous output):
@@ -14,7 +14,7 @@ Pipeline per item kind (fixed order, each fed the previous output):
     read(file)            -> data               # whole file, parsed once
     entries(file, data)   -> Vector{<:AbstractDataItem}  # one entry per item (a single one is a vector of one)
     process(item)         -> AbstractDataItem    # optional; default passthrough
-    stats(item)           -> Dict{Symbol,Any}    # optional, async after indexing
+    analyze(item)         -> Dict{Symbol,Any}    # optional, async after indexing
     label(item)           -> String             # optional
 
 `entries` returns the package's `DataItem` (recipe API) or a project subtype (type API); the engine
@@ -34,7 +34,7 @@ function Serialization.serialize(s::Serialization.AbstractSerializer, project::P
     Serialization.serialize(s, project.name)
     Serialization.serialize(s, project.description)
     Serialization.serialize(s, project.recipes)
-    Serialization.serialize(s, project.collection_stats)
+    Serialization.serialize(s, project.collections)
     Serialization.serialize(s, project.plots)
     return nothing
 end
@@ -42,15 +42,15 @@ end
 function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{Project})
     project = Project(
         "", "", ItemRecipe[],
-        Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
+        Dict{Symbol,CollectionRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Dict{Symbol,KindProfile}(), ReentrantLock(),
+        Dict{String,SourceItemProfile}(), ReentrantLock(),
     )
     Serialization.deserialize_cycle(s, project)
     project.name = Serialization.deserialize(s)
     project.description = Serialization.deserialize(s)
     project.recipes = Serialization.deserialize(s)
-    project.collection_stats = Serialization.deserialize(s)
+    project.collections = Serialization.deserialize(s)
     project.plots = Serialization.deserialize(s)
     return project
 end
@@ -77,16 +77,18 @@ function Base.show(io::IO, ::MIME"text/plain", project::Project)
     pad = isempty(project.recipes) ? 0 : maximum(length(string(r.kind)) for r in project.recipes)
     for recipe in project.recipes
         optional = [name for (name, f) in
-            (("process", recipe.process), ("stats", recipe.stats), ("label", recipe.label))
+            (("process", recipe.process), ("analyze", recipe.analyze), ("label", recipe.label))
             if f !== nothing]
         steps = isempty(optional) ? "" : " · " * join(optional, " · ")
         print(io, "\n    ", rstrip(rpad(string(recipe.kind), pad) * steps))
     end
 
-    print(io, "\n  ", _plural(length(project.collection_stats), "collection stat"))
-    isempty(project.collection_stats) || print(io, ":")
-    for recipe in values(project.collection_stats)
-        print(io, "\n    (", join(recipe.kinds, ", "), ") → ", _callback_name(recipe.compute_stats))
+    print(io, "\n  ", _plural(length(project.collections), "collection recipe"))
+    isempty(project.collections) || print(io, ":")
+    for recipe in values(project.collections)
+        stages = [name for (name, f) in
+            (("process", recipe.process), ("analyze", recipe.analyze)) if f !== nothing]
+        print(io, "\n    ", recipe.kind, " · ", join(stages, " · "))
     end
 
     plot_count = sum(length, values(project.plots); init=0)
@@ -105,34 +107,55 @@ function define_project(name::AbstractString; description::AbstractString="")::P
         String(name),
         String(description),
         ItemRecipe[],
-        Dict{Tuple{Vararg{Symbol}},CollectionStatRecipe}(),
+        Dict{Symbol,CollectionRecipe}(),
         Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Dict{Symbol,KindProfile}(),
+        Dict{String,SourceItemProfile}(),
         ReentrantLock(),
     )
 end
 
-"""Accumulate one timed source-item read and the items it expanded to into the scan profile."""
-function _record_read!(
+function Projects.record_scan_phase!(
     project::Project,
+    source_item_id::AbstractString,
     kind::Symbol,
+    phase::Symbol,
     seconds::Float64,
-    item_count::Int,
+    thread_id::Int,
 )::Nothing
     lock(project.profile_lock) do
-        entry = get!(KindProfile, project.scan_profile, kind)
-        entry.source_items += 1
-        entry.read_seconds += seconds
-        entry.items += item_count
+        entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
+        kind !== :unmatched && (entry.kind = kind)
+        phase === :detect ? (entry.detect_seconds += seconds) :
+        phase === :read ? (entry.read_seconds += seconds) :
+        phase === :entries ? (entry.entries_seconds += seconds) :
+        phase === :process ? (entry.process_seconds += seconds) :
+        phase === :analyze ? (entry.analyze_seconds += seconds) :
+        error("Unknown scan timing phase: $phase")
+        push!(entry.thread_ids, thread_id)
     end
     return nothing
 end
 
-"""Accumulate one timed process+stats computation into the per-kind scan profile."""
-function _record_stats!(project::Project, kind::Symbol, seconds::Float64)::Nothing
+function Projects.finish_source_profile!(
+    project::Project,
+    source_item_id::AbstractString,
+    source_item_label::AbstractString,
+    source_item_path::Union{Nothing,String},
+    kind::Symbol,
+    item_count::Int,
+    total_seconds::Float64,
+    thread_ids::Set{Int},
+)::Nothing
     lock(project.profile_lock) do
-        entry = get!(KindProfile, project.scan_profile, kind)
-        entry.stats_seconds += seconds
+        entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
+        entry.source_item_label = String(source_item_label)
+        entry.source_item_path = source_item_path
+        entry.kind = kind
+        entry.item_count = item_count
+        # process_seconds and analyze_seconds are accumulated separately during analysis via
+        # record_scan_phase!, so finish (which runs at scan time) must not overwrite them.
+        entry.total_seconds = total_seconds
+        union!(entry.thread_ids, thread_ids)
     end
     return nothing
 end
@@ -144,13 +167,44 @@ function reset_scan_profile!(project::Project)::Nothing
     return nothing
 end
 
-function scan_profile_summary(project::Project)::Vector{NamedTuple}
+function scan_profile_summary(project::Project)::Vector{KindProfileRow}
     rows = lock(project.profile_lock) do
-        [(; kind, source_items=p.source_items, items=p.items,
-            read_seconds=p.read_seconds, stats_seconds=p.stats_seconds)
-         for (kind, p) in project.scan_profile]
+        by_kind = Dict{Symbol,KindProfileRow}()
+        for profile in values(project.scan_profile)
+            row = get!(() -> KindProfileRow(profile.kind), by_kind, profile.kind)
+            row.source_items += 1
+            row.items += profile.item_count
+            row.detect_seconds += profile.detect_seconds
+            row.read_seconds += profile.read_seconds
+            row.entries_seconds += profile.entries_seconds
+            row.process_seconds += profile.process_seconds
+            row.analyze_seconds += profile.analyze_seconds
+            row.total_seconds += profile.total_seconds
+        end
+        collect(values(by_kind))
     end
-    sort!(rows; by=row -> row.read_seconds + row.stats_seconds, rev=true)
+    sort!(rows; by=row -> row.total_seconds, rev=true)
+    return rows
+end
+
+function scan_source_profile(project::Project)::Vector{SourceProfileRow}
+    rows = lock(project.profile_lock) do
+        [SourceProfileRow(
+            profile.source_item_id,
+            profile.source_item_label,
+            profile.source_item_path,
+            profile.kind,
+            profile.item_count,
+            profile.detect_seconds,
+            profile.read_seconds,
+            profile.entries_seconds,
+            profile.process_seconds,
+            profile.analyze_seconds,
+            profile.total_seconds,
+            sort!(collect(profile.thread_ids)),
+        ) for profile in values(project.scan_profile)]
+    end
+    sort!(rows; by=row -> row.total_seconds, rev=true)
     return rows
 end
 
@@ -159,8 +213,8 @@ Register (or replace) the recipe for one item kind.
 
 `detect`, `read`, and `entries` are required. `entries(file, data)` returns the per-item entries as
 `AbstractDataItem`s — the package's `DataItem` (recipe API) or your own subtype (type API); a
-single-item file just returns a vector of one. Attach the raw per-item payload as `item.data`;
-optional `process`/`stats`/`label` refine the recipe
+single-item file just returns a vector of one. Attach the raw per-item data as `item.data`;
+optional `process`/`analyze`/`label` refine the recipe
 API. Re-calling with the same `kind` replaces the recipe in place, so editing and re-running the line
 updates a live project.
 """
@@ -171,31 +225,31 @@ function register_item!(
     read::Function,
     entries::Function,
     process::Union{Nothing,Function}=nothing,
-    stats::Union{Nothing,Function}=nothing,
+    analyze::Union{Nothing,Function}=nothing,
     label::Union{Nothing,Function}=nothing,
 )::Project
-    recipe = ItemRecipe(kind, detect, read, entries, process, stats, label)
+    recipe = ItemRecipe(kind, detect, read, entries, process, analyze, label)
     index = findfirst(r -> r.kind === kind, project.recipes)
     index === nothing ? push!(project.recipes, recipe) : (project.recipes[index] = recipe)
     return project
 end
 
 """
-Register (or replace) a cross-item stat folded over each collection's items.
+Register (or replace) the collection recipe for one item kind.
 
-`compute_stats` receives the group `Vector{<:AbstractDataItem}` for one collection and returns a
-`Dict{Symbol,Any}` stored on that collection node. The callback adapter implements this through the
-low-level `collection_stats(project, source, collection, items)` hook. Re-calling with the same
-`kinds` replaces the recipe.
+`process(items)` receives the collection's members of `kind` and returns one output per input (same
+ids), rewriting per-item data or metadata (the down-flow). `analyze(items)` receives the
+post-process members and returns a `Dict{Symbol,Any}` attached to the collection node only. The
+callback adapter implements these through the low-level `process_collection`/`analyze_collection`
+hooks. Re-calling with the same `kind` replaces the recipe.
 """
-function register_collection_stat!(
-    project::Project;
-    kinds::Vector{Symbol},
-    compute_stats::Function,
-    group_by::Function=_default_collection_group,
+function register_collection_analysis!(
+    project::Project,
+    kind::Symbol;
+    process::Union{Nothing,Function}=nothing,
+    analyze::Union{Nothing,Function}=nothing,
 )::Project
-    key = Tuple(sort(kinds))
-    project.collection_stats[key] = CollectionStatRecipe(kinds, group_by, compute_stats)
+    project.collections[kind] = CollectionRecipe(kind, process, analyze)
     return project
 end
 
@@ -223,8 +277,6 @@ function register_plot!(
     return project
 end
 
-_default_collection_group(item::AbstractDataItem)::String = collection_path_key(collection(item))
-
 # ---------------------------------------------------------------------------
 # Recipe lookup helpers
 # ---------------------------------------------------------------------------
@@ -243,12 +295,12 @@ end
 function _mint_id(
     source_item_id::AbstractString,
     kind::Symbol,
-    params::Dict{Symbol,Any},
+    metadata::Dict{Symbol,Any},
 )::String
     source_id = String(source_item_id)
-    isempty(params) && return source_id
-    ordered = sort!(collect(keys(params)))
-    return "$source_id#kind=$(kind)," * join(("$(k)=$(params[k])" for k in ordered), ",")
+    isempty(metadata) && return source_id
+    ordered = sort!(collect(keys(metadata)))
+    return "$source_id#kind=$(kind)," * join(("$(k)=$(metadata[k])" for k in ordered), ",")
 end
 
 # ---------------------------------------------------------------------------
@@ -284,10 +336,9 @@ function _normalize_entry(
         kind=recipe.kind,
         collection=collection(item),
         label=item_label(item),
-        parameters=parameters(item),
-        stats=stats(item),
+        metadata=Projects.metadata(item),
         data=item_data(item),
-        id=_mint_id(source_item_id, recipe.kind, parameters(item)),
+        id=_mint_id(source_item_id, recipe.kind, Projects.metadata(item)),
     )
 end
 
@@ -301,42 +352,70 @@ function _processed_item(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDa
     )
 end
 
+"""
+Process one loaded item through its registered callback or the low-level `process(item)` hook.
+"""
+function Projects.process(
+    project::Project,
+    ::AbstractDataSource,
+    item::AbstractDataItem,
+)::AbstractDataItem
+    recipe = _recipe(project, kind(item))
+    (recipe === nothing || recipe.process === nothing) && return Projects.process(item)
+    return _processed_item(recipe, item)
+end
+
 function Projects.data_items(
     project::Project,
     source::AbstractDataSource,
     file::SourceFile,
 )::Vector{<:AbstractDataItem}
-    recipe = _detect_recipe(project, file)
+    recipe = nothing
+    started = time_ns()
+    profiler = Profiling.current_session()
+    try
+        recipe = Profiling.@profile_span profiler :project :detect Profiling.ProfileAttributes(
+            source_id=file.filepath,
+        ) begin
+            _detect_recipe(project, file)
+        end
+    finally
+        record_scan_phase!(
+            project, file.filepath,
+            recipe === nothing ? :unmatched : recipe.kind,
+            :detect, (time_ns() - started) / 1e9, Base.Threads.threadid())
+    end
     recipe === nothing && return DataItem[]
-    read_started = time_ns()
-    data = recipe.read(file)
-    read_seconds = (time_ns() - read_started) / 1e9
-    items = AbstractDataItem[
-        _normalize_entry(recipe, file.filepath, item)
-        for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
-    ]
-    _record_read!(project, recipe.kind, read_seconds, length(items))
+    started = time_ns()
+    data = try
+        Profiling.@profile_span profiler :project :read Profiling.ProfileAttributes(
+            kind=recipe.kind,
+            source_id=file.filepath,
+        ) begin
+            recipe.read(file)
+        end
+    finally
+        record_scan_phase!(
+            project, file.filepath, recipe.kind, :read,
+            (time_ns() - started) / 1e9, Base.Threads.threadid())
+    end
+    started = time_ns()
+    items = try
+        Profiling.@profile_span profiler :project :entries Profiling.ProfileAttributes(
+            kind=recipe.kind,
+            source_id=file.filepath,
+        ) begin
+            AbstractDataItem[
+                _normalize_entry(recipe, file.filepath, item)
+                for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
+            ]
+        end
+    finally
+        record_scan_phase!(
+            project, file.filepath, recipe.kind, :entries,
+            (time_ns() - started) / 1e9, Base.Threads.threadid())
+    end
     return items
-end
-
-function Projects.load_data_item(
-    project::Project,
-    source::AbstractDataSource,
-    source_item_id::AbstractString,
-    requested_id::AbstractString,
-)::AbstractDataItem
-    file = index_source_file(source_item_id)
-    recipe = _detect_recipe(project, file)
-    recipe === nothing && error("No registered item recipe for source item $(source_item_id)")
-    raw = recipe.read(file)
-    items = AbstractDataItem[
-        _normalize_entry(recipe, source_item_id, item)
-        for item in recipe.entries(file, raw)::Vector{<:AbstractDataItem}
-    ]
-    index = findfirst(item -> id(item) == requested_id, items)
-    index === nothing &&
-        error("Source item $(source_item_id) did not produce item id $(requested_id)")
-    return _processed_item(recipe, items[index])
 end
 
 """Interpret one physical file through the high-level callback adapter."""
@@ -346,40 +425,98 @@ function items_for_file(
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
 )::Vector{ItemRecord}
     source = DirectorySource(dirname(filepath); metadata_file=nothing)
-    source.collection_parameter_entries = meta
-    records = ItemIndex.interpret_source_item(
+    if meta !== nothing
+        source.collection_metadata_entries = meta
+        source.has_metadata = true
+    end
+    interpretation = ItemIndex.interpret_source_item(
         project,
         source,
         index_source_file(filepath),
     )
-    return records
+    return interpretation.records
 end
 
-function Projects.collection_stats(
+"""
+Rewrite one collection's members through the kind's registered collection `process`.
+
+Members are grouped by kind; a kind without a registered `process` passes its members through
+unchanged. The callback returns one output per input; the adapter validates ids and count.
+"""
+function Projects.process_collection(
     project::Project,
-    source::AbstractDataSource,
+    ::AbstractDataSource,
+    ::Vector{String},
+    items::Vector{<:AbstractDataItem},
+)::Vector{<:AbstractDataItem}
+    rewritten = AbstractDataItem[]
+    for group in _group_by_kind(items)
+        recipe = get(project.collections, kind(first(group)), nothing)
+        if recipe === nothing || recipe.process === nothing
+            append!(rewritten, group)
+            continue
+        end
+        outputs = recipe.process(group)::Vector{<:AbstractDataItem}
+        length(outputs) == length(group) || error(
+            "collection process for kind $(kind(first(group))) must return one item per input; " *
+            "got $(length(outputs)) for $(length(group)) members",
+        )
+        input_ids = Set(id(item) for item in group)
+        for output in outputs
+            id(output) in input_ids || error(
+                "collection process for kind $(kind(first(group))) returned unknown item id " *
+                "'$(id(output))'",
+            )
+        end
+        append!(rewritten, outputs)
+    end
+    return rewritten
+end
+
+"""Fold one collection's post-process members into collection-node metadata."""
+function Projects.analyze_collection(
+    project::Project,
+    ::AbstractDataSource,
     ::Vector{String},
     items::Vector{<:AbstractDataItem},
 )::Dict{Symbol,Any}
     merged = Dict{Symbol,Any}()
-    for recipe in values(project.collection_stats)
-        selected = AbstractDataItem[item for item in items if kind(item) in recipe.kinds]
-        isempty(selected) && continue
-        stats = recipe.compute_stats(selected)::Dict{Symbol,Any}
-        merge!(merged, stats)
+    for group in _group_by_kind(items)
+        recipe = get(project.collections, kind(first(group)), nothing)
+        (recipe === nothing || recipe.analyze === nothing) && continue
+        merge!(merged, recipe.analyze(group)::Dict{Symbol,Any})
     end
     return merged
 end
 
-function Projects.compute_item_stats(
+"""Group items by kind, preserving first-seen kind order."""
+function _group_by_kind(items::Vector{<:AbstractDataItem})::Vector{Vector{AbstractDataItem}}
+    groups = Dict{Symbol,Vector{AbstractDataItem}}()
+    order = Symbol[]
+    for item in items
+        item_kind = kind(item)
+        haskey(groups, item_kind) || push!(order, item_kind)
+        push!(get!(() -> AbstractDataItem[], groups, item_kind), item)
+    end
+    return Vector{AbstractDataItem}[groups[item_kind] for item_kind in order]
+end
+
+function Projects.analyze_item(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,
 )::Dict{Symbol,Any}
     recipe = _recipe(project, kind(item))
-    (recipe === nothing || recipe.stats === nothing) && return Dict{Symbol,Any}()
-    stats_started = time_ns()
-    result = recipe.stats(item)::Dict{Symbol,Any}
-    _record_stats!(project, recipe.kind, (time_ns() - stats_started) / 1e9)
-    return result
+    (recipe === nothing || recipe.analyze === nothing) && return Dict{Symbol,Any}()
+    return recipe.analyze(item)::Dict{Symbol,Any}
+end
+
+function Projects.has_collection_process(project::Project, item_kind::Symbol)::Bool
+    recipe = get(project.collections, item_kind, nothing)
+    return recipe !== nothing && recipe.process !== nothing
+end
+
+function Projects.has_collection_analysis(project::Project, item_kind::Symbol)::Bool
+    recipe = get(project.collections, item_kind, nothing)
+    return recipe !== nothing && recipe.analyze !== nothing
 end

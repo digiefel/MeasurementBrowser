@@ -226,7 +226,7 @@ end
 """
 Convenience: build an InspectorTable from items whose `item_data` is accessed via a callback.
 
-`get_data(item) -> Any` extracts the data payload.
+`get_data(item) -> Any` extracts the loaded data.
 `get_label(item) -> String` extracts the display label.
 """
 function merge_item_tables(

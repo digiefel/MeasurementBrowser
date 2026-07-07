@@ -1,32 +1,18 @@
 """
-Materialize the loaded items for selected records.
+Materialize processed items for selected records through the workspace work graph.
+
+Committed processed data comes from DuckDB. Missing results promote the existing background job or
+create one whose interpreted-data dependency may use DuckDB or the normal source fallback.
 """
 function materialize_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
-)::Vector{Any}
-    loaded = Any[]
-    sizehint!(loaded, length(records))
-    for record in records
-        id = record.id
-        fingerprint = (record.source_item_fingerprint, record.item_fingerprint)
-        cached = get(workspace.loaded_items, id, nothing)
-        if cached !== nothing && first(cached) == fingerprint
-            push!(loaded, last(cached))
-            continue
-        end
-        # FIXME: The low-level contract reloads by source-item id and id, so sources may need
-        # to re-find context they had during discovery. Pass a richer handle if this becomes painful.
-        item = load_data_item(workspace.project, workspace.source, record.source_item_id, record.id)
-        item = _effective_loaded_item(record, item)
-        workspace.loaded_items[id] = (fingerprint, item)
-        push!(loaded, item)
-    end
-    return loaded
+)::Vector{AbstractDataItem}
+    return request_processed_items(workspace, records)
 end
 
 """
-Return loaded item payloads for callers that inspect raw tabular data.
+Return loaded item data for callers that inspect raw tabular values.
 """
 function read_item_data(
     workspace::Workspace,

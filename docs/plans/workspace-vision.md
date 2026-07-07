@@ -23,6 +23,10 @@ This doc is the north-star product model. Near-term migration work lives in
 [refactor-gap-report.md](refactor-gap-report.md); focused plans linked from [README.md](README.md)
 cover only areas that need extra design detail.
 
+[Source, Cache, and Processing](source-cache-processing.md) defines how source refresh, local cache
+levels, required processing, interactive priority, statistics, and views cooperate to keep this
+workspace responsive.
+
 ## Principles
 
 - **GUI/API parity.** A useful GUI action should map to a package operation that can also be called
@@ -169,7 +173,7 @@ useful split is:
 | State | Owner | Persistence |
 |---|---|---|
 | Project state | Opened-project object | Recomputed from source, cache, and source-root metadata. |
-| Data cache | Package cache layer | Generated HDF5 cache outside the source root. |
+| Data cache | Package cache layer | Generated DuckDB cache outside the source root. |
 | GUI state | Browser window | Mostly transient; small preferences can live in app prefs. |
 | Annotations | Source root | Hand-editable tags, notes, coordinates, and spatial positions. |
 | Workflow state | Workflow model | Saved workflow file, replayable from GUI or API. |
@@ -213,6 +217,8 @@ This affects architecture:
 
 ## Relationship To Existing Plans
 
+- [source-cache-processing.md](source-cache-processing.md) defines the execution path from
+  source discovery through interpreted data, queued processing, processed data, stats, and views.
 - [refactor-gap-report.md](refactor-gap-report.md) tracks the current implementation gaps that block
   this model: opened-project ownership, data reuse, progressive analysis, plotting composition, and
   stale code paths.

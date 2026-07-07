@@ -4,7 +4,9 @@
 
 These files annotate collections and items. Figure annotations are stored separately.
 
-`metadata.txt` is `DirectorySource` collection parameter input and lives at that source root. User
+`metadata.txt` (or the custom filename configured on `DirectorySource`) is collection parameter input
+and lives at that source root. `DirectorySource` watches it and excludes that exact path from normal
+source-file discovery. User
 annotation files (`layout.txt`, `tags.txt`, `notes.txt`) currently live next to the cache, keyed by
 `source_id`; see [cache.md](cache.md).
 
@@ -92,5 +94,5 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 ## Cache layer (separate from source-root metadata)
 
-The HDF5 cache is generated data, not hand-edited source-root metadata. It lives outside the source
+The DuckDB cache is generated data, not hand-edited source-root metadata. It lives outside the source
 and is documented in [cache.md](cache.md).

@@ -327,8 +327,10 @@ function _render_inspector_plot!(inspector::TableInspectorState)::Nothing
         inspector.figure = nothing
         inspector.plot_key = nothing
     end
-    !can_plot_selected && inspector.plot_selected_only &&
-        ig.SameLine() && ig.TextDisabled("(select rows)")
+    if inspector.plot_selected_only && !can_plot_selected
+        ig.SameLine()
+        ig.TextDisabled("(select rows)")
+    end
 
     _ensure_inspector_plot!(inspector)
     if inspector.figure !== nothing

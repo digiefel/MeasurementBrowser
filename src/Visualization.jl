@@ -4,7 +4,8 @@ using GLMakie: Figure
 using InteractiveUtils: subtypes
 
 import ..ItemIndex: ItemRecord
-import ..Projects: AbstractDataItem, source_label
+import ..Projects: AbstractDataItem
+import ..Profiling
 import ..Workspace
 
 """
@@ -38,29 +39,24 @@ function plot_kind_from_name(name::AbstractString)::Union{Nothing,Type{<:PlotKin
     return RegisteredPlot{Symbol(kind),Symbol(label)}
 end
 
-"""Create the figure layout required by a visualizer."""
+"""Materialize records and create the figure layout required by a visualizer."""
 function setup_plot(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
 )::Figure
-    error(
-        "No setup_plot implementation for $(source_label(workspace.source)) " *
-        "plot kind '$plot_kind'",
-    )
+    return setup_plot(workspace, plot_kind, Workspace.materialize_items(workspace, records))
 end
 
-"""Draw selected items into an existing figure."""
+"""Materialize records and draw their items into an existing figure."""
 function plot_data!(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
     figure::Figure,
 )::Nothing
-    error(
-        "No plot_data! implementation for $(source_label(workspace.source)) " *
-        "plot kind '$plot_kind'",
-    )
+    plot_data!(workspace, plot_kind, Workspace.materialize_items(workspace, records), figure)
+    return nothing
 end
 
 """
@@ -72,10 +68,15 @@ The package materializes the loaded `items` (each with `item.data`) before invok
 function setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
-    records::Vector{ItemRecord},
+    items::Vector{<:AbstractDataItem},
 )::Figure where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    return recipe.setup(workspace, Workspace.materialize_items(workspace, records))::Figure
+    return Profiling.@profile_span workspace.profiler :visualization :setup_plot Profiling.ProfileAttributes(
+        kind=Kind,
+        items=Int64(length(items)),
+    ) begin
+        recipe.setup(workspace, items)::Figure
+    end
 end
 
 """
@@ -87,11 +88,16 @@ The package materializes the loaded `items` (each with `item.data`) before invok
 function plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
-    records::Vector{ItemRecord},
+    items::Vector{<:AbstractDataItem},
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = workspace.project.plots[Kind][String(Label)]
-    recipe.draw(workspace, Workspace.materialize_items(workspace, records), figure)
+    Profiling.@profile_span workspace.profiler :visualization :draw_plot Profiling.ProfileAttributes(
+        kind=Kind,
+        items=Int64(length(items)),
+    ) begin
+        recipe.draw(workspace, items, figure)
+    end
     return nothing
 end
 
@@ -126,19 +132,6 @@ function plot_kinds()::Vector{Type{<:PlotKind}}
     end
     sort!(kinds; by=kind -> String(nameof(kind)))
     return kinds
-end
-
-"""
-Draw raw-data items directly while bypassing processed data.
-
-`items` carry the unprocessed payload as `item.data`, so a debug callback can tune the analysis live.
-"""
-function debug_plot(
-    ::Workspace.Workspace,
-    items::Vector{<:AbstractDataItem};
-    kwargs...,
-)
-    error("Debug plots are not implemented for this project")
 end
 
 end

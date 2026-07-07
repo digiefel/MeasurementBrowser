@@ -5,7 +5,9 @@
 ## Entry point and frame loop
 
 `open_browser(workspace)` creates one `BrowserState` and runs the render loop for an already-opened
-workspace. The folder-open UI still uses the high-level callback project path internally:
+workspace. The first visible frames are a small preparation surface while the browser pays one-time
+GLMakie/ImGui figure warmup; the normal docked layout is shown only after that path is ready. The
+folder-open UI still uses the high-level callback project path internally:
 `open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
 navigation and information, right side for plot-oriented work.
 
@@ -13,14 +15,21 @@ navigation and information, right side for plot-oriented work.
 
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
 to the open workspace. `PlotState` owns plot windows and choices, `TableInspectorState` owns the
-generic file-inspection window, and `PerformanceState` owns samples used only for diagnostics.
+generic file-inspection window, and `PerformanceState` owns frame/UI samples used only for
+diagnostics. Scan timings live with the project performing the callbacks. Internal structured traces
+and optional CPU samples belong to the workspace that captured them.
 
-The workspace owns the source, item index, selected collection and item identities, loaded cache,
-loaded item memory, and the state of source-scan and cache work. Those values must not be copied
-into browser state.
+The workspace owns the source, item index, selected collection and item identities, DuckDB cache,
+work graph, and source-scan/cache state. Those values must not be copied into browser state.
 
-Source-scan and cache work each have independent state, progress, errors, cancellation, and task
-ownership. This prevents one operation from overwriting the status shown for the other.
+The GUI reads background-work state through one snapshot, `workspace.status` (a `WorkspaceStatus`):
+its level (color), short label, one merged detail line, busy flag, optional progress fraction, and the
+live error list. `poll_workspace!` recomputes that snapshot only when something changes or work is
+active, so idle frames are allocation-free, and the GUI never reaches into the scan/analysis/cache
+internals directly. This is the stable contract: the cache's internals can change without touching the
+UI as long as it still produces the same status. Scanning submits source changes to the work graph;
+`poll_workspace!` publishes completed work and folds progress, failures, and cache state into the
+snapshot.
 
 ## Panels
 
@@ -30,6 +39,22 @@ ownership. This prevents one operation from overwriting the status shown for the
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance, multi-select, and quick X/Y plot. |
+| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
+
+## Scan profiling
+
+The Performance window's always-on scan profile keeps one bounded row per source item. It shows
+interpretation time, expanded item count, and the scheduler thread that performed the source work.
+Processing and statistics belong to the separate processing/summarizing activities and are not
+reported as source-read time.
+
+Internal engine controls are absent unless the workspace was opened with
+`profile_internal=true`. Its Internal tab starts and stops a bounded structured capture, groups span
+latencies, separates writer wait from service, shows process counters and recent filtered events, and
+exports Perfetto JSON. General live plots stay in the normal Live tab so each Makie figure has one
+owning canvas. Starting during active work drains it and starts one clean rebuild. With
+`profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
+raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
 
 ### Selection flow (tree → plot)
 
@@ -47,6 +72,15 @@ Plots render directly when their inputs change. `PlotViewState` stores stable it
 plot type, figure, errors, and Live setting. It resolves those ids from the workspace index when
 rendering, so browser state never keeps a second copy of item records. The main and detached
 plots use the same type and the same rendering path.
+
+When a plot view no longer owns a visible figure — closed detached window, empty selection, invalid
+plot kind, or draw failure — the browser destroys its embedded Makie screen instead of only dropping
+the `Figure` reference. This keeps old scene graphs and OpenGL render resources from accumulating
+while browsing.
+
+One render materializes its selection once. The same processed item objects are passed to plot setup
+and drawing; the resulting Makie figure owns the plotted values for that plot state. There is no
+package-level object LRU and no separate debug-plot path.
 
 Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the items they were created with unless the user enables Live in that window.
 
@@ -69,21 +103,25 @@ Both apply to multi-selection via `_set_collections_bad!` / `_set_items_bad!`.
 use it by providing callbacks rather than passing DataFrames or item objects directly.
 
 **State**: `DataGridState` (defined in `Browser/State.jl`) is owned by the consumer and passed by
-reference each frame. It tracks `selected_rows::Vector{Int}`, a `scroll_to_row` request, and a
-`focused` flag written back each frame.
+reference each frame. Row mode tracks `selected_rows::Vector{Int}`. Cell mode tracks the anchor and
+focus corners of one rectangular selection. Both modes share the scroll request and focus state.
 
 **Render API**:
 ```julia
 render_data_grid!(id, state;
     n_rows, columns, cell,         # cell(row, col) -> String
+    cell_link = (_, _) -> nothing, # optional local path or URL for one cell
     row_tint = _ -> nothing,       # row -> Union{Nothing,UInt32} packed RGBA
     on_selection_change = identity,
+    selection_mode = :rows,        # :rows or :cells
     height = 0.0f0)                # 0 = fill available
 ```
 
 The grid uses `ImGuiListClipper` for O(visible) rendering, sticky header via
 `TableSetupScrollFreeze(0, 1)`, `ImGuiTableFlags_Resizable` for drag-to-resize columns, and the
-shared `_update_multi_selection!` helper for click/Shift/Ctrl/arrow/Escape/Ctrl+A selection.
+shared `_update_multi_selection!` helper for row selection. Cell mode supports click-drag and
+Shift/arrow range extension, select-all, and spreadsheet-compatible TSV clipboard copy. The Table
+Inspector deliberately stays in row mode; diagnostic tables use cell mode.
 
 **Column width persistence**: Column widths are persisted across restarts via ImGui's ini file
 (see below). `ImGuiTableFlags_SizingFixedFit` auto-sizes columns on first appearance; on

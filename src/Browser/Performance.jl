@@ -35,52 +35,14 @@ function _time!(
     return nothing
 end
 
-"""Read one integer field from a Linux process-information file."""
-function _read_proc_int(
-    path::String,
-    prefix::String,
-)::Union{Nothing,Int}
-    isfile(path) || return nothing
-    for line in eachline(path)
-        startswith(line, prefix) || continue
-        fields = split(strip(line))
-        length(fields) >= 2 || return nothing
-        try
-            return parse(Int, fields[2])
-        catch
-            return nothing
-        end
-    end
-    return nothing
-end
-
-"""Collect the process-memory values shown in the performance window."""
-function _memory_snapshot()::NamedTuple
-    return (
-        vmrss_kb=_read_proc_int("/proc/self/status", "VmRSS:"),
-        rssanon_kb=_read_proc_int("/proc/self/status", "RssAnon:"),
-        vmsize_kb=_read_proc_int("/proc/self/status", "VmSize:"),
-        vmpeak_kb=_read_proc_int("/proc/self/status", "VmPeak:"),
-        read_bytes=_read_proc_int("/proc/self/io", "read_bytes:"),
-        gc_live_bytes=Int(Base.gc_live_bytes()),
-        maxrss_bytes=Int(Sys.maxrss()),
-    )
-end
-
-"""Format a kibibyte count for the performance window."""
-function _fmt_kb(kb::Union{Nothing,Integer})::String
-    kb === nothing && return "n/a"
-    gib = kb / (1024^2)
-    gib >= 1 && return @sprintf("%.2f GiB", gib)
-    return @sprintf("%.0f MiB", kb / 1024)
-end
-
 """Format a byte count for the performance window."""
-function _fmt_bytes(bytes::Union{Nothing,Integer})::String
-    bytes === nothing && return "n/a"
+function _fmt_bytes(bytes::Integer)::String
     gib = bytes / (1024^3)
     gib >= 1 && return @sprintf("%.2f GiB", gib)
-    return @sprintf("%.0f MiB", bytes / (1024^2))
+    mib = bytes / (1024^2)
+    mib >= 1 && return @sprintf("%.0f MiB", mib)
+    bytes >= 1024 && return @sprintf("%.1f KB", bytes / 1024)
+    return "$bytes B"
 end
 
 """Read identifying strings from the active OpenGL context."""
