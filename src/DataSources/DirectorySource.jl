@@ -1,5 +1,6 @@
 using Dates
-using FileWatching
+using BetterFileWatching
+using CancellationTokens
 
 const DEFAULT_DIRECTORY_METADATA_FILE = "metadata.txt"
 
@@ -23,6 +24,7 @@ mutable struct DirectorySource <: AbstractDataSource
     has_metadata::Bool
     metadata_lock::ReentrantLock
     watcher_task::Union{Nothing,Task}
+    watcher_cancel::Union{Nothing,CancellationTokenSource}
     watcher_closed::Base.Threads.Atomic{Bool}
 end
 
@@ -39,6 +41,7 @@ function DirectorySource(
         Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(),
         false,
         ReentrantLock(),
+        nothing,
         nothing,
         Base.Threads.Atomic{Bool}(false),
     )
@@ -66,6 +69,7 @@ Projects.source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file
 
 Projects.source_id(source::DirectorySource)::String = source.root_path
 Projects.source_label(source::DirectorySource)::String = basename(source.root_path)
+Projects.source_item_noun(::DirectorySource)::String = "source files"
 
 """Extract a source-item timestamp from the supported filename conventions."""
 function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
@@ -128,17 +132,23 @@ function is_source_filename(name::AbstractString)::Bool
     return !(lowercase(name) in DIRECTORY_SOURCE_SIDECARS)
 end
 
-function collect_source_files(source::DirectorySource)::Vector{SourceFile}
+function collect_source_files(
+    source::DirectorySource;
+    on_progress::Union{Nothing,Function}=nothing,
+)::Vector{SourceFile}
     source_files = SourceFile[]
     metadata_path = collection_metadata_file_path(source)
+    found = Ref(0)
     if source.recursive
         for (root, _, names) in walkdir(source.root_path)
-            append_source_files!(source_files, root, names, metadata_path)
+            append_source_files!(source_files, root, names, metadata_path; on_progress, found)
         end
     else
         names = readdir(source.root_path)
-        append_source_files!(source_files, source.root_path, names, metadata_path)
+        append_source_files!(
+            source_files, source.root_path, names, metadata_path; on_progress, found)
     end
+    on_progress === nothing || on_progress(found[])
     return source_files
 end
 
@@ -147,6 +157,9 @@ function append_source_files!(
     root::AbstractString,
     names::Vector{String},
     metadata_path::Union{Nothing,String}=nothing,
+    ;
+    on_progress::Union{Nothing,Function}=nothing,
+    found::Base.RefValue{Int}=Ref(0),
 )::Nothing
     for name in names
         check_cancel()
@@ -155,6 +168,8 @@ function append_source_files!(
         metadata_path !== nothing && normpath(path) == metadata_path && continue
         isfile(path) || continue
         push!(source_files, index_source_file(path))
+        found[] += 1
+        on_progress !== nothing && found[] % 256 == 0 && on_progress(found[])
     end
     return nothing
 end
@@ -163,8 +178,8 @@ function parse_metadata_value(text::AbstractString)::Any
     value = strip(text)
     isempty(value) && return nothing
     lowercase_value = lowercase(value)
-    lowercase_value in ("true", "t", "yes", "y", "1") && return true
-    lowercase_value in ("false", "f", "no", "n", "0") && return false
+    lowercase_value in ("true", "t", "yes", "y") && return true
+    lowercase_value in ("false", "f", "no", "n") && return false
     for type in (Int, Float64)
         parsed = tryparse(type, value)
         parsed === nothing || return parsed
@@ -254,8 +269,10 @@ end
 # Collection metadata has one lifecycle owner: `open_source` loads it and the watcher is the
 # only refresher afterwards. Discovery must not consume a pending metadata change, or the watcher
 # would observe "no change" and the update would never be published.
-Projects.source_items(source::DirectorySource)::Vector{SourceFile} =
-    collect_source_files(source)
+Projects.source_items(
+    source::DirectorySource;
+    on_progress::Union{Nothing,Function}=nothing,
+)::Vector{SourceFile} = collect_source_files(source; on_progress)
 
 function Projects.collection_metadata(
     source::DirectorySource,
@@ -287,34 +304,41 @@ function Projects.watch_source(
     source.watcher_task === nothing || error(
         "DirectorySource '$(source.root_path)' is already being watched",
     )
-    path = collection_metadata_file_path(source)
-    # No configured metadata file means nothing can change: the source is static.
-    path === nothing && return nothing
+    cancel_source = CancellationTokenSource()
+    known = Dict(source_item_id(file) => fingerprint(file) for file in collect_source_files(source))
+    ignore(rel::AbstractString)::Bool =
+        ".git" in split(String(rel), '/') || (!source.recursive && occursin('/', String(rel)))
     task = Base.Threads.@spawn begin
         errored = false
-        while !source.watcher_closed[]
-            FileWatching.poll_file(path, 0.1, 0.5)
-            source.watcher_closed[] && break
-            # A malformed file is an expected state, not a watcher death: report it as a value and
-            # keep polling so a corrected file recovers on the next tick.
-            changed = try
-                load_collection_metadata!(source)
-            catch error
-                errored = true
-                on_change(SourceError(sprint(showerror, error)))
-                continue
+        try
+            watch_folder(source.root_path, get_token(cancel_source); ignore) do _
+                source.watcher_closed[] && return
+                metadata_changed = try
+                    load_collection_metadata!(source)
+                catch error
+                    errored = true
+                    on_change(SourceError(sprint(showerror, error)))
+                    return
+                end
+                files = collect_source_files(source)
+                current = Dict(source_item_id(file) => fingerprint(file) for file in files)
+                upserts = SourceFile[
+                    file for file in files
+                    if !haskey(known, source_item_id(file)) ||
+                       !isequal(known[source_item_id(file)], fingerprint(file))
+                ]
+                removals = String[id for id in keys(known) if !haskey(current, id)]
+                isempty(upserts) && isempty(removals) && !metadata_changed && !errored && return
+                known = current
+                errored = false
+                on_change(SourceChanges(upserts, removals; metadata_changed))
             end
-            # After an error, publish even an unchanged reload so the consumer clears the failure.
-            changed || errored || continue
-            errored = false
-            on_change(SourceChanges(
-                AbstractDataSourceItem[],
-                String[];
-                metadata_changed=changed,
-            ))
+        catch error
+            source.watcher_closed[] || on_change(SourceError(sprint(showerror, error)))
         end
     end
     source.watcher_task = task
+    source.watcher_cancel = cancel_source
     return task
 end
 
@@ -323,11 +347,13 @@ Projects.source_open_options(source::DirectorySource)::NamedTuple =
 
 function Projects.close_source!(source::DirectorySource)::Nothing
     source.watcher_closed[] = true
+    source.watcher_cancel === nothing || cancel(source.watcher_cancel)
     task = source.watcher_task
     if task !== nothing
         wait(task)
     end
     source.watcher_task = nothing
+    source.watcher_cancel = nothing
     return nothing
 end
 

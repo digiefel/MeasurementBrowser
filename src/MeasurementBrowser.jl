@@ -35,6 +35,7 @@ using .Projects:
     source_id,
     source_item_id,
     source_item_label,
+    source_item_noun,
     source_item_path,
     source_item_timestamp,
     source_items,
