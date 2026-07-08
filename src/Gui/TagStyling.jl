@@ -1,4 +1,5 @@
-using Annotations
+using ..DataBrowserAnnotations
+const Annotations = DataBrowserAnnotations
 import CImGui as ig
 
 """Show the tag-loading failure without blocking the rest of the browser."""

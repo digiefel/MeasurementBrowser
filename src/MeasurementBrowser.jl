@@ -1,7 +1,8 @@
 module MeasurementBrowser
 
 using PrecompileTools
-using Annotations
+using DataBrowserAnnotations
+const Annotations = DataBrowserAnnotations
 import DataBrowserProfiling as Profiling
 
 using DataBrowserAPI

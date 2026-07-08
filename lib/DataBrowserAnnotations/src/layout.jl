@@ -10,11 +10,13 @@ Lines starting with `#` are comments. Blank lines are ignored.
 """
 module Layout
 
+using ..DataBrowserAnnotations: AnnotationKey, collection_annotation_key
+
 export load, save, reset!, layout_path, LAYOUT_FILENAME
 
 const LAYOUT_FILENAME = "layout.txt"
 
-const PositionMap = Dict{String,Tuple{Float64,Float64}}
+const PositionMap = Dict{AnnotationKey,Tuple{Float64,Float64}}
 
 layout_path(root::AbstractString) = joinpath(String(root), LAYOUT_FILENAME)
 
@@ -39,13 +41,13 @@ function load(root::AbstractString)::PositionMap
         parts = split(line, '\t')
         length(parts) == 3 ||
             throw(LayoutParseError(path, line_number, "expected '<path>\\t<x>\\t<y>'"))
-        key = strip(parts[1])
+        key = collection_annotation_key(strip(parts[1]))
         isempty(key) && throw(LayoutParseError(path, line_number, "empty path"))
         x = tryparse(Float64, strip(parts[2]))
         y = tryparse(Float64, strip(parts[3]))
         x === nothing && throw(LayoutParseError(path, line_number, "bad x value '$(parts[2])'"))
         y === nothing && throw(LayoutParseError(path, line_number, "bad y value '$(parts[3])'"))
-        out[String(key)] = (x, y)
+        out[key] = (x, y)
     end
     return out
 end
@@ -88,7 +90,7 @@ function reset!(
     for (i, path) in enumerate(pvec)
         col = (i - 1) % ncols
         row = (i - 1) ÷ ncols
-        positions[String(path)] = (ox + col * sp, oy + row * sp)
+        positions[collection_annotation_key(path)] = (ox + col * sp, oy + row * sp)
     end
     return positions
 end

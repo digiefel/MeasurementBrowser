@@ -7,6 +7,8 @@ positions.
 """
 module Coords
 
+using ..DataBrowserAnnotations: AnnotationKey, collection_annotation_key
+
 export read_positions, read_overrides, bounding_box, Rect
 
 const CollectionParametersTable = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}
@@ -21,10 +23,6 @@ struct Rect
     y::Float64
     w::Float64
     h::Float64
-end
-
-function _path_key(segs::Tuple{Vararg{String}})
-    return join(segs, '/')
 end
 
 function _as_float(value)
@@ -48,42 +46,41 @@ function _pair(params::Dict{Symbol,Any}, kx::Symbol, ky::Symbol)
 end
 
 """
-    read_positions(metadata) -> Dict{String, Tuple{Float64,Float64}}
+    read_positions(metadata) -> Dict{AnnotationKey, Tuple{Float64,Float64}}
 
-Pull `(x_um, y_um)` for every row that supplies both columns. Keys are the
-slash-joined path strings used elsewhere in the codebase.
+Pull `(x_um, y_um)` for every row that supplies both columns. Keys are collection annotation keys.
 """
 function read_positions(metadata::CollectionParametersTable)
-    out = Dict{String,Tuple{Float64,Float64}}()
+    out = Dict{AnnotationKey,Tuple{Float64,Float64}}()
     for (segs, params) in metadata
         isempty(segs) && continue
         pair = _pair(params, :x_um, :y_um)
         pair === nothing && continue
-        out[_path_key(segs)] = pair
+        out[collection_annotation_key(collect(String, segs))] = pair
     end
     return out
 end
 
-read_positions(::Nothing) = Dict{String,Tuple{Float64,Float64}}()
+read_positions(::Nothing) = Dict{AnnotationKey,Tuple{Float64,Float64}}()
 
 """
-    read_overrides(metadata) -> Dict{String, Tuple{Float64,Float64}}
+    read_overrides(metadata) -> Dict{AnnotationKey, Tuple{Float64,Float64}}
 
 Pull `(w_um, h_um)` for every row that supplies both columns. These act as
 explicit bounding-box dimensions overriding any computed value.
 """
 function read_overrides(metadata::CollectionParametersTable)
-    out = Dict{String,Tuple{Float64,Float64}}()
+    out = Dict{AnnotationKey,Tuple{Float64,Float64}}()
     for (segs, params) in metadata
         isempty(segs) && continue
         pair = _pair(params, :w_um, :h_um)
         pair === nothing && continue
-        out[_path_key(segs)] = pair
+        out[collection_annotation_key(collect(String, segs))] = pair
     end
     return out
 end
 
-read_overrides(::Nothing) = Dict{String,Tuple{Float64,Float64}}()
+read_overrides(::Nothing) = Dict{AnnotationKey,Tuple{Float64,Float64}}()
 
 """
     bounding_box(positions, descendant_paths; override=nothing) -> Union{Rect,Nothing}
@@ -98,15 +95,16 @@ A degenerate rectangle (zero descendants on one axis) gets a zero-width
 or zero-height side; callers can pad as needed.
 """
 function bounding_box(
-    positions::Dict{String,Tuple{Float64,Float64}},
+    positions::Dict{AnnotationKey,Tuple{Float64,Float64}},
     descendant_paths;
     override::Union{Nothing,Tuple{Float64,Float64}}=nothing,
 )
     xs = Float64[]
     ys = Float64[]
     for path in descendant_paths
-        haskey(positions, path) || continue
-        x, y = positions[path]
+        key = collection_annotation_key(path)
+        haskey(positions, key) || continue
+        x, y = positions[key]
         push!(xs, x)
         push!(ys, y)
     end

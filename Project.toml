@@ -4,7 +4,7 @@ version = "0.1.0-alpha.1"
 authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 
 [deps]
-Annotations = "ae6ca758-ef8f-47cf-869f-33c684d5c66b"
+DataBrowserAnnotations = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 BetterFileWatching = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
@@ -53,5 +53,6 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 test = ["JSON", "Test"]
 
 [sources]
+DataBrowserAnnotations = {path = "lib/DataBrowserAnnotations"}
 DataBrowserAPI = {path = "lib/DataBrowserAPI"}
 DataBrowserProfiling = {path = "lib/DataBrowserProfiling"}

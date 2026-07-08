@@ -1,0 +1,19 @@
+name = "DataBrowserAnnotations"
+uuid = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
+version = "0.1.0"
+authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
+
+[deps]
+DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
+
+[compat]
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
+
+[sources]
+DataBrowserAPI = {path = "../DataBrowserAPI"}

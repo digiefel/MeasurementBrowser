@@ -13,7 +13,7 @@ The file has two sections, each introduced by a bracketed header:
     RuO2test/A10/VI                                            todo
 
 Assignment rows are `<key>\\t<tag_name>`. Keys are either collection-path strings
-(slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item keys.
+(slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item ids from [`id`](@ref).
 The two namespaces never overlap, so no kind prefix is needed. Fields are
 tab-separated on write; whitespace-tolerant on read. Lines starting with `#`
 are comments. Malformed rows raise `TagsParseError`.
@@ -21,6 +21,8 @@ are comments. Malformed rows raise `TagsParseError`.
 `Tags.load` and `Tags.save` only use `tags.txt`.
 """
 module Tags
+
+using ..DataBrowserAnnotations: AnnotationKey, collection_annotation_key
 
 export TagDef, TagState, load, save, effective, dominant_color,
        tags_path, TAGS_FILENAME
@@ -46,18 +48,18 @@ end
 
 Catalog of `TagDef`s plus a single `assignments` map.
 
-Keys are arbitrary strings — either collection-path keys (slash-joined segments,
-e.g. `"RuO2test/A9/VI/D1"`) or item keys. The two namespaces never overlap.
+Keys are [`AnnotationKey`](@ref) values — either collection paths or item ids.
+The two namespaces never overlap.
 
 Only explicitly attached tags are stored; inheritance is applied at lookup time
 via `effective`.
 """
 struct TagState
     catalog::Vector{TagDef}
-    assignments::Dict{String,Set{String}}
+    assignments::Dict{AnnotationKey,Set{String}}
 end
 
-TagState() = TagState(TagDef[], Dict{String,Set{String}}())
+TagState() = TagState(TagDef[], Dict{AnnotationKey,Set{String}}())
 
 struct TagsParseError <: Exception
     path::String
@@ -93,7 +95,7 @@ function load(root::AbstractString)::TagState
     path = tags_path(root)
 
     catalog = TagDef[]
-    assignments = Dict{String,Set{String}}()
+    assignments = Dict{AnnotationKey,Set{String}}()
 
     if isfile(path)
         section = :none
@@ -127,7 +129,7 @@ function load(root::AbstractString)::TagState
             elseif section == :assignments
                 length(fields) == 2 || throw(TagsParseError(path, line_number,
                     "expected '<key>\\t<tag_name>'"))
-                key = String(fields[1])
+                key = collection_annotation_key(fields[1])
                 tag = String(fields[2])
                 (isempty(key) || isempty(tag)) &&
                     throw(TagsParseError(path, line_number, "empty key or tag name"))
@@ -178,27 +180,27 @@ function save(root::AbstractString, state::TagState)
 end
 
 """
-    effective(state, path, ancestor_paths) -> Set{String}
+    effective(state, key, ancestor_keys) -> Set{String}
 
-Return tags that apply to `path`: its own assignments unioned with any
-assignments on ancestor paths. The caller supplies `ancestor_paths`
+Return tags that apply to `key`: its own assignments unioned with any
+assignments on ancestor keys. The caller supplies `ancestor_keys`
 (order doesn't affect the union).
 
 To get the full applicable set for an item, call:
 
-    effective(state, id, [collection_path; collection_ancestors...])
+    effective(state, item_annotation_key(item), collection_ancestors)
 
 This works because collection paths and item ids live in the
 same `assignments` map and are looked up uniformly.
 """
-function effective(state::TagState, path::AbstractString, ancestor_paths)::Set{String}
+function effective(state::TagState, key::AnnotationKey, ancestor_keys)::Set{String}
     out = Set{String}()
-    for ancestor in ancestor_paths
-        tags = get(state.assignments, String(ancestor), nothing)
+    for ancestor in ancestor_keys
+        tags = get(state.assignments, collection_annotation_key(ancestor), nothing)
         tags === nothing && continue
         union!(out, tags)
     end
-    own = get(state.assignments, String(path), nothing)
+    own = get(state.assignments, collection_annotation_key(key), nothing)
     own !== nothing && union!(out, own)
     return out
 end

@@ -1,4 +1,5 @@
-using Annotations
+using ..DataBrowserAnnotations
+const Annotations = DataBrowserAnnotations
 
 import ..Workspace
 using ..ItemIndex:

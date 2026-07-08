@@ -1,4 +1,5 @@
-using Annotations
+using DataBrowserAnnotations
+const Annotations = DataBrowserAnnotations
 using Test
 
 const ANNOT_FIXTURES = joinpath(@__DIR__, "fixtures", "annotations")

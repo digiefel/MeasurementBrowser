@@ -1,4 +1,5 @@
-using Annotations
+using ..DataBrowserAnnotations
+const Annotations = DataBrowserAnnotations
 using GLMakie: Figure, Observable
 import CImGui as ig
 
