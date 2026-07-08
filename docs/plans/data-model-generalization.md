@@ -5,7 +5,7 @@
 Grow MeasurementBrowser into **DataBrowser**: an open, scriptable, data-focused IDE rather than a
 measurement-only viewer. The same app should browse measurements, images, fitted models, and
 arbitrary datasets; organize them by meaning rather than by folder; and present each through the
-visualizers and figures in [workspace-vision.md](workspace-vision.md).
+visualizers and figures in [vision.md](../vision.md).
 
 The data model we ship today is the right shape with the wrong vocabulary and two hard couplings.
 Almost every field of `MeasurementInfo` is already domain-neutral. The parts that block other kinds
@@ -44,7 +44,7 @@ These three decide every ambiguous call below.
 This is a vocabulary + extensibility change, not a rewrite. Unchanged:
 
 - the **project / package split** — project code interprets and presents items; package code owns
-  cache, jobs, selection, views, persistence ([workspace-vision.md](workspace-vision.md));
+  cache, jobs, selection, views, persistence ([vision.md](../vision.md));
 - the **scan pipeline** (`collect → interpret → index`) and per-kind scan profiling;
 - the **hierarchy as a fundamental browsing structure** — now realized as *the default view*;
 - **stable identity, `parameters`, and `stats`** as the per-item metadata buckets
@@ -312,7 +312,7 @@ This doc owns the **core data-model generalization**: the item/collection type s
 contract, `collection` + the `collect` model, the data/cache trait, and cache-on-Revise. It does
 **not** own:
 
-- visualizers, figures, workflows, annotations, GUI/API parity — [workspace-vision.md](workspace-vision.md);
+- visualizers, figures, workflows, annotations, GUI/API parity — [vision.md](../vision.md);
 - spatial navigation and annotation storage — [spatial-browser.md](spatial-browser.md);
 - the public meaning of `parameters` vs `stats` —
   [measurement-parameters-and-stats.md](measurement-parameters-and-stats.md).

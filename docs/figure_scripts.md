@@ -5,5 +5,4 @@ generating standalone publication scripts, built on a path "group" model that th
 rework replaced.
 
 Its intended replacement is the saved workflow and editable figure model described in
-[plans/workspace-vision.md](plans/workspace-vision.md). If you need an old generated script, recover
-it from version control.
+[vision.md](vision.md) §8. If you need an old generated script, recover it from version control.

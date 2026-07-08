@@ -180,8 +180,9 @@ Current-state reference docs:
 | [annotations.md](annotations.md) | You're touching annotations: coordinates, layout, tags, or notes. |
 
 Future-facing docs and roadmaps live under [plans/](plans/), separate from the current-state docs
-above. Start with [plans/README.md](plans/README.md) for the plan map and
-[plans/workspace-vision.md](plans/workspace-vision.md) for the long-term GUI/API/workflow vision.
+above. Start with [vision.md](vision.md) for the product and architecture north star,
+[plans/roadmap.md](plans/roadmap.md) for the staged plan, and [plans/README.md](plans/README.md) for
+the plan map.
 
 ## Doc maintenance rule
 

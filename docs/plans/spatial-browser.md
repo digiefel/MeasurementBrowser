@@ -3,7 +3,7 @@
 ## Place In The Plan
 
 This doc owns spatial navigation and its annotations: coordinates, layout, tags, and
-notes. It fits under the broader [workspace vision](workspace-vision.md), but it does not own figure
+notes. It fits under the broader [vision](../vision.md), but it does not own figure
 annotations, figure files, or workflow persistence.
 
 ## Context
