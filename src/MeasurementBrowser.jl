@@ -7,6 +7,9 @@ import DataBrowserProfiling as Profiling
 
 using DataBrowserAPI
 const Projects = DataBrowserAPI
+using DataBrowserSources
+using DataBrowserSources: DirectorySource, SourceFile, TabularFileSource, inspect_table, index_source_file
+const TablePreview = TabularFileSource
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -89,6 +92,8 @@ using .ItemIndex:
     item_timestamp_key,
     with_cancel
 
+DataBrowserSources.set_scan_cancel_check!(check_cancel)
+
 include("Cache.jl")
 
 include("Workspace.jl")
@@ -99,7 +104,9 @@ using .Workspace:
     read_item_data,
     select_items!
 
-include("DataSources/DirectorySource.jl")
+include("TableInspector.jl")
+
+include("Project.jl")
 
 const ENGINE_ONLY_BENCHMARK_LOAD = get(ENV, "MB_BENCH_ENGINE_ONLY", "0") == "1"
 
@@ -108,10 +115,7 @@ if !ENGINE_ONLY_BENCHMARK_LOAD
     import DataBrowserAPI: plot_data!, setup_plot
 end
 
-include("TableInspector.jl")
-using .TableInspector: TablePreview, inspect_table
-
-include("Project.jl")
+using .TableInspector: InspectorTable, merge_item_tables
 if ENGINE_ONLY_BENCHMARK_LOAD
     open_browser(args...; kwargs...) =
         error("open_browser is unavailable when MB_BENCH_ENGINE_ONLY=1")

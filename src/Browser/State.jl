@@ -6,7 +6,9 @@ import CImGui as ig
 import ..Workspace
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI: KindProfileRow, PlotKind, Project, SourceProfileRow
-using ..TableInspector: TablePreview, InspectorTable
+using ...DataBrowserSources: TabularFileSource, inspect_table
+const TablePreview = TabularFileSource
+using ..TableInspector: InspectorTable, merge_item_tables
 
 """
 Runtime state for one plot window.

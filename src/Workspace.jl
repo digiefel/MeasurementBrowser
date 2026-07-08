@@ -2,6 +2,7 @@ module Workspace
 
 using Printf
 import DataBrowserProfiling as Profiling
+using ..DataBrowserSources
 
 import ..Cache:
     AbstractCacheDB,
@@ -411,5 +412,33 @@ include("Workspace/Status.jl")
 include("Workspace/DataAccess.jl")
 include("Workspace/Processing.jl")
 include("Workspace/MemoryDiagnostics.jl")
+
+function open_workspace(
+    project::Project,
+    root_path::AbstractString;
+    recursive::Bool=true,
+    metadata_file::Union{Nothing,AbstractString}=DataBrowserSources.DEFAULT_DIRECTORY_METADATA_FILE,
+    profile_internal::Bool=DataBrowserProfiling.environment_flag("MB_PROFILE_INTERNAL"),
+    profile_cpu::Bool=DataBrowserProfiling.environment_flag("MB_PROFILE_CPU"),
+    profile_output::Union{Nothing,AbstractString}=
+        DataBrowserProfiling.environment_path("MB_PROFILE_OUTPUT"),
+    crash_trace::Union{Nothing,AbstractString}=
+        DataBrowserProfiling.environment_path("MB_CRASH_TRACE"),
+    rebuild::Bool=false,
+    cache::Bool=true,
+    background_processing::Bool=false,
+)::Workspace
+    return open_workspace(
+        project,
+        DataBrowserSources.DirectorySource(root_path; recursive, metadata_file);
+        profile_internal,
+        profile_cpu,
+        profile_output,
+        crash_trace,
+        rebuild,
+        cache,
+        background_processing,
+    )
+end
 
 end

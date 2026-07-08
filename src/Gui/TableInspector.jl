@@ -3,10 +3,10 @@ using GLMakie: Axis, Figure, lines!, scatter!
 import CImGui as ig
 using NativeFileDialog: pick_file
 
+using ...DataBrowserSources: TabularFileSource, inspect_table
+const TablePreview = TabularFileSource
 using ..TableInspector:
-    TablePreview,
     InspectorTable,
-    inspect_table,
     merge_item_tables
 using .MakieImguiIntegration: MakieFigure
 
