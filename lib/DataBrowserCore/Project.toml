@@ -1,0 +1,34 @@
+name = "DataBrowserCore"
+uuid = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
+version = "0.1.0"
+authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
+
+[deps]
+DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
+DataBrowserAnnotations = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
+DataBrowserCache = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
+DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
+DataBrowserSources = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
+CancellationTokens = "2e8d271d-f2e2-407b-a864-17eb2156783e"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[compat]
+CancellationTokens = "2.3.0"
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
+
+[sources]
+DataBrowserAPI = {path = "../DataBrowserAPI"}
+DataBrowserAnnotations = {path = "../DataBrowserAnnotations"}
+DataBrowserCache = {path = "../DataBrowserCache"}
+DataBrowserProfiling = {path = "../DataBrowserProfiling"}
+DataBrowserSources = {path = "../DataBrowserSources"}

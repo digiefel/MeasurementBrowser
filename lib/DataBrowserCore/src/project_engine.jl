@@ -7,8 +7,30 @@ touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
 """
 
 using DataBrowserAPI
+using DataBrowserAPI: AbstractDataItem, AbstractDataSource, KindProfileRow, SourceProfileRow, collection, id, item_data, item_label, kind, metadata
+using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import Serialization
+import DataBrowserAPI:
+    analyze_collection,
+    analyze_item,
+    collection_path_label,
+    data_items,
+    detect_kind,
+    display_label,
+    finish_source_profile!,
+    has_collection_analysis,
+    has_collection_process,
+    kind_label,
+    process,
+    process_collection,
+    project_description,
+    project_name,
+    record_scan_phase!,
+    reset_scan_profile!,
+    scan_profile_summary,
+    scan_source_profile
+import .ItemIndex: DataItem, ItemRecord, interpret_source_item
 
 # Only registered recipes are persisted; transient scan state (read cache, profiling, locks) is
 # rebuilt empty on load. This keeps the cache format stable when transient fields change, so adding
@@ -286,7 +308,7 @@ function items_for_file(
         source.collection_metadata_entries = meta
         source.has_metadata = true
     end
-    interpretation = ItemIndex.interpret_source_item(
+    interpretation = interpret_source_item(
         project,
         source,
         index_source_file(filepath),

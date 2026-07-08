@@ -72,7 +72,10 @@ import DataBrowserAPI:
     scan_source_profile,
     finish_source_profile!
 
-include("ItemIndex.jl")
+include(joinpath(@__DIR__, "..", "lib", "DataBrowserCore", "src", "core_in_parent.jl"))
+const ItemIndex = DataBrowserCore.ItemIndex
+import .DataBrowserCore: items_for_file
+export items_for_file
 using .ItemIndex:
     CANCEL_CALLBACK_KEY,
     DataItem,
@@ -106,8 +109,6 @@ using .Workspace:
     select_items!
 
 include("TableInspector.jl")
-
-include("Project.jl")
 
 const ENGINE_ONLY_BENCHMARK_LOAD = get(ENV, "MB_BENCH_ENGINE_ONLY", "0") == "1"
 

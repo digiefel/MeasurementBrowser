@@ -27,7 +27,7 @@ using SHA
 using Serialization
 using Dates
 
-import ..ItemIndex:
+import ..DataBrowserCore.ItemIndex:
     DataItem,
     Hierarchy,
     ItemFailure,

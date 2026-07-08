@@ -742,6 +742,6 @@ function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarch
     return hierarchy
 end
 
-include("ItemIndex/Scanning.jl")
+include(joinpath(@__DIR__, "ItemIndex", "Scanning.jl"))
 
 end
