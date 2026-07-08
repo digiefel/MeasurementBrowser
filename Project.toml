@@ -7,6 +7,7 @@ authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 DataBrowserAnnotations = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
+DataBrowserCache = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 DataBrowserSources = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
 BetterFileWatching = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
@@ -58,3 +59,4 @@ DataBrowserAnnotations = {path = "lib/DataBrowserAnnotations"}
 DataBrowserAPI = {path = "lib/DataBrowserAPI"}
 DataBrowserProfiling = {path = "lib/DataBrowserProfiling"}
 DataBrowserSources = {path = "lib/DataBrowserSources"}
+DataBrowserCache = {path = "lib/DataBrowserCache"}

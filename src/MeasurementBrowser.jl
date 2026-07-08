@@ -94,7 +94,8 @@ using .ItemIndex:
 
 DataBrowserSources.set_scan_cancel_check!(check_cancel)
 
-include("Cache.jl")
+include(joinpath(@__DIR__, "..", "lib", "DataBrowserCache", "src", "cache_in_parent.jl"))
+const Cache = DataBrowserCache
 
 include("Workspace.jl")
 using .Workspace:

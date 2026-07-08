@@ -7,9 +7,11 @@ defined in the main package until `DataBrowserCore` is extracted.
 """
 module DataBrowserAPI
 
+using Dates
 using InteractiveUtils: subtypes
 
 include("project_types.jl")
+include("metadata_types.jl")
 include("source_contract.jl")
 include("item_contract.jl")
 include("interface.jl")

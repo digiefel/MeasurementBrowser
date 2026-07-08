@@ -10,6 +10,8 @@ import DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
+    MetadataDict,
+    MetadataValue,
     Project,
     collection,
     collection_metadata,
@@ -93,22 +95,6 @@ function collection_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
     any(isempty, segments) && error("Invalid collection path key '$key'")
     return Tuple(String.(segments))
 end
-
-"""
-The value types a `metadata` entry may hold.
-
-Kept deliberately narrow: these dicts describe items and collections with flat, queryable scalars
-(exactly what `parse_metadata_value` emits) plus `Symbol` tags, `Missing` for absent values, and
-homogeneous numeric/string vectors. The cache stores them as proper typed columns, so anything
-outside this union is rejected at index time rather than silently blobbed.
-"""
-const MetadataValue = Union{
-    Bool, Int64, Float64, String, Symbol, Date, DateTime, Missing,
-    Vector{Bool}, Vector{Int64}, Vector{Float64}, Vector{String},
-}
-
-"""The typed dict the engine stores for item/collection `metadata`."""
-const MetadataDict = Dict{Symbol,MetadataValue}
 
 """
 Coerce one value into a [`MetadataValue`](@ref), normalizing common near-misses (any `Integer` to
