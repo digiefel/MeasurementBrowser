@@ -51,9 +51,10 @@ drives the same operations.
 
 ## Stage 4 — Project persistence and cache discipline
 
-Make projects reopenable as *environment + data references + saved state*. Track provenance, cache
+Make projects reopenable as *environment + data-source config + saved state*. Track provenance, cache
 entries, package versions, and command history well enough for trust and reproducibility; support both
-lightweight recovery and richer archival bundles.
+lightweight recovery and richer archival bundles. The source/cache/project ownership model is in
+[project-persistence.md](project-persistence.md).
 - *Done when:* closing and reopening a project restores its state and reuses its cache, and a project
   can be shared and reopened elsewhere from its pins (or bundle).
 

@@ -104,17 +104,19 @@ Julia-centered foundation that leaves those directions open.
 The model rests on a small set of named concepts that apply equally to GUI and API use. Keeping them
 distinct is what makes caching, reproducibility, and packaging coherent.
 
-**Workspace.** The central runtime entity: one live opening of a project. It holds the live index,
-loaded data, cache connection, background jobs, selections, generated figures, errors, logs, and the
-interfaces currently attached. It is transient. It holds a reference to its project and keeps running
-even while that project's code changes. One project can back one-or-many workspaces (successive or
-concurrent); a workspace never outlives being closed.
+**Project.** The durable thing the user means by "this analysis": data plus the code that interprets
+it. In normal use it is represented by one editable project file. That file records the project entry
+code, data-source configuration, and generated-state locations such as the cache path. It can be
+opened, closed, edited, versioned, and reopened.
 
-**Project.** The durable, persisted thing a workspace opens. A project is, in practice, **a Julia
-environment (which packages and versions it uses) + data references + saved workspace state** (cache,
-figures, settings, selections, provenance). "It includes the code" is satisfied by exact version pins
-(the environment's manifest *is* the code), optionally plus source snapshots for archival, plus any
-project-specific inline scripts. A project can be opened, closed, shared, versioned, and reopened.
+**Workspace.** One live opening of a project. It holds the current index, loaded data, cache
+connection, background jobs, selections, generated figures, errors, logs, and attached interfaces. It
+is transient. One project can back one-or-many workspaces, successive or concurrent. Closing the last
+workspace does not delete the project file, data-source config, or cache.
+
+**Data source.** A configured origin the project opens: a directory, database query, instrument run,
+stream, or remote dataset. Data-source configuration is core project state. Editing it changes the
+project file, but it does not rewrite the Julia script that defines callbacks and plots.
 
 **Package.** A distributable extension — reusable behavior with *no data attached* (loaders,
 processors, data types, visualizers, commands, UI windows, examples, docs, templates). A package is
@@ -154,8 +156,9 @@ the commands over it.
 The API should feel like normal Julia composition, not an app-control protocol:
 
 ```julia
-project   = define_project("RuO2")            # or load a saved project
-workspace = open_workspace(project, root)     # one live opening
+config    = ProjectConfig(sources=[DirectorySource("data")])
+project   = define_project("ruo2.toml"; config)
+workspace = open_workspace(project)           # one live opening
 browser   = open_browser(workspace; wait=false)   # non-blocking; REPL stays free
 
 items = query_items(workspace, "polarity = 'up'")   # concrete list, or a live rule
@@ -171,6 +174,11 @@ save_workflow("pund_review.dbflow", fig)
 
 The GUI issues the same kinds of actions when the user clicks, drags, or edits plot options. The saved
 workflow stores those actions in package-owned terms, not private widget state.
+
+A script that calls `define_project(project_file; config)` creates or reopens the project file, then
+registers callbacks and plots. Rerunning the script points at the same project file. If the file
+already exists and the passed config disagrees with it, `define_project` should fail unless the caller
+explicitly asks to overwrite.
 
 ## 6. Near-Term Architecture: the DataBrowser package family
 
@@ -332,12 +340,11 @@ keeping trust high.
 ## 12. Caching and Persistence
 
 **The cache belongs to the project, not the workspace.** Its identity is a function of the project's
-definitions + the data + the parameters, never a workspace instance — that is what lets it survive
-closing and reopening (warm reopen) and be shared across interfaces. Because a project's code can
-change while a workspace is live, the project carries a version/fingerprint (its environment/manifest
-is part of it), and cache identity = project fingerprint + data identity + parameters. A live edit or
-a domain-package upgrade bumps the fingerprint and invalidates exactly the affected entries while the
-workspace stays attached.
+definitions + the data + the parameters, never a workspace instance and never merely "what the last
+scan saw." That is what lets it survive closing and reopening, and lets GUI, REPL, Python, and agent
+interfaces share the same work. Because a project's code can change while a workspace is live, the
+project definition carries a version/fingerprint, and cache identity = project-definition fingerprint
++ data identity + parameters.
 
 DuckDB is used where it fits — metadata, indexes, tabular summaries, cache catalogs, provenance
 records, queryable results — without forcing all scientific data into tables. It should be
@@ -361,11 +368,12 @@ thing the GUI observes and mutates through the same operations available to Juli
 | GUI state | Browser window | Mostly transient; small preferences in app prefs. |
 | Item annotations | Source root | Hand-editable tags, notes, coordinates, spatial positions. |
 | Workflow state | Workflow model | Saved workflow file, replayable from GUI or API. |
-| Figure state | Figure / workflow model | Saved with a workflow or as a self-contained figure. |
+| Figure state | Figure / workflow model | Produced from workflows or exported separately. |
 
-Persistence supports both lightweight recovery (references + pinned versions + metadata) and richer
-bundles (source snapshots, exported figures, and data needed for sharing or archiving). See
-[cache.md](cache.md) for the current cache design.
+Normal project persistence is a small text project file plus generated cache. Export/archive
+workflows may later package a Julia environment, data copies, and cache, but that is separate from
+ordinary open/save. See [cache.md](cache.md) for the current cache design and
+[plans/project-persistence.md](plans/project-persistence.md) for the saved-project model.
 
 ## 13. Packaging the Julia Application
 
@@ -396,8 +404,8 @@ supports, since those components would depend only on `DataBrowserCore` (or lowe
 - **GPU acceleration.** Operator-based: built-in operations gain CPU, threaded, distributed, and GPU
   implementations where appropriate. Could be interesting and high-risk/high-reward work.
 - **Editable figure bundles.** A strong long-term direction: a saved figure should contain more than
-  pixels — figure state, data references or snapshots, visualizer identity, package versions,
-  annotations, layout, and enough provenance to reopen and modify it.
+  pixels — figure state, data snapshots or enough data access information, visualizer identity,
+  package versions, annotations, layout, and enough provenance to reopen and modify it.
 
 ## 15. Roadmap
 

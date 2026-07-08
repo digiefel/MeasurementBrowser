@@ -16,9 +16,11 @@ Focused design docs for work not yet built. The product and architecture north s
 4. [data-model-generalization.md](data-model-generalization.md) — generalizing the core item/collection
    types toward DataBrowser: two extension APIs, `Any` payloads, the cache trait, and the `collect`
    model (the tree as a derived view via `collection`).
-5. [plotting-api-design.md](plotting-api-design.md) — project-facing plot API (`register_plot!`,
+5. [project-persistence.md](project-persistence.md) — project files, immutable config,
+   script-started projects, data-source config, and export boundaries.
+6. [plotting-api-design.md](plotting-api-design.md) — project-facing plot API (`register_plot!`,
    `setup`/`draw`) and GUI-owned composition.
-6. [spatial-browser.md](spatial-browser.md) — spatial browser, device/measurement annotations.
+7. [spatial-browser.md](spatial-browser.md) — spatial browser, device/measurement annotations.
 
 ## Plan Boundaries
 
@@ -30,6 +32,7 @@ The plans are deliberately split by ownership boundary:
 | `roadmap.md` | The ordered stages from today to the vision. | File-by-file split mechanics, type-system shape, plot signatures, cache schema, behavior changes. |
 | `package-split.md` | The concrete Stage 1 execution: which code lands in which `DataBrowser*` package, extraction order, keep-it-green procedure. | Why/when (the roadmap owns that), the type-system generalization, runtime behavior changes. |
 | `data-model-generalization.md` | The core item/collection type system, two extension APIs, payload/cache trait, and the `collect` model (`collection`, canonical vs. view). | Visualizers, figures, workflows, annotation storage. |
+| `project-persistence.md` | Project files, immutable config, script-started projects, data-source config, and export boundaries. | Item interfaces, plot API, package split mechanics. |
 | `plotting-api-design.md` | The project plot API (`register_plot!`, `setup`/`draw`) and GUI-owned composition. | The item/data model, generic built-in visualizers, figure/workflow persistence. |
 | `spatial-browser.md` | Spatial navigation plus device and measurement annotations. | Figure annotations and workflow persistence. |
 

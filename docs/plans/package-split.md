@@ -100,13 +100,13 @@ suite is green.
    the retype here is what makes it a genuine `→ API` package rather than the current string-keyed
    leaf.)
 4. **`DataBrowserSources`** — move `DataSources/DirectorySource.jl` and the raw-file-preview half of
-   `TableInspector.jl` (`TablePreview` / `inspect_table` — reading and detecting a delimited file).
+   `TableInspector.jl` (`TablePreview` / `inspect_table` — reading and detecting a delimited file, consolidated to `TabularFileSource`).
    Deps: `DataBrowserAPI`, `DataBrowserProfiling`, plus `CSV`, `DataFrames`, `BetterFileWatching`. The
    table *viewer* (`InspectorTable` / `merge_item_tables`) is not a source concern — it goes to Plots
    at step 7; the ImGui panel `src/Gui/TableInspector.jl` goes to GUI at step 8.
 5. **`DataBrowserCache`** — move `Cache.jl` + `Cache/`. Deps: `DataBrowserAPI`,
    `DataBrowserProfiling`, plus `DuckDB`, `DBInterface`, `DataFrames`, `SHA`. *Boundary to enforce:*
-   cache identity is the **project** fingerprint (environment + data identity + parameters), never the
+   cache identity is the project-definition fingerprint + data identity + parameters, never the
    workspace.
 6. **`DataBrowserCore`** — move `ItemIndex.jl` + `ItemIndex/`, `Workspace.jl` + `Workspace/`, and the
    engine-interface methods left behind from `Project.jl`, and lift the `WorkGraph` scheduler out of
@@ -140,3 +140,5 @@ revised before moving on.
   second consumer appears.
 - **Annotations identity type.** Which API type annotations key on (item id vs. collection path)
   falls out of the data-model work in [data-model-generalization.md](data-model-generalization.md).
+- **Exact file split.** Whether existing files should be preserved, renamed, or completely adapted
+  to a more sensible structure during the change (ideally yes, but how and when?).
