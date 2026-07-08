@@ -9,7 +9,7 @@ using ..Projects:
     source_label
 using ..ItemIndex: ItemRecord
 import ..Workspace
-import ..Profiling
+import DataBrowserProfiling as Profiling
 using ..Visualization:
     PlotKind,
     plot_data!,

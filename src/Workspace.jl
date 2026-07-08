@@ -1,7 +1,7 @@
 module Workspace
 
 using Printf
-import ..Profiling
+import DataBrowserProfiling as Profiling
 
 import ..Cache:
     AbstractCacheDB,

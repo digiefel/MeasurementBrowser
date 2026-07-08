@@ -5,6 +5,7 @@ authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 
 [deps]
 Annotations = "ae6ca758-ef8f-47cf-869f-33c684d5c66b"
+DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 BetterFileWatching = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
@@ -16,13 +17,11 @@ DuckDB = "d2f5444f-75bc-4fdf-ac35-56f514c445e1"
 GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
-JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 ModernGL = "66fc600b-dfda-50eb-8b99-91cfa97b1301"
 NativeFileDialog = "e1fe445b-aa65-4df4-81c1-2041507f0fd4"
 Observables = "510215fc-4207-5dde-b226-833fc4488ee2"
 PrecompileTools = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
 SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 SmoothData = "0112b07a-89eb-48f6-acf7-65d97704274c"
@@ -37,7 +36,6 @@ DBInterface = "2.6.1"
 DuckDB = "1.5.2"
 GLFW = "3.4.4"
 GLMakie = "0.13.5"
-JSON = "1.6.1"
 ModernGL = "1.1.8"
 NativeFileDialog = "0.2.1"
 PrecompileTools = "1.2.1"
@@ -48,7 +46,11 @@ TOML = "1.0.3"
 julia = "1.12"
 
 [extras]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test"]
+test = ["JSON", "Test"]
+
+[sources]
+DataBrowserProfiling = {path = "lib/DataBrowserProfiling"}

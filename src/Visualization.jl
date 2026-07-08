@@ -5,7 +5,7 @@ using InteractiveUtils: subtypes
 
 import ..ItemIndex: ItemRecord
 import ..Projects: AbstractDataItem
-import ..Profiling
+import DataBrowserProfiling as Profiling
 import ..Workspace
 
 """

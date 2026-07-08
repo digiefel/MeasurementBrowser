@@ -1,10 +1,11 @@
 using JSON
 using MeasurementBrowser
+import DataBrowserProfiling as Profiling
 using CSV
 using DataFrames: DataFrame, nrow
 using Test
 
-const PROFILE = MeasurementBrowser.Profiling
+const PROFILE = Profiling
 
 profile_snapshot() = (
     scan_done=0,
@@ -148,10 +149,9 @@ end
         path = joinpath(dir, "crash.jsonl")
         project = dirname(@__DIR__)
         code = """
-            using MeasurementBrowser
-            P = MeasurementBrowser.Profiling
-            session = P.ProfileSession(false, false, nothing, $(repr(path)))
-            P.start_span!(session, :test, :unfinished)
+            import DataBrowserProfiling as Profiling
+            session = Profiling.ProfileSession(false, false, nothing, $(repr(path)))
+            Profiling.start_span!(session, :test, :unfinished)
             exit(17)
         """
         command = `$(Base.julia_cmd()) --project=$project -e $code`

@@ -1,5 +1,5 @@
 """Workspace-owned metrics, traces, CPU samples, and crash forensics."""
-module Profiling
+module DataBrowserProfiling
 
 using JSON
 using Profile
@@ -379,8 +379,8 @@ end
 macro profile_span(session, category, operation, attributes, expr)
     quote
         local _profile_session = $(esc(session))
-        if Profiling.should_trace(_profile_session)
-            Profiling.with_profile_span(
+        if DataBrowserProfiling.should_trace(_profile_session)
+            DataBrowserProfiling.with_profile_span(
                 _profile_session,
                 $(esc(category)),
                 $(esc(operation)),
@@ -786,4 +786,4 @@ function close!(session::ProfileSession)::Nothing
     return nothing
 end
 
-end # module Profiling
+end # module DataBrowserProfiling

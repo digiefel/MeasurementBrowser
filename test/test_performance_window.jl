@@ -1,5 +1,7 @@
 const PERFORMANCE_BROWSER = MeasurementBrowser.Browser
 
+import DataBrowserProfiling as Profiling
+
 @testset "performance window live figures" begin
     live = PERFORMANCE_BROWSER.LivePlotsState(capacity=3)
     timings = Dict{Symbol,Vector{Float64}}(
@@ -22,12 +24,12 @@ const PERFORMANCE_BROWSER = MeasurementBrowser.Browser
     end
     @test live.elapsed_buf == Float32[2, 3, 4]
 
-    profiler = MeasurementBrowser.Profiling.ProfileSession(true, false, nothing, nothing)
+    profiler = Profiling.ProfileSession(true, false, nothing, nothing)
     called = Ref(false)
     PERFORMANCE_BROWSER._profile_action!(profiler) do
         called[] = true
     end
     @test called[]
     @test profiler.state === :idle
-    MeasurementBrowser.Profiling.close!(profiler)
+    Profiling.close!(profiler)
 end

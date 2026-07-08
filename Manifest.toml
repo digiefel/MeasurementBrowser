@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "0f5ab33b2472eab4d335da646b1403231bd11d48"
+project_hash = "570f796633fe04a046146b50921096893118c3be"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -339,6 +339,12 @@ version = "2.6.1"
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
 uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 version = "1.16.0"
+
+[[deps.DataBrowserProfiling]]
+deps = ["JSON", "Profile", "Statistics"]
+path = "lib/DataBrowserProfiling"
+uuid = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
+version = "0.1.0"
 
 [[deps.DataFrames]]
 deps = ["Compat", "DataAPI", "DataStructures", "Future", "InlineStrings", "InvertedIndices", "IteratorInterfaceExtensions", "LinearAlgebra", "Markdown", "Missings", "PooledArrays", "PrecompileTools", "PrettyTables", "Printf", "Random", "Reexport", "SentinelArrays", "SortingAlgorithms", "Statistics", "TableTraits", "Tables", "Unicode"]
@@ -1020,7 +1026,7 @@ uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.9"
 
 [[deps.MeasurementBrowser]]
-deps = ["Annotations", "BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "InteractiveUtils", "JSON", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "Profile", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+deps = ["Annotations", "BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserProfiling", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = "."
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"

@@ -2,8 +2,7 @@ module MeasurementBrowser
 
 using PrecompileTools
 using Annotations
-
-include("Profiling.jl")
+import DataBrowserProfiling as Profiling
 
 include("Projects.jl")
 using .Projects:

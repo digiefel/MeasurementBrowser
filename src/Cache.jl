@@ -26,8 +26,8 @@ import ..Projects:
     source_item_path,
     source_item_timestamp,
     source_label
-import ..Profiling
-using ..Profiling: @profile_span, ProfileAttributes
+import DataBrowserProfiling as Profiling
+using DataBrowserProfiling: @profile_span, ProfileAttributes
 
 using DuckDB
 using DBInterface

@@ -5,7 +5,7 @@ using GLMakie: Axis, Figure, Observable, axislegend, lines!
 import GLMakie.Makie as Makie
 using NativeFileDialog: save_file
 
-import ..Profiling
+import DataBrowserProfiling as Profiling
 using ..Projects: scan_profile_summary, scan_source_profile
 import ..Workspace
 using .MakieImguiIntegration: MakieFigure

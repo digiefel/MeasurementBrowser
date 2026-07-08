@@ -3,7 +3,7 @@ using GLMakie: Figure, Observable
 import CImGui as ig
 
 import ..Workspace
-import ..Profiling
+import DataBrowserProfiling as Profiling
 using ..Projects: KindProfileRow, Project, SourceProfileRow
 using ..TableInspector: TablePreview, InspectorTable
 using ..Visualization: PlotKind

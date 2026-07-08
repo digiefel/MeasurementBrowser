@@ -3,7 +3,7 @@ module ItemIndex
 using Dates
 using DataFrames: AbstractDataFrame
 
-import ..Profiling
+import DataBrowserProfiling as Profiling
 
 import ..Projects
 import ..Projects:
