@@ -5,8 +5,8 @@ using DataFrames: AbstractDataFrame
 
 import DataBrowserProfiling as Profiling
 
-import ..Projects
-import ..Projects:
+import DataBrowserAPI
+import DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
@@ -293,10 +293,10 @@ Derive the internal `ItemRecord` from any item via the source and item contracts
 function ItemRecord(
     item::AbstractDataItem;
     source_item::AbstractDataSourceItem,
-    kind::Symbol=Projects.kind(item),
-    metadata=Projects.metadata(item),
+    kind::Symbol=DataBrowserAPI.kind(item),
+    metadata=DataBrowserAPI.metadata(item),
 )::ItemRecord
-    label = Projects.item_label(item)
+    label = DataBrowserAPI.item_label(item)
     title = isempty(label) ?
         strip(join(filter(!isnothing, Any[source_item_timestamp(source_item), string(kind)]), " ")) :
         String(label)
@@ -304,27 +304,27 @@ function ItemRecord(
         source_item_id=source_item_id(source_item),
         source_item_path=source_item_path(source_item),
         source_item_timestamp=source_item_timestamp(source_item),
-        id=Projects.id(item),
+        id=DataBrowserAPI.id(item),
         item_label=title,
         kind,
-        collection=Projects.collection(item),
+        collection=DataBrowserAPI.collection(item),
         metadata,
         item_fingerprint=fingerprint(item),
     )
 end
 
-Projects.id(item::DataItem)::String = item.id
-Projects.item_label(item::DataItem)::String = item.label
-Projects.kind(item::DataItem)::Symbol = item.kind
-Projects.collection(item::DataItem)::Vector{String} = item.collection
-Projects.metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
-Projects.item_data(item::DataItem) = item.data
-Projects.fingerprint(item::DataItem) = nothing
+DataBrowserAPI.id(item::DataItem)::String = item.id
+DataBrowserAPI.item_label(item::DataItem)::String = item.label
+DataBrowserAPI.kind(item::DataItem)::Symbol = item.kind
+DataBrowserAPI.collection(item::DataItem)::Vector{String} = item.collection
+DataBrowserAPI.metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
+DataBrowserAPI.item_data(item::DataItem) = item.data
+DataBrowserAPI.fingerprint(item::DataItem) = nothing
 
 # The built-in item opts DataFrame values and views into the native columnar cache. Other data types
 # remain source-backed until they receive their own native storage method. Type-API items opt in
 # themselves.
-Projects.cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame
+DataBrowserAPI.cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame
 
 """
 One node in the collection hierarchy.

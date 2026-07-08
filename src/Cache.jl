@@ -13,8 +13,8 @@ import ..ItemIndex:
     all_items,
     collection_path_tuple,
     emit_progress
-import ..Projects
-import ..Projects:
+import DataBrowserAPI
+import DataBrowserAPI:
     AbstractDataItem,
     AbstractDataSourceItem,
     cacheable,

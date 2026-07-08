@@ -6,7 +6,7 @@ import GLMakie.Makie as Makie
 using NativeFileDialog: save_file
 
 import DataBrowserProfiling as Profiling
-using ..Projects: scan_profile_summary, scan_source_profile
+using DataBrowserAPI: scan_profile_summary, scan_source_profile
 import ..Workspace
 using .MakieImguiIntegration: MakieFigure
 

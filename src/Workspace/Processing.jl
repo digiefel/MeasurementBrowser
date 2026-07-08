@@ -442,7 +442,7 @@ function run_collection_process(workspace::Workspace, key::String)::NamedTuple
     rewritten_ids = String[]
     for output in outputs
         input = by_id[id(output)]
-        metadata_by_id[id(output)] = metadata_dict(Projects.metadata(output))
+        metadata_by_id[id(output)] = metadata_dict(DataBrowserAPI.metadata(output))
         item_data(output) === item_data(input) && continue
         push!(rewritten_ids, id(output))
     end

@@ -11,7 +11,7 @@ using ..TableInspector:
 using .MakieImguiIntegration: MakieFigure
 
 import ..Workspace
-using ..Projects: item_data
+using DataBrowserAPI: item_data
 
 # ---------------------------------------------------------------------------
 # Buffer helpers (kept for the raw-preview mode)

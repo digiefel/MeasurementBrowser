@@ -1,7 +1,7 @@
 import CImGui as ig
 import CImGui.CSyntax: @c
 
-using ..Projects:
+using DataBrowserAPI:
     kind_label
 import ..Workspace
 

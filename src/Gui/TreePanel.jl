@@ -1,6 +1,6 @@
 import CImGui as ig
 
-using ..Projects:
+using DataBrowserAPI:
     Project,
     display_label,
     kind_label

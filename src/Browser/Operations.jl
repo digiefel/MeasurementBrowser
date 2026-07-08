@@ -1,4 +1,4 @@
-using ..Projects:
+using DataBrowserAPI:
     Project,
     DEFAULT_PROJECT,
     PROJECTS,

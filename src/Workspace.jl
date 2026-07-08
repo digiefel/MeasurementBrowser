@@ -79,8 +79,8 @@ import ..ItemIndex:
     interpret_source_item,
     remove_records!,
     with_cancel
-import ..Projects
-import ..Projects:
+import DataBrowserAPI
+import DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,

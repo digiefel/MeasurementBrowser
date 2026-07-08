@@ -5,12 +5,12 @@ import CImGui as ig
 import CImGui.CSyntax: @c
 using NativeFileDialog: save_file
 
-using ..Projects:
+using DataBrowserAPI:
     source_label
 using ..ItemIndex: ItemRecord
 import ..Workspace
 import DataBrowserProfiling as Profiling
-using ..Visualization:
+using DataBrowserAPI:
     PlotKind,
     plot_data!,
     plot_kind_label,

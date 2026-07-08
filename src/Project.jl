@@ -1,27 +1,12 @@
 """
-Project.jl - methods of the registration-based project API.
+Project.jl - engine methods for the registration-based project API.
 
-The `Project` type and its recipe types are defined in the `Projects` module (early, so other
-submodules can name the concrete type). This file defines the methods: `define_project`, the
-`register_*` functions, and the project's implementation of the engine interface (interpretation,
-data access, plotting, serialization).
-
-A project is built by mutation with `register_item!` / `register_collection_analysis!` /
-`register_plot!`, each pointing at plain callbacks, which the engine then drives:
-
-Pipeline per item kind (fixed order, each fed the previous output):
-    detect(file)          -> Bool
-    read(file)            -> data               # whole file, parsed once
-    entries(file, data)   -> Vector{<:AbstractDataItem}  # one entry per item (a single one is a vector of one)
-    process(item)         -> AbstractDataItem    # optional; default passthrough
-    analyze(item)         -> Dict{Symbol,Any}    # optional, async after indexing
-    label(item)           -> String             # optional
-
-`entries` returns the package's `DataItem` (recipe API) or a project subtype (type API); the engine
-derives the internal record from each via the `AbstractDataItem` contract. `file` is a `SourceFile`
-(has `.filename`, `.filepath`, `.timestamp`).
+Construction (`define_project`, `register_*`) and the payload-agnostic contracts live in
+`DataBrowserAPI`. This file keeps serialization, scan profiling, and callback-driving methods that
+touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
 """
 
+using DataBrowserAPI
 using DataFrames: DataFrame
 import Serialization
 
@@ -55,66 +40,7 @@ function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{P
     return project
 end
 
-# ---------------------------------------------------------------------------
-# Pretty printing
-# ---------------------------------------------------------------------------
-
-"""Name of a callback, or "λ" for an anonymous function."""
-_callback_name(f)::String = (n = string(nameof(f)); startswith(n, "#") ? "λ" : n)
-
-"""Count with a pluralized noun, e.g. `1 plot`, `3 plots`."""
-_plural(n::Integer, word::AbstractString)::String = "$n $word" * (n == 1 ? "" : "s")
-
-Base.show(io::IO, project::Project) =
-    print(io, "Project(\"$(project.name)\", ", _plural(length(project.recipes), "item kind"), ")")
-
-function Base.show(io::IO, ::MIME"text/plain", project::Project)
-    print(io, "Project \"$(project.name)\"")
-    isempty(project.description) || print(io, " · ", project.description)
-
-    print(io, "\n  ", _plural(length(project.recipes), "item kind"))
-    isempty(project.recipes) || print(io, " (detection order):")
-    pad = isempty(project.recipes) ? 0 : maximum(length(string(r.kind)) for r in project.recipes)
-    for recipe in project.recipes
-        optional = [name for (name, f) in
-            (("process", recipe.process), ("analyze", recipe.analyze), ("label", recipe.label))
-            if f !== nothing]
-        steps = isempty(optional) ? "" : " · " * join(optional, " · ")
-        print(io, "\n    ", rstrip(rpad(string(recipe.kind), pad) * steps))
-    end
-
-    print(io, "\n  ", _plural(length(project.collections), "collection recipe"))
-    isempty(project.collections) || print(io, ":")
-    for recipe in values(project.collections)
-        stages = [name for (name, f) in
-            (("process", recipe.process), ("analyze", recipe.analyze)) if f !== nothing]
-        print(io, "\n    ", recipe.kind, " · ", join(stages, " · "))
-    end
-
-    plot_count = sum(length, values(project.plots); init=0)
-    print(io, "\n  ", _plural(plot_count, "plot"))
-    isempty(project.plots) || print(io, ":")
-    for kind in sort!(collect(keys(project.plots)); by=String)
-        for label in sort!(collect(keys(project.plots[kind])))
-            print(io, "\n    ", kind, " → \"", label, "\"")
-        end
-    end
-end
-
-"""Create an empty project. Register items/stats/plots into it afterwards."""
-function define_project(name::AbstractString; description::AbstractString="")::Project
-    return Project(
-        String(name),
-        String(description),
-        ItemRecipe[],
-        Dict{Symbol,CollectionRecipe}(),
-        Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Dict{String,SourceItemProfile}(),
-        ReentrantLock(),
-    )
-end
-
-function Projects.record_scan_phase!(
+function DataBrowserAPI.record_scan_phase!(
     project::Project,
     source_item_id::AbstractString,
     kind::Symbol,
@@ -136,7 +62,7 @@ function Projects.record_scan_phase!(
     return nothing
 end
 
-function Projects.finish_source_profile!(
+function DataBrowserAPI.finish_source_profile!(
     project::Project,
     source_item_id::AbstractString,
     source_item_label::AbstractString,
@@ -208,75 +134,6 @@ function scan_source_profile(project::Project)::Vector{SourceProfileRow}
     return rows
 end
 
-"""
-Register (or replace) the recipe for one item kind.
-
-`detect`, `read`, and `entries` are required. `entries(file, data)` returns the per-item entries as
-`AbstractDataItem`s — the package's `DataItem` (recipe API) or your own subtype (type API); a
-single-item file just returns a vector of one. Attach the raw per-item data as `item.data`;
-optional `process`/`analyze`/`label` refine the recipe
-API. Re-calling with the same `kind` replaces the recipe in place, so editing and re-running the line
-updates a live project.
-"""
-function register_item!(
-    project::Project,
-    kind::Symbol;
-    detect::Function,
-    read::Function,
-    entries::Function,
-    process::Union{Nothing,Function}=nothing,
-    analyze::Union{Nothing,Function}=nothing,
-    label::Union{Nothing,Function}=nothing,
-)::Project
-    recipe = ItemRecipe(kind, detect, read, entries, process, analyze, label)
-    index = findfirst(r -> r.kind === kind, project.recipes)
-    index === nothing ? push!(project.recipes, recipe) : (project.recipes[index] = recipe)
-    return project
-end
-
-"""
-Register (or replace) the collection recipe for one item kind.
-
-`process(items)` receives the collection's members of `kind` and returns one output per input (same
-ids), rewriting per-item data or metadata (the down-flow). `analyze(items)` receives the
-post-process members and returns a `Dict{Symbol,Any}` attached to the collection node only. The
-callback adapter implements these through the low-level `process_collection`/`analyze_collection`
-hooks. Re-calling with the same `kind` replaces the recipe.
-"""
-function register_collection_analysis!(
-    project::Project,
-    kind::Symbol;
-    process::Union{Nothing,Function}=nothing,
-    analyze::Union{Nothing,Function}=nothing,
-)::Project
-    project.collections[kind] = CollectionRecipe(kind, process, analyze)
-    return project
-end
-
-"""
-Register (or replace) one plot recipe for an item kind.
-
-`setup(workspace, items)` builds and returns the `Figure`; `draw(workspace, items, figure)` fills it
-in. `items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`); each
-has already passed through `process(item)`, if registered, so neither callback resolves item data
-itself. A kind may have multiple plots; re-registering the same `label` for the same kind replaces
-that plot, which keeps REPL iteration stable.
-"""
-function register_plot!(
-    project::Project,
-    kind::Symbol;
-    label::AbstractString,
-    setup::Function,
-    draw::Function,
-)::Project
-    label_string = String(label)
-    recipes = get!(project.plots, kind) do
-        Dict{String,PlotRecipe}()
-    end
-    recipes[label_string] = PlotRecipe(kind, label_string, setup, draw)
-    return project
-end
-
 # ---------------------------------------------------------------------------
 # Recipe lookup helpers
 # ---------------------------------------------------------------------------
@@ -336,9 +193,9 @@ function _normalize_entry(
         kind=recipe.kind,
         collection=collection(item),
         label=item_label(item),
-        metadata=Projects.metadata(item),
+        metadata=metadata(item),
         data=item_data(item),
-        id=_mint_id(source_item_id, recipe.kind, Projects.metadata(item)),
+        id=_mint_id(source_item_id, recipe.kind, metadata(item)),
     )
 end
 
@@ -355,17 +212,17 @@ end
 """
 Process one loaded item through its registered callback or the low-level `process(item)` hook.
 """
-function Projects.process(
+function DataBrowserAPI.process(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,
 )::AbstractDataItem
     recipe = _recipe(project, kind(item))
-    (recipe === nothing || recipe.process === nothing) && return Projects.process(item)
+    (recipe === nothing || recipe.process === nothing) && return DataBrowserAPI.process(item)
     return _processed_item(recipe, item)
 end
 
-function Projects.data_items(
+function DataBrowserAPI.data_items(
     project::Project,
     source::AbstractDataSource,
     file::SourceFile,
@@ -443,7 +300,7 @@ Rewrite one collection's members through the kind's registered collection `proce
 Members are grouped by kind; a kind without a registered `process` passes its members through
 unchanged. The callback returns one output per input; the adapter validates ids and count.
 """
-function Projects.process_collection(
+function DataBrowserAPI.process_collection(
     project::Project,
     ::AbstractDataSource,
     ::Vector{String},
@@ -474,7 +331,7 @@ function Projects.process_collection(
 end
 
 """Fold one collection's post-process members into collection-node metadata."""
-function Projects.analyze_collection(
+function DataBrowserAPI.analyze_collection(
     project::Project,
     ::AbstractDataSource,
     ::Vector{String},
@@ -501,7 +358,7 @@ function _group_by_kind(items::Vector{<:AbstractDataItem})::Vector{Vector{Abstra
     return Vector{AbstractDataItem}[groups[item_kind] for item_kind in order]
 end
 
-function Projects.analyze_item(
+function DataBrowserAPI.analyze_item(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,
@@ -511,12 +368,12 @@ function Projects.analyze_item(
     return recipe.analyze(item)::Dict{Symbol,Any}
 end
 
-function Projects.has_collection_process(project::Project, item_kind::Symbol)::Bool
+function DataBrowserAPI.has_collection_process(project::Project, item_kind::Symbol)::Bool
     recipe = get(project.collections, item_kind, nothing)
     return recipe !== nothing && recipe.process !== nothing
 end
 
-function Projects.has_collection_analysis(project::Project, item_kind::Symbol)::Bool
+function DataBrowserAPI.has_collection_analysis(project::Project, item_kind::Symbol)::Bool
     recipe = get(project.collections, item_kind, nothing)
     return recipe !== nothing && recipe.analyze !== nothing
 end

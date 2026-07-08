@@ -61,15 +61,15 @@ struct SourceFile <: AbstractDataSourceItem
     fingerprint::FileFingerprint
 end
 
-Projects.source_item_id(file::SourceFile)::String = file.filepath
-Projects.source_item_label(file::SourceFile)::String = file.filename
-Projects.fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
-Projects.source_item_path(file::SourceFile)::String = file.filepath
-Projects.source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
+DataBrowserAPI.source_item_id(file::SourceFile)::String = file.filepath
+DataBrowserAPI.source_item_label(file::SourceFile)::String = file.filename
+DataBrowserAPI.fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
+DataBrowserAPI.source_item_path(file::SourceFile)::String = file.filepath
+DataBrowserAPI.source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
 
-Projects.source_id(source::DirectorySource)::String = source.root_path
-Projects.source_label(source::DirectorySource)::String = basename(source.root_path)
-Projects.source_item_noun(::DirectorySource)::String = "source files"
+DataBrowserAPI.source_id(source::DirectorySource)::String = source.root_path
+DataBrowserAPI.source_label(source::DirectorySource)::String = basename(source.root_path)
+DataBrowserAPI.source_item_noun(::DirectorySource)::String = "source files"
 
 """Extract a source-item timestamp from the supported filename conventions."""
 function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
@@ -269,12 +269,12 @@ end
 # Collection metadata has one lifecycle owner: `open_source` loads it and the watcher is the
 # only refresher afterwards. Discovery must not consume a pending metadata change, or the watcher
 # would observe "no change" and the update would never be published.
-Projects.source_items(
+DataBrowserAPI.source_items(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
 )::Vector{SourceFile} = collect_source_files(source; on_progress)
 
-function Projects.collection_metadata(
+function DataBrowserAPI.collection_metadata(
     source::DirectorySource,
     collection_path::AbstractVector{<:AbstractString},
 )::Dict{Symbol,Any}
@@ -283,12 +283,12 @@ function Projects.collection_metadata(
     end
 end
 
-Projects.has_collection_metadata(source::DirectorySource)::Bool =
+DataBrowserAPI.has_collection_metadata(source::DirectorySource)::Bool =
     lock(source.metadata_lock) do
         source.has_metadata
     end
 
-function Projects.open_source(source::DirectorySource)::DirectorySource
+function DataBrowserAPI.open_source(source::DirectorySource)::DirectorySource
     isdir(source.root_path) || throw(ArgumentError(
         "Cannot open DirectorySource '$(source.root_path)': directory does not exist",
     ))
@@ -297,7 +297,7 @@ function Projects.open_source(source::DirectorySource)::DirectorySource
     return source
 end
 
-function Projects.watch_source(
+function DataBrowserAPI.watch_source(
     source::DirectorySource,
     on_change::Function,
 )::Union{Nothing,Task}
@@ -342,10 +342,10 @@ function Projects.watch_source(
     return task
 end
 
-Projects.source_open_options(source::DirectorySource)::NamedTuple =
+DataBrowserAPI.source_open_options(source::DirectorySource)::NamedTuple =
     (; recursive=source.recursive, metadata_file=source.metadata_file)
 
-function Projects.close_source!(source::DirectorySource)::Nothing
+function DataBrowserAPI.close_source!(source::DirectorySource)::Nothing
     source.watcher_closed[] = true
     source.watcher_cancel === nothing || cancel(source.watcher_cancel)
     task = source.watcher_task

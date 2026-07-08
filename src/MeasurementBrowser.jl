@@ -4,8 +4,9 @@ using PrecompileTools
 using Annotations
 import DataBrowserProfiling as Profiling
 
-include("Projects.jl")
-using .Projects:
+using DataBrowserAPI
+const Projects = DataBrowserAPI
+using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
@@ -15,8 +16,10 @@ using .Projects:
     ItemRecipe,
     KindProfileRow,
     PROJECTS,
+    PlotKind,
     PlotRecipe,
     Project,
+    RegisteredPlot,
     SourceChanges,
     SourceError,
     SourceItemProfile,
@@ -25,12 +28,22 @@ using .Projects:
     close_source!,
     collection,
     data_items,
+    define_project,
     fingerprint,
     id,
     item_data,
     item_label,
     metadata,
     open_source,
+    plot_kind_from_name,
+    plot_kind_label,
+    plot_kind_name,
+    plot_kind_symbol,
+    plot_kinds,
+    register_collection_analysis!,
+    register_item!,
+    register_plot!,
+    registered_plot_kinds,
     source_id,
     source_item_id,
     source_item_label,
@@ -40,7 +53,7 @@ using .Projects:
     source_items,
     source_label,
     watch_source
-import .Projects:
+import DataBrowserAPI:
     detect_kind,
     collection_path_label,
     display_label,
@@ -91,18 +104,7 @@ const ENGINE_ONLY_BENCHMARK_LOAD = get(ENV, "MB_BENCH_ENGINE_ONLY", "0") == "1"
 
 if !ENGINE_ONLY_BENCHMARK_LOAD
     include("Visualization.jl")
-    using .Visualization:
-        PlotKind,
-        RegisteredPlot,
-        plot_kind_from_name,
-        plot_kind_label,
-        plot_kind_name,
-        plot_kind_symbol,
-        plot_kinds,
-        registered_plot_kinds
-    import .Visualization:
-        plot_data!,
-        setup_plot
+    import DataBrowserAPI: plot_data!, setup_plot
 end
 
 include("TableInspector.jl")

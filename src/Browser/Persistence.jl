@@ -1,11 +1,11 @@
 using TOML
 
-using ..Projects:
+using DataBrowserAPI:
     PROJECTS,
     project_name
 using ..ItemIndex: ItemRecord
 import ..Workspace
-using ..Visualization:
+using DataBrowserAPI:
     PlotKind,
     plot_kind_from_name,
     plot_kind_name

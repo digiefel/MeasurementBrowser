@@ -4,9 +4,8 @@ import CImGui as ig
 
 import ..Workspace
 import DataBrowserProfiling as Profiling
-using ..Projects: KindProfileRow, Project, SourceProfileRow
+using DataBrowserAPI: KindProfileRow, PlotKind, Project, SourceProfileRow
 using ..TableInspector: TablePreview, InspectorTable
-using ..Visualization: PlotKind
 
 """
 Runtime state for one plot window.

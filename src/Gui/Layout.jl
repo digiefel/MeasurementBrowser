@@ -13,7 +13,7 @@ using NativeFileDialog: pick_folder
 # outlive the entire process.  We hold it here as a module-level Ref so it is never GC'd.
 const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
-using ..Projects:
+using DataBrowserAPI:
     KindProfileRow,
     DEFAULT_PROJECT,
     PROJECTS,
