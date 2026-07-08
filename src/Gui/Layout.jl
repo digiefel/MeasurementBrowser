@@ -307,7 +307,7 @@ function _render_stage_counts!(status::WorkspaceStatus)::Nothing
     _stage_count_cell("$(counts.sources_found) Sources", [
         "$(counts.sources_found) $(counts.source_noun) found",
         "$(counts.sources_pending) pending interpretation",
-    ]; align=:left)
+    ]; align=:center)
     _stage_count_cell("$(cache.interpreted_items) entries", [
         "$(cache.interpreted_items) items interpreted and cached",
     ]; align=:center)
@@ -329,7 +329,7 @@ function _render_stage_counts!(status::WorkspaceStatus)::Nothing
         "$(cache.failed_process) process",
         "$analyze_issues analyze",
         "$(cache.failed_collection) collection",
-    ]; align=:right)
+    ]; align=:center)
     ig.EndTable()
     return nothing
 end
