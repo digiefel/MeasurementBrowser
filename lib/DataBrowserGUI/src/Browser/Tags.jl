@@ -1,8 +1,8 @@
-using ..DataBrowserAnnotations
+using DataBrowserAnnotations
 const Annotations = DataBrowserAnnotations
 
-import ..Workspace
-using ..ItemIndex:
+import DataBrowserCore.Workspace
+using DataBrowserCore.ItemIndex:
     HierarchyNode,
     ItemRecord,
     collection_path_key,
@@ -35,10 +35,10 @@ function _load_tag_state_for_root!(
     end
 
     try
-        state.tag_state = Annotations.Tags.load(root_path)
+        state.tag_state = DataBrowserAnnotations.Tags.load(root_path)
         state.tag_state_error = ""
     catch err
-        if err isa Annotations.Tags.TagsParseError || err isa IOError
+        if err isa DataBrowserAnnotations.Tags.TagsParseError || err isa IOError
             state.tag_state = nothing
             state.tag_state_error = sprint(showerror, err)
             return nothing
@@ -61,7 +61,7 @@ function _show_bad_effective(state::BrowserState)::Bool
 end
 
 """Return loaded tags or fail with the error that prevented loading them."""
-function _tag_state_or_error(state::BrowserState)::Annotations.Tags.TagState
+function _tag_state_or_error(state::BrowserState)::DataBrowserAnnotations.Tags.TagState
     state.tag_state === nothing &&
         error("Tag state unavailable: $(state.tag_state_error)")
     return state.tag_state
@@ -92,11 +92,11 @@ end
 
 """Return whether an item or one of its supplied parents has the bad tag."""
 function _has_bad_tag(
-    tag_state::Annotations.Tags.TagState,
+    tag_state::DataBrowserAnnotations.Tags.TagState,
     key::AbstractString,
     ancestor_keys::Vector{String},
 )::Bool
-    return "bad" in Annotations.Tags.effective(tag_state, key, ancestor_keys)
+    return "bad" in DataBrowserAnnotations.Tags.effective(tag_state, key, ancestor_keys)
 end
 
 """Return whether a collection remains visible after applying the bad-tag filter."""
@@ -181,11 +181,11 @@ end
 Ensure the bad tag exists before writing bad-collection or bad-item assignments.
 """
 function _ensure_bad_catalog_entry!(
-    tag_state::Annotations.Tags.TagState,
+    tag_state::DataBrowserAnnotations.Tags.TagState,
 )::Nothing
     any(t -> t.name == BAD_TAG_NAME, tag_state.catalog) && return
     pushfirst!(tag_state.catalog,
-        Annotations.Tags.TagDef(BAD_TAG_NAME, BAD_TAG_COLOR, BAD_TAG_PRIORITY))
+        DataBrowserAnnotations.Tags.TagDef(BAD_TAG_NAME, BAD_TAG_COLOR, BAD_TAG_PRIORITY))
     return nothing
 end
 
@@ -220,7 +220,7 @@ function _set_collections_bad!(
         end
     end
 
-    Annotations.Tags.save(_annotation_root(workspace), tag_state)
+    DataBrowserAnnotations.Tags.save(_annotation_root(workspace), tag_state)
     return true
 end
 
@@ -255,7 +255,7 @@ function _set_items_bad!(
         end
     end
 
-    Annotations.Tags.save(_annotation_root(workspace), tag_state)
+    DataBrowserAnnotations.Tags.save(_annotation_root(workspace), tag_state)
     return true
 end
 

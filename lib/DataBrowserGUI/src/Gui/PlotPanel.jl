@@ -7,8 +7,8 @@ using NativeFileDialog: save_file
 
 using DataBrowserAPI:
     source_label
-using ..ItemIndex: ItemRecord
-import ..Workspace
+using DataBrowserCore.ItemIndex: ItemRecord
+import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI:
     PlotKind,

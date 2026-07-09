@@ -21,10 +21,10 @@ using DataBrowserAPI:
     project_name,
     SourceProfileRow,
     source_label
-using ..ItemIndex: SourceScan
-using ..Cache: ProjectCacheIdentity
-import ..Workspace
-using ..Workspace:
+using DataBrowserCore.ItemIndex: SourceScan
+using DataBrowserCore.Cache: ProjectCacheIdentity
+import DataBrowserCore.Workspace
+using DataBrowserCore.Workspace:
     WorkspaceStatus,
     refresh_status!,
     rebuild_cache!,

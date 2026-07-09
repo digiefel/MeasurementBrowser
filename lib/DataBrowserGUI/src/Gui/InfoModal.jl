@@ -3,7 +3,7 @@ import CImGui.CSyntax: @c
 
 using DataBrowserAPI:
     kind_label
-import ..Workspace
+import DataBrowserCore.Workspace
 
 """Render collection and item details for the visible workspace selection."""
 function render_info_window(state::BrowserState)::Nothing

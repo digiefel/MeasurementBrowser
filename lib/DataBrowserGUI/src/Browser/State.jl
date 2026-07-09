@@ -1,12 +1,11 @@
-using ..DataBrowserAnnotations
-const Annotations = DataBrowserAnnotations
+using DataBrowserAnnotations
 using GLMakie: Figure, Observable
 import CImGui as ig
 
-import ..Workspace
+import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI: KindProfileRow, PlotKind, Project, SourceProfileRow
-using ...DataBrowserSources
+using DataBrowserSources
 using DataBrowserPlots: InspectorTable, merge_item_tables
 
 """
@@ -229,7 +228,7 @@ Base.@kwdef mutable struct BrowserState
     scroll_to_collection_path::Union{Nothing,String} = nothing
     scroll_to_item_id::Union{Nothing,String} = nothing
     show_bad::Bool = true
-    tag_state::Union{Nothing,Annotations.Tags.TagState} = nothing
+    tag_state::Union{Nothing,DataBrowserAnnotations.Tags.TagState} = nothing
     tag_state_error::String = ""
     show_project_window::Bool = false
     show_performance_window::Bool = false

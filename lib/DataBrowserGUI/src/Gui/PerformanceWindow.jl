@@ -7,7 +7,7 @@ using NativeFileDialog: save_file
 
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI: scan_profile_summary, scan_source_profile
-import ..Workspace
+import DataBrowserCore.Workspace
 using .MakieImguiIntegration: MakieFigure
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "856c3d185c326a0a0dfded50c61c0772e1d0e1d6"
+project_hash = "c08bbd9d5853a7b1eab67b1ab3e4024725c052f0"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -356,6 +356,12 @@ version = "0.1.0"
 deps = ["CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "Printf", "SHA", "Serialization", "TOML"]
 path = "lib/DataBrowserCore"
 uuid = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
+version = "0.1.0"
+
+[[deps.DataBrowserGUI]]
+deps = ["CImGui", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCore", "DataBrowserPlots", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "Printf", "Statistics", "TOML"]
+path = "lib/DataBrowserGUI"
+uuid = "f3a4b5c6-d7e8-9f0a-1b2c-3d4e5f6a7b8c"
 version = "0.1.0"
 
 [[deps.DataBrowserPlots]]
@@ -1056,7 +1062,7 @@ uuid = "0a4f8689-d25c-4efe-a92b-7142dfc1aa53"
 version = "0.6.9"
 
 [[deps.MeasurementBrowser]]
-deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserPlots", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserGUI", "DataBrowserPlots", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = "."
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"

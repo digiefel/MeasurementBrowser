@@ -102,15 +102,15 @@ if !ENGINE_ONLY_BENCHMARK_LOAD
     using DataBrowserPlots
     using DataBrowserPlots: InspectorTable, merge_item_tables
     import DataBrowserAPI: plot_data!, setup_plot
+    using DataBrowserGUI
+    import DataBrowserGUI: Browser
+    using DataBrowserGUI: open_browser
+    include("Precompile.jl")
 end
 
 if ENGINE_ONLY_BENCHMARK_LOAD
     open_browser(args...; kwargs...) =
         error("open_browser is unavailable when MB_BENCH_ENGINE_ONLY=1")
-else
-    include("Browser.jl")
-    using .Browser: open_browser
-    include("Precompile.jl")
 end
 
 # Public API — exactly the contract. Everything else (engine internals: ItemRecord, the plot

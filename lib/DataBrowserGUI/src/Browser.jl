@@ -1,5 +1,7 @@
 module Browser
 
+using DataBrowserPlots
+
 include("Browser/MakieIntegration.jl")
 
 include("Browser/State.jl")

@@ -1,4 +1,4 @@
-using ..DataBrowserAnnotations
+using DataBrowserAnnotations
 const Annotations = DataBrowserAnnotations
 import CImGui as ig
 
@@ -17,12 +17,12 @@ end
 
 """Apply the dominant tag color and report whether the caller must pop it."""
 function _push_tag_text_style!(
-    tag_state::Annotations.Tags.TagState,
+    tag_state::DataBrowserAnnotations.Tags.TagState,
     key::AbstractString,
     ancestor_keys::Vector{String},
 )::Bool
-    effective_tags = Annotations.Tags.effective(tag_state, key, ancestor_keys)
-    color = Annotations.Tags.dominant_color(tag_state, effective_tags)
+    effective_tags = DataBrowserAnnotations.Tags.effective(tag_state, key, ancestor_keys)
+    color = DataBrowserAnnotations.Tags.dominant_color(tag_state, effective_tags)
     color === nothing && return false
     red = Float32(color[1]) / 255f0
     green = Float32(color[2]) / 255f0

@@ -3,8 +3,8 @@ using TOML
 using DataBrowserAPI:
     PROJECTS,
     project_name
-using ..ItemIndex: ItemRecord
-import ..Workspace
+using DataBrowserCore.ItemIndex: ItemRecord
+import DataBrowserCore.Workspace
 using DataBrowserAPI:
     PlotKind,
     plot_kind_from_name,

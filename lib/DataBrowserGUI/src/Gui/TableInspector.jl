@@ -3,14 +3,14 @@ using GLMakie: Axis, Figure, lines!, scatter!
 import CImGui as ig
 using NativeFileDialog: pick_file
 
-using ...DataBrowserSources
+using DataBrowserSources
 
 using DataBrowserPlots:
     InspectorTable,
     merge_item_tables
 using .MakieImguiIntegration: MakieFigure
 
-import ..Workspace
+import DataBrowserCore.Workspace
 using DataBrowserAPI: item_data
 
 # ---------------------------------------------------------------------------

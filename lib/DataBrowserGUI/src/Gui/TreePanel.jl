@@ -4,12 +4,12 @@ using DataBrowserAPI:
     Project,
     display_label,
     kind_label
-using ..ItemIndex:
+using DataBrowserCore.ItemIndex:
     HierarchyNode,
     ItemRecord,
     children,
     collection_path_key
-import ..Workspace
+import DataBrowserCore.Workspace
 
 """Destroy text-filter widgets before their saved text is replaced."""
 function _reset_project_filter_widgets!(state::BrowserState)::Nothing
