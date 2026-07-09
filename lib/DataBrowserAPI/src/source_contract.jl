@@ -57,12 +57,6 @@ source_open_options(::AbstractDataSource)::NamedTuple = (;)
 """Return the current source items discovered by a source."""
 function source_items end
 
-source_items(
-    source::AbstractDataSource;
-    on_progress::Union{Nothing,Function}=nothing,
-    cancel_token::Union{Nothing,CancellationToken}=nothing,
-) = source_items(source)
-
 """Human noun for source items, used by status surfaces."""
 source_item_noun(::AbstractDataSource)::String = "source items"
 
@@ -70,7 +64,7 @@ source_item_noun(::AbstractDataSource)::String = "source items"
 Watch a source and call `on_change` with each `SourceChanges` batch or recoverable `SourceError`.
 `nothing` means the source is static.
 """
-watch_source(::AbstractDataSource, ::Function) = nothing
+watch_source(::AbstractDataSource, ::Function; cancel_token::CancellationToken) = nothing
 
 """Stable source-item identity within a source."""
 function source_item_id end

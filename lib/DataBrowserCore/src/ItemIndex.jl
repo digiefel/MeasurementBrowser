@@ -2,7 +2,6 @@ module ItemIndex
 
 using Dates
 using DataFrames: AbstractDataFrame
-using CancellationTokens: OperationCanceledException
 
 import DataBrowserProfiling as Profiling
 
@@ -45,21 +44,6 @@ struct ItemFailure
     source_item_id::String
     id::String
     message::String
-end
-
-"""
-Cancellation raised by package-owned background work.
-"""
-struct JobCancelled <: Exception end
-
-"""
-Return whether an exception represents cancellation of contained work.
-"""
-function is_job_cancelled(error::Exception)::Bool
-    error isa JobCancelled && return true
-    error isa OperationCanceledException && return true
-    error isa CompositeException || return false
-    return !isempty(error.exceptions) && all(is_job_cancelled, error.exceptions)
 end
 
 collection_path_label(::Project, collection::AbstractVector{<:AbstractString})::String =

@@ -49,7 +49,6 @@ mutable struct DirectorySource <: AbstractDataSource
     metadata_lock::ReentrantLock
     watcher_task::Union{Nothing,Task}
     watcher_cancel::Union{Nothing,CancellationTokenSource}
-    watcher_closed::Base.Threads.Atomic{Bool}
 end
 
 function DirectorySource(
@@ -67,7 +66,6 @@ function DirectorySource(
         ReentrantLock(),
         nothing,
         nothing,
-        Base.Threads.Atomic{Bool}(false),
     )
 end
 
@@ -118,13 +116,6 @@ function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     end
 end
 
-"""Throw when cooperative scan cancellation was requested."""
-function _throw_if_cancelled(token::Union{Nothing,CancellationToken})::Nothing
-    token === nothing && return nothing
-    is_cancellation_requested(token) && throw(OperationCanceledException(token))
-    return nothing
-end
-
 function file_fingerprint(path::AbstractString; normalized::Bool=false)::FileFingerprint
     normalized_path = normalized ? String(path) : normpath(abspath(expanduser(String(path))))
     stat_info = stat(normalized_path)
@@ -163,7 +154,7 @@ end
 function collect_source_files(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
-    cancel_token::Union{Nothing,CancellationToken}=nothing,
+    cancel_token::CancellationToken,
 )::Vector{SourceFile}
     source_files = SourceFile[]
     metadata_path = collection_metadata_file_path(source)
@@ -194,10 +185,11 @@ function append_source_files!(
     ;
     on_progress::Union{Nothing,Function}=nothing,
     found::Base.RefValue{Int}=Ref(0),
-    cancel_token::Union{Nothing,CancellationToken}=nothing,
+    cancel_token::CancellationToken,
 )::Nothing
     for name in names
-        _throw_if_cancelled(cancel_token)
+        is_cancellation_requested(cancel_token) &&
+            throw(OperationCanceledException(cancel_token))
         is_source_filename(name) || continue
         path = joinpath(root, name)
         metadata_path !== nothing && normpath(path) == metadata_path && continue
@@ -304,7 +296,7 @@ end
 function source_items(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
-    cancel_token::Union{Nothing,CancellationToken}=nothing,
+    cancel_token::CancellationToken,
 )::Vector{SourceFile}
     return collect_source_files(source; on_progress, cancel_token)
 end
@@ -329,26 +321,30 @@ function open_source(source::DirectorySource)::DirectorySource
         "Cannot open DirectorySource '$(source.root_path)': directory does not exist",
     ))
     load_collection_metadata!(source)
-    source.watcher_closed[] = false
     return source
 end
 
 function watch_source(
     source::DirectorySource,
-    on_change::Function,
+    on_change::Function;
+    cancel_token::CancellationToken,
 )::Union{Nothing,Task}
     source.watcher_task === nothing || error(
         "DirectorySource '$(source.root_path)' is already being watched",
     )
-    cancel_source = CancellationTokenSource()
-    known = Dict(source_item_id(file) => fingerprint(file) for file in collect_source_files(source))
+    cancel_source = CancellationTokenSource(cancel_token)
+    watch_token = get_token(cancel_source)
+    known = Dict(
+        source_item_id(file) => fingerprint(file)
+        for file in collect_source_files(source; cancel_token=watch_token)
+    )
     ignore(rel::AbstractString)::Bool =
         ".git" in split(String(rel), '/') || (!source.recursive && occursin('/', String(rel)))
     task = Base.Threads.@spawn begin
         errored = false
         try
-            watch_folder(source.root_path, get_token(cancel_source); ignore) do _
-                source.watcher_closed[] && return
+            watch_folder(source.root_path, watch_token; ignore) do _
+                is_cancellation_requested(watch_token) && return
                 metadata_changed = try
                     load_collection_metadata!(source)
                 catch error
@@ -356,7 +352,8 @@ function watch_source(
                     on_change(SourceError(sprint(showerror, error)))
                     return
                 end
-                files = collect_source_files(source)
+                files = collect_source_files(source; cancel_token=watch_token)
+                is_cancellation_requested(watch_token) && return
                 current = Dict(source_item_id(file) => fingerprint(file) for file in files)
                 upserts = SourceFile[
                     file for file in files
@@ -370,7 +367,8 @@ function watch_source(
                 on_change(SourceChanges(upserts, removals; metadata_changed))
             end
         catch error
-            source.watcher_closed[] || on_change(SourceError(sprint(showerror, error)))
+            error isa OperationCanceledException && return
+            on_change(SourceError(sprint(showerror, error)))
         end
     end
     source.watcher_task = task
@@ -382,7 +380,6 @@ source_open_options(source::DirectorySource)::NamedTuple =
     (; recursive=source.recursive, metadata_file=source.metadata_file)
 
 function close_source!(source::DirectorySource)::Nothing
-    source.watcher_closed[] = true
     source.watcher_cancel === nothing || cancel(source.watcher_cancel)
     task = source.watcher_task
     if task !== nothing

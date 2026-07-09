@@ -4,6 +4,27 @@ struct ProcessingResult
     failure::Union{Nothing,CapturedException}
 end
 
+"""Answer one waiter with workspace-shutdown cancellation."""
+function _workspace_cancelled_result(workspace::Workspace)::ProcessingResult
+    return ProcessingResult(
+        nothing,
+        CapturedException(
+            OperationCanceledException(get_token(workspace.cancel_source)),
+            Any[],
+        ),
+    )
+end
+
+"""Answer one waiter dropped from the queue without shutting the workspace down."""
+function _dropped_work_result()::ProcessingResult
+    source = CancellationTokenSource()
+    cancel(source)
+    return ProcessingResult(
+        nothing,
+        CapturedException(OperationCanceledException(get_token(source)), Any[]),
+    )
+end
+
 """Map one work key to its cache `result_states` kind."""
 function _work_key_cache_kind(key::WorkKey)::CacheResultKind
     return key.kind === ITEM_PROCESS ? PROCESSING_RESULT :
@@ -95,7 +116,7 @@ function stop_work_workers!(workspace::Workspace)::Nothing
         notify(graph.condition; all=true)
     end
     foreach(wait, graph.workers)
-    result = ProcessingResult(nothing, CapturedException(JobCancelled(), Any[]))
+    result = _workspace_cancelled_result(workspace)
     lock(graph.lock) do
         for node in values(graph.nodes), waiter in node.waiters
             put!(waiter, result)
@@ -119,7 +140,7 @@ function cancel_waiting_work!(workspace::Workspace)::Nothing
         empty!(graph.queue)
         notify(graph.condition; all=true)
     end
-    result = ProcessingResult(nothing, CapturedException(JobCancelled(), Any[]))
+    result = _dropped_work_result()
     for node in canceled, waiter in node.waiters
         put!(waiter, result)
     end
@@ -216,7 +237,7 @@ function enqueue_work!(
     return lock(graph.lock) do
         if graph.closed
             waiter === nothing ||
-                put!(waiter, ProcessingResult(nothing, CapturedException(JobCancelled(), Any[])))
+                put!(waiter, _workspace_cancelled_result(workspace))
             return nothing
         end
         node = get(graph.nodes, key, nothing)
@@ -320,7 +341,10 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
             get(workspace.work.source_items, record.source_item_id, nothing)
         end
         if source_item === nothing
-            discovered = source_items(workspace.source)
+            discovered = source_items(
+                workspace.source;
+                cancel_token=get_token(workspace.cancel_source),
+            )
             position = findfirst(
                 item -> source_item_id(item) == record.source_item_id,
                 discovered,
@@ -675,7 +699,7 @@ function request_processed_items(
                     WorkKey(ITEM_ANALYZE, member.id) for member in hierarchy_node.items],
             )
             if result.failure !== nothing
-                is_job_cancelled(result.failure.ex) && throw(result.failure)
+                result.failure.ex isa OperationCanceledException && throw(result.failure)
             end
         else
             result = ensure_uptodate!(workspace, gate; priority=4)

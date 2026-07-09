@@ -75,7 +75,6 @@ export items_for_file
 using .ItemIndex:
     DataItem,
     HierarchyNode,
-    JobCancelled,
     ItemFailure,
     Hierarchy,
     ItemRecord,
@@ -85,7 +84,6 @@ using .ItemIndex:
     collection_path_tuple,
     emit_progress,
     insert_item!,
-    is_job_cancelled,
     item_timestamp_key
 
 include(joinpath(@__DIR__, "..", "lib", "DataBrowserCache", "src", "cache_in_parent.jl"))

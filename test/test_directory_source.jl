@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using CancellationTokens: CancellationTokenSource, get_token
 using DataBrowserAPI: AbstractDataSource, has_collection_metadata, source_item_noun
 using Test
 
@@ -109,9 +110,10 @@ end
             @test source_item_noun(custom) == "source files"
             @test source_item_noun(TestNounSource()) == "source items"
             @test has_collection_metadata(custom)
+            cancel_token = get_token(CancellationTokenSource())
             @test all(
                 file -> file.filepath != custom_path,
-                MBD.source_items(custom),
+                MBD.source_items(custom; cancel_token),
             )
         finally
             MBD.close_source!(custom)

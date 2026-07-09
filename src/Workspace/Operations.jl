@@ -35,7 +35,8 @@ function open_workspace(
         scan_source!(workspace; rebuild)
         watch_source(
             opened_source,
-            event -> publish_source_event!(workspace, event),
+            event -> publish_source_event!(workspace, event);
+            cancel_token=get_token(workspace.cancel_source),
         )
         return workspace
     catch
@@ -50,6 +51,7 @@ Cancel all work owned by a workspace and wait for it to stop.
 function close_workspace!(workspace::Workspace)::Nothing
     workspace.closed && return nothing
     workspace.closed = true
+    cancel(workspace.cancel_source)
     cancel_scan!(workspace)
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
@@ -556,12 +558,13 @@ function scan_source!(
         # reset so stale ones from the previous scan never linger.
         workspace.index.source = nothing
         empty!(workspace.index.analysis_errors)
-        cancel_source = CancellationTokenSource()
+        cancel_source = CancellationTokenSource(get_token(workspace.cancel_source))
         job.cancel_token = cancel_source
         workspace.status_dirty[] = true
         (job.id, cancel_source)
     end
     task = Base.Threads.@spawn begin
+        scan_token = get_token(cancel_source)
         Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
             source_id=source_id(workspace.source),
         ) begin
@@ -580,13 +583,15 @@ function scan_source!(
             discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
                 source_items(
                     workspace.source;
-                    cancel_token=get_token(cancel_source),
+                    cancel_token=scan_token,
                     on_progress=count -> begin
                         job.discovered[] = count
                         workspace.status_dirty[] = true
                     end,
                 )
             end
+            is_cancellation_requested(scan_token) &&
+                throw(OperationCanceledException(scan_token))
             # The cache's `source_items` table is the sole home of previous-session fingerprints;
             # a memory-only cache holds nothing, so every discovered item re-interprets.
             previous = _load_source_item_fingerprints(cachedb)
@@ -594,6 +599,8 @@ function scan_source!(
             upserts = AbstractDataSourceItem[]
             seen = Set{String}()
             for item in discovered
+                is_cancellation_requested(scan_token) &&
+                throw(OperationCanceledException(scan_token))
                 id_value = source_item_id(item)
                 push!(seen, id_value)
                 current_fingerprint = fingerprint(item)
@@ -605,6 +612,8 @@ function scan_source!(
                     push!(upserts, item)
                 end
             end
+            is_cancellation_requested(scan_token) &&
+                throw(OperationCanceledException(scan_token))
             removals = String[id for id in keys(previous) if !(id in seen)]
             stale = count(
                 id_value -> haskey(previous, id_value) && !isequal(previous[id_value], current[id_value]),
@@ -624,6 +633,8 @@ function scan_source!(
                 items=length(upserts),
                 batch_size=length(removals),
             ) begin
+                is_cancellation_requested(scan_token) &&
+                throw(OperationCanceledException(scan_token))
                 publish_source_changes!(
                     workspace,
                     scan_id,
@@ -636,7 +647,7 @@ function scan_source!(
                 cache_hit=isempty(upserts) && isempty(removals),
             )
         catch error
-            if is_job_cancelled(error)
+            if error isa OperationCanceledException
                 publish_scan_end!(workspace, scan_id; canceled=true)
             else
                 publish_scan_end!(
@@ -1006,7 +1017,7 @@ function publish_work_failure!(
     failure::CapturedException,
 )::Bool
     key = node.key
-    if is_job_cancelled(failure.ex)
+    if failure.ex isa OperationCanceledException
         # Cancellation is not an analysis error: finish the node and answer waiters with the
         # cancellation, but record nothing in the index or the cache failure results.
         waiters = finish_work_node!(workspace, node)
@@ -1162,7 +1173,7 @@ function publish_source_event!(
     changes::SourceChanges,
 )::Nothing
     lock(workspace.publish_lock) do
-        workspace.closed && return
+        is_cancellation_requested(get_token(workspace.cancel_source)) && return
         workspace.source_error = ""
         ingest_source_changes!(workspace, changes, nothing)
         finish_publish!(workspace)
@@ -1176,7 +1187,7 @@ function publish_source_event!(
     error::SourceError,
 )::Nothing
     lock(workspace.publish_lock) do
-        workspace.closed && return
+        is_cancellation_requested(get_token(workspace.cancel_source)) && return
         workspace.source_error = error.message
         finish_publish!(workspace)
     end

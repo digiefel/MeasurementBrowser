@@ -3,7 +3,13 @@ module Workspace
 using Printf
 import DataBrowserProfiling as Profiling
 using ..DataBrowserSources
-using CancellationTokens: CancellationTokenSource, cancel, get_token
+using CancellationTokens:
+    CancellationToken,
+    CancellationTokenSource,
+    OperationCanceledException,
+    cancel,
+    get_token,
+    is_cancellation_requested
 
 import ..Cache:
     AbstractCacheDB,
@@ -61,7 +67,6 @@ import ..ItemIndex:
     Hierarchy,
     ItemFailure,
     ItemRecord,
-    JobCancelled,
     MetadataDict,
     SourceItemInterpretation,
     SourceScan,
@@ -75,7 +80,6 @@ import ..ItemIndex:
     effective_record,
     finish_edit!,
     insert_record!,
-    is_job_cancelled,
     metadata_dict,
     interpret_source_item,
     remove_records!
@@ -298,6 +302,7 @@ mutable struct Workspace{S<:AbstractDataSource}
     idle_condition::Base.Threads.Condition
     status::WorkspaceStatus
     status_dirty::Base.Threads.Atomic{Bool}
+    cancel_source::CancellationTokenSource
     closed::Bool
 end
 
@@ -379,6 +384,7 @@ function Workspace(
         Base.Threads.Condition(publish_lock),
         WorkspaceStatus(),
         Base.Threads.Atomic{Bool}(true),
+        CancellationTokenSource(),
         false,
     )
     start_cache!(cache_db)
