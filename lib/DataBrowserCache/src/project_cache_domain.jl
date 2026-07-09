@@ -355,7 +355,7 @@ function project_cache_identity(
         name,
         source_id(source),
         source_label(source),
-        joinpath(depot, "measurementbrowser", name, "cache.duckdb"),
+        joinpath(depot, "databrowser", name, "cache.duckdb"),
     )
 end
 

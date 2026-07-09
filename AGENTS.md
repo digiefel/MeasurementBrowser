@@ -47,7 +47,7 @@ getting to that live workspace. North star: [docs/plans/workspace-vision.md](doc
 
 ## Target applications
 
-Before pre-made domain projects ship with the app, MeasurementBrowser needs to be installable as a
+Before pre-made domain projects ship with the app, DataBrowser needs to be installable as a
 standalone executable (or equivalent distribution) that a user can launch without hand-assembling a
 Julia environment.
 

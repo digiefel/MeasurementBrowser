@@ -138,7 +138,7 @@ function render_cache_rebuild_modal(state::BrowserState)::Nothing
 
     opened = state.cache_rebuild_modal
     if @c ig.BeginPopupModal("Cache Rebuild Required", &opened, ig.ImGuiWindowFlags_AlwaysAutoResize)
-        ig.TextWrapped("This project cache was made by an older MeasurementBrowser schema.")
+        ig.TextWrapped("This project cache was made by an older DataBrowser schema.")
         ig.TextWrapped(
             "The workspace is already open without disk persistence. Source data is safe; only " *
             "the generated cache file would be discarded.",

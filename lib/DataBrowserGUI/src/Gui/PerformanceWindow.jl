@@ -532,7 +532,7 @@ function _render_profile_tab!(
     can_export || ig.BeginDisabled()
     if ig.Button("Export Perfetto")
         _profile_action!(profiler) do
-            path = save_file("measurementbrowser-profile.json"; filterlist="json")
+            path = save_file("databrowser-profile.json"; filterlist="json")
             isempty(path) || Workspace.export_internal_profile!(workspace, path)
         end
     end

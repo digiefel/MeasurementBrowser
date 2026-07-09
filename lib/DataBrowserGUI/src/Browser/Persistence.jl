@@ -17,7 +17,7 @@ using DataBrowserAPI:
 const _MAX_RECENT_PROJECTS = 12
 
 function _prefs_path()::String
-    return joinpath(homedir(), ".config", "MeasurementBrowser", "prefs.toml")
+    return joinpath(homedir(), ".config", "DataBrowser", "prefs.toml")
 end
 
 """Read app-wide preferences, returning an empty table before the first save."""
@@ -158,7 +158,7 @@ end
 # Project-local browser state
 # ---------------------------------------------------------------------------
 
-const PROJECT_VIEW_FILENAME = "measurementbrowser.toml"
+const PROJECT_VIEW_FILENAME = "databrowser.toml"
 
 function _project_view_file_path(root_path::AbstractString)::String
     return joinpath(_normalize_project_path(root_path), PROJECT_VIEW_FILENAME)

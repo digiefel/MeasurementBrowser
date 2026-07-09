@@ -143,7 +143,7 @@ const DIRECTORY_SOURCE_SIDECARS = Set([
     "tags.txt",
     "notes.txt",
     "layout.txt",
-    "measurementbrowser.toml",
+    "databrowser.toml",
 ])
 
 function is_source_filename(name::AbstractString)::Bool

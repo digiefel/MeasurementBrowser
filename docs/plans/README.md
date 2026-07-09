@@ -9,7 +9,7 @@ Focused design docs for work not yet built. The product and architecture north s
 1. [../vision.md](../vision.md) — product and architecture north star: the DataBrowser family,
    workspace/project/package/command vocabulary, scriptable API, generic plotter, figures and
    workflows, caching, and the long-term arc.
-2. [roadmap.md](roadmap.md) — the ordered plan from `MeasurementBrowser` to the DataBrowser family,
+2. [roadmap.md](roadmap.md) — the ordered plan from `DataBrowser` to the DataBrowser family,
    starting with the package split.
 3. [package-split.md](package-split.md) — the concrete execution of Stage 1: file-by-file mapping,
    extraction order, and the keep-it-green procedure for cutting the package family.

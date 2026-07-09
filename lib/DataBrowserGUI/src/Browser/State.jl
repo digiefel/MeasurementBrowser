@@ -31,7 +31,7 @@ end
 All plot-related browser state.
 
 Plot choices are stored as Julia types while the app runs. Persistence converts them to names only
-when writing `measurementbrowser.toml`.
+when writing `databrowser.toml`.
 """
 Base.@kwdef mutable struct PlotState
     main::PlotViewState = PlotViewState(id="main", title="Plot Area", live=true)
@@ -42,20 +42,20 @@ Base.@kwdef mutable struct PlotState
     warmup_figure::Union{Nothing,Figure} = nothing
 end
 
-"""Saved tree controls from `measurementbrowser.toml`."""
+"""Saved tree controls from `databrowser.toml`."""
 Base.@kwdef struct PersistedTreeView
     expanded::Vector{String} = String[]
     selected::Vector{String} = String[]
     filter::String = ""
 end
 
-"""Saved item controls from `measurementbrowser.toml`."""
+"""Saved item controls from `databrowser.toml`."""
 Base.@kwdef struct PersistedItemsView
     selected::Vector{String} = String[]
     filter::String = ""
 end
 
-"""Saved plot-window state from `measurementbrowser.toml`."""
+"""Saved plot-window state from `databrowser.toml`."""
 Base.@kwdef struct PersistedPlotView
     id::String = ""
     title::String = ""

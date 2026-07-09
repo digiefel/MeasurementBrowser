@@ -61,7 +61,7 @@ function with_workspace(probe::Function, n::Int)
         write(joinpath(dir, "item_$index.csv"), "v\n1\n")
     end
     name = "scaling_" * basename(dir)  # unique; the cache is keyed by project name
-    cache_dir = joinpath(first(DEPOT_PATH), "measurementbrowser", name)
+    cache_dir = joinpath(first(DEPOT_PATH), "databrowser", name)
     try
         workspace = open_workspace(scaling_project(name), dir)
         wait_workspace_idle!(workspace; timeout=600)

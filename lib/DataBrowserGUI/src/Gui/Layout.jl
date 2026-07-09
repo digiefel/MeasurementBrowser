@@ -467,7 +467,7 @@ function _init_browser_context!()
     # Point imgui at a per-machine ini file so [Table] column widths persist across restarts.
     # The pointer must live for the whole process — _IMGUI_INI_BYTES holds the bytes.
     depot = isempty(DEPOT_PATH) ? homedir() : first(DEPOT_PATH)
-    ini_dir = joinpath(depot, "measurementbrowser")
+    ini_dir = joinpath(depot, "databrowser")
     mkpath(ini_dir)
     ini_path = joinpath(ini_dir, "imgui.ini")
     _IMGUI_INI_BYTES[] = vcat(Vector{UInt8}(codeunits(ini_path)), 0x00)
@@ -584,7 +584,7 @@ function _run_browser(
         spawn,
         wait,
         window_size=(1920, 1080),
-        window_title="Measurement Browser",
+        window_title="Data Browser",
         opengl_version=v"3.3",
         wait_events=false,
         on_exit=() -> begin

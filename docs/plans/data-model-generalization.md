@@ -2,7 +2,7 @@
 
 ## Goal
 
-Grow MeasurementBrowser into **DataBrowser**: an open, scriptable, data-focused IDE rather than a
+**DataBrowser** is an open, scriptable, data-focused IDE rather than a
 measurement-only viewer. The same app should browse measurements, images, fitted models, and
 arbitrary datasets; organize them by meaning rather than by folder; and present each through the
 visualizers and figures in [vision.md](../vision.md).
@@ -286,7 +286,7 @@ first; the second argument is either a data root or an explicit `AbstractDataSou
    node is the mutator (now done by workspace background analysis).
 4. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on
    `SourceScan`** — no per-record duplication of `source_id`/`source_label`.
-5. **The low-level types are not exported yet** — reachable as `MeasurementBrowser.name`, staged for a
+5. **The low-level types are not exported yet** — reachable as `DataBrowser.name`, staged for a
    dedicated submodule. The exported surface stays the conservative high-level set; `PlotKind` stays
    internal too.
 6. **`!` follows Julia's argument-mutation convention**, not "has side effects": `close_source!`
@@ -327,9 +327,6 @@ When this lands, the current-state [../data-model.md](../data-model.md) and
 Each step is independently testable and ends at a clean, restart-and-run state.
 
 1. **Rename pass.** `measurement_kind → kind`; scope the word "recipe" to the callback path. Mechanical.
-   *(The package rename `MeasurementBrowser → DataBrowser` is the most invasive move — it breaks
-   `using MeasurementBrowser` for the external TASE/v2-RuO2 projects — so it is its own deliberate
-   step, likely paired with the next release rather than folded in here.)*
 2. **Interface + record/item split + `item.data`.** Introduce `AbstractDataItem`/`AbstractCollection` and the
    interface as the contract; rename today's metadata-only `MeasurementInfo` to the internal
    `ItemRecord` the hierarchy stores; make the recipe path build the package's `DataItem`; materialize

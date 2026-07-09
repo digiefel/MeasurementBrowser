@@ -1,11 +1,11 @@
-# MeasurementBrowser Architecture
+# DataBrowser Architecture
 
 > **Onboarding doc.** Start here before touching code. This file describes the architectural model
 > that is not obvious from the filesystem. It should not be a file inventory.
 
 ## What this is
 
-MeasurementBrowser is a Julia working environment for data projects. It should be strictly
+DataBrowser is a Julia working environment for data projects. It should be strictly
 better than opening a REPL, finding files, loading them, extracting useful tables, computing values,
 and writing figure code by hand. The app makes that workflow interactive: open a project, browse the
 source structure, select collections or items, inspect data-derived values, and switch plots or views
@@ -131,7 +131,7 @@ and `metadata.txt` collection parameter input. `ItemIndex` owns the internal `It
 `DataItem`, hierarchy construction, and scanning. `Cache` owns generated DuckDB state. `Workspace` owns
 one project/source pair, its index, selection, cache, loaded data, and background work.
 `Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and
-CImGui rendering. `MeasurementBrowser` exports the small high-level API while keeping most low-level
+CImGui rendering. `DataBrowser` exports the small high-level API while keeping most low-level
 source contract names internal.
 
 `open_workspace(project, source)` or `open_workspace(project, root_path)` creates that owner and

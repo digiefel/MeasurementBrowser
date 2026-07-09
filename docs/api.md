@@ -1,6 +1,6 @@
 # Public API
 
-MeasurementBrowser has **two layers**:
+DataBrowser has **two layers**:
 
 - a **low-level, type-based source API** — the foundation the engine is written against. You model a
   data origin as an `AbstractDataSource`, the units it discovers as `AbstractDataSourceItem`s, and the
@@ -11,7 +11,7 @@ MeasurementBrowser has **two layers**:
   interpret them.
 
 The high-level callback API is the **exported** surface today and is what most projects use. The
-low-level types are currently engine-internal — reachable as `MeasurementBrowser.name` and staged for
+low-level types are currently engine-internal — reachable as `DataBrowser.name` and staged for
 a future dedicated submodule — but they are first-party and the callback API is implemented entirely
 through them. The package ships **no domain types**: a source/project supplies its kinds, readers,
 and plots.

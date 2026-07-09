@@ -27,7 +27,7 @@ end
             "test/nested,B,99,0,1,no\n",
         )
         write(joinpath(dir, "tags.txt"), "ignored")
-        write(joinpath(dir, "measurementbrowser.toml"), "ignored")
+        write(joinpath(dir, "databrowser.toml"), "ignored")
 
         project = MBD.define_project("Parameter test")
         MBD.register_item!(

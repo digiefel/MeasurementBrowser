@@ -8,7 +8,7 @@ annotations, figure files, or workflow persistence.
 
 ## Context
 
-`MeasurementBrowser` currently navigates devices through a tree panel. It works, but doesn't reflect the **spatial** reality of measurements on a chip — where devices physically sit, which sites are clustered, which chips are in flight together. The user wants a hybrid file-browser + GDS-style canvas where:
+`DataBrowser` currently navigates devices through a tree panel. It works, but doesn't reflect the **spatial** reality of measurements on a chip — where devices physically sit, which sites are clustered, which chips are in flight together. The user wants a hybrid file-browser + GDS-style canvas where:
 
 - Positioned items (devices, sites, sub-sites) render at hierarchical XY coordinates from `metadata.txt`.
 - Unpositioned items (chips) get an initial grid layout but are then freely draggable like icons in a macOS file browser; a "reset layout" button reapplies the grid on demand.

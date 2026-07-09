@@ -11,7 +11,7 @@ const ProjectViewTLMPlot = RegisteredPlot{:iv_sweep,:ProjectViewTLMPlot}
 
 @testset "project view state" begin
     root_path = mktempdir()
-    @test basename(Browser._project_view_file_path(root_path)) == "measurementbrowser.toml"
+    @test basename(Browser._project_view_file_path(root_path)) == "databrowser.toml"
     default_view = Browser._load_project_view(root_path)
     @test default_view.project == ""
     @test default_view.main_plot.id == "main"
@@ -48,35 +48,9 @@ const ProjectViewTLMPlot = RegisteredPlot{:iv_sweep,:ProjectViewTLMPlot}
     )
 
     Browser._save_project_view(root_path, view)
-    @test isfile(joinpath(root_path, "measurementbrowser.toml"))
+    @test isfile(joinpath(root_path, "databrowser.toml"))
     loaded = Browser._load_project_view(root_path)
     @test Browser._project_view_to_toml(loaded) == Browser._project_view_to_toml(view)
-
-    legacy_root_path = mktempdir()
-    write(joinpath(legacy_root_path, "measurementbrowser.toml"), """
-    project = "ProjectViewTest"
-
-    [measurements]
-    selected = ["item-1"]
-    filter = "298K"
-
-    [main_plot]
-    id = "main"
-    title = "Plot Area"
-    live = true
-    measurements = ["item-1"]
-
-    [[plot_windows]]
-    id = "plot_1"
-    title = "Detached"
-    live = false
-    measurements = ["item-2"]
-    """)
-    legacy_loaded = Browser._load_project_view(legacy_root_path)
-    @test isempty(legacy_loaded.items.selected)
-    @test legacy_loaded.items.filter == ""
-    @test isempty(legacy_loaded.main_plot.items)
-    @test isempty(only(legacy_loaded.plot_windows).items)
 
     toml_data = Browser._project_view_to_toml(view)
     @test Set(keys(toml_data)) == Set([

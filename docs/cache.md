@@ -46,7 +46,7 @@ There is no separate producer/consumer framework. Package code submits semantic 
 
 ## Ownership
 
-`ProjectCache.jl` owns everything specific to MeasurementBrowser's project cache:
+`ProjectCache.jl` owns everything specific to DataBrowser's project cache:
 
 - `CacheDB` and the set of result stores it contains;
 - row types, keys, and cache result kinds;
@@ -339,7 +339,7 @@ No maintenance cascade writes directly to DuckDB.
 Each project has one predictable cache file:
 
 ```text
-DEPOT_PATH[1]/measurementbrowser/<project-name>/cache.duckdb
+DEPOT_PATH[1]/databrowser/<project-name>/cache.duckdb
 ```
 
 The project name must be one safe path component and is used unchanged. The meta header binds the file
