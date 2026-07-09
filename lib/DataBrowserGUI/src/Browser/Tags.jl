@@ -1,5 +1,4 @@
 using DataBrowserAnnotations
-const Annotations = DataBrowserAnnotations
 
 import DataBrowserCore.Workspace
 using DataBrowserCore.ItemIndex:
