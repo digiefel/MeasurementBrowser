@@ -4,9 +4,9 @@ using GLMakie: Figure
 
 import DataBrowserAPI
 import DataBrowserAPI: AbstractDataItem, PlotKind, RegisteredPlot, plot_data!, setup_plot
-import ..ItemIndex: ItemRecord
+import DataBrowserCore.ItemIndex: ItemRecord
 import DataBrowserProfiling as Profiling
-import ..Workspace
+import DataBrowserCore.Workspace
 
 """Materialize records and create the figure layout required by a visualizer."""
 function setup_plot(

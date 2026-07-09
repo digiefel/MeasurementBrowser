@@ -2,7 +2,6 @@ module MeasurementBrowser
 
 using PrecompileTools
 using DataBrowserAnnotations
-const Annotations = DataBrowserAnnotations
 import DataBrowserProfiling as Profiling
 
 using DataBrowserSources
@@ -68,11 +67,11 @@ import DataBrowserAPI:
     scan_source_profile,
     finish_source_profile!
 
-include(joinpath(@__DIR__, "..", "lib", "DataBrowserCore", "src", "core_in_parent.jl"))
-const ItemIndex = DataBrowserCore.ItemIndex
-import .DataBrowserCore: items_for_file
-export items_for_file
-using .ItemIndex:
+using DataBrowserCore
+import DataBrowserCore.Cache as Cache
+import DataBrowserCore.ItemIndex as ItemIndex
+import DataBrowserCore.Workspace as Workspace
+using DataBrowserCore.ItemIndex:
     DataItem,
     HierarchyNode,
     ItemFailure,
@@ -85,12 +84,12 @@ using .ItemIndex:
     emit_progress,
     insert_item!,
     item_timestamp_key
+using DataBrowserCore: items_for_file
+export items_for_file
 
-include(joinpath(@__DIR__, "..", "lib", "DataBrowserCache", "src", "cache_in_parent.jl"))
-const Cache = DataBrowserCache
+using DataBrowserCore.Cache
 
-include("Workspace.jl")
-using .Workspace:
+using DataBrowserCore.Workspace:
     close_workspace!,
     open_workspace,
     query_items,

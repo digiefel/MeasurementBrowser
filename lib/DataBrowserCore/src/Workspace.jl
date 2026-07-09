@@ -2,7 +2,7 @@ module Workspace
 
 using Printf
 import DataBrowserProfiling as Profiling
-using ..DataBrowserSources
+using DataBrowserSources
 using CancellationTokens:
     CancellationToken,
     CancellationTokenSource,
@@ -11,7 +11,28 @@ using CancellationTokens:
     get_token,
     is_cancellation_requested
 
-import ..Cache:
+using ..WorkGraph:
+    WorkDependencyGraph,
+    WorkKey,
+    WorkKind,
+    WorkNode,
+    bump_revision!,
+    current_revision,
+    dependencies_ready,
+    pop_queued_node!,
+    push_queue_entry!,
+    queue_ready_node!,
+    seed_node_dependencies!,
+    take_work!,
+    wake_ready_dependents!
+import ..WorkGraph:
+    COLLECTION_ANALYZE,
+    COLLECTION_PROCESS,
+    ITEM_ANALYZE,
+    ITEM_PROCESS,
+    SOURCE_INTERPRET
+
+using ..Cache:
     AbstractCacheDB,
     BuildMetrics,
     CacheResultKey,
@@ -62,7 +83,8 @@ import ..Cache:
     edit_source_item_metadata!,
     wait_condition_deadline,
     write_meta_header!
-import ..ItemIndex:
+import ..Cache: query_items, read_item_data, set_cache_memory_limit!
+using ..ItemIndex:
     DataItem,
     Hierarchy,
     ItemFailure,
@@ -145,68 +167,6 @@ mutable struct WorkspaceIndex
     analysis_errors::Dict{String,String}
     # Published item ids per source item, so per-publish lookups avoid scanning every item.
     items_by_source::Dict{String,Vector{String}}
-end
-
-@enum WorkKind begin
-    SOURCE_INTERPRET
-    ITEM_PROCESS
-    ITEM_ANALYZE
-    COLLECTION_PROCESS
-    COLLECTION_ANALYZE
-end
-
-"""Stable identity of one result-producing operation."""
-struct WorkKey
-    kind::WorkKind
-    entity::String
-end
-
-"""One revision of a live background job (`:waiting`, `:queued`, or `:running` only)."""
-mutable struct WorkNode
-    key::WorkKey
-    revision::UInt16
-    state::Symbol
-    priority::Int
-    dependents::Set{WorkKey}
-    pending::UInt64
-    waiters::Vector{Channel{Any}}
-    queued_ns::UInt64
-end
-
-"""Workspace-owned live job graph and scheduling queue (FIFO buckets keyed by priority)."""
-mutable struct WorkDependencyGraph
-    lock::ReentrantLock
-    condition::Base.Threads.Condition
-    nodes::Dict{WorkKey,WorkNode}
-    queue::Dict{Int,Vector{Tuple{WorkKey,UInt16}}}
-    source_items::Dict{String,AbstractDataSourceItem}
-    source_locks::Dict{String,ReentrantLock}
-    workers::Vector{Task}
-    total::Int
-    completed::Int
-    active::Int
-    source_batch::Int
-    source_batch_open::Bool
-    closed::Bool
-end
-
-function WorkDependencyGraph()::WorkDependencyGraph
-    work_lock = ReentrantLock()
-    return WorkDependencyGraph(
-        work_lock,
-        Base.Threads.Condition(work_lock),
-        Dict{WorkKey,WorkNode}(),
-        Dict{Int,Vector{Tuple{WorkKey,UInt16}}}(),
-        Dict{String,AbstractDataSourceItem}(),
-        Dict{String,ReentrantLock}(),
-        Task[],
-        0,
-        0,
-        0,
-        0,
-        false,
-        false,
-    )
 end
 
 """

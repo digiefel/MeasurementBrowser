@@ -1,7 +1,5 @@
-"""
-Load the full cache module inside MeasurementBrowser so engine item types are in scope.
-"""
-module DataBrowserCache
+"""DuckDB cache buffers, build metrics, and project cache domain."""
+module Cache
 
 import DataBrowserAPI
 using DataBrowserAPI:
@@ -27,7 +25,7 @@ using SHA
 using Serialization
 using Dates
 
-import ..DataBrowserCore.ItemIndex:
+import ..ItemIndex:
     DataItem,
     Hierarchy,
     ItemFailure,
@@ -40,8 +38,10 @@ import ..DataBrowserCore.ItemIndex:
     insert_item!,
     metadata_dict
 
-include("build_metrics.jl")
-include("cache_buffer.jl")
-include("project_cache_domain.jl")
+const _CACHE_SRC = joinpath(@__DIR__, "..", "..", "DataBrowserCache", "src")
+
+include(joinpath(_CACHE_SRC, "build_metrics.jl"))
+include(joinpath(_CACHE_SRC, "cache_buffer.jl"))
+include(joinpath(_CACHE_SRC, "project_cache_domain.jl"))
 
 end

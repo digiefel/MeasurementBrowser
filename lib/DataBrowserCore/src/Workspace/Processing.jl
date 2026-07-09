@@ -72,34 +72,6 @@ function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     return nothing
 end
 
-"""Bump one work key's monotonic revision and return the new value."""
-function bump_revision!(graph::WorkDependencyGraph, key::WorkKey)::UInt16
-    node = get(graph.nodes, key, nothing)
-    return node === nothing ? UInt16(1) : node.revision + UInt16(1)
-end
-
-"""Return one work key's current revision, or 1 when no live node exists."""
-function current_revision(graph::WorkDependencyGraph, key::WorkKey)::UInt16
-    node = get(graph.nodes, key, nothing)
-    return node === nothing ? UInt16(1) : node.revision
-end
-
-"""Register reverse edges and count live unmet dependencies for one new node."""
-function seed_node_dependencies!(
-    graph::WorkDependencyGraph,
-    node::WorkNode,
-    dependencies::Vector{WorkKey},
-)::Nothing
-    node.pending = 0
-    for dependency in dependencies
-        dependency_node = get(graph.nodes, dependency, nothing)
-        dependency_node === nothing && continue
-        push!(dependency_node.dependents, node.key)
-        node.pending += 1
-    end
-    return nothing
-end
-
 """Start one work-conserving worker pool shared by every work kind."""
 function start_work_workers!(workspace::Workspace)::Nothing
     for _ in 1:max(2, Base.Threads.nthreads())
@@ -169,42 +141,7 @@ function reset_work_graph!(workspace::Workspace)::Nothing
     return nothing
 end
 
-dependencies_ready(node::WorkNode)::Bool = node.pending == UInt64(0)
-
-"""Append one queue entry to its priority bucket."""
-function push_queue_entry!(
-    graph::WorkDependencyGraph,
-    priority::Int,
-    entry::Tuple{WorkKey,UInt16},
-)::Nothing
-    push!(get!(() -> Tuple{WorkKey,UInt16}[], graph.queue, priority), entry)
-    return nothing
-end
-
-function queue_ready_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
-    node.state === :queued && return nothing
-    node.state = :queued
-    graph.active += 1
-    node.queued_ns = time_ns()
-    push_queue_entry!(graph, node.priority, (node.key, node.revision))
-    notify(graph.condition; all=false)
-    return nothing
-end
-
-"""Decrement dependents' pending counters and queue any that become ready."""
-function wake_ready_dependents!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
-    for dependent_key in node.dependents
-        dependent = get(graph.nodes, dependent_key, nothing)
-        dependent === nothing && continue
-        dependent.pending -= 1
-        dependent.pending == 0 &&
-            dependent.state === :waiting &&
-            queue_ready_node!(graph, dependent)
-    end
-    return nothing
-end
-
-"""Remove one finished live node and wake its dependents."""
+"""Start one work-conserving worker pool shared by every work kind."""
 function finish_work_node!(workspace::Workspace, node::WorkNode)::Vector{Channel{Any}}
     return lock(workspace.work.lock) do
         current = get(workspace.work.nodes, node.key, nothing)
@@ -282,38 +219,7 @@ function enqueue_work!(
     end
 end
 
-"""Pop the highest-priority queued current revision; caller must hold `graph.lock`."""
-function pop_queued_node!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
-    for priority in sort!(collect(keys(graph.queue)); rev=true)
-        bucket = graph.queue[priority]
-        while !isempty(bucket)
-            key, revision = popfirst!(bucket)
-            node = get(graph.nodes, key, nothing)
-            node === nothing && continue
-            node.revision == revision && node.state === :queued || continue
-            node.state = :running
-            return node
-        end
-    end
-    return nothing
-end
-
-"""Take the highest-priority current work revision, blocking until one is ready or the graph closes."""
-function take_work!(graph::WorkDependencyGraph)::Union{Nothing,WorkNode}
-    lock(graph.lock)
-    try
-        while true
-            graph.closed && return nothing
-            node = pop_queued_node!(graph)
-            node === nothing || return node
-            wait(graph.condition)
-        end
-    finally
-        unlock(graph.lock)
-    end
-end
-
-"""Whether this worker still owns the current running node."""
+"""Remove one finished live node and wake its dependents."""
 function work_node_current(workspace::Workspace, node::WorkNode)::Bool
     return lock(workspace.work.lock) do
         get(workspace.work.nodes, node.key, nothing) === node && node.state === :running
