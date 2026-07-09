@@ -174,7 +174,8 @@ function cancel_scan!(workspace::Workspace)::Nothing
     lock(workspace.publish_lock) do
         job = workspace.scan
         job.state === :discovering || return
-        Base.Threads.atomic_xchg!(job.cancel_token, true)
+        token_source = job.cancel_token
+        token_source !== nothing && cancel(token_source)
         job.state = :canceling
         workspace.status_dirty[] = true
     end
@@ -537,7 +538,7 @@ function scan_source!(
     job = workspace.scan
     # Job setup runs under the publish lock so cancel_scan!'s running check can never interleave
     # with the transition into :discovering.
-    scan_id, cancel_token = lock(workspace.publish_lock) do
+    scan_id, cancel_source = lock(workspace.publish_lock) do
         source_scan_running(workspace) && error("A source scan is already running")
         workspace.closed && error("The workspace is closed")
         job.id += 1
@@ -555,9 +556,10 @@ function scan_source!(
         # reset so stale ones from the previous scan never linger.
         workspace.index.source = nothing
         empty!(workspace.index.analysis_errors)
-        job.cancel_token = Base.Threads.Atomic{Bool}(false)
+        cancel_source = CancellationTokenSource()
+        job.cancel_token = cancel_source
         workspace.status_dirty[] = true
-        (job.id, job.cancel_token)
+        (job.id, cancel_source)
     end
     task = Base.Threads.@spawn begin
         Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
@@ -576,15 +578,14 @@ function scan_source!(
 
             write_meta_header!(cachedb)
             discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
-                with_cancel(() -> cancel_token[]) do
-                    source_items(
-                        workspace.source;
-                        on_progress=count -> begin
-                            job.discovered[] = count
-                            workspace.status_dirty[] = true
-                        end,
-                    )
-                end
+                source_items(
+                    workspace.source;
+                    cancel_token=get_token(cancel_source),
+                    on_progress=count -> begin
+                        job.discovered[] = count
+                        workspace.status_dirty[] = true
+                    end,
+                )
             end
             # The cache's `source_items` table is the sole home of previous-session fingerprints;
             # a memory-only cache holds nothing, so every discovered item re-interprets.

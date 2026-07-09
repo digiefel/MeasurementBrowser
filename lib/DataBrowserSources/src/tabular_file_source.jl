@@ -1,8 +1,6 @@
 using CSV
 using DataFrames: DataFrame, names, nrow
 
-const DEFAULT_PREVIEW_ROWS = 500
-
 """
 Preview of one arbitrary delimited text table.
 
@@ -21,10 +19,10 @@ struct TabularFileSource
     warnings::Vector{String}
 end
 
-"""Inspect a delimited text file and return a bounded preview plus detected table metadata."""
+"""Inspect a delimited text file and return table metadata plus loaded rows."""
 function inspect_table(
     path::AbstractString;
-    max_rows::Integer=DEFAULT_PREVIEW_ROWS,
+    max_rows::Integer=typemax(Int),
 )::TabularFileSource
     max_rows > 0 || throw(ArgumentError("max_rows must be positive"))
     filepath = normpath(String(path))

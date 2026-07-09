@@ -6,8 +6,7 @@ import CImGui as ig
 import ..Workspace
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI: KindProfileRow, PlotKind, Project, SourceProfileRow
-using ...DataBrowserSources: TabularFileSource, inspect_table
-const TablePreview = TabularFileSource
+using ...DataBrowserSources
 using ..TableInspector: InspectorTable, merge_item_tables
 
 """
@@ -126,7 +125,7 @@ Base.@kwdef mutable struct TableInspectorState
     plot_key::Union{Nothing,Tuple} = nothing
     plot_error::String = ""
     # Raw file-preview mode (secondary): file → DataGrid
-    preview::Union{Nothing,TablePreview} = nothing
+    preview::Union{Nothing,DataBrowserSources.TabularFileSource} = nothing
     file_grid::DataGridState = DataGridState()
     live::Bool = true
     path_buffer::Vector{UInt8} = fill(UInt8(0), TABLE_INSPECTOR_PATH_BUFFER_SIZE)

@@ -3,8 +3,8 @@ using GLMakie: Axis, Figure, lines!, scatter!
 import CImGui as ig
 using NativeFileDialog: pick_file
 
-using ...DataBrowserSources: TabularFileSource, inspect_table
-const TablePreview = TabularFileSource
+using ...DataBrowserSources
+
 using ..TableInspector:
     InspectorTable,
     merge_item_tables
@@ -361,8 +361,8 @@ function _inspect_table_path!(
     inspector = state.table_inspector
     _set_buffer_string!(inspector.path_buffer, String(path))
     try
-        # typemax(Int) — load the full file, no row cap
-        preview = inspect_table(path; max_rows=typemax(Int))
+        # Full file load (default); explicit max_rows caps rows for tests or callers that need it
+        preview = inspect_table(path)
         _set_buffer_string!(inspector.path_buffer, preview.path)
         inspector.preview = preview
         inspector.file_grid = DataGridState()
@@ -378,12 +378,12 @@ function _inspect_table_path!(
 end
 
 """
-Build a DataGrid model (columns + row_count + cell callback) from a `TablePreview`.
+Build a DataGrid model (columns + row_count + cell callback) from a `TabularFileSource`.
 
 Returns `(columns::Vector{String}, n_rows::Int, cell::Function)`.
 """
 function _file_grid_model(
-    preview::TablePreview,
+    preview::TabularFileSource,
 )::Tuple{Vector{String},Int,Function}
     table = preview.table
     columns = preview.columns
@@ -404,7 +404,7 @@ end
 """Render the raw-file mode via DataGrid (virtualized, all rows, no provenance)."""
 function _render_file_mode!(inspector::TableInspectorState)::Nothing
     preview = inspector.preview
-    preview isa TablePreview || return nothing
+    preview isa TabularFileSource || return nothing
 
     delimiter = preview.delimiter == '\t' ? "\\t" : string(preview.delimiter)
     header    = preview.header_row === nothing ? "none" : string(preview.header_row)
@@ -527,7 +527,7 @@ function render_table_inspector_window(state::BrowserState)::Nothing
             _render_item_data_view!(state, table)
 
         # --- raw file mode (secondary) ---
-        elseif inspector.preview isa TablePreview
+        elseif inspector.preview isa TabularFileSource
             _render_file_mode!(inspector)
 
         else

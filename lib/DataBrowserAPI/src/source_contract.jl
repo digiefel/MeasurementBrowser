@@ -1,3 +1,5 @@
+using CancellationTokens: CancellationToken
+
 """A data origin with lifecycle and discovery of source items."""
 abstract type AbstractDataSource end
 
@@ -55,8 +57,11 @@ source_open_options(::AbstractDataSource)::NamedTuple = (;)
 """Return the current source items discovered by a source."""
 function source_items end
 
-source_items(source::AbstractDataSource; on_progress::Union{Nothing,Function}=nothing) =
-    source_items(source)
+source_items(
+    source::AbstractDataSource;
+    on_progress::Union{Nothing,Function}=nothing,
+    cancel_token::Union{Nothing,CancellationToken}=nothing,
+) = source_items(source)
 
 """Human noun for source items, used by status surfaces."""
 source_item_noun(::AbstractDataSource)::String = "source items"

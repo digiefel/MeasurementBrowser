@@ -2,6 +2,7 @@ module ItemIndex
 
 using Dates
 using DataFrames: AbstractDataFrame
+using CancellationTokens: OperationCanceledException
 
 import DataBrowserProfiling as Profiling
 
@@ -51,35 +52,14 @@ Cancellation raised by package-owned background work.
 """
 struct JobCancelled <: Exception end
 
-const CANCEL_CALLBACK_KEY = :MeasurementBrowser_cancel_requested
-
 """
-Return whether an exception represents cancellation of all contained work.
+Return whether an exception represents cancellation of contained work.
 """
 function is_job_cancelled(error::Exception)::Bool
     error isa JobCancelled && return true
+    error isa OperationCanceledException && return true
     error isa CompositeException || return false
     return !isempty(error.exceptions) && all(is_job_cancelled, error.exceptions)
-end
-
-"""
-Run work with a task-local cancellation callback.
-"""
-function with_cancel(
-    work::Function,
-    cancel_requested::Union{Nothing,Function},
-)::Any
-    cancel_requested === nothing && return work()
-    return task_local_storage(work, CANCEL_CALLBACK_KEY, cancel_requested)
-end
-
-"""
-Stop the current package job when its task-local cancellation callback requests it.
-"""
-function check_cancel()::Nothing
-    cancel_requested = get(task_local_storage(), CANCEL_CALLBACK_KEY, nothing)
-    cancel_requested !== nothing && cancel_requested() && throw(JobCancelled())
-    return nothing
 end
 
 collection_path_label(::Project, collection::AbstractVector{<:AbstractString})::String =

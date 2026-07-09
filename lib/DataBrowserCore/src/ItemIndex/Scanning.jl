@@ -76,7 +76,6 @@ function interpret_source_item(
     records = Vector{ItemRecord}(undef, item_count)
     interpreted_items = Vector{AbstractDataItem}(undef, item_count)
     for (index, handle) in pairs(handles)
-        check_cancel()
         record = ItemRecord(handle; source_item)
         records[index] = record
         interpreted_items[index] = DataItem(

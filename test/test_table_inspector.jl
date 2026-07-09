@@ -34,12 +34,7 @@ const TI = MeasurementBrowser.TableInspector
         @test preview.columns == ["time_s", "current_A", "voltage_V"]
         @test preview.row_count == 2
         @test preview.preview_rows == 2
-
-        # All-rows mode: no cap, warnings empty
-        preview_all = inspect_table(comma_path; max_rows=typemax(Int))
-        @test preview_all.row_count == 2
-        @test preview_all.preview_rows == 2
-        @test isempty(preview_all.warnings)
+        @test isempty(preview.warnings)
 
         tab_path = joinpath(dir, "no_header.tsv")
         write(tab_path, "1\t2\t3\n4\t5\t6\n")
@@ -171,12 +166,11 @@ const TI = MeasurementBrowser.TableInspector
     end
 
     # --- file-mode grid model builder ---
-    @testset "file grid model from TablePreview" begin
+    @testset "file grid model from TabularFileSource" begin
         mktempdir() do dir
             path = joinpath(dir, "sample.csv")
             write(path, "a,b,c\n1,2,3\n4,5,6\n7,8,9\n")
-            # Load all rows
-            preview = inspect_table(path; max_rows=typemax(Int))
+            preview = inspect_table(path)
             @test preview.row_count == 3
             @test preview.preview_rows == 3
             @test isempty(preview.warnings)

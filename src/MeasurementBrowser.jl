@@ -5,10 +5,7 @@ using DataBrowserAnnotations
 const Annotations = DataBrowserAnnotations
 import DataBrowserProfiling as Profiling
 
-using DataBrowserAPI
 using DataBrowserSources
-using DataBrowserSources: DirectorySource, SourceFile, TabularFileSource, inspect_table, index_source_file
-const TablePreview = TabularFileSource
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -76,7 +73,6 @@ const ItemIndex = DataBrowserCore.ItemIndex
 import .DataBrowserCore: items_for_file
 export items_for_file
 using .ItemIndex:
-    CANCEL_CALLBACK_KEY,
     DataItem,
     HierarchyNode,
     JobCancelled,
@@ -84,17 +80,13 @@ using .ItemIndex:
     Hierarchy,
     ItemRecord,
     SourceScan,
-    check_cancel,
     children,
     collection_path_key,
     collection_path_tuple,
     emit_progress,
     insert_item!,
     is_job_cancelled,
-    item_timestamp_key,
-    with_cancel
-
-DataBrowserSources.set_scan_cancel_check!(check_cancel)
+    item_timestamp_key
 
 include(joinpath(@__DIR__, "..", "lib", "DataBrowserCache", "src", "cache_in_parent.jl"))
 const Cache = DataBrowserCache
@@ -138,6 +130,6 @@ export define_project, register_item!, register_collection_analysis!, register_p
 export AbstractDataItem, AbstractCollection
 export id, item_label, kind, collection, metadata, item_data, process, cacheable, fingerprint
 # Types you name
-export Project, DirectorySource, SourceFile, DataItem
+export Project, DirectorySource, SourceFile, DataItem, inspect_table
 
 end # module MeasurementBrowser

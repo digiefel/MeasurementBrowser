@@ -1,6 +1,6 @@
 using Dates
 using BetterFileWatching
-using CancellationTokens
+using CancellationTokens: CancellationToken, CancellationTokenSource, OperationCanceledException, cancel, get_token, is_cancellation_requested
 
 import DataBrowserAPI
 using DataBrowserAPI:
@@ -118,18 +118,22 @@ function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     end
 end
 
-"""Fingerprint an already-normalized absolute path (no redundant re-normalization)."""
-function _file_fingerprint(normalized::String)::FileFingerprint
-    stat_info = stat(normalized)
+"""Throw when cooperative scan cancellation was requested."""
+function _throw_if_cancelled(token::Union{Nothing,CancellationToken})::Nothing
+    token === nothing && return nothing
+    is_cancellation_requested(token) && throw(OperationCanceledException(token))
+    return nothing
+end
+
+function file_fingerprint(path::AbstractString; normalized::Bool=false)::FileFingerprint
+    normalized_path = normalized ? String(path) : normpath(abspath(expanduser(String(path))))
+    stat_info = stat(normalized_path)
     return FileFingerprint(
-        normalized,
+        normalized_path,
         Int64(stat_info.size),
         Int64(stat_info.mtime * 1_000_000_000),
     )
 end
-
-file_fingerprint(path::AbstractString)::FileFingerprint =
-    _file_fingerprint(normpath(abspath(expanduser(String(path)))))
 
 function index_source_file(path::AbstractString)::SourceFile
     normalized = normpath(abspath(expanduser(String(path))))
@@ -138,7 +142,7 @@ function index_source_file(path::AbstractString)::SourceFile
         normalized,
         filename,
         parse_timestamp(filename),
-        _file_fingerprint(normalized),
+        file_fingerprint(normalized; normalized=true),
     )
 end
 
@@ -159,18 +163,24 @@ end
 function collect_source_files(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
+    cancel_token::Union{Nothing,CancellationToken}=nothing,
 )::Vector{SourceFile}
     source_files = SourceFile[]
     metadata_path = collection_metadata_file_path(source)
     found = Ref(0)
     if source.recursive
         for (root, _, names) in walkdir(source.root_path)
-            append_source_files!(source_files, root, names, metadata_path; on_progress, found)
+            append_source_files!(
+                source_files, root, names, metadata_path;
+                on_progress, found, cancel_token,
+            )
         end
     else
         names = readdir(source.root_path)
         append_source_files!(
-            source_files, source.root_path, names, metadata_path; on_progress, found)
+            source_files, source.root_path, names, metadata_path;
+            on_progress, found, cancel_token,
+        )
     end
     on_progress === nothing || on_progress(found[])
     return source_files
@@ -184,9 +194,10 @@ function append_source_files!(
     ;
     on_progress::Union{Nothing,Function}=nothing,
     found::Base.RefValue{Int}=Ref(0),
+    cancel_token::Union{Nothing,CancellationToken}=nothing,
 )::Nothing
     for name in names
-        _check_scan_cancel()
+        _throw_if_cancelled(cancel_token)
         is_source_filename(name) || continue
         path = joinpath(root, name)
         metadata_path !== nothing && normpath(path) == metadata_path && continue
@@ -290,10 +301,19 @@ function matching_collection_metadata(
     return merged
 end
 
-source_items(
+function source_items(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
-)::Vector{SourceFile} = collect_source_files(source; on_progress)
+    cancel_token::Union{Nothing,CancellationToken}=nothing,
+)::Vector{SourceFile}
+    return collect_source_files(source; on_progress, cancel_token)
+end
+
+function has_collection_metadata(source::DirectorySource)::Bool
+    return lock(source.metadata_lock) do
+        source.has_metadata
+    end
+end
 
 function collection_metadata(
     source::DirectorySource,
@@ -303,11 +323,6 @@ function collection_metadata(
         matching_collection_metadata(source.collection_metadata_entries, collection_path)
     end
 end
-
-has_collection_metadata(source::DirectorySource)::Bool =
-    lock(source.metadata_lock) do
-        source.has_metadata
-    end
 
 function open_source(source::DirectorySource)::DirectorySource
     isdir(source.root_path) || throw(ArgumentError(

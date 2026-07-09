@@ -3,6 +3,7 @@ module Workspace
 using Printf
 import DataBrowserProfiling as Profiling
 using ..DataBrowserSources
+using CancellationTokens: CancellationTokenSource, cancel, get_token
 
 import ..Cache:
     AbstractCacheDB,
@@ -65,7 +66,6 @@ import ..ItemIndex:
     SourceItemInterpretation,
     SourceScan,
     all_items,
-    check_cancel,
     clear_node_analysis!,
     collection_path_key,
     collection_path_tuple,
@@ -78,8 +78,7 @@ import ..ItemIndex:
     is_job_cancelled,
     metadata_dict,
     interpret_source_item,
-    remove_records!,
-    with_cancel
+    remove_records!
 import DataBrowserAPI
 import DataBrowserAPI:
     AbstractDataSource,
@@ -122,7 +121,7 @@ mutable struct WorkspaceJob
     id::Int
     state::Symbol
     error::String
-    cancel_token::Union{Nothing,Base.Threads.Atomic{Bool}}
+    cancel_token::Union{Nothing,CancellationTokenSource}
     discovered::Base.Threads.Atomic{Int}
 end
 
