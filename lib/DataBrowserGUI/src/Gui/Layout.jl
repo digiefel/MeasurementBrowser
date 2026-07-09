@@ -547,8 +547,7 @@ end
 
 """Render the minimal startup surface shown before expensive first-use GUI work finishes."""
 function _render_startup_preparation!()::Nothing
-    center = ig.ImVec2(0, 0)
-    @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
+    center = ig.ImGuiViewport_GetCenter(ig.GetMainViewport())
     flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoMove |
             ig.ImGuiWindowFlags_NoSavedSettings | ig.ImGuiWindowFlags_AlwaysAutoResize |
             ig.ImGuiWindowFlags_NoInputs

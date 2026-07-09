@@ -100,8 +100,7 @@ function render_collection_metadata_modal(state::BrowserState)::Nothing
         state.collection_metadata_modal = true
     end
     # always center
-    center = ig.ImVec2(0.5, 0.5)
-    @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
+    center = ig.ImGuiViewport_GetCenter(ig.GetMainViewport())
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
 
     if state.collection_metadata_modal &&
@@ -133,8 +132,7 @@ end
 function render_cache_rebuild_modal(state::BrowserState)::Nothing
     state.cache_rebuild_modal || return nothing
 
-    center = ig.ImVec2(0.5, 0.5)
-    @c ig.ImGuiViewport_GetCenter(&center, ig.GetMainViewport())
+    center = ig.ImGuiViewport_GetCenter(ig.GetMainViewport())
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
     ig.OpenPopup("Cache Rebuild Required")
 
