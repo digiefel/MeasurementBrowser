@@ -12,18 +12,18 @@ using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import Serialization
 import DataBrowserAPI:
-    analyze_collection,
-    analyze_item,
+    _analyze_collection,
+    _analyze_item,
     collection_path_label,
     data_items,
     detect_kind,
     display_label,
     finish_source_profile!,
-    has_collection_analysis,
-    has_collection_process,
+    _has_collection_analysis,
+    _has_collection_process,
     kind_label,
     process,
-    process_collection,
+    _process_collection,
     project_description,
     project_name,
     record_scan_phase!,
@@ -322,7 +322,7 @@ Rewrite one collection's members through the kind's registered collection `proce
 Members are grouped by kind; a kind without a registered `process` passes its members through
 unchanged. The callback returns one output per input; the adapter validates ids and count.
 """
-function DataBrowserAPI.process_collection(
+function DataBrowserAPI._process_collection(
     project::Project,
     ::AbstractDataSource,
     ::Vector{String},
@@ -353,7 +353,7 @@ function DataBrowserAPI.process_collection(
 end
 
 """Fold one collection's post-process members into collection-node metadata."""
-function DataBrowserAPI.analyze_collection(
+function DataBrowserAPI._analyze_collection(
     project::Project,
     ::AbstractDataSource,
     ::Vector{String},
@@ -380,7 +380,7 @@ function _group_by_kind(items::Vector{<:AbstractDataItem})::Vector{Vector{Abstra
     return Vector{AbstractDataItem}[groups[item_kind] for item_kind in order]
 end
 
-function DataBrowserAPI.analyze_item(
+function DataBrowserAPI._analyze_item(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,
@@ -390,12 +390,12 @@ function DataBrowserAPI.analyze_item(
     return recipe.analyze(item)::Dict{Symbol,Any}
 end
 
-function DataBrowserAPI.has_collection_process(project::Project, item_kind::Symbol)::Bool
+function DataBrowserAPI._has_collection_process(project::Project, item_kind::Symbol)::Bool
     recipe = get(project.collections, item_kind, nothing)
     return recipe !== nothing && recipe.process !== nothing
 end
 
-function DataBrowserAPI.has_collection_analysis(project::Project, item_kind::Symbol)::Bool
+function DataBrowserAPI._has_collection_analysis(project::Project, item_kind::Symbol)::Bool
     recipe = get(project.collections, item_kind, nothing)
     return recipe !== nothing && recipe.analyze !== nothing
 end

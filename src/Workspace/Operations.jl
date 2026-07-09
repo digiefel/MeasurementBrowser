@@ -823,10 +823,10 @@ function apply_cache_index!(
             isempty(hierarchy_node.items) && continue
             collection_key = collection_path_key(collect(String, path))
             member_kinds = unique(record.kind for record in hierarchy_node.items)
-            if any(k -> has_collection_process(workspace.project, k), member_kinds) &&
+            if any(k -> _has_collection_process(workspace.project, k), member_kinds) &&
                     !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key)
                 enqueue_collection_work!(workspace, [collection_key]; supersede=false)
-            elseif any(k -> has_collection_analysis(workspace.project, k), member_kinds) &&
+            elseif any(k -> _has_collection_analysis(workspace.project, k), member_kinds) &&
                     !cache_index_ready(index, COLLECTION_ANALYSIS_RESULT, collection_key)
                 enqueue_collection_work!(workspace, [collection_key]; supersede=false)
             end
@@ -873,8 +873,8 @@ function enqueue_collection_work!(
         member_kinds = unique(record.kind for record in hierarchy_node.items)
         member_analyze = WorkKey[
             WorkKey(ITEM_ANALYZE, record.id) for record in hierarchy_node.items]
-        has_process = any(k -> has_collection_process(workspace.project, k), member_kinds)
-        has_analyze = any(k -> has_collection_analysis(workspace.project, k), member_kinds)
+        has_process = any(k -> _has_collection_process(workspace.project, k), member_kinds)
+        has_analyze = any(k -> _has_collection_analysis(workspace.project, k), member_kinds)
         process_key = WorkKey(COLLECTION_PROCESS, collection_key)
         analyze_key = WorkKey(COLLECTION_ANALYZE, collection_key)
         if !supersede

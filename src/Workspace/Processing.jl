@@ -400,7 +400,7 @@ function run_item_analysis(workspace::Workspace, record::ItemRecord)::MetadataDi
         source_id=record.source_item_id,
         item_id=record.id,
     ) begin
-        metadata_dict(analyze_item(
+        metadata_dict(_analyze_item(
             workspace.project,
             workspace.source,
             DataItem(
@@ -435,7 +435,7 @@ function run_collection_process(workspace::Workspace, key::String)::NamedTuple
             payloads[index] === nothing ? nothing : item_data(payloads[index]))
         for index in eachindex(delivered)
     ]
-    outputs = process_collection(
+    outputs = _process_collection(
         workspace.project, workspace.source, collect(path), inputs)
     by_id = Dict(id(input) => input for input in inputs)
     metadata_by_id = Dict{String,MetadataDict}()
@@ -466,7 +466,7 @@ function run_collection_analysis(workspace::Workspace, key::String)::MetadataDic
     payloads = Vector{Any}(nothing, length(delivered))
     rewritten = [
         index for index in eachindex(records)
-        if has_collection_process(workspace.project, records[index].kind)
+        if _has_collection_process(workspace.project, records[index].kind)
     ]
     folded = read_item_data(workspace.cache.db, delivered[rewritten]; stage=:collection_processed)
     for (position, index) in pairs(rewritten)
@@ -482,7 +482,7 @@ function run_collection_analysis(workspace::Workspace, key::String)::MetadataDic
             payloads[index] === nothing ? nothing : item_data(payloads[index]))
         for index in eachindex(delivered)
     ]
-    return metadata_dict(analyze_collection(
+    return metadata_dict(_analyze_collection(
         workspace.project,
         workspace.source,
         collect(path),
@@ -582,7 +582,7 @@ Kinds with a registered collection `process` are gated on their collection's COL
 read the `:collection_processed` payload (falling back to `:processed`); others gate on ITEM_PROCESS.
 """
 function delivery_gate(workspace::Workspace, record::ItemRecord)::Tuple{WorkKey,Symbol}
-    if has_collection_process(workspace.project, record.kind)
+    if _has_collection_process(workspace.project, record.kind)
         return WorkKey(COLLECTION_PROCESS, collection_path_key(record.collection)), :collection
     end
     return WorkKey(ITEM_PROCESS, record.id), :item

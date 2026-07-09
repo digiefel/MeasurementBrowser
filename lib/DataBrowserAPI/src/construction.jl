@@ -85,7 +85,7 @@ Register (or replace) the collection recipe for one item kind.
 `process(items)` receives the collection's members of `kind` and returns one output per input (same
 ids), rewriting per-item data or metadata (the down-flow). `analyze(items)` receives the
 post-process members and returns a `Dict{Symbol,Any}` attached to the collection node only. The
-callback adapter implements these through the low-level `process_collection`/`analyze_collection`
+callback adapter implements these through the low-level `_process_collection`/`_analyze_collection`
 hooks. Re-calling with the same `kind` replaces the recipe.
 """
 function register_collection_analysis!(

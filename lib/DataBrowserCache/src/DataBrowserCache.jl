@@ -9,8 +9,7 @@ import DataBrowserAPI
 using DataBrowserAPI: AbstractDataItem, AbstractDataSourceItem, MetadataDict, cacheable,
     fingerprint, item_data, metadata, source_id, source_item_id, source_item_path,
     source_item_timestamp, source_label
-import DataBrowserProfiling
-using DataBrowserProfiling: @profile_span, ProfileAttributes
+import DataBrowserProfiling as Profiling
 
 using DuckDB
 using DBInterface

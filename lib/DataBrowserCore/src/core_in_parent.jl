@@ -15,7 +15,7 @@ using DataBrowserAPI:
     source_item_label,
     source_item_path
 using DataBrowserSources
-using DataBrowserProfiling
+import DataBrowserProfiling as Profiling
 
 include("ItemIndex.jl")
 include("project_engine.jl")

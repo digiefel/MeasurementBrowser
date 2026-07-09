@@ -1,7 +1,7 @@
 abstract type AbstractDataItem end
 
 """Nestable container an item is placed in. Future home for collection behaviour."""
-abstract type Collection end
+abstract type AbstractCollection end
 
 """Stable string identity of an item."""
 function id end
@@ -29,12 +29,6 @@ cacheable(::AbstractDataItem)::Bool = false
 
 fingerprint(::AbstractDataItem) = nothing
 
-"""Optional rewrite of a collection's members (one output per input). Internal workspace hook."""
-function process_collection end
-
-"""Optional fold over a collection's members into collection-node metadata. Internal workspace hook."""
-function analyze_collection end
-
 """Collection metadata contributed by a source for one collection path."""
 collection_metadata(::AbstractDataSource, ::AbstractVector{<:AbstractString})::Dict{Symbol,Any} =
     Dict{Symbol,Any}()
@@ -42,11 +36,21 @@ collection_metadata(::AbstractDataSource, ::AbstractVector{<:AbstractString})::D
 """Whether a source supplied collection metadata for this scan."""
 has_collection_metadata(::AbstractDataSource)::Bool = false
 
+# ---------------------------------------------------------------------------
+# Internal workspace hooks
+# ---------------------------------------------------------------------------
+
+"""Optional rewrite of a collection's members (one output per input). Internal workspace hook."""
+function _process_collection end
+
+"""Optional fold over a collection's members into collection-node metadata. Internal workspace hook."""
+function _analyze_collection end
+
 """Per-item analysis metadata computed after indexing. Internal workspace hook."""
-function analyze_item end
+function _analyze_item end
 
 """Whether one item kind has a registered collection `process` stage."""
-function has_collection_process end
+function _has_collection_process end
 
 """Whether one item kind has a registered collection `analyze` stage."""
-function has_collection_analysis end
+function _has_collection_analysis end

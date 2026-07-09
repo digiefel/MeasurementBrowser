@@ -6,7 +6,6 @@ const Annotations = DataBrowserAnnotations
 import DataBrowserProfiling as Profiling
 
 using DataBrowserAPI
-const Projects = DataBrowserAPI
 using DataBrowserSources
 using DataBrowserSources: DirectorySource, SourceFile, TabularFileSource, inspect_table, index_source_file
 const TablePreview = TabularFileSource
@@ -14,7 +13,7 @@ using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
-    Collection,
+    AbstractCollection,
     CollectionRecipe,
     DEFAULT_PROJECT,
     ItemRecipe,
@@ -136,7 +135,7 @@ export open_browser, open_workspace, close_workspace!, select_items!, query_item
 # Build a project
 export define_project, register_item!, register_collection_analysis!, register_plot!
 # The AbstractDataItem contract — implement these for a custom item type
-export AbstractDataItem, Collection
+export AbstractDataItem, AbstractCollection
 export id, item_label, kind, collection, metadata, item_data, process, cacheable, fingerprint
 # Types you name
 export Project, DirectorySource, SourceFile, DataItem
