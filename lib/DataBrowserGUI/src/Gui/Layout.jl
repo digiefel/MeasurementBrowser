@@ -158,28 +158,6 @@ function render_menu_bar(state::BrowserState)::Nothing
                 end
             end
 
-            recents = state.recent_projects
-            if ig.BeginMenu("Recent Projects")
-                if isempty(recents)
-                    ig.TextDisabled("No recent projects")
-                else
-                    for (idx, entry) in enumerate(recents)
-                        path = entry.path
-                        isempty(path) && continue
-                        pref = entry.project_preference
-                        label = "$(basename(path)) [$pref]###recent_project_$idx"
-                        if ig.MenuItem(label)
-                            _open_project_path!(state, path)
-                        end
-                        if ig.BeginItemTooltip()
-                            ig.TextUnformatted(path)
-                            ig.EndTooltip()
-                        end
-                    end
-                end
-                ig.EndMenu()
-            end
-
             ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, state.show_project_window)
                 state.show_project_window = !state.show_project_window
@@ -397,22 +375,15 @@ function render_project_window(state::BrowserState)::Nothing
                 _helpmarker(project_description(p))
             end
 
-            if changed
-                current_root = (
-                    workspace isa Workspace.Workspace &&
-                    hasproperty(workspace.source, :root_path)
-                ) ? workspace.source.root_path : ""
-                _persist_preferences!(
-                    state;
-                    path=isempty(current_root) ? nothing : current_root,
+            if changed && workspace isa Workspace.Workspace
+                current_root = hasproperty(workspace.source, :root_path) ?
+                    workspace.source.root_path : ""
+                !isempty(current_root) || error("Cannot reload project preference without an open source root")
+                @info(
+                    "Project preference changed to '$(state.project_preference)' - " *
+                    "reloading cache",
                 )
-                if workspace isa Workspace.Workspace
-                    @info(
-                        "Project preference changed to '$(state.project_preference)' - " *
-                        "reloading cache",
-                    )
-                    _open_project_path!(state, current_root)
-                end
+                _open_project_path!(state, current_root)
             end
         end
     end
@@ -672,11 +643,9 @@ function open_browser(
     wait::Bool=!isinteractive(),
     window_start::Symbol=:normal,
 )
-    prefs = _load_prefs()
     state = BrowserState(
         project_locked=true,
         project_preference=project_name(workspace.project),
-        recent_projects=_parse_recent_projects(prefs),
     )
     ctx = _init_browser_context!()
     _attach_workspace!(state, workspace)

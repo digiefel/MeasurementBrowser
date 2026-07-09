@@ -158,7 +158,6 @@ function render_cache_rebuild_modal(state::BrowserState)::Nothing
         if ig.Button("Discard cache and rebuild")
             path = state.cache_rebuild_path
             project = state.cache_rebuild_project
-            persist = state.cache_rebuild_persist
             project === nothing && error("Cannot rebuild cache because no project was selected")
             opened = false
             state.cache_rebuild_modal = false
@@ -166,7 +165,7 @@ function render_cache_rebuild_modal(state::BrowserState)::Nothing
             state.cache_rebuild_project = nothing
             state.cache_rebuild_error = ""
             ig.CloseCurrentPopup()
-            _open_project_path!(state, path; project, persist, rebuild_cache=true)
+            _open_project_path!(state, path; project, rebuild_cache=true)
         end
         ig.EndPopup()
     end

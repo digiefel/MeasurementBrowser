@@ -1,8 +1,6 @@
 using TOML
 
-using DataBrowserAPI:
-    PROJECTS,
-    project_name
+using DataBrowserAPI: project_name
 using DataBrowserCore.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 using DataBrowserAPI:
@@ -10,148 +8,9 @@ using DataBrowserAPI:
     plot_kind_from_name,
     plot_kind_name
 
-# ---------------------------------------------------------------------------
-# App preferences
-# ---------------------------------------------------------------------------
-
-const _MAX_RECENT_PROJECTS = 12
-
-function _prefs_path()::String
-    return joinpath(homedir(), ".config", "DataBrowser", "prefs.toml")
-end
-
-"""Read app-wide preferences, returning an empty table before the first save."""
-function _load_prefs()::Dict{String,Any}
-    path = _prefs_path()
-    isfile(path) || return Dict{String,Any}()
-    return TOML.parsefile(path)
-end
-
-"""Write app-wide preferences outside any source project."""
-function _save_prefs(data::Dict{String,Any})::Nothing
-    path = _prefs_path()
-    mkpath(dirname(path))
-    open(path, "w") do io
-        TOML.print(io, data)
-    end
-    return nothing
-end
-
 """Convert a user path into the stable absolute form used by persistence."""
 function _normalize_project_path(path::AbstractString)::String
     return normpath(abspath(expanduser(String(path))))
-end
-
-"""Accept only the automatic choice or a currently registered project name."""
-function _sanitize_project_preference(pref::AbstractString)::String
-    pref == "auto" && return "auto"
-    for project in PROJECTS
-        project_name(project) == pref && return String(pref)
-    end
-    return "auto"
-end
-
-"""Decode recent-project entries from app preferences."""
-function _parse_recent_projects(
-    prefs::Dict{String,Any},
-)::Vector{RecentProject}
-    recents = RecentProject[]
-    raw = get(prefs, "recent_projects", Any[])
-    raw isa Vector || return recents
-
-    for entry in raw
-        entry isa AbstractDict || continue
-        path = get(entry, "path", nothing)
-        path isa AbstractString || continue
-        path = strip(path)
-        isempty(path) && continue
-        pref = get(entry, "project_preference", "auto")
-        pref = pref isa AbstractString ? pref : "auto"
-        push!(
-            recents,
-            RecentProject(
-                path=_normalize_project_path(path),
-                project_preference=_sanitize_project_preference(pref),
-            ),
-        )
-    end
-
-    return recents
-end
-
-"""Move an opened project to the front of the bounded recent-project list."""
-function _update_recent_projects!(
-    recents::Vector{RecentProject},
-    path::AbstractString,
-    pref::AbstractString,
-)::Nothing
-    norm_path = _normalize_project_path(path)
-    filter!(entry -> entry.path != norm_path, recents)
-    pushfirst!(
-        recents,
-        RecentProject(
-            path=norm_path,
-            project_preference=String(pref),
-        ),
-    )
-    length(recents) > _MAX_RECENT_PROJECTS && resize!(recents, _MAX_RECENT_PROJECTS)
-    return nothing
-end
-
-"""Save the current project choice and optional source-root preferences."""
-function _persist_preferences!(
-    state::BrowserState;
-    path::Union{Nothing,String}=nothing,
-)::Nothing
-    prefs = _load_prefs()
-    pref = _sanitize_project_preference(state.project_preference)
-    state.project_preference = pref
-    prefs["project"] = pref
-
-    recents = _parse_recent_projects(prefs)
-    if path !== nothing && !isempty(path)
-        _update_recent_projects!(recents, path, pref)
-        prefs["recent_projects"] = [
-            Dict{String,String}(
-                "path" => recent.path,
-                "project_preference" => recent.project_preference,
-            )
-            for recent in recents
-        ]
-    end
-
-    _save_prefs(prefs)
-    state.recent_projects = recents
-    return nothing
-end
-
-"""Find the recent-project entry for one normalized source root."""
-function _recent_project_entry_for_path(
-    state::BrowserState,
-    path::String,
-)::Union{Nothing,RecentProject}
-    for entry in state.recent_projects
-        entry.path == path && return entry
-    end
-    return nothing
-end
-
-"""Return the project choice saved for a source root."""
-function _project_preference_for_path(state::BrowserState, path::String)::String
-    entry = _recent_project_entry_for_path(state, path)
-    if entry !== nothing
-        return _sanitize_project_preference(entry.project_preference)
-    end
-    return _sanitize_project_preference(state.project_preference)
-end
-
-"""Persist preferences associated with the currently open source root."""
-function _persist_current_project_preferences!(state::BrowserState)::Nothing
-    workspace = state.workspace
-    workspace isa Workspace.Workspace || return nothing
-    hasproperty(workspace.source, :root_path) || return nothing
-    _persist_preferences!(state; path=workspace.source.root_path)
-    return nothing
 end
 
 # ---------------------------------------------------------------------------

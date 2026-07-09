@@ -80,12 +80,6 @@ Base.@kwdef struct PersistedProjectView
     plot_windows::Vector{PersistedPlotView} = PersistedPlotView[]
 end
 
-"""One recently opened source root and its user preferences."""
-Base.@kwdef struct RecentProject
-    path::String
-    project_preference::String = "auto"
-end
-
 const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
 
 """
@@ -217,7 +211,6 @@ Base.@kwdef mutable struct BrowserState
     table_inspector::TableInspectorState = TableInspectorState()
     performance::PerformanceState = PerformanceState()
     project_preference::String = "auto"
-    recent_projects::Vector{RecentProject} = RecentProject[]
     saved_project_view::PersistedProjectView = PersistedProjectView()
     expanded_collection_paths::Vector{String} = String[]
     tree_filter::String = ""
@@ -240,7 +233,6 @@ Base.@kwdef mutable struct BrowserState
     cache_rebuild_modal::Bool = false
     cache_rebuild_path::String = ""
     cache_rebuild_project::Union{Nothing,Project} = nothing
-    cache_rebuild_persist::Bool = true
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
 end

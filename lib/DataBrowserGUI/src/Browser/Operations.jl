@@ -24,7 +24,6 @@ function _open_project_path!(
     state::BrowserState,
     path::String;
     project::Union{Nothing,Project}=nothing,
-    persist::Bool=true,
     rebuild_cache::Bool=false,
 )::Nothing
     norm_path = _normalize_project_path(path)
@@ -37,7 +36,6 @@ function _open_project_path!(
         end
     end
     if project === nothing
-        state.project_preference = _project_preference_for_path(state, norm_path)
         project = _project_for_preference(state.project_preference)
     else
         state.project_preference = project_name(project)
@@ -48,8 +46,7 @@ function _open_project_path!(
         (;)
     _attach_workspace!(
         state,
-        open_workspace(project, norm_path; reopen_options..., rebuild=rebuild_cache);
-        persist,
+        open_workspace(project, norm_path; reopen_options..., rebuild=rebuild_cache),
     )
     return nothing
 end
@@ -61,8 +58,7 @@ figure-script context. Shared by `_open_project_path!` (which opens the workspac
 """
 function _attach_workspace!(
     state::BrowserState,
-    workspace::Workspace.Workspace;
-    persist::Bool=true,
+    workspace::Workspace.Workspace,
 )::Nothing
     source = workspace.source
     source_root = hasproperty(source, :root_path) ? source.root_path : ""
@@ -82,10 +78,8 @@ function _attach_workspace!(
         state.cache_rebuild_modal = true
         state.cache_rebuild_path = source_root
         state.cache_rebuild_project = workspace.project
-        state.cache_rebuild_persist = persist
         state.cache_rebuild_error = sprint(showerror, workspace.cache.disk_error)
     end
-    persist && !isempty(source_root) && _persist_preferences!(state; path=source_root)
     return nothing
 end
 
