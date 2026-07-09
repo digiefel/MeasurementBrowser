@@ -21,8 +21,10 @@
 #
 # Results land in bench/results/<timestamp>-scaling/scaling.csv.
 
-using MeasurementBrowser
-const MB = MeasurementBrowser
+using DataBrowserAPI
+using DataBrowserCore.ItemIndex: DataItem
+using DataBrowserCore.Workspace
+using DataBrowserGUI.Browser
 using BenchmarkTools
 using DataFrames: DataFrame
 using Dates: format, now
@@ -32,15 +34,15 @@ using Statistics: mean
 const SIZES = isempty(ARGS) ? [500, 1000, 2000, 4000] : parse.(Int, split(ARGS[1], ","))
 
 """One collection, one trivial item per file — the smallest project that still exercises the scan."""
-function scaling_project(name::AbstractString)::MB.Project
-    project = MB.define_project(name)
-    MB.register_item!(
+function scaling_project(name::AbstractString)::Project
+    project = define_project(name)
+    register_item!(
         project,
         :row;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(v=[1]),
         entries=(file, data) -> [
-            MB.DataItem(
+            DataItem(
                 kind=:row,
                 collection=["batch"],
                 label=file.filename,
@@ -61,10 +63,10 @@ function with_workspace(probe::Function, n::Int)
     name = "scaling_" * basename(dir)  # unique; the cache is keyed by project name
     cache_dir = joinpath(first(DEPOT_PATH), "measurementbrowser", name)
     try
-        workspace = MB.open_workspace(scaling_project(name), dir)
-        MB.Workspace.wait_workspace_idle!(workspace; timeout=600)
+        workspace = open_workspace(scaling_project(name), dir)
+        wait_workspace_idle!(workspace; timeout=600)
         result = probe(workspace)
-        MB.close_workspace!(workspace)
+        close_workspace!(workspace)
         return result
     finally
         rm(dir; force=true, recursive=true)
@@ -76,12 +78,12 @@ end
 function measure(n::Int)::Dict{String,Float64}
     return with_workspace(n) do ws
         ws.selection.collection_paths = ["batch"]  # select the one collection, as the GUI would
-        state = MB.Browser.BrowserState(workspace=ws)
+        state = BrowserState(workspace=ws)
         Dict(
-            "status_refresh" => @belapsed(MB.Workspace.refresh_status!($ws)),
-            "workspace_busy" => @belapsed(MB.Workspace.workspace_busy($ws)),
-            "items_panel" => @belapsed(MB.Browser._items_of_selected_collections($state)),
-            "metadata_publish" => @belapsed(MB.Workspace.reconcile_source_metadata_cache!($ws)),
+            "status_refresh" => @belapsed(refresh_status!($ws)),
+            "workspace_busy" => @belapsed(workspace_busy($ws)),
+            "items_panel" => @belapsed(_items_of_selected_collections($state)),
+            "metadata_publish" => @belapsed(reconcile_source_metadata_cache!($ws)),
         )
     end
 end

@@ -1,4 +1,4 @@
-const PERFORMANCE_BROWSER = MeasurementBrowser.Browser
+const PERFORMANCE_BROWSER = DataBrowserGUI.Browser
 
 import DataBrowserProfiling as Profiling
 

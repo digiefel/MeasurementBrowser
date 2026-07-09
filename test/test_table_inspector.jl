@@ -1,10 +1,13 @@
-using MeasurementBrowser
-using MeasurementBrowser: inspect_table
+using DataBrowser
+using DataBrowserGUI
+using DataBrowser: inspect_table
+using DataBrowserGUI
 using DataFrames: DataFrame
 using Test
 
-const Browser = MeasurementBrowser.Browser
+const Browser = DataBrowserGUI.Browser
 using DataBrowserPlots
+using DataBrowserGUI
 
 @testset "table inspector" begin
 

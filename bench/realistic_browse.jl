@@ -20,22 +20,25 @@
 # it; add MB_PROFILE_CPU=1 for Julia sampling. Set MB_BENCH_START_PROFILE=0 to measure
 # enabled-but-idle overhead.
 
-using MeasurementBrowser
-const MB = MeasurementBrowser
-const ENGINE_ONLY = MB.Profiling.environment_flag("MB_BENCH_ENGINE_ONLY", false)
+using DataBrowserAPI
+import DataBrowserAPI: _has_collection_analysis
+using DataBrowserCore.ItemIndex: DataItem, ItemRecord, collection_path_key
+using DataBrowserCore.Workspace
+using DataBrowserCore.Cache
+using DataBrowserPlots
+using DataBrowserSources
+import DataBrowserProfiling as Profiling
 using CSV
 using DataFrames
 using Dates
 using Random
 using Printf
 using Statistics: mean, median, quantile
-# GLMakie ships with the engine; the plot recipes below build real figures from the cached data, the
-# same scene-graph work the GUI does on a selection (no window is shown, so no GPU is touched).
-ENGINE_ONLY || @eval import GLMakie: Figure, Axis, lines!, contents
+import GLMakie: Figure, Axis, lines!, contents
 
 # Optional: render a PNG when CairoMakie is in the bench env. Imported at top level so the plotting
 # call below runs in a new-enough world age (importing inside the function fails with "method too new").
-const HAS_CAIRO = !ENGINE_ONLY && try
+const HAS_CAIRO = try
     @eval import CairoMakie
     true
 catch
@@ -49,9 +52,9 @@ end
 scale = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0
 _env_int(key, default) = parse(Int, get(ENV, key, string(default)))
 _scaled(n) = max(1, round(Int, n * scale))
-const PROFILE_INTERNAL = MB.Profiling.environment_flag("MB_PROFILE_INTERNAL", true)
-const PROFILE_CPU = MB.Profiling.environment_flag("MB_PROFILE_CPU")
-const START_PROFILE = MB.Profiling.environment_flag(
+const PROFILE_INTERNAL = Profiling.environment_flag("MB_PROFILE_INTERNAL", true)
+const PROFILE_CPU = Profiling.environment_flag("MB_PROFILE_CPU")
+const START_PROFILE = Profiling.environment_flag(
     "MB_BENCH_START_PROFILE", PROFILE_INTERNAL)
 START_PROFILE && !PROFILE_INTERNAL && error(
     "MB_BENCH_START_PROFILE=1 requires MB_PROFILE_INTERNAL=1",
@@ -71,7 +74,7 @@ const KIND1_ROWS   = 120
 const KIND2_ROWS   = 5_000
 const KIND3_ROWS   = _env_int("MB_BENCH_KIND3_ROWS", 6_000) # rows per cycle
 
-const CACHE_ROW_CEILING = MB.Cache.CACHE_BUFFER_ROW_LIMIT
+const CACHE_ROW_CEILING = Cache.CACHE_BUFFER_ROW_LIMIT
 const PROCESSED_STRESS_ROWS = _env_int(
     "MB_BENCH_PROCESSED_STRESS_ROWS",
     2 * CACHE_ROW_CEILING,
@@ -79,7 +82,7 @@ const PROCESSED_STRESS_ROWS = _env_int(
 const AFTER_BUILD_PLOTS = _env_int("MB_BENCH_AFTER_BUILD_PLOTS", 40)
 const BENCH_REPEATS = _env_int("MB_BENCH_REPEATS", 1)
 const MAX_BUILD_SECONDS = 600   # safety cap
-const REQUIRE_SATURATION = MB.Profiling.environment_flag(
+const REQUIRE_SATURATION = Profiling.environment_flag(
     "MB_BENCH_REQUIRE_SATURATION",
     scale >= 1.0,
 )
@@ -95,7 +98,6 @@ const BENCH_ENV_KEYS = (
     "MB_BENCH_KIND3_CYCLES",
     "MB_BENCH_KIND3_ROWS",
     "MB_BENCH_AFTER_BUILD_PLOTS",
-    "MB_BENCH_ENGINE_ONLY",
     "MB_BENCH_PROCESSED_STRESS_ROWS",
     "MB_BENCH_REPEATS",
     "MB_BENCH_REQUIRE_SATURATION",
@@ -128,7 +130,7 @@ function _repo_command(args::Vector{String})::String
 end
 
 function _print_run_header(log_path::String, outdir::String)::Nothing
-    tee_println("MeasurementBrowser realistic benchmark")
+    tee_println("DataBrowser realistic benchmark")
     tee_println("started_at: ", Dates.format(now(), dateformat"yyyy-mm-dd HH:MM:SS"))
     tee_println("output_dir: ", outdir)
     tee_println("log_file:   ", log_path)
@@ -229,36 +231,36 @@ end
 _collection(file) = [splitpath(dirname(file.filepath))[end-1], splitpath(dirname(file.filepath))[end]]
 
 function build_project(; plots::Bool=true)
-    project = MB.define_project("BenchRealistic"; description="Realistic browse-while-build benchmark")
+    project = define_project("BenchRealistic"; description="Realistic browse-while-build benchmark")
 
-    MB.register_item!(project, :kind1;
+    register_item!(project, :kind1;
         detect  = file -> endswith(file.filename, "_kind1.csv"),
         read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
-        entries = (file, data) -> [MB.DataItem(; kind=:kind1, collection=_collection(file),
+        entries = (file, data) -> [DataItem(; kind=:kind1, collection=_collection(file),
             label=file.filename, data=data, id=file.filepath * "#kind1")],
-        process = item -> MB.DataItem(item, transform(item.data, [:voltage, :current] =>
+        process = item -> DataItem(item, transform(item.data, [:voltage, :current] =>
             ByRow((v, i) -> iszero(v) ? 0.0 : i / v) => :conductance)),
         analyze = item -> Dict{Symbol,Any}(:imax => maximum(abs, item.data.current)),
         label   = item -> "K1 $(item.label)")
 
-    MB.register_item!(project, :kind2;
+    register_item!(project, :kind2;
         detect  = file -> endswith(file.filename, "_kind2.csv"),
         read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
-        entries = (file, data) -> [MB.DataItem(; kind=:kind2, collection=_collection(file),
+        entries = (file, data) -> [DataItem(; kind=:kind2, collection=_collection(file),
             label=file.filename, data=data, id=file.filepath * "#kind2")],
         analyze = item -> Dict{Symbol,Any}(:cmean => mean(item.data.cap)),
         label   = item -> "K2 $(item.label)")
 
     # The fatigue-style kind: one file → one item per cycle (where item count explodes).
-    MB.register_item!(project, :kind3;
+    register_item!(project, :kind3;
         detect  = file -> endswith(file.filename, "_kind3.csv"),
         read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
         entries = (file, data) -> [
-            MB.DataItem(; kind=:kind3, collection=_collection(file),
+            DataItem(; kind=:kind3, collection=_collection(file),
                 label=string(file.filename, " cycle ", c), metadata=Dict{Symbol,Any}(:cycle => c),
                 data=(@view data[data.cycle .== c, :]), id=string(file.filepath, "#kind3,cycle=", c))
             for c in sort(unique(data.cycle))],
-        process = item -> MB.DataItem(item, transform(item.data, [:voltage, :current] =>
+        process = item -> DataItem(item, transform(item.data, [:voltage, :current] =>
             ByRow((v, i) -> v * i) => :power)),
         analyze = item -> Dict{Symbol,Any}(:pmax => maximum(abs, item.data.current)),
         label   = item -> "K3 $(item.label)")
@@ -268,22 +270,22 @@ function build_project(; plots::Bool=true)
     # Real plot recipes: one axis, one line per selected item, reading the processed columns — the
     # same scene-graph work the GUI does when a user selects items and the plot panel renders.
     _axis(fig, xlabel, ylabel) = Axis(fig[1, 1]; xlabel, ylabel)
-    MB.register_plot!(project, :kind1; label="IV",
+    register_plot!(project, :kind1; label="IV",
         setup=(ws, items) -> (fig = Figure(); _axis(fig, "voltage", "conductance"); fig),
         draw=(ws, items, fig) -> for item in items
-            d = MB.item_data(item)
+            d = item_data(item)
             lines!(contents(fig[1, 1])[1], d.voltage, d.conductance)
         end)
-    MB.register_plot!(project, :kind2; label="CV",
+    register_plot!(project, :kind2; label="CV",
         setup=(ws, items) -> (fig = Figure(); _axis(fig, "voltage", "cap"); fig),
         draw=(ws, items, fig) -> for item in items
-            d = MB.item_data(item)
+            d = item_data(item)
             lines!(contents(fig[1, 1])[1], d.voltage, d.cap)
         end)
-    MB.register_plot!(project, :kind3; label="power",
+    register_plot!(project, :kind3; label="power",
         setup=(ws, items) -> (fig = Figure(); _axis(fig, "time", "power"); fig),
         draw=(ws, items, fig) -> for item in items
-            d = MB.item_data(item)
+            d = item_data(item)
             lines!(contents(fig[1, 1])[1], d.time, d.power)
         end)
     return project
@@ -294,12 +296,12 @@ end
 # --------------------------------------------------------------------------------------------------
 
 build_idle(ws) = begin
-    _, _, active = MB.Workspace.work_counts(ws)
+    _, _, active = Workspace.work_counts(ws)
     return active == 0 &&
-        !MB.Workspace.source_scan_running(ws) &&
-        !MB.Workspace.processing_work_running(ws) &&
-        !MB.Workspace.analysis_work_running(ws) &&
-        !MB.Workspace.cache_work_running(ws) &&
+        !Workspace.source_scan_running(ws) &&
+        !Workspace.processing_work_running(ws) &&
+        !Workspace.analysis_work_running(ws) &&
+        !Workspace.cache_work_running(ws) &&
         ws.scan.state in (:done, :unchanged, :error, :canceled)
 end
 
@@ -313,11 +315,11 @@ function _active_work_count(ws, kinds::Tuple)::Int
 end
 
 _processing_active(ws)::Bool =
-    _active_work_count(ws, (MB.Workspace.ITEM_PROCESS, MB.Workspace.ITEM_ANALYZE)) > 0 ||
-    MB.Workspace.cache_has_pending_writes(ws.cache.db)
+    _active_work_count(ws, (Workspace.ITEM_PROCESS, Workspace.ITEM_ANALYZE)) > 0 ||
+    Workspace.cache_has_pending_writes(ws.cache.db)
 
 _analysis_active(ws)::Bool =
-    _active_work_count(ws, (MB.Workspace.COLLECTION_ANALYZE,)) > 0
+    _active_work_count(ws, (Workspace.COLLECTION_ANALYZE,)) > 0
 
 """Collect up to 64 already-processed item ids of `kind`."""
 function _ready_ids(ws, kind::Symbol)
@@ -340,15 +342,15 @@ function timed_plot!(ws, plot_kinds, kind::Symbol, k::Int; records=nothing)
     if records === nothing
         ready = _ready_ids(ws, kind)
         length(ready) < k && return nothing
-        records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in ready[1:k]]
+        records = ItemRecord[ws.index.items[id] for id in ready[1:k]]
     end
     n_ready = records === nothing ? 0 : length(records)
     result = @timed begin
-        MB.select_items!(ws, records)             # mirror the GUI selecting them
-        items = MB.Workspace.materialize_items(ws, records)
+        select_items!(ws, records)             # mirror the GUI selecting them
+        items = Workspace.materialize_items(ws, records)
         plot_kind = plot_kinds[kind]
-        figure = MB.setup_plot(ws, plot_kind, items)
-        MB.plot_data!(ws, plot_kind, items, figure)
+        figure = setup_plot(ws, plot_kind, items)
+        plot_data!(ws, plot_kind, items, figure)
     end
     return (plot_ms=result.time * 1e3, bytes=result.bytes, n=length(records), ready=n_ready)
 end
@@ -410,8 +412,8 @@ function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
     )
 end
 
-function _records_of_kind(ws, kind::Symbol)::Vector{MB.ItemIndex.ItemRecord}
-    records = MB.ItemIndex.ItemRecord[
+function _records_of_kind(ws, kind::Symbol)::Vector{ItemRecord}
+    records = ItemRecord[
         record for record in values(ws.index.items)
         if record.kind === kind && haskey(ws.index.item_metadata, record.id)
     ]
@@ -443,13 +445,13 @@ function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
         )
     end
 
-    MB.select_items!(ws, selected)
+    select_items!(ws, selected)
     processed_writes_before = ws.metrics.processed_writes[]
-    load = @timed MB.Workspace.materialize_items(ws, selected)
+    load = @timed Workspace.materialize_items(ws, selected)
     peak_pending_rows = Int64(0)
     flush_started = time()
-    while MB.Workspace.cache_has_pending_writes(ws.cache.db)
-        counts = MB.Workspace.cache_pending_counts(ws.cache.db)
+    while Workspace.cache_has_pending_writes(ws.cache.db)
+        counts = Workspace.cache_pending_counts(ws.cache.db)
         peak_pending_rows = max(peak_pending_rows, Int64(counts.rows))
         sleep(0.004)
     end
@@ -583,19 +585,17 @@ function run_benchmark()
         tee_printf("  %d files, ~%d items, %.1f MB on disk, generated in %.1fs\n",
             n_files, n_items, data_bytes / 1024^2, gen_t)
 
-    project = build_project(; plots=!ENGINE_ONLY)
+    project = build_project(; plots=true)
     kinds = (:kind1, :kind2, :kind3)
-    plot_kinds = ENGINE_ONLY ?
-        Dict{Symbol,Any}() :
-        Dict(k => first(MB.registered_plot_kinds(project, k)) for k in kinds)
+    plot_kinds = Dict(k => first(registered_plot_kinds(project, k)) for k in kinds)
     samples = Sample[]
 
     tee_println("Building cache + browsing during the scan ...")
     profile_output = PROFILE_INTERNAL ? something(
-        MB.Profiling.environment_path("MB_PROFILE_OUTPUT"),
+        Profiling.environment_path("MB_PROFILE_OUTPUT"),
         joinpath(outdir, "profile.json"),
     ) : nothing
-    ws = MB.open_workspace(
+    ws = open_workspace(
         project,
         data_root;
         profile_internal=PROFILE_INTERNAL,
@@ -603,7 +603,7 @@ function run_benchmark()
         profile_output=profile_output,
     )
     if START_PROFILE
-        MB.Workspace.start_internal_profile!(ws)
+        Workspace.start_internal_profile!(ws)
         deadline = time() + 60
         while ws.profiler.state !== :recording
             time() < deadline || error(
@@ -613,7 +613,7 @@ function run_benchmark()
         end
     end
     t_start = time()
-    rss_start_bytes = MB.Profiling.process_rss_bytes()
+    rss_start_bytes = Profiling.process_rss_bytes()
     rss_peak_bytes = rss_start_bytes
     rss_end_bytes = rss_start_bytes
     build_seconds = 0.0
@@ -635,18 +635,18 @@ function run_benchmark()
             now = time() - t_start
             if now - last_rss_sample >= 0.1
                 last_rss_sample = now
-                rss_peak_bytes = max(rss_peak_bytes, MB.Profiling.process_rss_bytes())
+                rss_peak_bytes = max(rss_peak_bytes, Profiling.process_rss_bytes())
             end
             if now - last_memory_sample >= 0.5
                 last_memory_sample = now
-                snapshot = MB.Workspace.workspace_memory_snapshot(ws)
+                snapshot = Workspace.workspace_memory_snapshot(ws)
                 rss_peak_bytes = max(rss_peak_bytes, snapshot.rss_bytes)
                 push!(memory_samples, MemorySample(now, snapshot))
             end
             processing_active = _processing_active(ws)
             analysis_active = _analysis_active(ws)
             processing_started === nothing && processing_active && (processing_started = now)
-            scan_seconds == 0 && !MB.Workspace.source_scan_running(ws) &&
+            scan_seconds == 0 && !Workspace.source_scan_running(ws) &&
                 ws.scan.state in (:done, :unchanged, :error, :canceled) &&
                 (scan_seconds = now)
             if processing_started !== nothing && processing_seconds == 0 && !processing_active
@@ -659,7 +659,7 @@ function run_benchmark()
                 (analysis_seconds = now - analysis_started)
             # Probe responsiveness ~6×/s, rotating across kinds, once items exist. Each probe is the
             # full select → load → plot probe a user performs while the build is still running.
-            if !ENGINE_ONLY && now - last_probe >= 0.16
+            if now - last_probe >= 0.16
                 last_probe = now
                 kind = kinds[kind_cursor]; kind_cursor = mod1(kind_cursor + 1, length(kinds))
                 probe = timed_plot!(ws, plot_kinds, kind, 3)
@@ -674,7 +674,7 @@ function run_benchmark()
                 @warn("hit MAX_BUILD_SECONDS"); break)
             sleep(0.004)
         end
-        final_memory = MB.Workspace.workspace_memory_snapshot(ws)
+        final_memory = Workspace.workspace_memory_snapshot(ws)
         rss_end_bytes = final_memory.rss_bytes
         push!(memory_samples, MemorySample(time() - t_start, final_memory))
 
@@ -682,28 +682,26 @@ function run_benchmark()
         saturation_stats = saturate_processed_writes!(ws, :kind3)
 
         # Steady-state sweep: random plot probes per kind on the finished cache.
-        if !ENGINE_ONLY
-            rng = MersenneTwister(1)
-            for kind in kinds, _ in 1:AFTER_BUILD_PLOTS
+        rng = MersenneTwister(1)
+        for kind in kinds, _ in 1:AFTER_BUILD_PLOTS
                 ids = [id for id in keys(ws.index.item_metadata)
                        if (r = get(ws.index.items, id, nothing); r !== nothing && r.kind === kind)]
                 isempty(ids) && continue
                 k = rand(rng, 1:min(4, length(ids)))
-                records = MB.ItemIndex.ItemRecord[ws.index.items[id] for id in rand(rng, ids, k)]
+                records = ItemRecord[ws.index.items[id] for id in rand(rng, ids, k)]
                 probe = timed_plot!(ws, plot_kinds, kind, k; records=records)
                 probe === nothing || push!(samples, Sample(time() - t_start, :after_build, kind, probe.n,
                     probe.plot_ms, probe.bytes, probe.ready))
-            end
         end
-        completed, total, active = MB.Workspace.work_counts(ws)
+        completed, total, active = Workspace.work_counts(ws)
         collection_nodes = count(ws.index.hierarchy.index) do (path, hierarchy_node)
             isempty(hierarchy_node.items) && return false
-            collection_key = MB.ItemIndex.collection_path_key(collect(String, path))
+            collection_key = collection_path_key(collect(String, path))
             member_kinds = unique(record.kind for record in hierarchy_node.items)
-            has_analyze = any(k -> MB.has_collection_analysis(ws.project, k), member_kinds)
+            has_analyze = any(k -> _has_collection_analysis(ws.project, k), member_kinds)
             has_analyze || return false
-            key = MB.Workspace.WorkKey(MB.Workspace.COLLECTION_ANALYZE, collection_key)
-            return MB.Workspace.cache_work_status(ws, key) === :ready
+            key = Workspace.WorkKey(Workspace.COLLECTION_ANALYZE, collection_key)
+            return Workspace.cache_work_status(ws, key) === :ready
         end
         metrics = ws.metrics
         build_stats = (
@@ -727,9 +725,9 @@ function run_benchmark()
             memory_samples,
         )
         START_PROFILE &&
-            (profile_report = MB.Workspace.stop_internal_profile!(ws))
+            (profile_report = Workspace.stop_internal_profile!(ws))
     finally
-        MB.close_workspace!(ws)
+        close_workspace!(ws)
     end
 
     # Warm reopen on the same cache: the incremental rescan finds every fingerprint unchanged and
@@ -759,7 +757,7 @@ function _reopen_once(project, data_root, plot_kinds, kinds)
     GC.gc()
     t0 = time()
     bytes0 = Base.gc_bytes()
-    ws = MB.open_workspace(project, data_root)
+    ws = open_workspace(project, data_root)
     first_view_s = 0.0
     idle_s = 0.0
     deadline = time() + MAX_BUILD_SECONDS
@@ -776,18 +774,16 @@ function _reopen_once(project, data_root, plot_kinds, kinds)
         end
         alloc_bytes = Base.gc_bytes() - bytes0
         first_plots = NamedTuple[]
-        if !ENGINE_ONLY
-            for kind in kinds
-                probe = timed_plot!(ws, plot_kinds, kind, 1)
-                probe === nothing || push!(first_plots,
-                    (kind=kind, plot_ms=probe.plot_ms))
-            end
+        for kind in kinds
+            probe = timed_plot!(ws, plot_kinds, kind, 1)
+            probe === nothing || push!(first_plots,
+                (kind=kind, plot_ms=probe.plot_ms))
         end
         return (first_view_s=first_view_s, idle_s=idle_s, alloc_bytes=alloc_bytes,
             items=length(ws.index.items), unchanged=ws.scan.state === :unchanged,
             first_plots=first_plots)
     finally
-        MB.close_workspace!(ws)
+        close_workspace!(ws)
     end
 end
 
@@ -871,7 +867,7 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
         end
     end
 
-    if profile_report isa MB.Profiling.ProfileReport
+    if profile_report isa Profiling.ProfileReport
         event_groups = _profile_event_groups(profile_report)
         open(joinpath(outdir, "profile_summary.csv"), "w") do io
             println(io, "category,operation,count,total_ms,p50_ms,p90_ms,p99_ms,max_ms," *
@@ -954,9 +950,9 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
             "after_plot_median_ms,after_plot_p90_ms,after_plot_p99_ms,after_plot_max_ms," *
             "rss_start_mib,rss_peak_mib,rss_end_mib,peak_rss_kib_per_item," *
             "peak_gc_live_kib_per_item,profile_events,profile_dropped")
-        event_count = profile_report isa MB.Profiling.ProfileReport ?
+        event_count = profile_report isa Profiling.ProfileReport ?
             length(profile_report.events) : 0
-        dropped = profile_report isa MB.Profiling.ProfileReport ?
+        dropped = profile_report isa Profiling.ProfileReport ?
             profile_report.dropped_events : 0
         @printf(io, "%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.3f,%.3f,%d,%d\n",
             n_files,
@@ -1081,7 +1077,7 @@ function report(samples, stats, saturation, reopen, profile_report, outdir,
         tee_printf("  first %-6s plot  %6.1f ms\n", p.kind, p.plot_ms)
     end
 
-    if profile_report isa MB.Profiling.ProfileReport
+    if profile_report isa Profiling.ProfileReport
         tee_printf("\nStructured profile: %d events, %d counters, %d dropped, %d CPU samples\n",
             length(profile_report.events), length(profile_report.counters),
             profile_report.dropped_events,
@@ -1105,7 +1101,7 @@ end
 
 """Render pipeline timing plots and write the plotted timing tables."""
 function _maybe_plot_pipeline(profile_report, memory_samples::Vector{MemorySample}, outdir::String)::Nothing
-    if !(profile_report isa MB.Profiling.ProfileReport)
+    if !(profile_report isa Profiling.ProfileReport)
         tee_println("\nNo structured profile captured; skipping pipeline event plots.")
         _write_pipeline_timeseries!(memory_samples, outdir)
         return nothing

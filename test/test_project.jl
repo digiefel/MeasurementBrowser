@@ -1,6 +1,6 @@
 using CSV
 using DataFrames: DataFrame
-using MeasurementBrowser
+using DataBrowser
 
 if !isdefined(Main, :TEST_CACHE_DEPOT)
     const TEST_CACHE_DEPOT = mktempdir()
@@ -45,7 +45,7 @@ const TEST_PROJECT = _build_test_project()
 
 """Build the directory source used by high-level project tests."""
 function test_source(_project::Project, root_path::AbstractString)
-    return MeasurementBrowser.DirectorySource(root_path)
+    return DataBrowser.DirectorySource(root_path)
 end
 
 """Write one small source table for scan and cache tests."""
@@ -56,4 +56,4 @@ end
 
 """Block until source and graph work settle, then return the workspace."""
 wait_workspace_idle!(workspace; timeout::Real=15) =
-    MeasurementBrowser.Workspace.wait_workspace_idle!(workspace; timeout)
+    DataBrowserCore.Workspace.wait_workspace_idle!(workspace; timeout)

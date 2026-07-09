@@ -86,14 +86,15 @@ registration order; the first match wins, so register specific filename patterns
 
 | Editing… | Look in… | Doc |
 |---|---|---|
-| `register_*`, item callbacks | `src/Project.jl`, `src/Projects.jl` | [api.md](docs/api.md) |
-| Scanning, item records, hierarchy | `src/ItemIndex/` | [data-model.md](docs/data-model.md) |
-| Directory traversal, `metadata.txt` | `src/DataSources/DirectorySource.jl` | [storage.md](docs/storage.md) |
-| DuckDB cache, writes, reopen | `src/Cache/` | [cache.md](docs/cache.md) |
-| Background work, loading item data | `src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Browser panels, plot embedding | `src/Browser/` | [gui.md](docs/gui.md) |
-| Profiling, benchmark traces | `src/Profiling.jl` | [profiling.md](docs/profiling.md) |
-| Tags, notes, spatial layout | `src/Annotations/` | [annotations.md](docs/annotations.md) |
+| `register_*`, item callbacks | `lib/DataBrowserAPI/` | [api.md](docs/api.md) |
+| Scanning, item records, hierarchy | `lib/DataBrowserCore/src/ItemIndex/` | [data-model.md](docs/data-model.md) |
+| Directory traversal, `metadata.txt` | `lib/DataBrowserSources/` | [storage.md](docs/storage.md) |
+| DuckDB cache, writes, reopen | `lib/DataBrowserCore/src/Cache.jl` (+ `lib/DataBrowserCache/`) | [cache.md](docs/cache.md) |
+| Background work, loading item data | `lib/DataBrowserCore/src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
+| Plot rendering, table viewer model | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
+| Browser panels, plot embedding | `lib/DataBrowserGUI/` | [gui.md](docs/gui.md) |
+| Profiling, benchmark traces | `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
+| Tags, notes, spatial layout | `lib/DataBrowserAnnotations/` | [annotations.md](docs/annotations.md) |
 
 `docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change
 behavior that affects the model, update the relevant doc in the same commit — do not copy

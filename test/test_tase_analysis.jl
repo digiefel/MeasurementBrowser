@@ -1,10 +1,10 @@
-using MeasurementBrowser
-using MeasurementBrowser: items_for_file, read_item_data, setup_plot, plot_data!
+using DataBrowser
+using DataBrowser: items_for_file, read_item_data, setup_plot, plot_data!
 using Test
 using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis, lines!, contents
 
-const MB = MeasurementBrowser
+const MB = DataBrowser
 
 # A realistic registry project (TASE four-terminal IV) exercised against the bundled fixtures. TASE
 # itself now lives as an external registry project; this keeps coverage of a real read + plot path.
@@ -91,7 +91,7 @@ end
     @test items[1].collection == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
 
     @testset "plot data api" begin
-        workspace = MB.Workspace.Workspace(project, MB.DirectorySource(dirname(fixture1)))
+        workspace = DataBrowserCore.Workspace.Workspace(project, DirectorySource(dirname(fixture1)))
         try
             for item in items
                 workspace.index.items[item.id] = item
@@ -101,12 +101,12 @@ end
             @test all(nrow(df) == 3 for df in data)
             @test all(names(df) == ["i", "v"] for df in data)
 
-            plot_kind = MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
-            @test plot_kind === MB.RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+            plot_kind = RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
+            @test plot_kind === RegisteredPlot{:four_terminal_iv,Symbol("Four-Terminal I-V")}
             figure = setup_plot(workspace, plot_kind, items)
             @test plot_data!(workspace, plot_kind, items, figure) === nothing
         finally
-            MB.Workspace.close_workspace!(workspace)
+            DataBrowserCore.Workspace.close_workspace!(workspace)
         end
     end
 end

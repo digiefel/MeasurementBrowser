@@ -1,5 +1,5 @@
 using JSON
-using MeasurementBrowser
+using DataBrowser
 import DataBrowserProfiling as Profiling
 using CSV
 using DataFrames: DataFrame, nrow
@@ -119,15 +119,15 @@ end
 
 @testset "profile keyword precedence" begin
     mktempdir() do dir
-        project = MeasurementBrowser.define_project("ProfileFlags_$(basename(dir))")
-        source = MeasurementBrowser.DirectorySource(dir)
+        project = DataBrowser.define_project("ProfileFlags_$(basename(dir))")
+        source = DataBrowser.DirectorySource(dir)
         withenv(
             "MB_PROFILE_INTERNAL" => "1",
             "MB_PROFILE_CPU" => "1",
             "MB_PROFILE_OUTPUT" => joinpath(dir, "ignored.json"),
             "MB_CRASH_TRACE" => nothing,
         ) do
-            workspace = MeasurementBrowser.open_workspace(
+            workspace = DataBrowser.open_workspace(
                 project,
                 source;
                 profile_internal=false,
@@ -138,7 +138,7 @@ end
             try
                 @test workspace.profiler.state === :disabled
             finally
-                MeasurementBrowser.close_workspace!(workspace)
+                DataBrowser.close_workspace!(workspace)
             end
         end
     end

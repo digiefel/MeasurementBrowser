@@ -1,4 +1,6 @@
 using Test
+using DataBrowserCore
+using DataBrowserGUI
 
 const TEST_CACHE_DEPOT = mktempdir()
 pushfirst!(DEPOT_PATH, TEST_CACHE_DEPOT)
@@ -6,7 +8,7 @@ atexit(() -> rm(TEST_CACHE_DEPOT; force=true, recursive=true))
 
 include("test_project.jl")
 
-@testset "MeasurementBrowser Tests" begin
+@testset "DataBrowser Tests" begin
     include("test_tase_analysis.jl")
     include("test_project_view_state.jl")
     include("test_directory_source.jl")

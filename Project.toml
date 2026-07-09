@@ -1,4 +1,4 @@
-name = "MeasurementBrowser"
+name = "DataBrowser"
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
 authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
