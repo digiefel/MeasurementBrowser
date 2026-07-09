@@ -5,7 +5,7 @@ using NativeFileDialog: pick_file
 
 using ...DataBrowserSources
 
-using ..TableInspector:
+using DataBrowserPlots:
     InspectorTable,
     merge_item_tables
 using .MakieImguiIntegration: MakieFigure

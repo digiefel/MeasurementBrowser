@@ -1,15 +1,23 @@
-module Visualization
+"""GLMakie plot rendering and merged table viewer data model."""
+module DataBrowserPlots
 
 using GLMakie: Figure
 
 import DataBrowserAPI
-import DataBrowserAPI: AbstractDataItem, PlotKind, RegisteredPlot, plot_data!, setup_plot
+import DataBrowserAPI:
+    AbstractDataItem,
+    PlotKind,
+    RegisteredPlot,
+    plot_data!,
+    setup_plot
 import DataBrowserCore.ItemIndex: ItemRecord
-import DataBrowserProfiling as Profiling
 import DataBrowserCore.Workspace
+import DataBrowserProfiling as Profiling
+
+include("table_model.jl")
 
 """Materialize records and create the figure layout required by a visualizer."""
-function setup_plot(
+function DataBrowserAPI.setup_plot(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
@@ -19,7 +27,7 @@ function setup_plot(
 end
 
 """Materialize records and draw their items into an existing figure."""
-function plot_data!(
+function DataBrowserAPI.plot_data!(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
@@ -36,7 +44,7 @@ Build the figure for a registered plot by running its `setup` callback.
 The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
 `setup` sizes the figure layout to the data without resolving it itself.
 """
-function setup_plot(
+function DataBrowserAPI.setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
     items::Vector{<:AbstractDataItem},
@@ -56,7 +64,7 @@ Draw a registered plot into its figure by running its `draw` callback.
 The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
 `draw` reads `item.data` directly and never resolves data itself.
 """
-function plot_data!(
+function DataBrowserAPI.plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
     items::Vector{<:AbstractDataItem},
@@ -71,5 +79,7 @@ function plot_data!(
     end
     return nothing
 end
+
+export InspectorTable, merge_item_tables
 
 end

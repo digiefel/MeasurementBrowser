@@ -96,16 +96,14 @@ using DataBrowserCore.Workspace:
     read_item_data,
     select_items!
 
-include("TableInspector.jl")
-
 const ENGINE_ONLY_BENCHMARK_LOAD = get(ENV, "MB_BENCH_ENGINE_ONLY", "0") == "1"
 
 if !ENGINE_ONLY_BENCHMARK_LOAD
-    include("Visualization.jl")
+    using DataBrowserPlots
+    using DataBrowserPlots: InspectorTable, merge_item_tables
     import DataBrowserAPI: plot_data!, setup_plot
 end
 
-using .TableInspector: InspectorTable, merge_item_tables
 if ENGINE_ONLY_BENCHMARK_LOAD
     open_browser(args...; kwargs...) =
         error("open_browser is unavailable when MB_BENCH_ENGINE_ONLY=1")

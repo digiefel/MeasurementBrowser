@@ -1,5 +1,3 @@
-module TableInspector
-
 using DataFrames: DataFrame, names, nrow
 
 export InspectorTable, merge_item_tables
@@ -160,6 +158,4 @@ function merge_item_tables(
     end
 
     return InspectorTable(columns, total_rows, row_item, labels, getcell), warnings
-end
-
 end
