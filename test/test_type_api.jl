@@ -1,8 +1,8 @@
-using MeasurementBrowser
+using DataBrowser
 using Test
 using GLMakie: Figure, Axis
 
-const MB = MeasurementBrowser
+const MB = DataBrowser
 
 # A custom item via the type API: subtype AbstractDataItem, carry metadata as typed fields and the
 # data directly. The engine indexes it through the same contract the package's DataItem answers.
@@ -56,10 +56,10 @@ MB.item_data(p::Photo) = p.data
     # Scan: entries returns Photos; the engine derives records via the contract (no filepath needed
     # on the item — it comes from the SourceFile) and frees the data-bearing items.
     workspace = MB.open_workspace(project, test_source(project, dir); cache=false)
-    plot_kind = MB.RegisteredPlot{:photo,Symbol("Image")}
+    plot_kind = RegisteredPlot{:photo,Symbol("Image")}
     try
         wait_workspace_idle!(workspace)
-        records = MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy)
+        records = DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy)
         @test length(records) == 2
         @test all(r -> r.kind == :photo, records)
         @test Set(r.metadata[:exposure] for r in records) == Set([2.0, 4.0])

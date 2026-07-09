@@ -94,7 +94,7 @@ package-level object LRU and no separate debug-plot path.
 Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the items they were created with unless the user enables Live in that window.
 
 While the app runs, plot choices are stored as `item kind => plot type`. Project-local
-persistence writes the type names to `measurementbrowser.toml`. When the main Live plot sees one
+persistence writes the type names to `databrowser.toml`. When the main Live plot sees one
 item kind, it restores that kind's last plot choice.
 
 ## Context menus (right-click)
@@ -147,7 +147,7 @@ ImGui's ini file persists window sizes, positions, and — most importantly — 
 widths. The browser re-enables ini persistence and points it at a stable per-machine path:
 
 ```
-<DEPOT_PATH[1]>/measurementbrowser/imgui.ini
+<DEPOT_PATH[1]>/databrowser/imgui.ini
 ```
 
 (`homedir()` is used when `DEPOT_PATH` is empty.) The directory is created at startup if it does

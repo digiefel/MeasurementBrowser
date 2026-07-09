@@ -1,9 +1,11 @@
-using MeasurementBrowser
+using DataBrowser
+using CancellationTokens: CancellationTokenSource, get_token
+using DataBrowserAPI: AbstractDataSource, has_collection_metadata, source_item_noun
 using Test
 
-const MBD = MeasurementBrowser
+const MBD = DataBrowser
 
-struct TestNounSource <: MBD.Projects.AbstractDataSource end
+struct TestNounSource <: AbstractDataSource end
 
 """Open a memory-only workspace on `source` and wait for the build to settle."""
 function _open_settled(project, source)
@@ -25,7 +27,7 @@ end
             "test/nested,B,99,0,1,no\n",
         )
         write(joinpath(dir, "tags.txt"), "ignored")
-        write(joinpath(dir, "measurementbrowser.toml"), "ignored")
+        write(joinpath(dir, "databrowser.toml"), "ignored")
 
         project = MBD.define_project("Parameter test")
         MBD.register_item!(
@@ -69,8 +71,8 @@ end
 
             metadata_by_label = Dict(
                 record.item_label =>
-                    MBD.ItemIndex.effective_metadata(hierarchy, record)
-                for record in MeasurementBrowser.ItemIndex.all_items(hierarchy)
+                    DataBrowserCore.ItemIndex.effective_metadata(hierarchy, record)
+                for record in DataBrowserCore.ItemIndex.all_items(hierarchy)
             )
             @test metadata_by_label["Table root"][:wafer] == "A"
             @test metadata_by_label["Table root"][:area_um2] == 7.0
@@ -84,7 +86,7 @@ end
         shallow = _open_settled(TEST_PROJECT, MBD.DirectorySource(dir; recursive=false))
         try
             @test shallow.cache.status.total_source_items == 1
-            @test only(MeasurementBrowser.ItemIndex.all_items(shallow.index.hierarchy)).item_label == "Table root"
+            @test only(DataBrowserCore.ItemIndex.all_items(shallow.index.hierarchy)).item_label == "Table root"
         finally
             MBD.close_workspace!(shallow)
         end
@@ -95,7 +97,7 @@ end
             hierarchy = without_metadata.index.hierarchy
             @test !hierarchy.has_collection_metadata
             @test all(isempty(node.metadata) for node in values(hierarchy.index))
-            @test all(isempty(record.metadata) for record in MeasurementBrowser.ItemIndex.all_items(hierarchy))
+            @test all(isempty(record.metadata) for record in DataBrowserCore.ItemIndex.all_items(hierarchy))
         finally
             MBD.close_workspace!(without_metadata)
         end
@@ -105,12 +107,13 @@ end
         custom = MBD.DirectorySource(dir; metadata_file="device_info.txt")
         MBD.open_source(custom)
         try
-            @test MBD.Projects.source_item_noun(custom) == "source files"
-            @test MBD.Projects.source_item_noun(TestNounSource()) == "source items"
-            @test MBD.Projects.has_collection_metadata(custom)
+            @test source_item_noun(custom) == "source files"
+            @test source_item_noun(TestNounSource()) == "source items"
+            @test has_collection_metadata(custom)
+            cancel_token = get_token(CancellationTokenSource())
             @test all(
                 file -> file.filepath != custom_path,
-                MBD.source_items(custom),
+                MBD.source_items(custom; cancel_token),
             )
         finally
             MBD.close_source!(custom)
@@ -132,8 +135,8 @@ end
 
             write(metadata_path, "no_parameter_columns\n")
             @test Base.timedwait(() -> !isempty(workspace.source_error), 5) === :ok
-            MBD.Workspace.refresh_status!(workspace)
-            status = MBD.Workspace.workspace_status(workspace)
+            DataBrowserCore.Workspace.refresh_status!(workspace)
+            status = DataBrowserCore.Workspace.workspace_status(workspace)
             @test status.level === :error
             @test status.label == "Source Error"
 

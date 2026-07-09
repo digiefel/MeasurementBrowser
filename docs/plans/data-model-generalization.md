@@ -2,7 +2,7 @@
 
 ## Goal
 
-Grow MeasurementBrowser into **DataBrowser**: an open, scriptable, data-focused IDE rather than a
+**DataBrowser** is an open, scriptable, data-focused IDE rather than a
 measurement-only viewer. The same app should browse measurements, images, fitted models, and
 arbitrary datasets; organize them by meaning rather than by folder; and present each through the
 visualizers and figures in [vision.md](../vision.md).
@@ -25,7 +25,7 @@ model legible.
 These three decide every ambiguous call below.
 
 1. **Generality at the base, clarity at the leaves.** The abstract umbrella type `AbstractDataItem`
-   (and `Collection`) is allowed to be bland — *no one reads it in normal use*. Its meaning is a small
+   (and `AbstractCollection`) is allowed to be bland — *no one reads it in normal use*. Its meaning is a small
    documented interface, not the noun. The clarity lives in the concrete types **projects** define
    for their own domain (an RuO2 measurement, a device) — or in well-chosen `kind`s and `parameters`
    on the package's normal `DataItem`. The package ships `AbstractDataItem`, the interface, and the
@@ -56,7 +56,7 @@ This is a vocabulary + extensibility change, not a rewrite. Unchanged:
 
 ```julia
 abstract type AbstractDataItem end   # the contract every item satisfies
-abstract type Collection end         # a semantic, metadata-bearing node in the tree (a device, a dataset)
+abstract type AbstractCollection end         # a semantic, metadata-bearing node in the tree (a device, a dataset)
 
 # The interface IS the contract — a subtype indexes if it answers these. A type implements them
 # however it likes: the package's DataItem reads dicts; a project subtype reads its own typed fields.
@@ -81,24 +81,24 @@ The package ships `AbstractDataItem`, the interface, the concrete `DataItem`, an
 ```julia
 # package-provided:
 struct DataItem <: AbstractDataItem … end       # the normal item: parameters/stats dicts + data
-# (+ abstract AbstractDataItem / Collection, the interface, and the internal ItemRecord — see below)
+# (+ abstract AbstractDataItem / AbstractCollection, the interface, and the internal ItemRecord — see below)
 
 # project-provided via the type API — illustrative, NOT shipped by the package:
 struct PundMeasurement <: AbstractDataItem … end   # metadata as typed fields it owns
-struct Device          <: Collection        … end  # area_um2, t_HZO_nm, …
+struct Device          <: AbstractCollection        … end  # area_um2, t_HZO_nm, …
 ```
 
 This generalizes today's package types: metadata-only `MeasurementInfo` becomes the internal
-`ItemRecord`; `DeviceInfo`'s path folds into `collection` and its node metadata into the `Collection`
+`ItemRecord`; `DeviceInfo`'s path folds into `collection` and its node metadata into the `AbstractCollection`
 abstraction. Neither a measurement nor a device *type* is package-provided anymore.
 
 `kind` is a coarse tag (icon, UI bucket, plot-registry key), **not** the dispatch key it is today —
 the type carries the real meaning. Recipe-API projects still get a `Symbol`-keyed experience through
 the package's `DataItem`.
 
-Item **identity is file + kind + params**, never its tree position. `Collection` is the typed,
+Item **identity is file + kind + params**, never its tree position. `AbstractCollection` is the typed,
 metadata-bearing entity attached to a *meaningful* node — a device with area/thickness, a dataset
-with provenance. Plain intermediate path segments are just strings; you only reach for a `Collection`
+with provenance. Plain intermediate path segments are just strings; you only reach for an `AbstractCollection`
 when a node carries semantics or metadata, rather than forcing every segment to be a heavy object.
 
 ## Two representations: internal record vs. the items you see
@@ -286,7 +286,7 @@ first; the second argument is either a data root or an explicit `AbstractDataSou
    node is the mutator (now done by workspace background analysis).
 4. **`ItemRecord` carries only source-*item* identity; source-*level* identity lives once on
    `SourceScan`** — no per-record duplication of `source_id`/`source_label`.
-5. **The low-level types are not exported yet** — reachable as `MeasurementBrowser.name`, staged for a
+5. **The low-level types are not exported yet** — reachable as `DataBrowser.name`, staged for a
    dedicated submodule. The exported surface stays the conservative high-level set; `PlotKind` stays
    internal too.
 6. **`!` follows Julia's argument-mutation convention**, not "has side effects": `close_source!`
@@ -327,15 +327,12 @@ When this lands, the current-state [../data-model.md](../data-model.md) and
 Each step is independently testable and ends at a clean, restart-and-run state.
 
 1. **Rename pass.** `measurement_kind → kind`; scope the word "recipe" to the callback path. Mechanical.
-   *(The package rename `MeasurementBrowser → DataBrowser` is the most invasive move — it breaks
-   `using MeasurementBrowser` for the external TASE/v2-RuO2 projects — so it is its own deliberate
-   step, likely paired with the next release rather than folded in here.)*
-2. **Interface + record/item split + `item.data`.** Introduce `AbstractDataItem`/`Collection` and the
+2. **Interface + record/item split + `item.data`.** Introduce `AbstractDataItem`/`AbstractCollection` and the
    interface as the contract; rename today's metadata-only `MeasurementInfo` to the internal
    `ItemRecord` the hierarchy stores; make the recipe path build the package's `DataItem`; materialize
    data-bearing items (with `item.data`) for the viewed selection via the engine bridge. Switch
    plot/inspect callbacks to `(workspace, items, figure)` reading `item.data` — the parallel data
-   array goes away. Fold `DeviceInfo`'s path into `collection` and its metadata into the `Collection`
+   array goes away. Fold `DeviceInfo`'s path into `collection` and its metadata into the `AbstractCollection`
    representation. No package-provided domain types — projects define their own subtypes or use the
    generic `DataItem`.
 3. **Collection model.** Replace stored `DeviceInfo.location` with a derived `collection` produced by
@@ -355,6 +352,6 @@ Each step is independently testable and ends at a clean, restart-and-run state.
 
 - Arbitrary custom view axes beyond the built-ins — owner is likely "the project declares them,"
   decided at step 6.
-- Whether `Collection` metadata (device area/thickness) keeps the current lookup-time path-prefix
-  inheritance or becomes explicit `Collection` objects — settle during step 3.
+- Whether `AbstractCollection` metadata (device area/thickness) keeps the current lookup-time path-prefix
+  inheritance or becomes explicit `AbstractCollection` objects — settle during step 3.
 </content>

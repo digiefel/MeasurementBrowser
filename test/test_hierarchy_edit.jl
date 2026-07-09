@@ -1,7 +1,7 @@
-using MeasurementBrowser
+using DataBrowser
 using Test
 
-const HE_INDEX = MeasurementBrowser.ItemIndex
+const HE_INDEX = DataBrowserCore.ItemIndex
 
 function _edit_record(;
     id::String,
@@ -19,7 +19,7 @@ end
 
 @testset "copy-on-write hierarchy edits" begin
     mktempdir() do dir
-        source = MeasurementBrowser.DirectorySource(dir)
+        source = DataBrowser.DirectorySource(dir)
         records = [
             _edit_record(id="a1", source_item_id="file-a", collection=["dev-A", "run-2"]),
             _edit_record(id="a2", source_item_id="file-a", collection=["dev-A", "run-10"]),
@@ -42,13 +42,13 @@ end
         updated = HE_INDEX.finish_edit!(edit, source)
 
         # The original tree is untouched: full contract for concurrent readers.
-        @test length(MeasurementBrowser.ItemIndex.all_items(original)) == 3
+        @test length(DataBrowserCore.ItemIndex.all_items(original)) == 3
         @test haskey(original.index, ("dev-A", "run-2"))
         @test [child.name for child in original.index[("dev-A",)].children] ==
             ["run-2", "run-10"]
 
         # The updated tree reflects the edit: empty nodes pruned, new node in sorted position.
-        @test length(MeasurementBrowser.ItemIndex.all_items(updated)) == 2
+        @test length(DataBrowserCore.ItemIndex.all_items(updated)) == 2
         @test !haskey(updated.index, ("dev-A", "run-2"))
         @test !haskey(updated.index, ("dev-A", "run-10"))
         @test [child.name for child in updated.index[("dev-A",)].children] == ["run-3"]

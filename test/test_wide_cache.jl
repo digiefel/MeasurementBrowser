@@ -1,14 +1,14 @@
-using MeasurementBrowser
+using DataBrowser
 using Test
 using Dates: Date, DateTime
 
-const WIDE = MeasurementBrowser.Cache
-const WIDE_INDEX = MeasurementBrowser.ItemIndex
+const WIDE = DataBrowserCore.Cache
+const WIDE_INDEX = DataBrowserCore.ItemIndex
 
 """Open a fresh disk cache for one wide-table test and clean it up afterwards."""
 function _with_wide_cache(work::Function, name::AbstractString)
     mktempdir() do dir
-        source = MeasurementBrowser.DirectorySource(dir)
+        source = DataBrowser.DirectorySource(dir)
         identity = WIDE.project_cache_identity("$(name)_$(basename(dir))", source)
         cache = WIDE.open_cache_db(identity)
         try
@@ -83,34 +83,34 @@ end
         write(joinpath(dir, "cold.csv"), "x\n1\n")
         write(joinpath(dir, "metadata.txt"), "collection_path,wafer\ndev,A\n")
 
-        project = MeasurementBrowser.define_project("QueryItems_$(basename(dir))")
-        MeasurementBrowser.register_item!(project, :table;
+        project = DataBrowser.define_project("QueryItems_$(basename(dir))")
+        DataBrowser.register_item!(project, :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> read(file.filepath, String),
-            entries=(file, _data) -> [MeasurementBrowser.DataItem(
+            entries=(file, _data) -> [DataBrowser.DataItem(
                 kind=:table,
                 collection=["dev", splitext(file.filename)[1]],
                 data=nothing)],
             analyze=item -> Dict{Symbol,Any}(
                 :peak => splitext(basename(item.id))[1] == "hot" ? 5.0 : 1.0),
         )
-        workspace = MeasurementBrowser.open_workspace(
-            project, MeasurementBrowser.DirectorySource(dir); background_processing=true)
+        workspace = DataBrowser.open_workspace(
+            project, DataBrowser.DirectorySource(dir); background_processing=true)
         try
             wait_workspace_idle!(workspace)
             # Give the buffered wide-column writes their flush window before querying committed DB;
             # until the ALTER commits, the predicate column is not yet present.
             settled() = try
-                length(MeasurementBrowser.query_items(workspace, "peak > 4")) == 1
+                length(DataBrowser.query_items(workspace, "peak > 4")) == 1
             catch
                 false
             end
             @test Base.timedwait(settled, 10) === :ok
-            matched = MeasurementBrowser.query_items(workspace, "peak > 4 AND wafer = 'A'")
+            matched = DataBrowser.query_items(workspace, "peak > 4 AND wafer = 'A'")
             @test length(matched) == 1
             @test occursin("hot", only(matched))
         finally
-            MeasurementBrowser.close_workspace!(workspace)
+            DataBrowser.close_workspace!(workspace)
         end
     end
 end
@@ -118,13 +118,13 @@ end
 @testset "memory cache answers query_items with an empty vector" begin
     mktempdir() do dir
         write(joinpath(dir, "a.csv"), "x\n1\n")
-        workspace = MeasurementBrowser.open_workspace(
-            TEST_PROJECT, MeasurementBrowser.DirectorySource(dir); cache=false)
+        workspace = DataBrowser.open_workspace(
+            TEST_PROJECT, DataBrowser.DirectorySource(dir); cache=false)
         try
             wait_workspace_idle!(workspace)
-            @test MeasurementBrowser.query_items(workspace, "1 = 1") == String[]
+            @test DataBrowser.query_items(workspace, "1 = 1") == String[]
         finally
-            MeasurementBrowser.close_workspace!(workspace)
+            DataBrowser.close_workspace!(workspace)
         end
     end
 end

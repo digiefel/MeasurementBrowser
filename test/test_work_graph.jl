@@ -1,10 +1,10 @@
-using MeasurementBrowser
+using DataBrowser
 using Test
 using DBInterface
 using DuckDB
 
-const WORK = MeasurementBrowser.Workspace
-const CACHE = MeasurementBrowser.Cache
+const WORK = DataBrowserCore.Workspace
+const CACHE = DataBrowserCore.Cache
 
 @testset "work graph dependencies" begin
     graph = WORK.WorkDependencyGraph()
@@ -58,7 +58,7 @@ end
 
 @testset "stale cache schema requires explicit rebuild" begin
     mktempdir() do dir
-        source = MeasurementBrowser.DirectorySource(dir)
+        source = DataBrowser.DirectorySource(dir)
         identity = CACHE.project_cache_identity("StaleSchema_$(basename(dir))", source)
         mkpath(dirname(identity.cache_path))
         db = DBInterface.connect(DuckDB.DB, identity.cache_path)
@@ -104,8 +104,8 @@ end
 @testset "workspace falls back to memory cache on stale disk schema" begin
     mktempdir() do dir
         project_name = "StaleWorkspace_$(basename(dir))"
-        project = MeasurementBrowser.define_project(project_name)
-        source = MeasurementBrowser.DirectorySource(dir)
+        project = DataBrowser.define_project(project_name)
+        source = DataBrowser.DirectorySource(dir)
         identity = CACHE.project_cache_identity(project_name, source)
         mkpath(dirname(identity.cache_path))
         db = DBInterface.connect(DuckDB.DB, identity.cache_path)
@@ -118,13 +118,13 @@ end
             DBInterface.close!(db)
         end
 
-        workspace = MeasurementBrowser.open_workspace(project, source)
+        workspace = DataBrowser.open_workspace(project, source)
         try
             @test workspace.cache.db isa CACHE.MemoryCacheDB
             @test workspace.cache.disk_error isa CACHE.ProjectCacheSchemaError
             @test !workspace.background_processing
         finally
-            MeasurementBrowser.close_workspace!(workspace)
+            DataBrowser.close_workspace!(workspace)
             rm(dirname(identity.cache_path); force=true, recursive=true)
         end
     end
@@ -132,7 +132,7 @@ end
 
 @testset "semantic collection-metadata cache delete" begin
     mktempdir() do dir
-        source = MeasurementBrowser.DirectorySource(dir)
+        source = DataBrowser.DirectorySource(dir)
         identity = CACHE.project_cache_identity("WorkGraphDelete_$(basename(dir))", source)
         cache = CACHE.open_cache_db(identity)
         try
@@ -164,13 +164,13 @@ end
 @testset "cache stage summary follows persisted stage rows" begin
     mktempdir() do dir
         write_test_source(joinpath(dir, "a.csv"))
-        workspace = MeasurementBrowser.open_workspace(
+        workspace = DataBrowser.open_workspace(
             TEST_PROJECT,
-            MeasurementBrowser.DirectorySource(dir);
+            DataBrowser.DirectorySource(dir);
             background_processing=true,
         )
         try
-            MeasurementBrowser.Workspace.wait_workspace_idle!(workspace)
+            DataBrowserCore.Workspace.wait_workspace_idle!(workspace)
             summary = CACHE.cache_stage_summary(workspace.cache.db)
             @test summary.cached_sources == 1
             @test summary.interpreted_items == 1
@@ -178,7 +178,7 @@ end
             @test summary.analyzed == 1
 
             source_item_id = only(keys(workspace.index.items_by_source))
-            records = MeasurementBrowser.Workspace.source_item_records(
+            records = DataBrowserCore.Workspace.source_item_records(
                 workspace.index, source_item_id)
             CACHE.delete_source_item!(workspace.cache.db, source_item_id, records)
             summary = CACHE.cache_stage_summary(workspace.cache.db)
@@ -187,7 +187,7 @@ end
             @test summary.processed == 0
             @test summary.analyzed == 0
         finally
-            MeasurementBrowser.close_workspace!(workspace)
+            DataBrowser.close_workspace!(workspace)
         end
     end
 end

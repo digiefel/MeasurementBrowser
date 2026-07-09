@@ -1,10 +1,13 @@
-using MeasurementBrowser
-using MeasurementBrowser: inspect_table
+using DataBrowser
+using DataBrowserGUI
+using DataBrowser: inspect_table
+using DataBrowserGUI
 using DataFrames: DataFrame
 using Test
 
-const Browser = MeasurementBrowser.Browser
-const TI = MeasurementBrowser.TableInspector
+const Browser = DataBrowserGUI.Browser
+using DataBrowserPlots
+using DataBrowserGUI
 
 @testset "table inspector" begin
 
@@ -34,12 +37,7 @@ const TI = MeasurementBrowser.TableInspector
         @test preview.columns == ["time_s", "current_A", "voltage_V"]
         @test preview.row_count == 2
         @test preview.preview_rows == 2
-
-        # All-rows mode: no cap, warnings empty
-        preview_all = inspect_table(comma_path; max_rows=typemax(Int))
-        @test preview_all.row_count == 2
-        @test preview_all.preview_rows == 2
-        @test isempty(preview_all.warnings)
+        @test isempty(preview.warnings)
 
         tab_path = joinpath(dir, "no_header.tsv")
         write(tab_path, "1\t2\t3\n4\t5\t6\n")
@@ -56,7 +54,7 @@ const TI = MeasurementBrowser.TableInspector
     @testset "merge_item_tables single item" begin
         df = DataFrame(x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0])
         pairs = [("item_a", df)]
-        table, warnings = TI.merge_item_tables(
+        table, warnings = merge_item_tables(
             Tuple{Any,Any}[(lbl, d) for (lbl, d) in pairs],
         )
         @test isempty(warnings)
@@ -76,7 +74,7 @@ const TI = MeasurementBrowser.TableInspector
         df1 = DataFrame(x=[1, 2], y=[3, 4])
         df2 = DataFrame(y=[5, 6], z=[7, 8])  # y shared, z new, x missing
         pairs = Tuple{Any,Any}[("A", df1), ("B", df2)]
-        table, warnings = TI.merge_item_tables(pairs)
+        table, warnings = merge_item_tables(pairs)
         @test isempty(warnings)
         # Column union: x, y, z (x first from df1, then y, then z from df2)
         @test Set(table.columns) == Set(["x", "y", "z"])
@@ -96,7 +94,7 @@ const TI = MeasurementBrowser.TableInspector
     @testset "merge_item_tables non-DataFrame warning" begin
         df = DataFrame(a=[1, 2])
         pairs = Tuple{Any,Any}[("good", df), ("bad", "not a dataframe")]
-        table, warnings = TI.merge_item_tables(pairs)
+        table, warnings = merge_item_tables(pairs)
         @test length(warnings) == 1
         @test occursin("non-tabular", warnings[1])
         @test table.rows == 2
@@ -105,7 +103,7 @@ const TI = MeasurementBrowser.TableInspector
 
     # --- merge_item_tables: empty input ---
     @testset "merge_item_tables empty" begin
-        table, warnings = TI.merge_item_tables(Tuple{Any,Any}[])
+        table, warnings = merge_item_tables(Tuple{Any,Any}[])
         @test table.rows == 0
         @test isempty(table.columns)
         @test isempty(table.item_labels)
@@ -171,12 +169,11 @@ const TI = MeasurementBrowser.TableInspector
     end
 
     # --- file-mode grid model builder ---
-    @testset "file grid model from TablePreview" begin
+    @testset "file grid model from TabularFileSource" begin
         mktempdir() do dir
             path = joinpath(dir, "sample.csv")
             write(path, "a,b,c\n1,2,3\n4,5,6\n7,8,9\n")
-            # Load all rows
-            preview = inspect_table(path; max_rows=typemax(Int))
+            preview = inspect_table(path)
             @test preview.row_count == 3
             @test preview.preview_rows == 3
             @test isempty(preview.warnings)

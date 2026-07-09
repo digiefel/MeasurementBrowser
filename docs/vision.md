@@ -365,7 +365,7 @@ thing the GUI observes and mutates through the same operations available to Juli
 |---|---|---|
 | Workspace state | Workspace object | Recomputed from source, cache, and source metadata. |
 | Data cache | Cache layer | DuckDB (+ side files) outside the source root; keyed by project. |
-| GUI state | Browser window | Mostly transient; small preferences in app prefs. |
+| GUI state | Browser window | Mostly transient; per-dataset state in `databrowser.toml`. App-wide prefs TBD with project-file persistence. |
 | Item annotations | Source root | Hand-editable tags, notes, coordinates, spatial positions. |
 | Workflow state | Workflow model | Saved workflow file, replayable from GUI or API. |
 | Figure state | Figure / workflow model | Produced from workflows or exported separately. |

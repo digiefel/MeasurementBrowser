@@ -1,7 +1,7 @@
 # DataBrowser Roadmap
 
-The ordered plan to take the codebase from `MeasurementBrowser` today — a single package with the GUI
-and engine entangled — to the `DataBrowser` family in [../vision.md](../vision.md): a scriptable,
+The ordered plan to take the codebase from a single monolithic package — GUI and engine
+entangled — to the `DataBrowser` family in [../vision.md](../vision.md): a scriptable,
 agent-ready scientific toolkit. Stages run roughly in order; each lists what it delivers and when it
 is done. Near-term stages are concrete; later ones are directional and get detailed as they approach.
 
@@ -17,9 +17,8 @@ wired back into the shrinking main package through `[sources]` path deps so the 
 compiling and testing at every step. Naming is part of extraction, not a later pass: each package
 lands as `DataBrowser*` with its real boundary, so every step is reviewable on its own terms — "does
 `DataBrowserCache` hold the right things and depend on the right things?" — instead of as a reshuffle
-under the old names. There is no separate rename phase: the residual `MeasurementBrowser`, once
-everything else has been lifted out, *is* the thin `DataBrowser` umbrella, and renaming it is the last
-step.
+under the old names. There is no separate rename phase: once everything else has been lifted out,
+the residual umbrella module is `DataBrowser`.
 
 The order, leaves first, is Profiling → API → Annotations → Sources → Cache → Core → Plots → GUI →
 umbrella-rename, with the cross-cutting rules enforced at the step that owns them (payload-agnostic API

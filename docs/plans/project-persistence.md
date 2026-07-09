@@ -72,7 +72,7 @@ path = "../data/electrical"
 metadata_file = "device_info.txt"
 
 [cache]
-path = ".measurementbrowser/cache.duckdb"
+path = ".databrowser/cache.duckdb"
 ```
 
 Exact keys are deferred. The important shape is:

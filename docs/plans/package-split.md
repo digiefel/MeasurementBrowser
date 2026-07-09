@@ -1,7 +1,7 @@
 # Package Split — Execution Plan
 
-The concrete steps behind [roadmap.md](roadmap.md) Stage 1: how the single `MeasurementBrowser`
-package becomes the `DataBrowser` family in [../vision.md](../vision.md) §6. This doc owns the
+The concrete steps behind [roadmap.md](roadmap.md) Stage 1: how the monolith was split into the
+`DataBrowser` family in [../vision.md](../vision.md) §6. This doc owns the
 file-by-file mapping and the ordering; the roadmap owns *why* and *when*, the vision owns the target
 boundaries.
 
@@ -16,10 +16,10 @@ Two properties make this work:
 
 - **Each step is independently reviewable.** The unit of review is a real, finally-named package with
   a real boundary — "is this what `DataBrowserCache` should contain, and are its deps right?" — not a
-  reshuffle of `MeasurementBrowser` internals under names that no longer mean anything.
+  reshuffle of `DataBrowser` internals under names that no longer mean anything.
 - **The rename falls out for free.** We never do a separate "rename" pass. Everything is extracted
   into `DataBrowser*` packages; what remains in the original package shrinks until it is just the thin
-  umbrella, and the final step renames that residual `MeasurementBrowser` → `DataBrowser`.
+  `DataBrowser` umbrella module.
 
 Extraction goes bottom-up (leaves first) so a package only ever depends on packages already extracted.
 
@@ -42,7 +42,7 @@ The API-shaped code already lives largely apart from the engine, which is what m
 | `src/Workspace.jl`, `src/Workspace/` | workspace, operations, processing, data access, status | `DataBrowserCore` (+ `WorkGraph` extracted) |
 | `src/Visualization.jl` | plot-kind declarations **and** GLMakie rendering | split: declarations → API, rendering → `DataBrowserPlots` |
 | `src/Browser.jl`, `src/Browser/`, `src/Gui/` | the CImGui shell, panels, browser | `DataBrowserGUI` |
-| `src/MeasurementBrowser.jl` | top-level module, includes, exports | residual → `DataBrowser` umbrella |
+| `src/DataBrowser.jl` | top-level module, includes, exports | residual → `DataBrowser` umbrella |
 
 ## Dependency leaks the split has to sever
 
@@ -56,7 +56,7 @@ chosen to cut them:
 - **`GLMakie: Figure` in `Visualization.jl`.** Split it: the plot-kind *declarations* (`PlotKind`,
   `plot_kinds`, `setup_plot` / `plot_data!` as bare generics) go to API; the GLMakie rendering goes to
   `DataBrowserPlots`. After this, Core no longer transitively needs GLMakie.
-- **`MB_BENCH_ENGINE_ONLY`.** The `ENGINE_ONLY_BENCHMARK_LOAD` branch in `MeasurementBrowser.jl`
+- **`MB_BENCH_ENGINE_ONLY`.** The `ENGINE_ONLY_BENCHMARK_LOAD` branch in `DataBrowser.jl`
   exists only to fake a headless engine inside the monolith. Once `DataBrowserCore` is a real headless
   package, `bench/` depends on Core directly and this branch is deleted.
 
@@ -119,7 +119,7 @@ suite is green.
    Stage 2 generic-plotter work, not this mechanical move.
 8. **`DataBrowserGUI`** — move `Browser.jl` + `Browser/` + `Gui/`. Deps: API, Core, Plots,
    Annotations, plus `CImGui`, `GLFW`, `ModernGL`, `NativeFileDialog`, `Observables`.
-9. **Umbrella** — what remains of `MeasurementBrowser.jl` is the include-and-export shell. Rename the
+9. **Umbrella** — what remains of `DataBrowser.jl` is the include-and-export shell. Rename the
    package and module to `DataBrowser`, depend on `DataBrowserGUI`, re-export the public API, wire
    defaults, delete `Precompile.jl`'s monolith assumptions and the `MB_BENCH_ENGINE_ONLY` branch.
 

@@ -1,8 +1,8 @@
-using MeasurementBrowser
+using DataBrowser
 using DataFrames: DataFrame, nrow
 using Test
 
-const MBP = MeasurementBrowser
+const MBP = DataBrowser
 
 """
 Build a fatigue-style project: one item per cycle CSV, item analyze counts rows, the collection
@@ -69,8 +69,8 @@ end
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
-        loaded = MBP.Workspace.materialize_items(workspace, records)
+            DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+        loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         loaded = sort(loaded; by=item -> item.metadata[:cycle])
 
         # Item analyze put :events on each item; collection process pushed cumulative totals down
@@ -86,7 +86,7 @@ end
 
         conflict = "metadata :events expected Int64, got Bool; value dropped"
         @test_logs (:warn, r"Workspace metadata conflict") begin
-            MBP.Workspace.publish_metadata_conflicts!(
+            DataBrowserCore.Workspace.publish_metadata_conflicts!(
                 workspace, "manual-conflict", :test, [conflict])
         end
         @test workspace.index.analysis_errors["manual-conflict"] == conflict
@@ -114,7 +114,7 @@ end
         project, test_source(project, dir); background_processing=true)
     try
         wait_workspace_idle!(workspace)
-        record = only(MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy))
+        record = only(DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy))
         @test workspace.index.item_metadata[record.id][:events] == 4
 
         # Re-register analyze with a different key, then re-run the item's analyze stage: its output
@@ -129,7 +129,7 @@ end
             end,
             analyze=item -> Dict{Symbol,Any}(:doubled => item.data.count[1] * 2),
         )
-        recomputed = MBP.Workspace.run_item_analysis(workspace, record)
+        recomputed = DataBrowserCore.Workspace.run_item_analysis(workspace, record)
         lock(workspace.publish_lock) do
             workspace.index.item_metadata[record.id] =
                 Dict{Symbol,Any}(k => v for (k, v) in recomputed)
@@ -148,12 +148,12 @@ end
         project, test_source(project, dir); background_processing=true, cache=false)
     try
         wait_workspace_idle!(workspace)
-        @test workspace.cache.db isa MBP.Cache.MemoryCacheDB
+        @test workspace.cache.db isa DataBrowserCore.Cache.MemoryCacheDB
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
-        loaded = MBP.Workspace.materialize_items(workspace, records)
+            DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+        loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         loaded = sort(loaded; by=item -> item.metadata[:cycle])
 
         @test [item.metadata[:cumulative] for item in loaded] == [2, 5, 10]
@@ -171,13 +171,13 @@ end
     try
         wait_workspace_idle!(workspace)
         records = sort(
-            MeasurementBrowser.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
-        loaded = MBP.Workspace.materialize_items(workspace, records)
+            DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+        loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         # The fold failed, so members deliver their :processed payloads (no cumulative column).
         @test length(loaded) == 2
         @test all(item -> !hasproperty(item.data, :cumulative), loaded)
         # The collection-process error is surfaced on the collection key.
-        key = MBP.ItemIndex.collection_path_key(["fatigue"])
+        key = DataBrowserCore.ItemIndex.collection_path_key(["fatigue"])
         @test haskey(workspace.index.analysis_errors, key)
     finally
         MBP.close_workspace!(workspace)

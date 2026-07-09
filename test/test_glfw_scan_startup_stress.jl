@@ -1,9 +1,9 @@
 using CSV
 using DataFrames: DataFrame, nrow
-using MeasurementBrowser
+using DataBrowser
 using Test
 
-const MB = MeasurementBrowser
+const MB = DataBrowser
 
 function write_stress_csvs(root::AbstractString; files::Int=96, rows::Int=2000)::Nothing
     for file_index in 1:files
@@ -42,17 +42,17 @@ function build_csv_stress_project(items_per_file::Int)::MB.Project
 end
 
 function run_browser_frames(
-    workspace::MB.Workspace.Workspace;
+    workspace::DataBrowserCore.Workspace.Workspace;
     frames::Int=12,
     window_start::Symbol=:background,
 )::Nothing
-    state = MB.Browser.BrowserState(
+    state = DataBrowserGUI.Browser.BrowserState(
         project_locked=true,
         project_preference=workspace.project.name,
     )
-    ctx = MB.Browser._init_browser_context!()
-    MB.Browser._attach_workspace!(state, workspace)
-    task = MB.Browser._run_browser(
+    ctx = DataBrowserGUI.Browser._init_browser_context!()
+    DataBrowserGUI.Browser._attach_workspace!(state, workspace)
+    task = DataBrowserGUI.Browser._run_browser(
         state,
         ctx;
         engine=nothing,
@@ -85,7 +85,7 @@ if get(ENV, "MB_GLFW_SCAN_STRESS", "") == "1"
             write_stress_csvs(root; files, rows)
             workspace = MB.open_workspace(
                 build_csv_stress_project(items_per_file),
-                MB.DirectorySource(root),
+                DirectorySource(root),
             )
             try
                 run_browser_frames(workspace; frames=frames, window_start=window_start)

@@ -1,11 +1,11 @@
-using MeasurementBrowser
-using MeasurementBrowser: items_for_file, setup_plot, plot_data!
+using DataBrowser
+using DataBrowser: items_for_file, setup_plot, plot_data!
 using CSV
 using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis
 using Test
 
-const MB = MeasurementBrowser
+const MB = DataBrowser
 
 @testset "registry plot bridge" begin
     dir = mktempdir()
@@ -60,8 +60,8 @@ const MB = MeasurementBrowser
     )
 
     # Identity helpers used by the GUI and persistence.
-    table_plot = MB.RegisteredPlot{:table,Symbol("Table Plot")}
-    table_summary = MB.RegisteredPlot{:table,Symbol("Table Summary")}
+    table_plot = RegisteredPlot{:table,Symbol("Table Plot")}
+    table_summary = RegisteredPlot{:table,Symbol("Table Summary")}
     @test MB.registered_plot_kinds(project, :table) == [table_plot, table_summary]
     @test MB.registered_plot_kinds(project, :missing) == Type{<:MB.PlotKind}[]
     @test MB.plot_kind_label(project, table_plot) == "Table Plot"
@@ -71,7 +71,7 @@ const MB = MeasurementBrowser
 
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
     items = items_for_file(project, joinpath(dir, "m.csv"))
-    workspace = MB.Workspace.Workspace(project, test_source(project, dir))
+    workspace = DataBrowserCore.Workspace.Workspace(project, test_source(project, dir))
     for item in items
         workspace.index.items[item.id] = item
     end
@@ -80,7 +80,7 @@ const MB = MeasurementBrowser
     @test workspace.selection.item_ids == ids
     @test MB.select_items!(workspace, ids[1:1]) === nothing
     @test workspace.selection.item_ids == ids[1:1]
-    loaded_items = MB.Workspace.materialize_items(workspace, items)
+    loaded_items = DataBrowserCore.Workspace.materialize_items(workspace, items)
     @test MB.select_items!(workspace, loaded_items) === nothing
     @test workspace.selection.item_ids == ids
     @test MB.select_items!(workspace, []) === nothing
@@ -98,7 +98,7 @@ const MB = MeasurementBrowser
     # An unregistered kind errors clearly rather than dispatching nowhere.
     @test_throws KeyError setup_plot(
         workspace,
-        MB.RegisteredPlot{:missing,Symbol("Missing")},
+        RegisteredPlot{:missing,Symbol("Missing")},
         items,
     )
 end
