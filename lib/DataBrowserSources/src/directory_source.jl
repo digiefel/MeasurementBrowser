@@ -8,7 +8,9 @@ using DataBrowserAPI:
     AbstractDataSourceItem,
     Project,
     SourceChanges,
-    SourceError,
+    SourceError
+import DataBrowserAPI:
+    close_source!,
     collection_metadata,
     fingerprint,
     has_collection_metadata,
@@ -21,6 +23,7 @@ using DataBrowserAPI:
     source_item_timestamp,
     source_items,
     source_label,
+    source_open_options,
     watch_source
 
 const DEFAULT_DIRECTORY_METADATA_FILE = "metadata.txt"
@@ -82,15 +85,15 @@ struct SourceFile <: AbstractDataSourceItem
     fingerprint::FileFingerprint
 end
 
-DataBrowserAPI.source_item_id(file::SourceFile)::String = file.filepath
-DataBrowserAPI.source_item_label(file::SourceFile)::String = file.filename
-DataBrowserAPI.fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
-DataBrowserAPI.source_item_path(file::SourceFile)::String = file.filepath
-DataBrowserAPI.source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
+source_item_id(file::SourceFile)::String = file.filepath
+source_item_label(file::SourceFile)::String = file.filename
+fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
+source_item_path(file::SourceFile)::String = file.filepath
+source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
 
-DataBrowserAPI.source_id(source::DirectorySource)::String = source.root_path
-DataBrowserAPI.source_label(source::DirectorySource)::String = basename(source.root_path)
-DataBrowserAPI.source_item_noun(::DirectorySource)::String = "source files"
+source_id(source::DirectorySource)::String = source.root_path
+source_label(source::DirectorySource)::String = basename(source.root_path)
+source_item_noun(::DirectorySource)::String = "source files"
 
 """Extract a source-item timestamp from the supported filename conventions."""
 function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
@@ -287,12 +290,12 @@ function matching_collection_metadata(
     return merged
 end
 
-DataBrowserAPI.source_items(
+source_items(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
 )::Vector{SourceFile} = collect_source_files(source; on_progress)
 
-function DataBrowserAPI.collection_metadata(
+function collection_metadata(
     source::DirectorySource,
     collection_path::AbstractVector{<:AbstractString},
 )::Dict{Symbol,Any}
@@ -301,12 +304,12 @@ function DataBrowserAPI.collection_metadata(
     end
 end
 
-DataBrowserAPI.has_collection_metadata(source::DirectorySource)::Bool =
+has_collection_metadata(source::DirectorySource)::Bool =
     lock(source.metadata_lock) do
         source.has_metadata
     end
 
-function DataBrowserAPI.open_source(source::DirectorySource)::DirectorySource
+function open_source(source::DirectorySource)::DirectorySource
     isdir(source.root_path) || throw(ArgumentError(
         "Cannot open DirectorySource '$(source.root_path)': directory does not exist",
     ))
@@ -315,7 +318,7 @@ function DataBrowserAPI.open_source(source::DirectorySource)::DirectorySource
     return source
 end
 
-function DataBrowserAPI.watch_source(
+function watch_source(
     source::DirectorySource,
     on_change::Function,
 )::Union{Nothing,Task}
@@ -360,10 +363,10 @@ function DataBrowserAPI.watch_source(
     return task
 end
 
-DataBrowserAPI.source_open_options(source::DirectorySource)::NamedTuple =
+source_open_options(source::DirectorySource)::NamedTuple =
     (; recursive=source.recursive, metadata_file=source.metadata_file)
 
-function DataBrowserAPI.close_source!(source::DirectorySource)::Nothing
+function close_source!(source::DirectorySource)::Nothing
     source.watcher_closed[] = true
     source.watcher_cancel === nothing || cancel(source.watcher_cancel)
     task = source.watcher_task

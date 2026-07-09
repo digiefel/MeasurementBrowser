@@ -100,6 +100,7 @@ import DataBrowserAPI:
     has_collection_metadata,
     id,
     item_data,
+    metadata,
     process,
     open_source,
     project_name,

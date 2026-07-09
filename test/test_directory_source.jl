@@ -1,9 +1,10 @@
 using MeasurementBrowser
+using DataBrowserAPI: AbstractDataSource, has_collection_metadata, source_item_noun
 using Test
 
 const MBD = MeasurementBrowser
 
-struct TestNounSource <: MBD.Projects.AbstractDataSource end
+struct TestNounSource <: AbstractDataSource end
 
 """Open a memory-only workspace on `source` and wait for the build to settle."""
 function _open_settled(project, source)
@@ -105,9 +106,9 @@ end
         custom = MBD.DirectorySource(dir; metadata_file="device_info.txt")
         MBD.open_source(custom)
         try
-            @test MBD.Projects.source_item_noun(custom) == "source files"
-            @test MBD.Projects.source_item_noun(TestNounSource()) == "source items"
-            @test MBD.Projects.has_collection_metadata(custom)
+            @test source_item_noun(custom) == "source files"
+            @test source_item_noun(TestNounSource()) == "source items"
+            @test has_collection_metadata(custom)
             @test all(
                 file -> file.filepath != custom_path,
                 MBD.source_items(custom),

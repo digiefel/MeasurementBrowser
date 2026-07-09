@@ -3,29 +3,29 @@ module Visualization
 using GLMakie: Figure
 
 import DataBrowserAPI
-import DataBrowserAPI: AbstractDataItem, PlotKind, RegisteredPlot
+import DataBrowserAPI: AbstractDataItem, PlotKind, RegisteredPlot, plot_data!, setup_plot
 import ..ItemIndex: ItemRecord
 import DataBrowserProfiling as Profiling
 import ..Workspace
 
 """Materialize records and create the figure layout required by a visualizer."""
-function DataBrowserAPI.setup_plot(
+function setup_plot(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
 )::Figure
-    return DataBrowserAPI.setup_plot(
+    return setup_plot(
         workspace, plot_kind, Workspace.materialize_items(workspace, records))
 end
 
 """Materialize records and draw their items into an existing figure."""
-function DataBrowserAPI.plot_data!(
+function plot_data!(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
     figure::Figure,
 )::Nothing
-    DataBrowserAPI.plot_data!(
+    plot_data!(
         workspace, plot_kind, Workspace.materialize_items(workspace, records), figure)
     return nothing
 end
@@ -36,7 +36,7 @@ Build the figure for a registered plot by running its `setup` callback.
 The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
 `setup` sizes the figure layout to the data without resolving it itself.
 """
-function DataBrowserAPI.setup_plot(
+function setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
     items::Vector{<:AbstractDataItem},
@@ -56,7 +56,7 @@ Draw a registered plot into its figure by running its `draw` callback.
 The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
 `draw` reads `item.data` directly and never resolves data itself.
 """
-function DataBrowserAPI.plot_data!(
+function plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
     items::Vector{<:AbstractDataItem},

@@ -1,4 +1,5 @@
 using MeasurementBrowser
+using DataBrowserAPI: SourceItemProfile
 using CSV
 using DataFrames: DataFrame, nrow
 using Serialization: serialize, deserialize
@@ -129,7 +130,7 @@ end
 @testset "Project serialization drops transient state" begin
     project = _profile_project()
     # Dirty the transient fields the cache must never persist.
-    project.scan_profile["source.csv"] = MB.Projects.SourceItemProfile("source.csv")
+    project.scan_profile["source.csv"] = SourceItemProfile("source.csv")
 
     io = IOBuffer()
     serialize(io, project)

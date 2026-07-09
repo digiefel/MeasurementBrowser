@@ -22,6 +22,7 @@ import DataBrowserAPI:
     has_collection_metadata,
     id,
     item_data,
+    item_label,
     kind,
     kind_label,
     metadata,
@@ -33,7 +34,8 @@ import DataBrowserAPI:
     source_item_path,
     source_item_timestamp,
     source_items,
-    source_label
+    source_label,
+    cacheable
 
 """
 Failure produced while interpreting or analyzing one source item.
@@ -279,10 +281,10 @@ Derive the internal `ItemRecord` from any item via the source and item contracts
 function ItemRecord(
     item::AbstractDataItem;
     source_item::AbstractDataSourceItem,
-    kind::Symbol=DataBrowserAPI.kind(item),
-    metadata=DataBrowserAPI.metadata(item),
+    kind::Symbol=kind(item),
+    metadata=metadata(item),
 )::ItemRecord
-    label = DataBrowserAPI.item_label(item)
+    label = item_label(item)
     title = isempty(label) ?
         strip(join(filter(!isnothing, Any[source_item_timestamp(source_item), string(kind)]), " ")) :
         String(label)
@@ -290,27 +292,27 @@ function ItemRecord(
         source_item_id=source_item_id(source_item),
         source_item_path=source_item_path(source_item),
         source_item_timestamp=source_item_timestamp(source_item),
-        id=DataBrowserAPI.id(item),
+        id=id(item),
         item_label=title,
         kind,
-        collection=DataBrowserAPI.collection(item),
+        collection=collection(item),
         metadata,
         item_fingerprint=fingerprint(item),
     )
 end
 
-DataBrowserAPI.id(item::DataItem)::String = item.id
-DataBrowserAPI.item_label(item::DataItem)::String = item.label
-DataBrowserAPI.kind(item::DataItem)::Symbol = item.kind
-DataBrowserAPI.collection(item::DataItem)::Vector{String} = item.collection
-DataBrowserAPI.metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
-DataBrowserAPI.item_data(item::DataItem) = item.data
-DataBrowserAPI.fingerprint(item::DataItem) = nothing
+id(item::DataItem)::String = item.id
+item_label(item::DataItem)::String = item.label
+kind(item::DataItem)::Symbol = item.kind
+collection(item::DataItem)::Vector{String} = item.collection
+metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
+item_data(item::DataItem) = item.data
+fingerprint(item::DataItem) = nothing
 
 # The built-in item opts DataFrame values and views into the native columnar cache. Other data types
 # remain source-backed until they receive their own native storage method. Type-API items opt in
 # themselves.
-DataBrowserAPI.cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame
+cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame
 
 """
 One node in the collection hierarchy.

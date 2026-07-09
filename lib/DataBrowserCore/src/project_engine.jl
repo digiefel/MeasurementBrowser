@@ -62,7 +62,7 @@ function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{P
     return project
 end
 
-function DataBrowserAPI.record_scan_phase!(
+function record_scan_phase!(
     project::Project,
     source_item_id::AbstractString,
     kind::Symbol,
@@ -84,7 +84,7 @@ function DataBrowserAPI.record_scan_phase!(
     return nothing
 end
 
-function DataBrowserAPI.finish_source_profile!(
+function finish_source_profile!(
     project::Project,
     source_item_id::AbstractString,
     source_item_label::AbstractString,
@@ -234,17 +234,17 @@ end
 """
 Process one loaded item through its registered callback or the low-level `process(item)` hook.
 """
-function DataBrowserAPI.process(
+function process(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,
 )::AbstractDataItem
     recipe = _recipe(project, kind(item))
-    (recipe === nothing || recipe.process === nothing) && return DataBrowserAPI.process(item)
+    (recipe === nothing || recipe.process === nothing) && return process(item)
     return _processed_item(recipe, item)
 end
 
-function DataBrowserAPI.data_items(
+function data_items(
     project::Project,
     source::AbstractDataSource,
     file::SourceFile,
@@ -322,7 +322,7 @@ Rewrite one collection's members through the kind's registered collection `proce
 Members are grouped by kind; a kind without a registered `process` passes its members through
 unchanged. The callback returns one output per input; the adapter validates ids and count.
 """
-function DataBrowserAPI._process_collection(
+function _process_collection(
     project::Project,
     ::AbstractDataSource,
     ::Vector{String},
@@ -353,7 +353,7 @@ function DataBrowserAPI._process_collection(
 end
 
 """Fold one collection's post-process members into collection-node metadata."""
-function DataBrowserAPI._analyze_collection(
+function _analyze_collection(
     project::Project,
     ::AbstractDataSource,
     ::Vector{String},
@@ -380,7 +380,7 @@ function _group_by_kind(items::Vector{<:AbstractDataItem})::Vector{Vector{Abstra
     return Vector{AbstractDataItem}[groups[item_kind] for item_kind in order]
 end
 
-function DataBrowserAPI._analyze_item(
+function _analyze_item(
     project::Project,
     ::AbstractDataSource,
     item::AbstractDataItem,
@@ -390,12 +390,12 @@ function DataBrowserAPI._analyze_item(
     return recipe.analyze(item)::Dict{Symbol,Any}
 end
 
-function DataBrowserAPI._has_collection_process(project::Project, item_kind::Symbol)::Bool
+function _has_collection_process(project::Project, item_kind::Symbol)::Bool
     recipe = get(project.collections, item_kind, nothing)
     return recipe !== nothing && recipe.process !== nothing
 end
 
-function DataBrowserAPI._has_collection_analysis(project::Project, item_kind::Symbol)::Bool
+function _has_collection_analysis(project::Project, item_kind::Symbol)::Bool
     recipe = get(project.collections, item_kind, nothing)
     return recipe !== nothing && recipe.analyze !== nothing
 end
