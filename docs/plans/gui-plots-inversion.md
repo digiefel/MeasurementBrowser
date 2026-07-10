@@ -1,5 +1,10 @@
 # GUI/Plots Inversion — Execution Plan
 
+**Status (2026-07-11): executed.** All phases landed on `dbplots`, followed by a review pass
+fixing eight findings (inspector crash, sparkline render, typed cell access, table caching,
+warmup ordering, shell/extension boundary hooks, docs). Kept for reference; current behavior
+is documented in [../gui.md](../gui.md).
+
 The concrete, file-level plan for the migration in
 [gui-extension-architecture.md](gui-extension-architecture.md): flip the dependency edge so
 `DataBrowserPlots -> DataBrowserGUI`, leaving a GUI shell that loads without GLMakie. Written to be
