@@ -6,15 +6,13 @@ authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 [deps]
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 DataBrowserAnnotations = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
+DataBrowserCache = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 DataBrowserSources = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
 CancellationTokens = "2e8d271d-f2e2-407b-a864-17eb2156783e"
-DBInterface = "a10d1c49-ce27-4219-8d33-6db1a4562965"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
-DuckDB = "d2f5444f-75bc-4fdf-ac35-56f514c445e1"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
-SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
 Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
@@ -22,8 +20,6 @@ Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 [compat]
 Tables = "1"
 CancellationTokens = "2.3.0"
-DBInterface = "2.6.1"
-DuckDB = "1.5.2"
 julia = "1.12"
 
 [extras]
@@ -35,5 +31,6 @@ test = ["Test"]
 [sources]
 DataBrowserAPI = {path = "../DataBrowserAPI"}
 DataBrowserAnnotations = {path = "../DataBrowserAnnotations"}
+DataBrowserCache = {path = "../DataBrowserCache"}
 DataBrowserProfiling = {path = "../DataBrowserProfiling"}
 DataBrowserSources = {path = "../DataBrowserSources"}

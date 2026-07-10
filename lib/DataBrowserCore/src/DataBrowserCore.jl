@@ -1,4 +1,7 @@
-"""Headless workspace engine: item index, cache, work graph, and workspace lifecycle."""
+"""
+Headless workspace engine: work graph and workspace lifecycle over the `DataBrowserAPI` item index
+and the `DataBrowserCache` store.
+"""
 module DataBrowserCore
 
 using DataBrowserAPI
@@ -20,7 +23,6 @@ import DataBrowserProfiling as Profiling
 
 include("project_engine.jl")
 include("WorkGraph.jl")
-include("Cache.jl")
 include("Workspace.jl")
 include("TableModel.jl")
 

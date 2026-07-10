@@ -1,7 +1,7 @@
 using DataBrowser
 using Test
 
-const OO_CACHE = DataBrowserCore.Cache
+const OO_CACHE = DataBrowserCache
 
 @testset "workspace open options capture and replay" begin
     mktempdir() do dir

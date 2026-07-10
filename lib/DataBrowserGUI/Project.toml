@@ -7,6 +7,7 @@ authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
 DataBrowserAnnotations = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
+DataBrowserCache = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 DataBrowserCore = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
 DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 DataBrowserSources = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
@@ -35,6 +36,7 @@ test = ["Test"]
 [sources]
 DataBrowserAnnotations = {path = "../DataBrowserAnnotations"}
 DataBrowserAPI = {path = "../DataBrowserAPI"}
+DataBrowserCache = {path = "../DataBrowserCache"}
 DataBrowserCore = {path = "../DataBrowserCore"}
 DataBrowserProfiling = {path = "../DataBrowserProfiling"}
 DataBrowserSources = {path = "../DataBrowserSources"}

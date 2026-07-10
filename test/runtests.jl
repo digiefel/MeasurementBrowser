@@ -1,5 +1,6 @@
 using Test
 using DataBrowserAPI
+using DataBrowserCache
 using DataBrowserCore
 using DataBrowserGUI
 

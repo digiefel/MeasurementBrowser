@@ -148,7 +148,7 @@ end
         project, test_source(project, dir); background_processing=true, cache=false)
     try
         wait_workspace_idle!(workspace)
-        @test workspace.cache.db isa DataBrowserCore.Cache.MemoryCacheDB
+        @test workspace.cache.db isa DataBrowserCache.MemoryCacheDB
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
