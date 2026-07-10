@@ -14,16 +14,6 @@ end
 
 PlotsExtension() = PlotsExtension(PlotState(), false, TablePlotState())
 
-function _persisted_plot_view(view::PlotViewState)::PersistedPlotView
-    return PersistedPlotView(
-        id=view.id,
-        title=view.title,
-        plot_kind=view.plot_kind === nothing ? "" : plot_kind_name(view.plot_kind),
-        live=view.live,
-        items=copy(view.item_ids),
-    )
-end
-
 function _persisted_plot_view_from_dict(data::AbstractDict)::PersistedPlotView
     items = get(data, "items", Any[])
     return PersistedPlotView(
