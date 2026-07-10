@@ -23,14 +23,7 @@ using DataBrowserAPI:
     plot_kind_from_name
 using .MakieImguiIntegration: MakieFigure, destroy_figure!
 
-function _plots_extension(state::Browser.BrowserState)
-    for ext in state.extensions
-        Browser.extension_id(ext) == "PlotsExtension" && return ext
-    end
-    error("PlotsExtension is not loaded")
-end
-
-_plot_state(state::Browser.BrowserState) = _plots_extension(state).plots
+_plot_state(state::Browser.BrowserState) = plots_extension(state).plots
 
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
 
@@ -53,18 +46,6 @@ function clear_plot_views!(plots::PlotState)::Nothing
         clear_plot_view!(plots, view)
         view.error = ""
         view.export_error = ""
-    end
-    return nothing
-end
-
-"""
-Arm a full profile of the next plot redraw.
-"""
-function _arm_plot_profile!(state::Browser.BrowserState)::Nothing
-    _plots_extension(state).profile_next_plot = true
-    plots = _plot_state(state)
-    for view in (plots.main, plots.windows...)
-        view.last_key = nothing
     end
     return nothing
 end
@@ -127,8 +108,9 @@ function draw_plot_view!(
     draw_alloc = 0
 
     # Arm Julia's bounded all-thread sampler for this one redraw if requested.
-    profiling = _plots_extension(state).profile_next_plot
-    _plots_extension(state).profile_next_plot = false
+    ext = plots_extension(state)
+    profiling = ext.profile_next_plot
+    ext.profile_next_plot = false
     sampling = false
     if profiling
         try
@@ -303,7 +285,7 @@ function render_plot_toolbar!(
 
     ig.SameLine()
     if ig.Button("Profile##plot_profile_$(view.id)")
-        _arm_plot_profile!(state)
+        request_plot_profile!(state)
     end
     if ig.BeginItemTooltip()
         ig.TextUnformatted("Profile the next redraw and print the full breakdown to the console")
