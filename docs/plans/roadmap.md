@@ -30,7 +30,8 @@ lives in [gui-extension-architecture.md](gui-extension-architecture.md).
 Residual from the split, next after the GUI/Plots inversion and as its own PR: flip the Cache edge.
 `DataBrowserCache` still depends on `DataBrowserCore` and the cache implementation still lives in
 `lib/DataBrowserCore/src/Cache.jl`; the target is `Core → Cache` with Cache depending only on API,
-Profiling, and its storage backend.
+Profiling, and its storage backend. Execution plan: [cache-flip.md](cache-flip.md) (ItemIndex moves
+into `DataBrowserAPI` to break the coupling).
 
 - *Done when:* `DataBrowserCore` loads and tests headless with no GLMakie/CImGui; the GUI loads on top
   via the umbrella; a domain package can register loaders/plots against `DataBrowserAPI` without
