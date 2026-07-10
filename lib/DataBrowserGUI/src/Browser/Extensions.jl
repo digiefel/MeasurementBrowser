@@ -8,6 +8,10 @@ draw!(ext::GuiExtension, state) = nothing
 reset!(ext::GuiExtension, state) = nothing
 shutdown!(ext::GuiExtension, state) = nothing
 is_ready(ext::GuiExtension, state)::Bool = true
+# Called each startup frame while `!is_ready`, after the preparation surface has been
+# presented at least once; blocking one-time initialization belongs here, and `is_ready`
+# must stay a pure predicate.
+warmup!(ext::GuiExtension, state) = nothing
 save_view(ext::GuiExtension, state)::Dict{String,Any} = Dict{String,Any}()
 load_view!(ext::GuiExtension, state, view::Dict{String,Any}) = nothing
 open_detached_plot!(ext::GuiExtension, state; kwargs...)::Bool = false

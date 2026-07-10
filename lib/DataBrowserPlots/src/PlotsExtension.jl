@@ -73,9 +73,13 @@ function Browser.shutdown!(ext::PlotsExtension, ::Browser.BrowserState)
     return nothing
 end
 
-function Browser.is_ready(ext::PlotsExtension, state::Browser.BrowserState)
-    ensure_plot_runtime_warmed!(state)
+function Browser.is_ready(ext::PlotsExtension, ::Browser.BrowserState)
     return ext.plots.runtime_warmed
+end
+
+function Browser.warmup!(::PlotsExtension, state::Browser.BrowserState)
+    ensure_plot_runtime_warmed!(state)
+    return nothing
 end
 
 function Browser.save_view(ext::PlotsExtension, ::Browser.BrowserState)
