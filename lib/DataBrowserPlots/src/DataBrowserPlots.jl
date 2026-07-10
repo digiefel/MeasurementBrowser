@@ -1,4 +1,4 @@
-"""GLMakie plot rendering and merged table viewer data model."""
+"""GLMakie plot rendering as a GUI extension."""
 module DataBrowserPlots
 
 using GLMakie: Figure
@@ -13,6 +13,16 @@ import DataBrowserAPI:
 import DataBrowserCore.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
+import DataBrowserGUI
+const Browser = DataBrowserGUI.Browser
+
+include("MakieIntegration.jl")
+using .MakieImguiIntegration
+
+include("PlotState.jl")
+include("PlotPanel.jl")
+include("TablePlotPanel.jl")
+include("PlotsExtension.jl")
 
 """Materialize records and create the figure layout required by a visualizer."""
 function DataBrowserAPI.setup_plot(
@@ -36,12 +46,6 @@ function DataBrowserAPI.plot_data!(
     return nothing
 end
 
-"""
-Build the figure for a registered plot by running its `setup` callback.
-
-The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
-`setup` sizes the figure layout to the data without resolving it itself.
-"""
 function DataBrowserAPI.setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
@@ -56,12 +60,6 @@ function DataBrowserAPI.setup_plot(
     end
 end
 
-"""
-Draw a registered plot into its figure by running its `draw` callback.
-
-The package materializes the loaded `items` (each with `item.data`) before invoking the recipe, so
-`draw` reads `item.data` directly and never resolves data itself.
-"""
 function DataBrowserAPI.plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
@@ -77,5 +75,12 @@ function DataBrowserAPI.plot_data!(
     end
     return nothing
 end
+
+function __init__()
+    Browser.register_gui_extension!(PlotsExtension)
+end
+
+export PlotsExtension, plots_extension, request_plot_profile!
+export PlotState, PlotViewState, PersistedPlotView
 
 end
