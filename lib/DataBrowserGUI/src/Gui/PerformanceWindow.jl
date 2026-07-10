@@ -109,12 +109,17 @@ function _render_sparkline!(
     ig.SameLine()
     ig.TextDisabled(@sprintf("  %.2f %s", values[end], unit))
     width = max(120.0f0, ig.GetContentRegionAvail().x)
+    # PlotLines takes positional arguments only: values_offset, overlay_text,
+    # scale_min, scale_max, graph_size.
     ig.PlotLines(
         "##perf_spark_$id",
         values,
-        length(values);
-        scale_min=0.0f0,
-        graph_size=(width, height),
+        length(values),
+        0,
+        C_NULL,
+        0.0f0,
+        ig.FLT_MAX,
+        (width, height),
     )
     return nothing
 end

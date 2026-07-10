@@ -1,5 +1,6 @@
 const PERFORMANCE_BROWSER = DataBrowserGUI.Browser
 
+import CImGui
 import DataBrowserProfiling as Profiling
 
 @testset "performance window sparklines" begin
@@ -19,6 +20,14 @@ import DataBrowserProfiling as Profiling
         PERFORMANCE_BROWSER._ring_push!(live.elapsed_buf, value, live.capacity)
     end
     @test live.elapsed_buf == Float32[2, 3, 4]
+
+    # Pin the positional PlotLines signature `_render_sparkline!` relies on; CImGui's
+    # PlotLines accepts no keyword arguments, so a kwarg call would MethodError at render.
+    @test hasmethod(
+        CImGui.PlotLines,
+        Tuple{String,Vector{Float32},Int,Int,Ptr{Nothing},Float32,Float32,
+              Tuple{Float32,Float32}},
+    )
 
     profiler = Profiling.ProfileSession(true, false, nothing, nothing)
     called = Ref(false)
