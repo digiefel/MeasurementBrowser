@@ -2,7 +2,7 @@ using DataBrowser
 using Test
 using Dates: Date, DateTime
 
-const WIDE = DataBrowserCore.Cache
+const WIDE = DataBrowserCache
 const WIDE_INDEX = DataBrowserAPI.ItemIndex
 
 """Open a fresh disk cache for one wide-table test and clean it up afterwards."""

@@ -32,7 +32,7 @@ import ..WorkGraph:
     ITEM_PROCESS,
     SOURCE_INTERPRET
 
-using ..Cache:
+using DataBrowserCache:
     AbstractCacheDB,
     BuildMetrics,
     CacheResultKey,
@@ -83,7 +83,7 @@ using ..Cache:
     edit_source_item_metadata!,
     wait_condition_deadline,
     write_meta_header!
-import ..Cache: query_items, read_item_data, set_cache_memory_limit!
+import DataBrowserCache: query_items, read_item_data, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
     DataItem,
     Hierarchy,

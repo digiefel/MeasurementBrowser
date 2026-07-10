@@ -4,7 +4,7 @@ using DBInterface
 using DuckDB
 
 const WORK = DataBrowserCore.Workspace
-const CACHE = DataBrowserCore.Cache
+const CACHE = DataBrowserCache
 
 @testset "work graph dependencies" begin
     graph = WORK.WorkDependencyGraph()

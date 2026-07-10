@@ -92,7 +92,7 @@ export open_browser,
     scan_source_profile
 
 using DataBrowserAPI: Project, project_name, registered_plot_kinds
-import DataBrowserCore.Cache as Cache
+import DataBrowserCache as Cache
 import DataBrowserCore.Workspace as Workspace
 import DataBrowserGUI: Browser
 

@@ -22,7 +22,7 @@ using DataBrowserAPI:
     SourceProfileRow,
     source_label
 using DataBrowserAPI.ItemIndex: SourceScan
-using DataBrowserCore.Cache: ProjectCacheIdentity
+using DataBrowserCache: ProjectCacheIdentity
 import DataBrowserCore.Workspace
 using DataBrowserCore.Workspace:
     WorkspaceStatus,
