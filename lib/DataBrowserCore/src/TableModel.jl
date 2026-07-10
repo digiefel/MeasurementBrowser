@@ -7,7 +7,9 @@ Merged table built from one or more materialized items' tabular `.data` payloads
 
 `columns` is the union of all item columns in stable order.
 `row_item[r]` is the 1-based index into `item_labels` for row `r`.
-`getcell(row, col)` returns display text for any cell.
+`getcell(row, col)` returns display text for any cell; `getvalue(row, col)` returns the raw
+typed value (`missing` when the row's item lacks that column). Consumers that compute — plotting,
+fitting, export — must read `getvalue`, never parse display text.
 
 When only one item is selected, `item_labels` has one entry and all `row_item` values are 1;
 the provenance chrome is suppressed at render time.
@@ -18,6 +20,7 @@ struct InspectorTable
     row_item::Vector{Int}
     item_labels::Vector{String}
     getcell::Function   # (row::Int, col::Int) -> String
+    getvalue::Function  # (row::Int, col::Int) -> Any
 end
 
 """Return display text for one table cell value."""
@@ -60,7 +63,8 @@ function _inspector_table_from_tables(
     tables::Vector,
     labels::Vector{String},
 )::InspectorTable
-    isempty(tables) && return InspectorTable(columns, 0, Int[], labels, (_, _) -> "")
+    isempty(tables) &&
+        return InspectorTable(columns, 0, Int[], labels, (_, _) -> "", (_, _) -> missing)
 
     row_item = Int[]
     row_offsets = Int[]
@@ -88,7 +92,14 @@ function _inspector_table_from_tables(
         return _cell_text(column[row_in_item])
     end
 
-    return InspectorTable(columns, total_rows, row_item, labels, getcell)
+    function getvalue(row::Int, col::Int)::Any
+        item_i = row_item[row]
+        ci = get(col_indices[item_i], columns[col], nothing)
+        ci === nothing && return missing
+        return Tables.getcolumn(tables[item_i], ci)[row_offsets[row]]
+    end
+
+    return InspectorTable(columns, total_rows, row_item, labels, getcell, getvalue)
 end
 
 """

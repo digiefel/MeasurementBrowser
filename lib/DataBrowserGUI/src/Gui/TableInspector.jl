@@ -120,12 +120,17 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     show_prov = inspector.show_provenance_column && length(table.item_labels) > 1
     if show_prov
         columns = vcat(["_item_"], table.columns)
+        inner = table
         function getcell(row::Int, col::Int)::String
-            col == 1 && return table.item_labels[table.row_item[row]]
-            return table.getcell(row, col - 1)
+            col == 1 && return inner.item_labels[inner.row_item[row]]
+            return inner.getcell(row, col - 1)
+        end
+        function getvalue(row::Int, col::Int)::Any
+            col == 1 && return inner.item_labels[inner.row_item[row]]
+            return inner.getvalue(row, col - 1)
         end
         table = InspectorTable(
-            columns, table.rows, table.row_item, table.item_labels, getcell)
+            columns, inner.rows, inner.row_item, inner.item_labels, getcell, getvalue)
     end
 
     inspector.inspector_table = table

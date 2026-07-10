@@ -112,6 +112,23 @@ using DataBrowserGUI
         @test any(occursin("'matrix'", w) for w in warnings)
     end
 
+    # --- InspectorTable: typed cell access ---
+    @testset "InspectorTable typed cell access" begin
+        df = DataFrame(a=Float32[1.5, 2.5], b=[1 // 2, 3 // 4])
+        table, _ = merge_item_tables(Tuple{Any,Any}[("i", df)])
+        @test table.getvalue(1, 1) === 1.5f0
+        @test table.getvalue(2, 2) === 3 // 4
+        # Display text stays a string; typed access must not go through it
+        @test table.getcell(1, 1) == "1.5f0"
+
+        # A column absent from one merged item reads as missing there
+        df2 = DataFrame(c=[9])
+        merged, _ = merge_item_tables(Tuple{Any,Any}[("i", df), ("j", df2)])
+        c_col = findfirst(==("c"), merged.columns)
+        @test merged.getvalue(1, c_col) === missing
+        @test merged.getvalue(3, c_col) === 9
+    end
+
     # --- _update_multi_selection!: basic operations ---
     @testset "multi_selection Int rows" begin
         all_rows = [1, 2, 3, 4, 5]
