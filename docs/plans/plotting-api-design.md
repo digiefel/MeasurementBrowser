@@ -3,7 +3,8 @@
 ## Purpose
 
 Project code describes how one plot is laid out and how processed items are drawn. The package owns
-selection, materialization, plot windows, composition, export, and browser lifecycle.
+selection, materialization, plot windows, composition, and export; the GUI shell owns browser
+lifecycle and hosts the registered plot windows.
 
 ```julia
 register_plot!(project, :iv;
@@ -55,6 +56,5 @@ lifecycle are stable; it should not add a second source-loading or processing pa
 ## Composition
 
 Today one registered plot produces one figure. Future composition should combine figures or plot
-descriptions at the package boundary without making project callbacks manage browser windows,
-selection, or workspace state. The current `setup`/`draw` contract remains the small project-facing
-unit.
+descriptions in `DataBrowserPlots` without making project callbacks manage browser windows, selection,
+or workspace state. The current `setup`/`draw` contract remains the small project-facing unit.

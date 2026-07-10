@@ -20,11 +20,17 @@ lands as `DataBrowser*` with its real boundary, so every step is reviewable on i
 under the old names. There is no separate rename phase: once everything else has been lifted out,
 the residual umbrella module is `DataBrowser`.
 
-The order, leaves first, is Profiling → API → Annotations → Sources → Cache → Core → Plots → GUI →
+The order, leaves first, is Profiling → API → Annotations → Sources → Cache → Core → GUI → Plots →
 umbrella-rename, with the cross-cutting rules enforced at the step that owns them (payload-agnostic API
-when API is cut, cache-on-project when Cache is cut, workspace-as-context when Core is cut). The
-file-by-file mapping, per-package deps, and the keep-it-green procedure live in
-[package-split.md](package-split.md).
+when API is cut, cache-on-project when Cache is cut, workspace-as-context when Core is cut,
+GUI-extension registration when GUI is cut). The file-by-file mapping, per-package deps, and the
+keep-it-green procedure live in [package-split.md](package-split.md); the corrected GUI/Plots boundary
+lives in [gui-extension-architecture.md](gui-extension-architecture.md).
+
+Residual from the split, next after the GUI/Plots inversion and as its own PR: flip the Cache edge.
+`DataBrowserCache` still depends on `DataBrowserCore` and the cache implementation still lives in
+`lib/DataBrowserCore/src/Cache.jl`; the target is `Core → Cache` with Cache depending only on API,
+Profiling, and its storage backend.
 
 - *Done when:* `DataBrowserCore` loads and tests headless with no GLMakie/CImGui; the GUI loads on top
   via the umbrella; a domain package can register loaders/plots against `DataBrowserAPI` without
@@ -33,12 +39,13 @@ file-by-file mapping, per-package deps, and the keep-it-green procedure live in
 
 ## Stage 2 — Generic plotter and the window registry
 
-Make the app useful on new data before anyone writes a custom visualizer. Build the default
-visualizers in `DataBrowserPlots` (1-D signals, multiple traces, 2-D arrays, images, collections,
-scalar metadata, nested structures, tables, Makie figures) and stand up the GUI **window registry** —
-the public surface external packages add their own windows through.
-- *Done when:* common exploration works with no custom draw functions, and a built-in window is
-  registered through the same public surface an external package would use.
+Make the app useful on new data before anyone writes a custom visualizer. Keep lightweight
+visualizers for Core-supported data shapes in `DataBrowserGUI`, then build the Makie-backed defaults
+in `DataBrowserPlots` (1-D signals, multiple traces, 2-D arrays, images, collections, scalar metadata,
+nested structures, enhanced table plots, Makie figures) as a default GUI extension. Stand up the GUI
+**window registry** — the public surface external packages add their own windows through.
+- *Done when:* common exploration works with no custom draw functions, DBPlots is registered through
+  the same public surface an external package would use, and `DataBrowserGUI` can load without GLMakie.
 
 ## Stage 3 — Command unification
 
@@ -67,8 +74,9 @@ expose Pythonic wrappers over the same commands, plus Python-side loaders and pr
 ## Stage 6 — Analysis packages
 
 Define the extension-package interface and build one or two serious domain packages (XPS,
-ellipsometry) as downstream proof points — each depending on `DataBrowserAPI` (+ `DataBrowserGUI` for
-its windows), pinned by a project's environment.
+ellipsometry) as downstream proof points — each depending on `DataBrowserAPI`, plus
+`DataBrowserGUI` for windows and `DataBrowserPlots` for Makie visualizers, pinned by a project's
+environment.
 - *Done when:* a domain package delivers a specialized workflow (loaders, visualizers, windows) with
   no changes to the base packages, validating that the base gives enough for free.
 
