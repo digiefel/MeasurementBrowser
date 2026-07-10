@@ -91,8 +91,8 @@ registration order; the first match wins, so register specific filename patterns
 | Directory traversal, `metadata.txt` | `lib/DataBrowserSources/` | [storage.md](docs/storage.md) |
 | DuckDB cache, writes, reopen | `lib/DataBrowserCore/src/Cache.jl` (+ `lib/DataBrowserCache/`) | [cache.md](docs/cache.md) |
 | Background work, loading item data | `lib/DataBrowserCore/src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
-| Plot rendering, table viewer model | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
-| Browser panels, plot embedding | `lib/DataBrowserGUI/` | [gui.md](docs/gui.md) |
+| Plot rendering, Makie integration | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
+| Browser shell, table inspector, extension registry | `lib/DataBrowserGUI/` | [gui.md](docs/gui.md) |
 | Profiling, benchmark traces | `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
 | Tags, notes, spatial layout | `lib/DataBrowserAnnotations/` | [annotations.md](docs/annotations.md) |
 

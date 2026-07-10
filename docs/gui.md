@@ -6,17 +6,19 @@
 
 `open_browser(workspace)` creates one `BrowserState` and runs the render loop for an already-opened
 workspace. The first visible frames are a small preparation surface while the browser pays one-time
-GLMakie/ImGui figure warmup; the normal docked layout is shown only after that path is ready. The
-folder-open UI still uses the high-level callback project path internally:
+GLMakie/ImGui figure warmup runs through the registered `PlotsExtension`; the normal docked layout
+is shown only after extensions report ready. The folder-open UI still uses the high-level callback project path internally:
 `open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
 navigation and information, right side for plot-oriented work.
 
 ## State boundary
 
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
-to the open workspace. `PlotState` owns plot windows and choices, `TableInspectorState` owns the
-generic file-inspection window, and `PerformanceState` owns frame/UI samples used only for
-diagnostics. Scan timings live with the project performing the callbacks. Internal structured traces
+to the open workspace. `TableInspectorState` owns the generic table-inspection window,
+`PerformanceState` owns frame/UI samples used only for diagnostics, and optional GUI extensions
+(such as `DataBrowserPlots.PlotsExtension`) own Makie plot windows, table plotting, and plot
+persistence under `extensions.PlotsExtension` in `databrowser.toml`. Scan timings live with the
+project performing the callbacks. Internal structured traces
 and optional CPU samples belong to the workspace that captured them.
 
 The workspace owns the source, item index, selected collection and item identities, DuckDB cache,

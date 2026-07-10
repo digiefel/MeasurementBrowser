@@ -138,6 +138,10 @@ configurable without changing the package boundary.
 
 ## Migration Plan
 
+**Status (2026-07-10):** Phases 0–5 of [gui-plots-inversion.md](gui-plots-inversion.md) are
+implemented. `DataBrowserGUI` loads without GLMakie; `DataBrowserPlots` registers
+`PlotsExtension` through the GUI extension registry.
+
 The file-level execution plan, phased to keep tests green, is
 [gui-plots-inversion.md](gui-plots-inversion.md).
 
