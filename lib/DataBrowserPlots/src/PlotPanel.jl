@@ -1,9 +1,12 @@
 using Printf
-using GLMakie: Axis, Figure, lines!
+using GLMakie: Axis, Figure, lines!, scatter!
 import GLMakie.Makie as Makie
 import CImGui as ig
 import CImGui.CSyntax: @c
 using NativeFileDialog: save_file
+
+import DataBrowserGUI
+const Browser = DataBrowserGUI.Browser
 
 using DataBrowserAPI:
     source_label
@@ -16,8 +19,18 @@ using DataBrowserAPI:
     plot_kind_label,
     plot_kind_name,
     registered_plot_kinds,
-    setup_plot
+    setup_plot,
+    plot_kind_from_name
 using .MakieImguiIntegration: MakieFigure, destroy_figure!
+
+function _plots_extension(state::Browser.BrowserState)
+    for ext in state.extensions
+        Browser.extension_id(ext) == "PlotsExtension" && return ext
+    end
+    error("PlotsExtension is not loaded")
+end
+
+_plot_state(state::Browser.BrowserState) = _plots_extension(state).plots
 
 const PLOT_HELP_TEXT = "Live follows the browser selection.\nDetach opens an independent plot window.\nExport saves the current figure.\nScroll zooms, right-drag pans, Ctrl-click resets limits."
 
@@ -46,14 +59,10 @@ end
 
 """
 Arm a full profile of the next plot redraw.
-
-This is the programmatic hook behind the toolbar "Profile" button: set it, then trigger any redraw
-(switch items, toggle a plot kind) and the breakdown is printed to the console. Invalidating
-`last_key` forces the next frame to actually redraw rather than reuse the cached figure.
 """
-function request_plot_profile!(state::BrowserState)::Nothing
-    state.profile_next_plot = true
-    plots = state.plots
+function _arm_plot_profile!(state::Browser.BrowserState)::Nothing
+    _plots_extension(state).profile_next_plot = true
+    plots = _plot_state(state)
     for view in (plots.main, plots.windows...)
         view.last_key = nothing
     end
@@ -106,7 +115,7 @@ The console receives the complete exception together with the source, plot type,
 When `state.profile_next_plot` is set, this redraw is wrapped in Julia's sampling profiler.
 """
 function draw_plot_view!(
-    state::BrowserState,
+    state::Browser.BrowserState,
     view::PlotViewState,
     plot_key::Tuple,
     records::Vector{ItemRecord},
@@ -118,8 +127,8 @@ function draw_plot_view!(
     draw_alloc = 0
 
     # Arm Julia's bounded all-thread sampler for this one redraw if requested.
-    profiling = state.profile_next_plot
-    state.profile_next_plot = false
+    profiling = _plots_extension(state).profile_next_plot
+    _plots_extension(state).profile_next_plot = false
     sampling = false
     if profiling
         try
@@ -156,10 +165,10 @@ function draw_plot_view!(
         figure = result
         figure === nothing && error("Plot renderer returned no figure.")
         draw_alloc = load_alloc + setup_alloc + data_alloc
-        _append_perf_sample!(state, :plot_load, (load_ns - started_ns) / 1e6, load_alloc)
-        _append_perf_sample!(state, :plot_setup, (setup_ns - load_ns) / 1e6, setup_alloc)
-        _append_perf_sample!(state, :plot_data, (data_ns - setup_ns) / 1e6, data_alloc)
-        _append_perf_sample!(state, :plot_draw, (data_ns - started_ns) / 1e6, draw_alloc)
+        Browser._append_perf_sample!(state, :plot_load, (load_ns - started_ns) / 1e6, load_alloc)
+        Browser._append_perf_sample!(state, :plot_setup, (setup_ns - load_ns) / 1e6, setup_alloc)
+        Browser._append_perf_sample!(state, :plot_data, (data_ns - setup_ns) / 1e6, data_alloc)
+        Browser._append_perf_sample!(state, :plot_draw, (data_ns - started_ns) / 1e6, draw_alloc)
         if profiling
             captured = sampling ? Profiling.stop_sampling!() : nothing
             sampling = false
@@ -176,13 +185,13 @@ function draw_plot_view!(
         view.error = ""
     catch err
         bt = catch_backtrace()
-        _append_perf_sample!(
+        Browser._append_perf_sample!(
             state,
             :plot_draw,
             (time_ns() - started_ns) / 1e6,
             draw_alloc,
         )
-        clear_plot_view!(state.plots, view)
+        clear_plot_view!(_plot_state(state), view)
         view.last_key = plot_key
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
         view.error = "Plot failed: $summary. See the console for full details."
@@ -209,13 +218,13 @@ end
 
 """Render the controls shared by the main and detached plot windows."""
 function render_plot_toolbar!(
-    state::BrowserState,
+    state::Browser.BrowserState,
     view::PlotViewState,
     records::Vector{ItemRecord},
     selected_records::Vector{ItemRecord},
     available::Vector{Type{<:PlotKind}},
 )::Nothing
-    plots = state.plots
+    plots = _plot_state(state)
     project = (state.workspace::Workspace.Workspace).project
     current = view.plot_kind
     if ig.BeginCombo(
@@ -294,7 +303,7 @@ function render_plot_toolbar!(
 
     ig.SameLine()
     if ig.Button("Profile##plot_profile_$(view.id)")
-        request_plot_profile!(state)
+        _arm_plot_profile!(state)
     end
     if ig.BeginItemTooltip()
         ig.TextUnformatted("Profile the next redraw and print the full breakdown to the console")
@@ -321,15 +330,15 @@ end
 
 """Render a figure or the reason no figure is available."""
 function render_plot_body!(
-    state::BrowserState,
+    state::Browser.BrowserState,
     view::PlotViewState,
     status::Symbol,
 )::Nothing
-    plots = state.plots
+    plots = _plot_state(state)
 
     if view.figure !== nothing
         makie_id = _plot_makie_id(plots, view)
-        _time!(state, :makie_fig) do
+        Browser._time!(state, :makie_fig) do
             MakieFigure(
                 makie_id,
                 view.figure;
@@ -355,18 +364,18 @@ Live views use the current browser selection. Static views resolve their saved i
 current workspace index.
 """
 function render_plot_view!(
-    state::BrowserState,
+    state::Browser.BrowserState,
     view::PlotViewState,
     selected_records::Vector{ItemRecord},
 )::Nothing
-    plots = state.plots
+    plots = _plot_state(state)
 
     if view.live
         view.item_ids = [record.id for record in selected_records]
     end
     records = view.live ?
         selected_records :
-        _items_for_ids(state, view.item_ids)
+        Browser._items_for_ids(state, view.item_ids)
 
     workspace = state.workspace::Workspace.Workspace
     source = workspace.source
@@ -432,8 +441,8 @@ function render_plot_view!(
 end
 
 """Warm GLMakie once in a hidden window before the first visible plot."""
-function ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
-    plots = state.plots
+function ensure_plot_runtime_warmed!(state::Browser.BrowserState)::Nothing
+    plots = _plot_state(state)
     plots.runtime_warmed && return nothing
     flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoInputs |
             ig.ImGuiWindowFlags_NoBackground | ig.ImGuiWindowFlags_NoSavedSettings |
@@ -468,9 +477,9 @@ function ensure_plot_runtime_warmed!(state::BrowserState)::Nothing
 end
 
 """Render the main plot window."""
-function render_plot_window(state::BrowserState)::Nothing
-    _, selected, _ = _project_visible_selection(state)
-    main = state.plots.main
+function render_plot_window(state::Browser.BrowserState)::Nothing
+    _, selected, _ = Browser._project_visible_selection(state)
+    main = _plot_state(state).main
     if ig.Begin(main.title)
         render_plot_view!(state, main, selected)
     end
@@ -479,9 +488,9 @@ function render_plot_window(state::BrowserState)::Nothing
 end
 
 """Render every detached plot window and remove windows closed by the user."""
-function render_additional_plot_windows(state::BrowserState)::Nothing
-    plots = state.plots
-    _, selected, _ = _project_visible_selection(state)
+function render_additional_plot_windows(state::Browser.BrowserState)::Nothing
+    plots = _plot_state(state)
+    _, selected, _ = Browser._project_visible_selection(state)
     kept = PlotViewState[]
 
     for view in plots.windows

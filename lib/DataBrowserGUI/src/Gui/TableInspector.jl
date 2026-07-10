@@ -1,12 +1,11 @@
-using DataFrames: nrow, DataFrame
-using GLMakie: Axis, Figure, lines!, scatter!
+using Tables
 import CImGui as ig
+import CImGui.CSyntax: @c
 using NativeFileDialog: pick_file
 
 using DataBrowserSources
 
 using DataBrowserCore: InspectorTable, merge_item_tables
-using .MakieImguiIntegration: MakieFigure
 
 import DataBrowserCore.Workspace
 using DataBrowserAPI: item_data
@@ -126,8 +125,6 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     inspector.inspector_warnings = String[]
     inspector.inspector_key = key
     inspector.grid.selected_rows = Int[]
-    inspector.figure = nothing
-    inspector.plot_key = nothing
 
     # Track current kind to form a stable per-kind DataGrid table id (used by imgui.ini)
     kinds = unique([r.kind for r in selected_records])
@@ -151,145 +148,6 @@ function _row_tint_for_item(row_item_index::Int)::UInt32
         ig.IM_COL32(210, 200, 80,  40),   # yellow-ish
     ]
     return colors[mod1(row_item_index, length(colors))]
-end
-
-# ---------------------------------------------------------------------------
-# Quick-plot helpers (driven from InspectorTable)
-# ---------------------------------------------------------------------------
-
-"""Choose one dataframe column with a compact combo box."""
-function _column_combo!(
-    label::String,
-    current::Int,
-    columns::Vector{String},
-    width::Real,
-)::Int
-    isempty(columns) && return current
-    current = clamp(current, 1, length(columns))
-    ig.SetNextItemWidth(width)
-    if ig.BeginCombo(label, columns[current])
-        for (index, column) in enumerate(columns)
-            if ig.Selectable(column, index == current)
-                current = index
-            end
-        end
-        ig.EndCombo()
-    end
-    return current
-end
-
-"""Extract finite float64 pairs from the inspector table for the given column indices."""
-function _inspector_plot_vectors(
-    table::InspectorTable,
-    x_col::Int,
-    y_col::Int,
-    row_subset::Union{Nothing,Vector{Int}},
-)::Tuple{Vector{Float64},Vector{Float64}}
-    x_values = Float64[]
-    y_values = Float64[]
-    rows = row_subset !== nothing ? row_subset : (1:table.rows)
-    for row in rows
-        x_str = table.getcell(row, x_col)
-        y_str = table.getcell(row, y_col)
-        x_float = tryparse(Float64, x_str)
-        y_float = tryparse(Float64, y_str)
-        x_float === nothing && continue
-        y_float === nothing && continue
-        isfinite(x_float) && isfinite(y_float) || continue
-        push!(x_values, x_float)
-        push!(y_values, y_float)
-    end
-    return x_values, y_values
-end
-
-"""Build or reuse the quick plot from the inspector table."""
-function _ensure_inspector_plot!(
-    inspector::TableInspectorState,
-)::Nothing
-    table = inspector.inspector_table
-    table isa InspectorTable || return nothing
-    table.rows == 0 && return nothing
-    columns = table.columns
-    length(columns) < 2 && return nothing
-
-    x_index = clamp(inspector.x_column, 1, length(columns))
-    y_index = clamp(inspector.y_column, 1, length(columns))
-
-    selected_rows = inspector.grid.selected_rows
-    row_subset = (inspector.plot_selected_only && !isempty(selected_rows)) ?
-        copy(selected_rows) : nothing
-    plot_key = (inspector.inspector_key, x_index, y_index, inspector.plot_selected_only,
-                row_subset !== nothing ? sort(row_subset) : nothing)
-    inspector.plot_key == plot_key && inspector.figure !== nothing && return nothing
-
-    x_col_name = columns[x_index]
-    y_col_name = columns[y_index]
-    x_values, y_values = _inspector_plot_vectors(table, x_index, y_index, row_subset)
-
-    if isempty(x_values)
-        inspector.figure = nothing
-        inspector.plot_key = nothing
-        inspector.plot_error = "No finite numeric points for the selected columns."
-        return nothing
-    end
-
-    fig = Figure(size=(600, 400))
-    ax = Axis(fig[1, 1], xlabel=x_col_name, ylabel=y_col_name, title="Inspector Plot")
-    lines!(ax, x_values, y_values; linewidth=1)
-    scatter!(ax, x_values, y_values; markersize=4)
-    inspector.figure = fig
-    inspector.plot_key = plot_key
-    inspector.plot_error = ""
-    return nothing
-end
-
-"""Render X/Y column chooser and the quick plot."""
-function _render_inspector_plot!(inspector::TableInspectorState)::Nothing
-    table = inspector.inspector_table
-    table isa InspectorTable || return nothing
-    columns = table.columns
-    length(columns) < 2 && return nothing
-
-    width = max(80.0, (ig.GetContentRegionAvail().x - 12.0) / 2.0)
-    inspector.x_column = _column_combo!(
-        "X##ti_x",
-        inspector.x_column,
-        columns,
-        width,
-    )
-    ig.SameLine()
-    inspector.y_column = _column_combo!(
-        "Y##ti_y",
-        inspector.y_column,
-        columns,
-        width,
-    )
-
-    selected_rows = inspector.grid.selected_rows
-    can_plot_selected = !isempty(selected_rows)
-    plot_sel = inspector.plot_selected_only
-    if @c ig.Checkbox("Plot selected only##ti_pso", &plot_sel)
-        inspector.plot_selected_only = plot_sel
-        inspector.figure = nothing
-        inspector.plot_key = nothing
-    end
-    if inspector.plot_selected_only && !can_plot_selected
-        ig.SameLine()
-        ig.TextDisabled("(select rows)")
-    end
-
-    _ensure_inspector_plot!(inspector)
-    if inspector.figure !== nothing
-        MakieFigure(
-            "table_inspector_plot",
-            inspector.figure;
-            auto_resize_x=true,
-            auto_resize_y=true,
-        )
-    elseif !isempty(inspector.plot_error)
-        ig.TextDisabled(inspector.plot_error)
-    end
-    return nothing
 end
 
 # ---------------------------------------------------------------------------
@@ -333,7 +191,7 @@ function _file_grid_model(
 )::Tuple{Vector{String},Int,Function}
     table = preview.table
     columns = preview.columns
-    n_rows = nrow(table)
+    n_rows = Tables.rowcount(table)
     col_indices = Dict(c => j for (j, c) in enumerate(columns))
 
     function cell(row::Int, col::Int)::String
@@ -493,16 +351,14 @@ function render_table_inspector_window(state::BrowserState)::Nothing
     return nothing
 end
 
-"""Render the primary item-data view: DataGrid on the left, plot on the right."""
+"""Render the primary item-data view as a full-width DataGrid."""
 function _render_item_data_view!(state::BrowserState, table::InspectorTable)::Nothing
     inspector = state.table_inspector
 
-    # Warnings (non-tabular items skipped, etc.)
     for w in inspector.inspector_warnings
         ig.TextDisabled(w)
     end
 
-    # Row count / large-data warning
     if table.rows >= 1_000_000
         ig.TextColored(
             (1.0f0, 0.8f0, 0.2f0, 1.0f0),
@@ -510,11 +366,8 @@ function _render_item_data_view!(state::BrowserState, table::InspectorTable)::No
         )
     end
 
-    # Multi-item: show provenance legend
     multi_item = length(table.item_labels) > 1
     if multi_item
-        avail_x = ig.GetContentRegionAvail().x
-        label_width = max(80.0f0, avail_x / Float32(length(table.item_labels) + 1))
         for (i, lbl) in enumerate(table.item_labels)
             tint_u32 = _row_tint_for_item(i)
             r = Float32((tint_u32 >> 0)  & 0xFF) / 255.0f0
@@ -525,20 +378,12 @@ function _render_item_data_view!(state::BrowserState, table::InspectorTable)::No
         end
     end
 
-    avail = ig.GetContentRegionAvail()
-    left_w = avail.x * 0.55f0
-
-    # Left: data grid
-    ig.BeginChild("##ti_table", (left_w, 0.0f0), false)
-
     row_tint = if multi_item
         (row::Int) -> _row_tint_for_item(table.row_item[row])
     else
         (_) -> nothing
     end
 
-    # Stable per-kind table id so imgui.ini keys column widths per item kind.
-    # "mixed" when multiple kinds are selected; kinds are always Symbols so String() is safe.
     grid_id = inspector.current_kind !== nothing ? string(inspector.current_kind) : "mixed"
 
     render_data_grid!(
@@ -548,19 +393,7 @@ function _render_item_data_view!(state::BrowserState, table::InspectorTable)::No
         columns=table.columns,
         cell=table.getcell,
         row_tint,
-        on_selection_change=(_) -> begin
-            # invalidate plot cache when selection changes with plot_selected_only
-            inspector.plot_key = nothing
-        end,
     )
-
-    ig.EndChild()
-    ig.SameLine()
-
-    # Right: quick plot
-    ig.BeginChild("##ti_plot", (0.0f0, 0.0f0), false)
-    _render_inspector_plot!(inspector)
-    ig.EndChild()
 
     return nothing
 end

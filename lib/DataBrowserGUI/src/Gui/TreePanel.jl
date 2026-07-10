@@ -540,22 +540,15 @@ function _render_items_panel(
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count items")
 
                             if ig.MenuItem("Open Plot in New Window")
-                                plots = state.plots
-                                plots.next_window_id += 1
-                                push!(
-                                    plots.windows,
-                                    PlotViewState(
-                                        id="plot_$(plots.next_window_id)",
-                                        title=item.item_label,
-                                        live=false,
+                                for ext in state.extensions
+                                    Browser.open_detached_plot!(
+                                        ext,
+                                        state;
                                         item_ids=[id],
-                                        plot_kind=get(
-                                            plots.kind_by_item,
-                                            item.kind,
-                                            nothing,
-                                        ),
-                                    ),
-                                )
+                                        title=item.item_label,
+                                        kind=item.kind,
+                                    ) && break
+                                end
                             end
 
                             editable = _tag_state_ready(state)

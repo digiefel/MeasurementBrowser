@@ -1,46 +1,11 @@
 using DataBrowserAnnotations
-using GLMakie: Figure
 import CImGui as ig
 
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
-using DataBrowserAPI: KindProfileRow, PlotKind, Project, SourceProfileRow
+using DataBrowserAPI: KindProfileRow, Project, SourceProfileRow
 using DataBrowserSources
 using DataBrowserCore: InspectorTable
-
-"""
-Runtime state for one plot window.
-
-The same type represents the main plot and detached plots so drawing, export, persistence, and
-error handling follow one path.
-"""
-Base.@kwdef mutable struct PlotViewState
-    id::String
-    title::String
-    live::Bool
-    item_ids::Vector{String} = String[]
-    kind::Union{Nothing,Symbol} = nothing
-    plot_kind::Union{Nothing,Type{<:PlotKind}} = nothing
-    figure::Union{Nothing,Figure} = nothing
-    last_key::Union{Nothing,Tuple} = nothing
-    error::String = ""
-    export_error::String = ""
-end
-
-"""
-All plot-related browser state.
-
-Plot choices are stored as Julia types while the app runs. Persistence converts them to names only
-when writing `databrowser.toml`.
-"""
-Base.@kwdef mutable struct PlotState
-    main::PlotViewState = PlotViewState(id="main", title="Plot Area", live=true)
-    windows::Vector{PlotViewState} = PlotViewState[]
-    kind_by_item::Dict{Symbol,DataType} = Dict{Symbol,DataType}()
-    next_window_id::Int = 0
-    runtime_warmed::Bool = false
-    warmup_figure::Union{Nothing,Figure} = nothing
-end
 
 """Saved tree controls from `databrowser.toml`."""
 Base.@kwdef struct PersistedTreeView
@@ -55,15 +20,6 @@ Base.@kwdef struct PersistedItemsView
     filter::String = ""
 end
 
-"""Saved plot-window state from `databrowser.toml`."""
-Base.@kwdef struct PersistedPlotView
-    id::String = ""
-    title::String = ""
-    plot_kind::String = ""
-    live::Bool = false
-    items::Vector{String} = String[]
-end
-
 """
 The browser state written inside one project directory.
 
@@ -74,10 +30,6 @@ Base.@kwdef struct PersistedProjectView
     project::String = ""
     tree::PersistedTreeView = PersistedTreeView()
     items::PersistedItemsView = PersistedItemsView()
-    plot_kinds::Dict{String,String} = Dict{String,String}()
-    main_plot::PersistedPlotView =
-        PersistedPlotView(id="main", title="Plot Area", live=true)
-    plot_windows::Vector{PersistedPlotView} = PersistedPlotView[]
     extensions::Dict{String,Dict{String,Any}} = Dict{String,Dict{String,Any}}()
 end
 
@@ -108,16 +60,9 @@ Base.@kwdef mutable struct TableInspectorState
     inspector_warnings::Vector{String} = String[]
     inspector_key::Union{Nothing,Tuple} = nothing  # (item_ids..., show_provenance)
     grid::DataGridState = DataGridState()
-    plot_selected_only::Bool = false
     show_provenance_column::Bool = false
     # current_kind drives the per-kind DataGrid table id so imgui.ini keys column widths per kind
     current_kind::Union{Nothing,Symbol} = nothing
-    # Quick-plot state (driven from inspector_table)
-    x_column::Int = 1
-    y_column::Int = 2
-    figure::Union{Nothing,Figure} = nothing
-    plot_key::Union{Nothing,Tuple} = nothing
-    plot_error::String = ""
     # Raw file-preview mode (secondary): file → DataGrid
     preview::Union{Nothing,DataBrowserSources.TabularFileSource} = nothing
     file_grid::DataGridState = DataGridState()
@@ -188,7 +133,6 @@ only controls, windows, local persistence, annotations, and rendering state.
 Base.@kwdef mutable struct BrowserState
     workspace::Union{Nothing,Workspace.Workspace} = nothing
     project_locked::Bool = false
-    plots::PlotState = PlotState()
     table_inspector::TableInspectorState = TableInspectorState()
     performance::PerformanceState = PerformanceState()
     project_preference::String = "auto"
@@ -206,9 +150,6 @@ Base.@kwdef mutable struct BrowserState
     tag_state_error::String = ""
     show_project_window::Bool = false
     show_performance_window::Bool = false
-    # When set, the next plot redraw is wrapped in the sampling profiler + cache timers and the full
-    # breakdown is printed to the console. Set it via the toolbar button or `request_plot_profile!`.
-    profile_next_plot::Bool = false
     collection_metadata_modal::Bool = true
     modal_root_path::String = ""
     cache_rebuild_modal::Bool = false

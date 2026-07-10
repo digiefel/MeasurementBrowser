@@ -551,7 +551,6 @@ function _run_browser(
     _set_browser_window_hints(window_start)
     first_frame   = Ref(true)
     setup_layout  = Ref(true)
-    warmup_started = Ref(false)
     return ig.render(
         ctx;
         engine,
@@ -588,15 +587,8 @@ function _run_browser(
             window_start == :normal && _promote_to_foreground_app()
             first_frame[] = false
         end
-        if !_extensions_ready(state) || !state.plots.runtime_warmed
+        if !_extensions_ready(state)
             _render_startup_preparation!()
-            if warmup_started[]
-                _time!(state, :plot_warmup) do
-                    ensure_plot_runtime_warmed!(state)
-                end
-            else
-                warmup_started[] = true
-            end
             return nothing
         end
         _time!(state, :frame_ui) do
@@ -614,12 +606,6 @@ function _run_browser(
             end
             _time!(state, :table_inspector) do
                 render_table_inspector_window(state)
-            end
-            _time!(state, :plot) do
-                render_plot_window(state)
-            end
-            _time!(state, :extra_plots) do
-                render_additional_plot_windows(state)
             end
             _time!(state, :extensions) do
                 for ext in state.extensions
