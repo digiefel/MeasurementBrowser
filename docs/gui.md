@@ -49,7 +49,8 @@ Directory sources are watched continuously.
 | Hierarchy tree | Multi-select tree, primary navigation. |
 | Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
 | Information | Selected collection and item details. |
-| Table Inspector | Materialized item-data viewer with per-row provenance, multi-select, and quick X/Y plot. |
+| Table Inspector | Materialized item-data viewer with per-row provenance and multi-select. |
+| Table Plot (DBPlots) | Independent X/Y plot over the workspace selection's merged table; toggled from the Plot menu. |
 | Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
 
 ## Scan profiling
@@ -62,8 +63,9 @@ reported as source-read time.
 Internal engine controls are absent unless the workspace was opened with
 `profile_internal=true`. Its Internal tab starts and stops a bounded structured capture, groups span
 latencies, separates writer wait from service, shows process counters and recent filtered events, and
-exports Perfetto JSON. General live plots stay in the normal Live tab so each Makie figure has one
-owning canvas. Starting during active work drains it and starts one clean rebuild. With
+exports Perfetto JSON. General live histories stay in the normal Live tab as CImGui sparklines
+fed from bounded ring buffers (CSV export, no Makie). Starting during active work drains it and
+starts one clean rebuild. With
 `profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
 raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
 
@@ -171,15 +173,16 @@ The Table Inspector shows data in two modes, both rendered through the same `Dat
 **Primary mode (item data)**:
 - On each frame, resolves the browser selection to `ItemRecord`s via `_project_visible_selection`
   and materializes items with `Workspace.materialize_items`.
-- Merges multiple items' `DataFrame`s by column union; columns present in only some items render
-  blank for the others. A stable key based on item ids prevents redundant rebuilds.
+- Merges multiple items' Tables.jl-compatible data by column union; columns present in only some
+  items render blank for the others. Non-tabular items are skipped with a per-item warning rather
+  than failing the whole view. A stable key based on item ids prevents redundant rebuilds.
 - Multi-item selections: subtle per-item alternating row background tint for provenance; an optional
   leading "\_item\_" column (toggled by the "Provenance column" checkbox) shows each row's source label.
 - All rows are rendered (no cap); virtualization keeps rendering O(visible).
 - Header is sticky (frozen first row).
 - Multi-row selection with click / Shift+click / Ctrl+click / Ctrl+A / ↑↓ / Escape.
-- Plot on the right (55/45 split): X/Y column chooser; "Plot selected only" checkbox restricts the
-  plot to the grid selection.
+- The inspector only shows tables. Plotting columns lives in the separate Table Plot window
+  (DBPlots), an independent visualizer over the same workspace selection.
 
 **Column width persistence (item mode)**: The DataGrid is called with a per-kind `id` —
 `string(kind)` for a single-kind selection, `"mixed"` when multiple kinds are selected. ImGui
@@ -189,7 +192,7 @@ per kind globally across restarts. There is no toml layer for column widths.
 **Secondary raw-file mode**: `Inspect → Table Inspector` exposes the path bar, `Live` checkbox,
 `Open...`, and `Reload` controls for inspecting arbitrary delimited files. The full file is
 loaded (no row cap; a soft warning appears above 100 000 rows) and rendered through `DataGrid`
-with id `"file"`. This mode has no provenance tinting and no quick-plot panel. The grid model
+with id `"file"`. This mode has no provenance tinting. The grid model
 is built by `_file_grid_model(preview)` which returns `(columns, n_rows, cell)` from the parsed
 `TablePreview`; its column widths are persisted separately under the `"file"` ini key.
 
