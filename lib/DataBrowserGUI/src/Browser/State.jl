@@ -1,5 +1,5 @@
 using DataBrowserAnnotations
-using GLMakie: Figure, Observable
+using GLMakie: Figure
 import CImGui as ig
 
 import DataBrowserCore.Workspace
@@ -126,49 +126,29 @@ Base.@kwdef mutable struct TableInspectorState
 end
 
 """
-Ring-buffer state and Makie figure handles for the Performance window's live figures.
+Ring-buffer state for the Performance window sparklines.
 
-Two figures are created once and updated in place via Observables:
-- `timings_figure`: rolling plot-redraw phase durations (load / setup / draw-data / total).
-- `build_figure`: internal build sparklines (throughput, backlog, RSS).
-
-Each timing line carries its own `_x`/`_obs` pair so series of different length never collide (the
-plot-error path records only `:plot_draw`, so the phase vectors do diverge). Build `_buf` fields are
-bounded ring buffers sampled while the window is open; throughput is a finite difference of the
-completed-work counter between ticks, so `last_*` hold the previous snapshot.
+Timing buffers hold rolling plot-redraw phase durations (load / setup / draw-data / total).
+Build buffers are sampled while the window is open; throughput is a finite difference of the
+completed-work counter between ticks.
 """
 Base.@kwdef mutable struct LivePlotsState
     capacity::Int = 600
 
-    # ---- timings figure: one independent (x, y) ring buffer per redraw phase ----
-    timings_figure::Union{Nothing,Figure} = nothing
-    load_x::Observable{Vector{Float32}}  = Observable(Float32[])
-    load_obs::Observable{Vector{Float32}} = Observable(Float32[])
-    setup_x::Observable{Vector{Float32}} = Observable(Float32[])
-    setup_obs::Observable{Vector{Float32}} = Observable(Float32[])
-    data_x::Observable{Vector{Float32}}  = Observable(Float32[])
-    data_obs::Observable{Vector{Float32}} = Observable(Float32[])
-    total_x::Observable{Vector{Float32}} = Observable(Float32[])
-    total_obs::Observable{Vector{Float32}} = Observable(Float32[])
+    load_buf::Vector{Float32} = Float32[]
+    setup_buf::Vector{Float32} = Float32[]
+    data_buf::Vector{Float32} = Float32[]
+    total_buf::Vector{Float32} = Float32[]
     timings_seen::Int = -1
     timings_export_error::String = ""
 
-    # ---- build sparklines: shared elapsed-seconds x, one ring buffer per series ----
-    build_figure::Union{Nothing,Figure} = nothing
-    elapsed_buf::Vector{Float32}    = Float32[]
-    throughput_buf::Vector{Float32} = Float32[]   # completed work / s
-    active_buf::Vector{Float32}     = Float32[]   # active work-graph nodes
-    pending_buf::Vector{Float32}    = Float32[]   # pending cache-buffer rows
-    rss_buf::Vector{Float32}        = Float32[]   # RSS GiB
-
-    elapsed_obs::Observable{Vector{Float32}}    = Observable(Float32[])
-    throughput_obs::Observable{Vector{Float32}} = Observable(Float32[])
-    active_obs::Observable{Vector{Float32}}     = Observable(Float32[])
-    pending_obs::Observable{Vector{Float32}}    = Observable(Float32[])
-    rss_obs::Observable{Vector{Float32}}        = Observable(Float32[])
+    elapsed_buf::Vector{Float32} = Float32[]
+    throughput_buf::Vector{Float32} = Float32[]
+    active_buf::Vector{Float32} = Float32[]
+    pending_buf::Vector{Float32} = Float32[]
+    rss_buf::Vector{Float32} = Float32[]
     build_export_error::String = ""
 
-    # ---- sampling state (finite-difference bases + throttle) ----
     t0_ns::UInt64 = UInt64(0)
     last_sample_ns::UInt64 = UInt64(0)
     last_elapsed_s::Float64 = 0.0

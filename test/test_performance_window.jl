@@ -2,7 +2,7 @@ const PERFORMANCE_BROWSER = DataBrowserGUI.Browser
 
 import DataBrowserProfiling as Profiling
 
-@testset "performance window live figures" begin
+@testset "performance window sparklines" begin
     live = PERFORMANCE_BROWSER.LivePlotsState(capacity=3)
     timings = Dict{Symbol,Vector{Float64}}(
         :plot_load => [1.0, 2.0],
@@ -11,14 +11,10 @@ import DataBrowserProfiling as Profiling
         :plot_draw => [7.0, 8.0, 9.0],
     )
 
-    @test PERFORMANCE_BROWSER._make_timings_figure(live) !== nothing
     PERFORMANCE_BROWSER._update_live_timings!(live, timings)
-    @test live.load_x[] == Float32[1, 2]
-    @test live.total_x[] == Float32[1, 2, 3]
-    @test length(live.load_x[]) == length(live.load_obs[])
-    @test length(live.total_x[]) == length(live.total_obs[])
+    @test live.load_buf == Float32[1, 2]
+    @test live.total_buf == Float32[7, 8, 9]
 
-    @test PERFORMANCE_BROWSER._make_build_figure(live) !== nothing
     for value in (1.0f0, 2.0f0, 3.0f0, 4.0f0)
         PERFORMANCE_BROWSER._ring_push!(live.elapsed_buf, value, live.capacity)
     end

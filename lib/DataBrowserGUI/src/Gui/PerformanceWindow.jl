@@ -1,14 +1,11 @@
 using Printf
 using Statistics: mean
 import CImGui as ig
-using GLMakie: Axis, Figure, Observable, axislegend, lines!
-import GLMakie.Makie as Makie
 using NativeFileDialog: save_file
 
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI: scan_profile_summary, scan_source_profile
 import DataBrowserCore.Workspace
-using .MakieImguiIntegration: MakieFigure
 
 # ---------------------------------------------------------------------------
 # Internal table helpers
@@ -87,48 +84,80 @@ function _render_plot_phase_table(performance::PerformanceState)::Nothing
     return nothing
 end
 
-"""
-Build the redraw-timings figure once: one axis, four phase lines.
+"""Copy the trailing `capacity` samples from `values` into `buf`."""
+function _retain_tail!(buf::Vector{Float32}, values::Vector{Float64}, capacity::Int)::Nothing
+    empty!(buf)
+    retained = min(capacity, length(values))
+    retained == 0 && return nothing
+    append!(buf, Float32.(@view values[end - retained + 1:end]))
+    return nothing
+end
 
-Each phase carries its own `(x, y)` Observable pair so a longer series never collides with the
-others on a shared x.
-"""
-function _make_timings_figure(lp::LivePlotsState)::Figure
-    fig = Figure(size=(680, 220))
-    axis = Axis(fig[1, 1]; xlabel="redraw #", ylabel="ms", title="Plot redraw phases")
-    lines!(axis, lp.load_x, lp.load_obs; color=:steelblue, label="load")
-    lines!(axis, lp.setup_x, lp.setup_obs; color=:darkorange, label="setup")
-    lines!(axis, lp.data_x, lp.data_obs; color=:forestgreen, label="draw data")
-    lines!(axis, lp.total_x, lp.total_obs; color=:crimson, label="total")
-    axislegend(axis; position=:lt, labelsize=10)
-    return fig
+"""Render one bounded history as an ImGui sparkline with the latest value as overlay text."""
+function _render_sparkline!(
+    id::String,
+    label::String,
+    values::Vector{Float32},
+    unit::String;
+    height::Float32=60.0f0,
+)::Nothing
+    ig.TextUnformatted(label)
+    if isempty(values)
+        ig.TextDisabled(" (no samples)")
+        return nothing
+    end
+    ig.SameLine()
+    ig.TextDisabled(@sprintf("  %.2f %s", values[end], unit))
+    width = max(120.0f0, ig.GetContentRegionAvail().x)
+    ig.PlotLines(
+        "##perf_spark_$id",
+        values,
+        length(values);
+        scale_min=0.0f0,
+        graph_size=(width, height),
+    )
+    return nothing
+end
+
+"""Write aligned sparkline buffers to a CSV file chosen by the user."""
+function _export_sparklines_csv(
+    default_name::String,
+    series::Vector{Pair{String,Vector{Float32}}},
+)::String
+    path = save_file(default_name; filterlist="csv")
+    isempty(path) && return ""
+    isempty(splitext(path)[2]) && (path *= ".csv")
+    try
+        open(path, "w") do io
+            println(io, join(first.(series), ","))
+            rows = minimum(length(last(entry)) for entry in series)
+            for i in 1:rows
+                println(io, join((string(last(s)[i]) for s in series), ","))
+            end
+        end
+    catch err
+        bt = catch_backtrace()
+        summary = first(split(sprint(showerror, err), '\n'; limit=2))
+        @error("Sparkline export failed\nOutput: $path", exception=(err, bt))
+        return "Export failed: $summary. See the console for full details."
+    end
+    return ""
 end
 
 """
-Refresh redraw-timing Observables only when a new redraw landed.
-
-Each phase keeps its own x values so error-only total samples cannot cause dimension mismatches.
+Refresh redraw-timing ring buffers only when a new redraw landed.
 """
 function _update_live_timings!(lp::LivePlotsState, timings::Dict{Symbol,Vector{Float64}})::Nothing
     draw = get(timings, :plot_draw, Float64[])
     length(draw) == lp.timings_seen && return nothing
     lp.timings_seen = length(draw)
-    for (key, x_values, y_values) in (
-        (:plot_load, lp.load_x, lp.load_obs),
-        (:plot_setup, lp.setup_x, lp.setup_obs),
-        (:plot_data, lp.data_x, lp.data_obs),
-        (:plot_draw, lp.total_x, lp.total_obs),
+    for (key, buf) in (
+        (:plot_load, :load_buf),
+        (:plot_setup, :setup_buf),
+        (:plot_data, :data_buf),
+        (:plot_draw, :total_buf),
     )
-        values = get(timings, key, Float64[])
-        sample_count = length(values)
-        retained = min(lp.capacity, sample_count)
-        if retained == 0
-            isempty(y_values[]) || (x_values[] = Float32[]; y_values[] = Float32[])
-            continue
-        end
-        first_index = sample_count - retained + 1
-        x_values[] = Float32.(first_index:sample_count)
-        y_values[] = Float32.(@view values[first_index:sample_count])
+        _retain_tail!(getfield(lp, buf), get(timings, key, Float64[]), lp.capacity)
     end
     return nothing
 end
@@ -183,25 +212,21 @@ function _render_project_tab!(state::BrowserState)::Nothing
     _render_plot_phase_table(performance)
 
     lp = performance.live_plots
-    lp.timings_figure === nothing && (lp.timings_figure = _make_timings_figure(lp))
     _update_live_timings!(lp, performance.timings)
     if ig.Button("Export##live_timings_export")
         series = Pair{String,Vector{Float32}}[
-            "redraw" => copy(lp.total_x[]),
-            "load_ms" => copy(lp.load_obs[]),
-            "setup_ms" => copy(lp.setup_obs[]),
-            "data_ms" => copy(lp.data_obs[]),
-            "total_ms" => copy(lp.total_obs[]),
+            "load_ms" => copy(lp.load_buf),
+            "setup_ms" => copy(lp.setup_buf),
+            "data_ms" => copy(lp.data_buf),
+            "total_ms" => copy(lp.total_buf),
         ]
-        lp.timings_export_error = _export_live_figure(
-            lp.timings_figure, "perf-timings.png", series)
+        lp.timings_export_error = _export_sparklines_csv("perf-timings.csv", series)
     end
     isempty(lp.timings_export_error) || ig.TextWrapped(lp.timings_export_error)
-    MakieFigure(
-        "perf_live_timings", lp.timings_figure;
-        auto_resize_x=true,
-        auto_resize_y=false,
-    )
+    _render_sparkline!("load", "Load", lp.load_buf, "ms")
+    _render_sparkline!("setup", "Setup", lp.setup_buf, "ms")
+    _render_sparkline!("data", "Draw data", lp.data_buf, "ms")
+    _render_sparkline!("total", "Total", lp.total_buf, "ms")
     return nothing
 end
 
@@ -298,31 +323,7 @@ function _sample_build!(lp::LivePlotsState, workspace::Workspace.Workspace)::Not
     _ring_push!(lp.active_buf, Float32(active), capacity)
     _ring_push!(lp.pending_buf, Float32(staged.rows), capacity)
     _ring_push!(lp.rss_buf, Float32(Profiling.process_rss_bytes() / 1024^3), capacity)
-
-    lp.elapsed_obs[] = copy(lp.elapsed_buf)
-    lp.throughput_obs[] = copy(lp.throughput_buf)
-    lp.active_obs[] = copy(lp.active_buf)
-    lp.pending_obs[] = copy(lp.pending_buf)
-    lp.rss_obs[] = copy(lp.rss_buf)
     return nothing
-end
-
-"""Build the three-panel engine dashboard once; series share elapsed seconds on x."""
-function _make_build_figure(lp::LivePlotsState)::Figure
-    fig = Figure(size=(680, 400))
-
-    throughput_axis = Axis(fig[1, 1]; ylabel="items / s", title="Analysis throughput")
-    lines!(throughput_axis, lp.elapsed_obs, lp.throughput_obs; color=:purple)
-
-    backlog_axis = Axis(fig[1, 2]; ylabel="count", title="Backlog")
-    lines!(backlog_axis, lp.elapsed_obs, lp.active_obs; color=:steelblue, label="active work")
-    lines!(backlog_axis, lp.elapsed_obs, lp.pending_obs;
-        color=:seagreen, label="pending cache rows")
-    axislegend(backlog_axis; position=:lt, labelsize=10)
-
-    rss_axis = Axis(fig[2, 1]; xlabel="elapsed (s)", ylabel="GiB", title="RSS")
-    lines!(rss_axis, lp.elapsed_obs, lp.rss_obs; color=:darkorange)
-    return fig
 end
 
 """Render live pipeline counters and the build sparklines."""
@@ -337,58 +338,22 @@ function _render_build_tab!(state::BrowserState, workspace::Workspace.Workspace)
         "Cache write buffer: %d items / %d rows pending", staged.items, staged.rows))
     ig.Spacing()
 
-    lp.build_figure === nothing && (lp.build_figure = _make_build_figure(lp))
     if ig.Button("Export##live_build_export")
         series = Pair{String,Vector{Float32}}[
-            "elapsed_s" => copy(lp.elapsed_obs[]),
-            "throughput_per_s" => copy(lp.throughput_obs[]),
-            "active_work" => copy(lp.active_obs[]),
-            "pending_rows" => copy(lp.pending_obs[]),
-            "rss_gib" => copy(lp.rss_obs[]),
+            "elapsed_s" => copy(lp.elapsed_buf),
+            "throughput_per_s" => copy(lp.throughput_buf),
+            "active_work" => copy(lp.active_buf),
+            "pending_rows" => copy(lp.pending_buf),
+            "rss_gib" => copy(lp.rss_buf),
         ]
-        lp.build_export_error = _export_live_figure(
-            lp.build_figure, "perf-build.png", series)
+        lp.build_export_error = _export_sparklines_csv("perf-build.csv", series)
     end
     isempty(lp.build_export_error) || ig.TextWrapped(lp.build_export_error)
-    MakieFigure("perf_live_build", lp.build_figure; auto_resize_x=true, auto_resize_y=false)
+    _render_sparkline!("throughput", "Throughput", lp.throughput_buf, "items/s")
+    _render_sparkline!("active", "Active work", lp.active_buf, "nodes")
+    _render_sparkline!("pending", "Pending cache rows", lp.pending_buf, "rows")
+    _render_sparkline!("rss", "RSS", lp.rss_buf, "GiB")
     return nothing
-end
-
-"""
-Save a figure to PNG (or the user's chosen extension), then optionally dump the raw buffer series
-to a companion CSV (same stem + `_data.csv`).
-"""
-function _export_live_figure(
-    figure::Figure,
-    default_name::String,
-    series::Vector{Pair{String,Vector{Float32}}},
-)::String
-    path = save_file(default_name; filterlist="png,jpg,jpeg,svg,pdf")
-    isempty(path) && return ""
-    isempty(splitext(path)[2]) && (path *= ".png")
-    try
-        Makie.save(path, figure)
-    catch err
-        bt = catch_backtrace()
-        summary = first(split(sprint(showerror, err), '\n'; limit=2))
-        @error("Live-plot export failed\nOutput: $path", exception=(err, bt))
-        return "Export failed: $summary. See the console for full details."
-    end
-    if !isempty(series)
-        csv_path = splitext(path)[1] * "_data.csv"
-        try
-            open(csv_path, "w") do io
-                println(io, join(first.(series), ","))
-                rows = minimum(length(last(entry)) for entry in series)
-                for i in 1:rows
-                    println(io, join((string(last(s)[i]) for s in series), ","))
-                end
-            end
-        catch err
-            @warn "Could not write companion CSV" path=csv_path exception=err
-        end
-    end
-    return ""
 end
 
 # ---------------------------------------------------------------------------
