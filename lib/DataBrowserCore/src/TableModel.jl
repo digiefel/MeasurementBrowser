@@ -106,15 +106,3 @@ function merge_item_tables(pairs::Vector{Tuple{Any,Any}})::InspectorTable
     end
     return _inspector_table_from_tables(columns, tables, labels)
 end
-
-"""
-Build an `InspectorTable` from items whose data and labels are extracted via callbacks.
-"""
-function merge_item_tables(
-    items::Vector,
-    get_data::Function,
-    get_label::Function,
-)::InspectorTable
-    pairs = Tuple{Any,Any}[(get_label(item), get_data(item)) for item in items]
-    return merge_item_tables(pairs)
-end
