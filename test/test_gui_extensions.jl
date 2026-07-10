@@ -69,6 +69,10 @@ end
         @test ext.calls[:menu] == 1
         @test ext.calls[:draw] == 1
 
+        # warmup! has a no-op fallback; is_ready stays a pure predicate
+        @test Browser.warmup!(ext, state) === nothing
+        @test !Browser.is_ready(ext, state)
+
         ext.ready = true
         @test Browser._extensions_ready(state)
 

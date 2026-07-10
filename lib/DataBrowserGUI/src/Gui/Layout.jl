@@ -549,8 +549,9 @@ function _run_browser(
     exit_after_frames === nothing || exit_after_frames > 0 ||
         error("exit_after_frames must be positive when provided; got $exit_after_frames")
     _set_browser_window_hints(window_start)
-    first_frame   = Ref(true)
-    setup_layout  = Ref(true)
+    first_frame       = Ref(true)
+    setup_layout      = Ref(true)
+    startup_presented = Ref(false)
     return ig.render(
         ctx;
         engine,
@@ -588,7 +589,18 @@ function _run_browser(
             first_frame[] = false
         end
         if !_extensions_ready(state)
+            # Present the preparation surface for one frame before running any blocking
+            # extension warmup, so the window is never blank during the expensive part.
             _render_startup_preparation!()
+            if startup_presented[]
+                _time!(state, :extension_warmup) do
+                    for ext in state.extensions
+                        is_ready(ext, state) || warmup!(ext, state)
+                    end
+                end
+            else
+                startup_presented[] = true
+            end
             return nothing
         end
         _time!(state, :frame_ui) do
