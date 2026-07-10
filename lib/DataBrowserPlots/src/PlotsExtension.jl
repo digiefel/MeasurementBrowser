@@ -6,6 +6,13 @@ using DataBrowserAPI:
     plot_kind_from_name,
     plot_kind_name
 
+"""
+The Makie plotting extension registered with the `DataBrowserGUI` shell.
+
+One instance per browser owns all plot state: the main and detached plot
+windows (`plots`), the table-plot window (`table_plot`), and the one-shot
+redraw-profiling flag (`profile_next_plot`).
+"""
 mutable struct PlotsExtension <: Browser.GuiExtension
     plots::PlotState
     profile_next_plot::Bool
@@ -160,6 +167,7 @@ function Browser.open_detached_plot!(
     return true
 end
 
+"""Return the browser's `PlotsExtension` instance; error if it is not loaded."""
 function plots_extension(state::Browser.BrowserState)::PlotsExtension
     for ext in state.extensions
         ext isa PlotsExtension && return ext
@@ -167,6 +175,12 @@ function plots_extension(state::Browser.BrowserState)::PlotsExtension
     error("PlotsExtension is not loaded")
 end
 
+"""
+Arm a full profile of the next plot redraw.
+
+Invalidates every open plot view so the next frame redraws and captures the
+phase timing/CPU-sampling breakdown (also wired to each plot's Profile button).
+"""
 function request_plot_profile!(state::Browser.BrowserState)::Nothing
     ext = plots_extension(state)
     ext.profile_next_plot = true
