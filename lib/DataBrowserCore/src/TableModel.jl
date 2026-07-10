@@ -94,15 +94,24 @@ end
 """
 Build an `InspectorTable` from a list of `(label, table)` pairs.
 
-Multiple items are merged by column union (missing columns render blank) with per-row provenance.
+Pairs whose data does not satisfy `Tables.istable` are skipped with a warning, so one non-tabular
+item never hides its tabular siblings. Multiple items are merged by column union (missing columns
+render blank) with per-row provenance.
+
+Returns `(table::InspectorTable, warnings::Vector{String})`.
 """
-function merge_item_tables(pairs::Vector{Tuple{Any,Any}})::InspectorTable
+function merge_item_tables(pairs::Vector{Tuple{Any,Any}})::Tuple{InspectorTable,Vector{String}}
     col_set = Set{String}()
     columns = String[]
     tables = Any[]
     labels = String[]
+    warnings = String[]
     for (label, table) in pairs
+        if !Tables.istable(table)
+            push!(warnings, "Item '$(label)' has non-tabular data; skipped.")
+            continue
+        end
         _append_table!(col_set, columns, tables, labels, string(label), table)
     end
-    return _inspector_table_from_tables(columns, tables, labels)
+    return _inspector_table_from_tables(columns, tables, labels), warnings
 end

@@ -66,9 +66,17 @@ function _sync_table_plot_table!(
     for i in 1:length(selected_records)
         record = get(workspace.index.items, selected_records[i].id, nothing)
         label = record !== nothing ? record.item_label : string(materialized[i])
-        push!(pairs, (label, item_data(materialized[i])))
+        data = try
+            item_data(materialized[i])
+        catch err
+            bt = catch_backtrace()
+            @error "Table plot: failed to load item data" label exception=(err, bt)
+            continue
+        end
+        push!(pairs, (label, data))
     end
-    return merge_item_tables(pairs)
+    table, _ = merge_item_tables(pairs)
+    return table
 end
 
 function _ensure_table_plot!(

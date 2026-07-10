@@ -54,7 +54,8 @@ using DataBrowserGUI
     @testset "merge_item_tables single item" begin
         df = DataFrame(x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0])
         pairs = [("item_a", df)]
-        table = merge_item_tables(Tuple{Any,Any}[(lbl, d) for (lbl, d) in pairs])
+        table, warnings = merge_item_tables(Tuple{Any,Any}[(lbl, d) for (lbl, d) in pairs])
+        @test isempty(warnings)
         @test table.columns == ["x", "y"]
         @test table.rows == 3
         @test length(table.row_item) == 3
@@ -71,7 +72,8 @@ using DataBrowserGUI
         df1 = DataFrame(x=[1, 2], y=[3, 4])
         df2 = DataFrame(y=[5, 6], z=[7, 8])  # y shared, z new, x missing
         pairs = Tuple{Any,Any}[("A", df1), ("B", df2)]
-        table = merge_item_tables(pairs)
+        table, warnings = merge_item_tables(pairs)
+        @test isempty(warnings)
         @test Set(table.columns) == Set(["x", "y", "z"])
         @test table.rows == 4  # 2 from df1 + 2 from df2
         @test table.item_labels == ["A", "B"]
@@ -87,10 +89,27 @@ using DataBrowserGUI
 
     # --- merge_item_tables: empty input ---
     @testset "merge_item_tables empty" begin
-        table = merge_item_tables(Tuple{Any,Any}[])
+        table, warnings = merge_item_tables(Tuple{Any,Any}[])
+        @test isempty(warnings)
         @test table.rows == 0
         @test isempty(table.columns)
         @test isempty(table.item_labels)
+    end
+
+    # --- merge_item_tables: non-tabular items are skipped, not fatal ---
+    @testset "merge_item_tables non-tabular skip" begin
+        df = DataFrame(x=[1, 2], y=[3, 4])
+        pairs = Tuple{Any,Any}[
+            ("good", df),
+            ("bad", Dict(:not => "a table")),
+            ("matrix", [1 2; 3 4]),
+        ]
+        table, warnings = merge_item_tables(pairs)
+        @test table.rows == 2
+        @test table.item_labels == ["good"]
+        @test length(warnings) == 2
+        @test any(occursin("'bad'", w) for w in warnings)
+        @test any(occursin("'matrix'", w) for w in warnings)
     end
 
     # --- _update_multi_selection!: basic operations ---

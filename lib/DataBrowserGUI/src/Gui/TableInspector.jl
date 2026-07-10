@@ -84,21 +84,27 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
         return nothing
     end
 
-    # Build label from record (more useful than the item object's show)
-    pairs = [
-        (materialized[i], get(workspace.index.items, selected_records[i].id, nothing))
-        for i in 1:length(selected_records)
-    ]
-    labeled_pairs = Tuple{Any,Any}[
-        (
-            record !== nothing ? record.item_label : string(mat_item),
-            item_data(mat_item),
-        )
-        for (mat_item, record) in pairs
-    ]
+    # Build labels from records (more useful than the item object's show); skip items whose
+    # data fails to load so one bad item never hides its siblings.
+    warnings = String[]
+    labeled_pairs = Tuple{Any,Any}[]
+    for i in 1:length(selected_records)
+        mat_item = materialized[i]
+        record = get(workspace.index.items, selected_records[i].id, nothing)
+        label = record !== nothing ? record.item_label : string(mat_item)
+        data = try
+            item_data(mat_item)
+        catch err
+            bt = catch_backtrace()
+            @error "Table inspector: failed to load item data" label exception=(err, bt)
+            push!(warnings, "Item '$label': failed to load data; skipped.")
+            continue
+        end
+        push!(labeled_pairs, (label, data))
+    end
 
-    try
-        table = merge_item_tables(labeled_pairs)
+    table, merge_warnings = try
+        merge_item_tables(labeled_pairs)
     catch err
         bt = catch_backtrace()
         @error "Table inspector: failed to build table" exception=(err, bt)
@@ -109,6 +115,7 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
         inspector.inspector_key = key
         return nothing
     end
+    append!(warnings, merge_warnings)
 
     show_prov = inspector.show_provenance_column && length(table.item_labels) > 1
     if show_prov
@@ -122,7 +129,7 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     end
 
     inspector.inspector_table = table
-    inspector.inspector_warnings = String[]
+    inspector.inspector_warnings = warnings
     inspector.inspector_key = key
     inspector.grid.selected_rows = Int[]
 
