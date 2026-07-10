@@ -22,7 +22,7 @@
 # Results land in bench/results/<timestamp>-scaling/scaling.csv.
 
 using DataBrowserAPI
-using DataBrowserCore.ItemIndex: DataItem
+using DataBrowserAPI.ItemIndex: DataItem
 using DataBrowserCore.Workspace
 using DataBrowserGUI.Browser
 using BenchmarkTools

@@ -1,7 +1,7 @@
 using TOML
 
 using DataBrowserAPI: project_name
-using DataBrowserCore.ItemIndex: ItemRecord
+using DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 
 """Convert a user path into the stable absolute form used by persistence."""

@@ -30,7 +30,7 @@ import DataBrowserAPI:
     reset_scan_profile!,
     scan_profile_summary,
     scan_source_profile
-import .ItemIndex: DataItem, ItemRecord, interpret_source_item
+import DataBrowserAPI.ItemIndex: DataItem, ItemRecord, interpret_source_item
 
 # Only registered recipes are persisted; transient scan state (read cache, profiling, locks) is
 # rebuilt empty on load. This keeps the cache format stable when transient fields change, so adding

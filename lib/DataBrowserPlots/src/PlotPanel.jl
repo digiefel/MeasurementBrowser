@@ -10,7 +10,7 @@ const Browser = DataBrowserGUI.Browser
 
 using DataBrowserAPI:
     source_label
-using DataBrowserCore.ItemIndex: ItemRecord
+using DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI:

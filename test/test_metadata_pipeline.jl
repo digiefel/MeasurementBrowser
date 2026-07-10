@@ -69,7 +69,7 @@ end
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+            DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         loaded = sort(loaded; by=item -> item.metadata[:cycle])
 
@@ -114,7 +114,7 @@ end
         project, test_source(project, dir); background_processing=true)
     try
         wait_workspace_idle!(workspace)
-        record = only(DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy))
+        record = only(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy))
         @test workspace.index.item_metadata[record.id][:events] == 4
 
         # Re-register analyze with a different key, then re-run the item's analyze stage: its output
@@ -152,7 +152,7 @@ end
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+            DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         loaded = sort(loaded; by=item -> item.metadata[:cycle])
 
@@ -171,13 +171,13 @@ end
     try
         wait_workspace_idle!(workspace)
         records = sort(
-            DataBrowserCore.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+            DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         # The fold failed, so members deliver their :processed payloads (no cumulative column).
         @test length(loaded) == 2
         @test all(item -> !hasproperty(item.data, :cumulative), loaded)
         # The collection-process error is surfaced on the collection key.
-        key = DataBrowserCore.ItemIndex.collection_path_key(["fatigue"])
+        key = DataBrowserAPI.ItemIndex.collection_path_key(["fatigue"])
         @test haskey(workspace.index.analysis_errors, key)
     finally
         MBP.close_workspace!(workspace)

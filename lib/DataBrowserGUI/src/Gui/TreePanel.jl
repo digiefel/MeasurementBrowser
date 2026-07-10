@@ -4,7 +4,7 @@ using DataBrowserAPI:
     Project,
     display_label,
     kind_label
-using DataBrowserCore.ItemIndex:
+using DataBrowserAPI.ItemIndex:
     HierarchyNode,
     ItemRecord,
     children,

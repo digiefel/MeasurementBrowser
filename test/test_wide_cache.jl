@@ -3,7 +3,7 @@ using Test
 using Dates: Date, DateTime
 
 const WIDE = DataBrowserCore.Cache
-const WIDE_INDEX = DataBrowserCore.ItemIndex
+const WIDE_INDEX = DataBrowserAPI.ItemIndex
 
 """Open a fresh disk cache for one wide-table test and clean it up afterwards."""
 function _with_wide_cache(work::Function, name::AbstractString)

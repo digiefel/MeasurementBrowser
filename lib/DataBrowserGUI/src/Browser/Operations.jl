@@ -3,7 +3,7 @@ using DataBrowserAPI:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using DataBrowserCore.ItemIndex: collection_path_key, all_items
+using DataBrowserAPI.ItemIndex: collection_path_key, all_items
 using DataBrowserCore.Cache: ProjectCacheSchemaError
 import DataBrowserCore.Workspace
 using DataBrowserCore.Workspace:

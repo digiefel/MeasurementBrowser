@@ -1,12 +1,11 @@
 module ItemIndex
 
 using Dates
-using DataFrames: AbstractDataFrame
 
 import DataBrowserProfiling as Profiling
 
-import DataBrowserAPI
-import DataBrowserAPI:
+import ..DataBrowserAPI
+import ..DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
@@ -35,7 +34,8 @@ import DataBrowserAPI:
     source_item_timestamp,
     source_items,
     source_label,
-    cacheable
+    cacheable,
+    cacheable_payload
 
 """
 Failure produced while interpreting or analyzing one source item.
@@ -273,10 +273,10 @@ metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
 item_data(item::DataItem) = item.data
 fingerprint(item::DataItem) = nothing
 
-# The built-in item opts DataFrame values and views into the native columnar cache. Other data types
-# remain source-backed until they receive their own native storage method. Type-API items opt in
-# themselves.
-cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame
+# The built-in item delegates to the payload trait: storage backends declare which payload types
+# they can store natively (DataBrowserCache opts in DataFrames). Other data types remain
+# source-backed until a backend claims them. Type-API items opt in themselves.
+cacheable(item::DataItem)::Bool = cacheable_payload(item.data)
 
 """
 One node in the collection hierarchy.

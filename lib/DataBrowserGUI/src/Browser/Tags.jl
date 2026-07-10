@@ -1,7 +1,7 @@
 using DataBrowserAnnotations
 
 import DataBrowserCore.Workspace
-using DataBrowserCore.ItemIndex:
+using DataBrowserAPI.ItemIndex:
     HierarchyNode,
     ItemRecord,
     collection_path_key,

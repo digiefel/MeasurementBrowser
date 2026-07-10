@@ -101,7 +101,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
     project = DataBrowser.define_project("ProjectViewTest")
     source = test_source(project, root_path)
     workspace = DataBrowserCore.Workspace.Workspace(project, source)
-    item_1 = DataBrowserCore.ItemIndex.ItemRecord(;
+    item_1 = DataBrowserAPI.ItemIndex.ItemRecord(;
         source_item_id="file-1",
         source_item_path=joinpath(root_path, "item-1.csv"),
         id="item-1",
@@ -109,7 +109,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         kind=:iv_sweep,
         collection=["chip", "device-1"],
     )
-    item_2 = DataBrowserCore.ItemIndex.ItemRecord(;
+    item_2 = DataBrowserAPI.ItemIndex.ItemRecord(;
         source_item_id="file-2",
         source_item_path=joinpath(root_path, "item-2.csv"),
         id="item-2",
@@ -117,9 +117,9 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         kind=:iv_sweep,
         collection=["chip", "device-2"],
     )
-    hierarchy = DataBrowserCore.ItemIndex.Hierarchy(root_path, true)
-    DataBrowserCore.ItemIndex.insert_item!(hierarchy, item_1)
-    DataBrowserCore.ItemIndex.insert_item!(hierarchy, item_2)
+    hierarchy = DataBrowserAPI.ItemIndex.Hierarchy(root_path, true)
+    DataBrowserAPI.ItemIndex.insert_item!(hierarchy, item_1)
+    DataBrowserAPI.ItemIndex.insert_item!(hierarchy, item_2)
     DataBrowserCore.Workspace.replace_item_index!(workspace, hierarchy)
     state = Browser.BrowserState(workspace=workspace)
     state.extensions = Browser._instantiate_extensions()
