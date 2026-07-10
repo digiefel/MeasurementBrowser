@@ -395,8 +395,11 @@ function render_project_window(state::BrowserState)::Nothing
     return nothing
 end
 
-"""Create the initial hierarchy, information, and plot docking layout."""
-function _setup_docking_layout!(dockspace_id::UInt32)::Nothing
+"""
+Create the initial docking layout: shell panels on the left, extension-claimed main
+windows (via `main_dock_windows`) in the primary right slot.
+"""
+function _setup_docking_layout!(state::BrowserState, dockspace_id::UInt32)::Nothing
     vp = ig.GetMainViewport()
     sz = unsafe_load(vp.Size)
 
@@ -415,8 +418,12 @@ function _setup_docking_layout!(dockspace_id::UInt32)::Nothing
     ig.DockBuilderSplitNode(left[], ig.ImGuiDir_Up, 3/4, top_left, bottom_left)
 
     ig.DockBuilderDockWindow("Hierarchy",         top_left[])
-    ig.DockBuilderDockWindow("Plot Area",          right[])
-    ig.DockBuilderDockWindow("Information Panel",  bottom_left[])
+    ig.DockBuilderDockWindow("Information Panel", bottom_left[])
+    for ext in state.extensions
+        for title in main_dock_windows(ext, state)
+            ig.DockBuilderDockWindow(title, right[])
+        end
+    end
 
     ig.DockBuilderFinish(dockspace_id)
     return nothing
@@ -607,7 +614,7 @@ function _run_browser(
             dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
             if setup_layout[]
                 setup_layout[] = false
-                _setup_docking_layout!(dockspace_id)
+                _setup_docking_layout!(state, dockspace_id)
             end
             render_selection_window(state)
             _time!(state, :project_window) do

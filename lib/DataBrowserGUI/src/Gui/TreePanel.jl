@@ -539,16 +539,14 @@ function _render_items_panel(
                             selected_count = length(target_ids)
                             selected_count > 1 && ig.TextDisabled("Apply to $selected_count items")
 
-                            if ig.MenuItem("Open Plot in New Window")
-                                for ext in state.extensions
-                                    Browser.open_detached_plot!(
-                                        ext,
-                                        state;
-                                        item_ids=[id],
-                                        title=item.item_label,
-                                        kind=item.kind,
-                                    ) && break
-                                end
+                            for ext in state.extensions
+                                item_context_menu!(
+                                    ext,
+                                    state;
+                                    item_ids=[id],
+                                    label=item.item_label,
+                                    kind=item.kind,
+                                )
                             end
 
                             editable = _tag_state_ready(state)

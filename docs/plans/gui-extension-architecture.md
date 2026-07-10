@@ -76,12 +76,20 @@ menu!(ext::GuiExtension, state::BrowserState) = nothing
 draw!(ext::GuiExtension, state::BrowserState) = nothing
 reset!(ext::GuiExtension, state::BrowserState) = nothing
 shutdown!(ext::GuiExtension, state::BrowserState) = nothing
-is_ready(ext::GuiExtension, state::BrowserState) = true
+is_ready(ext::GuiExtension, state::BrowserState) = true   # pure predicate
+warmup!(ext::GuiExtension, state::BrowserState) = nothing # blocking init while !is_ready
 save_view(ext::GuiExtension, state::BrowserState) = Dict{String,Any}()
 load_view!(ext::GuiExtension, state::BrowserState, view) = nothing
+item_context_menu!(ext::GuiExtension, state; item_ids, label, kind) = nothing
+main_dock_windows(ext::GuiExtension, state) = String[]
 
 register_gui_extension!(::Type{<:GuiExtension})
 ```
+
+`is_ready`/`warmup!` split warmup gating from the work itself: the shell presents its
+startup surface first, then calls `warmup!` until every extension reports ready.
+`item_context_menu!` and `main_dock_windows` are how extensions add item context-menu
+entries and claim first-layout dock slots — the shell names no extension window itself.
 
 The registry stores extension *types* in load order; each browser instantiates
 one instance per type at startup. The per-browser mutable instance is the

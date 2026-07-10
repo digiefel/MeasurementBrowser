@@ -14,7 +14,10 @@ is_ready(ext::GuiExtension, state)::Bool = true
 warmup!(ext::GuiExtension, state) = nothing
 save_view(ext::GuiExtension, state)::Dict{String,Any} = Dict{String,Any}()
 load_view!(ext::GuiExtension, state, view::Dict{String,Any}) = nothing
-open_detached_plot!(ext::GuiExtension, state; kwargs...)::Bool = false
+# Extensions may append entries to an item's context menu; called inside the open popup.
+item_context_menu!(ext::GuiExtension, state; item_ids, label, kind) = nothing
+# Window titles the shell docks into the primary content slot when building the layout.
+main_dock_windows(ext::GuiExtension, state)::Vector{String} = String[]
 
 const _GUI_EXTENSION_TYPES = Type{<:GuiExtension}[]
 
