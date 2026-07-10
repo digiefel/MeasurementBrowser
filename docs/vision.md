@@ -129,6 +129,16 @@ database-backed results, Makie objects, image-like or signal-like data, or opaqu
 values. A logical browsable entry discovered from sources is an **item** (e.g. a single measurement),
 with stable identity, parameters, stats, and access to its data. The system need not understand every
 value fully, but it should identify it, track it in the index, summarize it, and expose actions.
+A **Core-supported data shape** is a type the toolkit understands out of the box: caching, summaries,
+and default visualizers work with no user code (tables today; vectors, arrays, and image-like values
+later). The shape *is* the payload's Julia type — there is no separate detection or declaration step,
+and shapes are not exclusive: every visualizer whose accepted types match the payload is offered, so
+the same matrix opens as a grid, an image, or a heatmap depending on which visualizer the user opens.
+The app is type-agnostic in the failure direction too: a payload nothing matches simply is not cached
+and gets only the basic inspector, and a visualizer applied to data it cannot handle fails cleanly on
+that view — the user can then register their own support. Shapes whose support needs heavy
+dependencies (audio codecs, for example) belong in extension packages even when generic, on the same
+host/extension pattern as the GUI itself.
 
 **Selection.** A concrete list of items, or a *rule* that resolves to items as the project changes.
 Concrete selections reproduce exactly; live rules keep views attached as items are added, removed, or
@@ -139,7 +149,11 @@ testing, and agent/MCP support. A command has a name, inputs, outputs, errors, h
 predictable effects, and is inspectable so an agent can discover what is possible.
 
 **Visualizer, Figure, Workflow, Annotation.** A **visualizer** renders or interacts with a kind of
-data (generic built-ins or package-supplied), optionally exposing declarative state. A **figure** is
+data (generic built-ins or package-supplied), optionally exposing declarative state. At runtime a
+visualizer presents as zero-or-more windows the user can spawn, toggle, minimize, and close; the
+current plot window is the first such visualizer (today 1-to-many, since it is the only one).
+Registered plot APIs like `register_plot!` are how *one* visualizer accepts project callbacks, not
+the contract every visualizer follows. A **figure** is
 a composed visual artifact: visualizer outputs, layout, styling, annotations, and optional embedded
 data. A **workflow** is the persisted sequence/graph of actions (open, select, transform, visualize,
 fit, annotate, export) — intent, not pixels. An **annotation** is user-authored metadata on an item
@@ -199,17 +213,22 @@ DataBrowserSources → API : file discovery, loading, metadata extraction, data 
 DataBrowserCache   → API : persistence (DuckDB where it fits); keyed by PROJECT, not workspace
 DataBrowserCore    → API, Sources, Cache, Annotations : the workspace, the index, background work,
                    command execution, project save/load, provenance, REPL, and the runtime that
-                   drives a project's callbacks through interpret → process → analyze
-DataBrowserPlots   → API (+ GLMakie) : the generic plotter and built-in visualizers, over data values
-DataBrowserGUI     → API, Core, Plots (+ CImGui/GLFW) : the CImGui shell, panels, browser, and the
-                   window registry that packages add their own windows to
+                   drives a project's callbacks through interpret → process → analyze; base support
+                   for common data shapes such as tables, vectors, arrays, and image-like data; shapes
+                   needing heavy dependencies (audio, say) live in extension packages
+DataBrowserGUI     → API, Core (+ CImGui/GLFW) : the host shell, panels, browser, shared widgets,
+                   the window registry, and lightweight visualizers for Core-supported data shapes
+DataBrowserPlots   → API, Core, GUI (+ GLMakie) : a first-party/default GUI extension for Makie
+                   embedding, high-level plot APIs, and enhanced default visualizers
 DataBrowserCLI     → API, Core : a command-line frontend over the same commands (may come later)
-DataBrowser        → GUI : umbrella / install target; re-exports the API and wires defaults
+DataBrowser        → GUI, default extensions : umbrella / install target; re-exports the API
+                   and wires defaults
 ```
 
-The dependency graph is acyclic with `DataBrowserAPI` at the bottom and the frontends at the top.
-Heavy dependencies live in exactly two places — DuckDB in `DataBrowserCache`, the GLMakie/CImGui stack
-in `DataBrowserPlots` / `DataBrowserGUI` — so headless engine work never recompiles the GPU stack.
+The dependency graph is acyclic with `DataBrowserAPI` at the bottom and the GUI host/extensions at
+the top. Heavy dependencies live where their feature lives — DuckDB in `DataBrowserCache`, CImGui/GLFW
+in `DataBrowserGUI`, GLMakie in `DataBrowserPlots` — so headless engine work never recompiles the GUI
+or GPU stack, and the GUI shell can exist without importing Makie.
 
 `DataBrowserAPI` stays a clean leaf only under one discipline: something belongs in it only if it is
 shared by two or more packages **and** is declaration or data — abstract extension types, lightweight
@@ -250,17 +269,19 @@ Most of this section is up to future investigation and direction.
 
 ## 8. Generic Plotter, Figures, and Workflows
 
-The generic plotter (`DataBrowserPlots`) is a major near-term priority: it makes the app useful before
-users write custom visualizers. It should be data-oriented in the scientific sense: what kind of data
-is this, what can be inspected, what axes or dimensions exist, what metadata exists, what natural views
-are available, what comparisons are meaningful?
+The generic Makie plotter (`DataBrowserPlots`) is a major near-term priority and a default GUI
+extension: it makes the app useful before users write custom visualizers, while proving the same
+window registry external packages will use. The base GUI still owns lightweight inspectors for
+Core-supported data shapes, such as tables. The Makie plotter should be data-oriented in the
+scientific sense: what kind of data is this, what can be inspected, what axes or dimensions exist,
+what metadata exists, what natural views are available, what comparisons are meaningful?
 
-The first generic visualizers should cover: raw table views of any tabular data; X-vs-Y scatter and
-line plots; overlays collected by item, device, tag, or parameter; two-dimensional arrays and image-
-like data; heatmaps for gridded or pivoted tables; simple summaries and histograms; scalar metadata;
-nested structures; fit views for common models (starting with linear fits); and Makie figures — good
-enough that common exploration works without custom draw functions. Visualizers consume data through
-package data-access functions; they do not read source files, cache files, or GUI state directly.
+The first Makie visualizers should cover: X-vs-Y scatter and line plots; overlays collected by item,
+device, tag, or parameter; enhanced table plots; two-dimensional arrays and image-like data; heatmaps
+for gridded or pivoted tables; simple summaries and histograms; scalar metadata; nested structures;
+fit views for common models (starting with linear fits); and Makie figures — good enough that common
+exploration works without custom draw functions. Visualizers consume data through package data-access
+functions; they do not read source files, cache files, or GUI state directly.
 
 Progressive enhancement: unknown data gets a basic inspector; recognized data gets generic
 visualizers; domain-specific data gets specialized visualizers; packaged modules add the
@@ -283,6 +304,8 @@ annotations (tags/notes on a device or measurement).
 process → create visualizer → map columns to axes → set collection axis and style → add fit → annotate
 → export. The first requirement is a stable action model both GUI and API use; a text DSL can come
 later as a representation of that model. Workflows support both concrete selections and live rules.
+A workflow records the whole session surface: if three visualizer windows are open, each with its own
+selection and state, replaying the workflow reopens all three.
 
 Open design questions: whether a self-contained figure stores a data snapshot, only rendered marks, or
 both; how live figures degrade when the source project is unavailable; and whether figure annotations
@@ -324,8 +347,8 @@ the user.
 Analysis packages are a central product concept. An analysis package is a Julia package that extends
 the toolkit for a specific domain, instrument, file format, or workflow. It may include loaders, data
 types, processing pipelines, visualizers, UI windows, templates, examples, and documentation. It
-depends on `DataBrowserAPI` (to register behavior) and, if it adds windows, on `DataBrowserGUI` (the
-window registry).
+depends on `DataBrowserAPI` (to register behavior), on `DataBrowserGUI` if it adds windows, and on
+`DataBrowserPlots` if it adds Makie-based visualizers.
 
 The base app makes these packages valuable by providing common infrastructure for file browsing,
 caching, data inspection, plotting, UI layout, export, command execution, logging, workspace state,
