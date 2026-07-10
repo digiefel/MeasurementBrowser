@@ -14,8 +14,6 @@ import DataBrowserCore.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 
-include("table_model.jl")
-
 """Materialize records and create the figure layout required by a visualizer."""
 function DataBrowserAPI.setup_plot(
     workspace::Workspace.Workspace,
@@ -79,7 +77,5 @@ function DataBrowserAPI.plot_data!(
     end
     return nothing
 end
-
-export InspectorTable, merge_item_tables
 
 end

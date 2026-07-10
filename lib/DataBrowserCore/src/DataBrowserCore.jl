@@ -23,5 +23,8 @@ include("project_engine.jl")
 include("WorkGraph.jl")
 include("Cache.jl")
 include("Workspace.jl")
+include("TableModel.jl")
+
+export InspectorTable, merge_item_tables
 
 end
