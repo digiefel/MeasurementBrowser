@@ -21,7 +21,7 @@ using DataBrowserAPI:
     project_name,
     SourceProfileRow,
     source_label
-using DataBrowserCore.ItemIndex: SourceScan
+using DataBrowserAPI.ItemIndex: SourceScan
 using DataBrowserCore.Cache: ProjectCacheIdentity
 import DataBrowserCore.Workspace
 using DataBrowserCore.Workspace:

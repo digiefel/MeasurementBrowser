@@ -84,7 +84,7 @@ using ..Cache:
     wait_condition_deadline,
     write_meta_header!
 import ..Cache: query_items, read_item_data, set_cache_memory_limit!
-using ..ItemIndex:
+using DataBrowserAPI.ItemIndex:
     DataItem,
     Hierarchy,
     ItemFailure,

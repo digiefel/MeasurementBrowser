@@ -18,7 +18,6 @@ using DataBrowserAnnotations
 using DataBrowserSources
 import DataBrowserProfiling as Profiling
 
-include("ItemIndex.jl")
 include("project_engine.jl")
 include("WorkGraph.jl")
 include("Cache.jl")

@@ -10,7 +10,7 @@ import DataBrowserAPI:
     RegisteredPlot,
     plot_data!,
     setup_plot
-import DataBrowserCore.ItemIndex: ItemRecord
+import DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 import DataBrowserGUI

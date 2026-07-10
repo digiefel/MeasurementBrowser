@@ -1,9 +1,9 @@
 """
 Payload-agnostic project and item contracts for DataBrowser.
 
-Types, generic function declarations, project construction (`define_project`, `register_*`), and
-plot-kind identities live here. Engine methods that drive callbacks and touch concrete payloads are
-defined in the main package until `DataBrowserCore` is extracted.
+Types, generic function declarations, project construction (`define_project`, `register_*`),
+plot-kind identities, and the shared item data model (`ItemIndex`: item records, the collection
+hierarchy, and source scans) live here.
 """
 module DataBrowserAPI
 
@@ -17,5 +17,6 @@ include("item_contract.jl")
 include("interface.jl")
 include("construction.jl")
 include("plots.jl")
+include("ItemIndex.jl")
 
 end

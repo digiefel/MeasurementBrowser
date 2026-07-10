@@ -1,4 +1,5 @@
 using Test
+using DataBrowserAPI
 using DataBrowserCore
 using DataBrowserGUI
 

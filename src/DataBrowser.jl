@@ -39,7 +39,7 @@ using DataBrowserAPI:
 import DataBrowserAPI: plot_data!, setup_plot
 
 using DataBrowserSources: DirectorySource, SourceFile, inspect_table
-using DataBrowserCore.ItemIndex: DataItem
+using DataBrowserAPI.ItemIndex: DataItem
 using DataBrowserCore: items_for_file
 using DataBrowserCore.Workspace:
     close_workspace!,

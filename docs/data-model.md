@@ -10,7 +10,7 @@ ItemRecord              → internal, data-less index/cache record   (never seen
 ```
 
 `DataSources/DirectorySource.jl` defines the built-in file-backed source item (`SourceFile`).
-`ItemIndex` defines the internal `ItemRecord`, the concrete `DataItem`, and the collection hierarchy.
+`DataBrowserAPI.ItemIndex` defines the internal `ItemRecord`, the concrete `DataItem`, and the collection hierarchy.
 The project-facing API is in [api.md](api.md); the design rationale is in
 [plans/data-model-generalization.md](plans/data-model-generalization.md).
 

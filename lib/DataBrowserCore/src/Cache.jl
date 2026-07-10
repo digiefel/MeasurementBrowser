@@ -25,7 +25,7 @@ using SHA
 using Serialization
 using Dates
 
-import ..ItemIndex:
+import DataBrowserAPI.ItemIndex:
     DataItem,
     Hierarchy,
     ItemFailure,
@@ -37,6 +37,10 @@ import ..ItemIndex:
     emit_progress,
     insert_item!,
     metadata_dict
+
+# The columnar cache stores DataFrame payloads natively; this claims them for the payload trait.
+# Moves to DataBrowserCache when the cache becomes a real package (Phase 1 of the cache flip).
+DataBrowserAPI.cacheable_payload(::AbstractDataFrame)::Bool = true
 
 const _CACHE_SRC = joinpath(@__DIR__, "..", "..", "DataBrowserCache", "src")
 

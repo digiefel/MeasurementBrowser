@@ -22,7 +22,7 @@
 
 using DataBrowserAPI
 import DataBrowserAPI: _has_collection_analysis
-using DataBrowserCore.ItemIndex: DataItem, ItemRecord, collection_path_key
+using DataBrowserAPI.ItemIndex: DataItem, ItemRecord, collection_path_key
 using DataBrowserCore.Workspace
 using DataBrowserCore.Cache
 using DataBrowserPlots
