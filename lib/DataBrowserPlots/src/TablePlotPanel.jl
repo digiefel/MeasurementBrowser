@@ -38,12 +38,11 @@ function _table_plot_vectors(
     x_values = Float64[]
     y_values = Float64[]
     for row in 1:table.rows
-        x_str = table.getcell(row, x_col)
-        y_str = table.getcell(row, y_col)
-        x_float = tryparse(Float64, x_str)
-        y_float = tryparse(Float64, y_str)
-        x_float === nothing && continue
-        y_float === nothing && continue
+        x_value = table.getvalue(row, x_col)
+        y_value = table.getvalue(row, y_col)
+        x_value isa Real && y_value isa Real || continue
+        x_float = Float64(x_value)
+        y_float = Float64(y_value)
         isfinite(x_float) && isfinite(y_float) || continue
         push!(x_values, x_float)
         push!(y_values, y_float)
