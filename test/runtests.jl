@@ -24,6 +24,7 @@ include("test_project.jl")
     include("test_type_api.jl")
     include("test_table_inspector.jl")
     include("test_performance_window.jl")
+    include("test_gui_extensions.jl")
     include("test_annotations.jl")
     get(ENV, "MB_GLFW_SCAN_STRESS", "") == "1" &&
         include("test_glfw_scan_startup_stress.jl")

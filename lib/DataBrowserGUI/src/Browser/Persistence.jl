@@ -48,6 +48,20 @@ function _project_view_from_toml(::Type{Dict{String,String}}, value::Any)::Dict{
     return Dict(String(key) => _project_view_from_toml(String, item) for (key, item) in value)
 end
 
+function _project_view_from_toml(
+    ::Type{Dict{String,Dict{String,Any}}},
+    value::Any,
+)::Dict{String,Dict{String,Any}}
+    value isa AbstractDict || error("Expected table, got $(typeof(value))")
+    return Dict(
+        String(key) => Dict{String,Any}(
+            String(inner_key) => inner_value
+            for (inner_key, inner_value) in item
+        )
+        for (key, item) in value
+    )
+end
+
 function _project_view_from_toml(::Type{T}, data::Any)::T where {T}
     data isa AbstractDict || error("Expected table for $T, got $(typeof(data))")
     defaults = T()
@@ -141,7 +155,20 @@ function _project_view_from_browser(
         ),
         main_plot=_persisted_plot_view(plots.main),
         plot_windows=[_persisted_plot_view(view) for view in plots.windows],
+        extensions=_persisted_extensions(state),
     )
+end
+
+"""Merge extension save views with any persisted ids not loaded this session."""
+function _persisted_extensions(state::BrowserState)::Dict{String,Dict{String,Any}}
+    extensions = Dict{String,Dict{String,Any}}()
+    for (id, view) in state.saved_project_view.extensions
+        extensions[id] = copy(view)
+    end
+    for ext in state.extensions
+        extensions[extension_id(ext)] = save_view(ext, state)
+    end
+    return extensions
 end
 
 """Apply loaded project-local state to browser controls and workspace selection."""
@@ -191,6 +218,11 @@ function _apply_project_view!(
         if match_result !== nothing
     ]
     plots.next_window_id = isempty(counters) ? 0 : maximum(counters)
+
+    for ext in state.extensions
+        id = extension_id(ext)
+        haskey(view.extensions, id) && load_view!(ext, state, view.extensions[id])
+    end
 
     _reset_project_filter_widgets!(state)
     return nothing

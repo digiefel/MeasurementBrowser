@@ -4,6 +4,7 @@ using DataBrowserPlots
 
 include("Browser/MakieIntegration.jl")
 
+include("Browser/Extensions.jl")
 include("Browser/State.jl")
 include("Browser/Performance.jl")
 include("Browser/Tags.jl")

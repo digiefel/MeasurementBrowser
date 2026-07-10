@@ -190,6 +190,9 @@ function render_menu_bar(state::BrowserState)::Nothing
             end
             ig.EndMenu()
         end
+        for ext in state.extensions
+            menu!(ext, state)
+        end
         ig.EndMenuBar()
     end
     return nothing
@@ -560,6 +563,7 @@ function _run_browser(
         wait_events=false,
         on_exit=() -> begin
             _shutdown_background_jobs!(state)
+            _shutdown_extensions!(state)
             _save_project_view_if_changed!(state)
             _print_perf_summary(state)
         end,
@@ -584,7 +588,7 @@ function _run_browser(
             window_start == :normal && _promote_to_foreground_app()
             first_frame[] = false
         end
-        if !state.plots.runtime_warmed
+        if !_extensions_ready(state) || !state.plots.runtime_warmed
             _render_startup_preparation!()
             if warmup_started[]
                 _time!(state, :plot_warmup) do
@@ -617,6 +621,11 @@ function _run_browser(
             _time!(state, :extra_plots) do
                 render_additional_plot_windows(state)
             end
+            _time!(state, :extensions) do
+                for ext in state.extensions
+                    draw!(ext, state)
+                end
+            end
             _time!(state, :perf_window) do
                 render_perf_window(state)
             end
@@ -647,6 +656,10 @@ function open_browser(
         project_locked=true,
         project_preference=project_name(workspace.project),
     )
+    state.extensions = _instantiate_extensions()
+    for ext in state.extensions
+        init!(ext, state)
+    end
     ctx = _init_browser_context!()
     _attach_workspace!(state, workspace)
     return _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
