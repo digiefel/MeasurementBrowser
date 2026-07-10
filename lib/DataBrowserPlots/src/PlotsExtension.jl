@@ -1,3 +1,5 @@
+import CImGui as ig
+
 import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
 
@@ -149,13 +151,13 @@ function Browser.load_view!(ext::PlotsExtension, ::Browser.BrowserState, view::D
     return nothing
 end
 
-function Browser.open_detached_plot!(
-    ext::PlotsExtension,
-    ::Browser.BrowserState;
+"""Open a detached plot window pre-populated with the given items."""
+function open_detached_plot!(
+    ext::PlotsExtension;
     item_ids::Vector{String},
     title::String,
     kind::Union{Nothing,Symbol},
-)::Bool
+)::Nothing
     plots = ext.plots
     plots.next_window_id += 1
     push!(
@@ -168,8 +170,24 @@ function Browser.open_detached_plot!(
             plot_kind=kind === nothing ? nothing : get(plots.kind_by_item, kind, nothing),
         ),
     )
-    return true
+    return nothing
 end
+
+function Browser.item_context_menu!(
+    ext::PlotsExtension,
+    ::Browser.BrowserState;
+    item_ids::Vector{String},
+    label::String,
+    kind::Union{Nothing,Symbol},
+)
+    if ig.MenuItem("Open Plot in New Window")
+        open_detached_plot!(ext; item_ids, title=label, kind)
+    end
+    return nothing
+end
+
+Browser.main_dock_windows(ext::PlotsExtension, ::Browser.BrowserState) =
+    [ext.plots.main.title]
 
 """Return the browser's `PlotsExtension` instance; error if it is not loaded."""
 function plots_extension(state::Browser.BrowserState)::PlotsExtension
