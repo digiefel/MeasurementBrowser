@@ -60,6 +60,7 @@ const ProjectViewTLMPlot = RegisteredPlot{:iv_sweep,:ProjectViewTLMPlot}
         "plot_kinds",
         "main_plot",
         "plot_windows",
+        "extensions",
     ])
 
     parsed = Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(

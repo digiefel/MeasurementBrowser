@@ -78,6 +78,7 @@ Base.@kwdef struct PersistedProjectView
     main_plot::PersistedPlotView =
         PersistedPlotView(id="main", title="Plot Area", live=true)
     plot_windows::Vector{PersistedPlotView} = PersistedPlotView[]
+    extensions::Dict{String,Dict{String,Any}} = Dict{String,Dict{String,Any}}()
 end
 
 const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
@@ -215,4 +216,26 @@ Base.@kwdef mutable struct BrowserState
     cache_rebuild_project::Union{Nothing,Project} = nothing
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
+    extensions::Vector{GuiExtension} = GuiExtension[]
+end
+
+"""Call `shutdown!` on every extension instance."""
+function _shutdown_extensions!(state::BrowserState)::Nothing
+    for ext in state.extensions
+        shutdown!(ext, state)
+    end
+    return nothing
+end
+
+"""Call `reset!` on every extension instance."""
+function _reset_extensions!(state::BrowserState)::Nothing
+    for ext in state.extensions
+        reset!(ext, state)
+    end
+    return nothing
+end
+
+"""True when every extension reports ready (warmup gating)."""
+function _extensions_ready(state::BrowserState)::Bool
+    return all(is_ready(ext, state) for ext in state.extensions)
 end
