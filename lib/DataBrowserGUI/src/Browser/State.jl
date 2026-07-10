@@ -6,7 +6,7 @@ import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 using DataBrowserAPI: KindProfileRow, PlotKind, Project, SourceProfileRow
 using DataBrowserSources
-using DataBrowserPlots: InspectorTable, merge_item_tables
+using DataBrowserCore: InspectorTable
 
 """
 Runtime state for one plot window.

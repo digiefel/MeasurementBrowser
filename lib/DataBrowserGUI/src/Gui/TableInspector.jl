@@ -1,13 +1,11 @@
-using DataFrames: nrow, DataFrame, names
+using DataFrames: nrow, DataFrame
 using GLMakie: Axis, Figure, lines!, scatter!
 import CImGui as ig
 using NativeFileDialog: pick_file
 
 using DataBrowserSources
 
-using DataBrowserPlots:
-    InspectorTable,
-    merge_item_tables
+using DataBrowserCore: InspectorTable, merge_item_tables
 using .MakieImguiIntegration: MakieFigure
 
 import DataBrowserCore.Workspace
@@ -92,92 +90,40 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
         (materialized[i], get(workspace.index.items, selected_records[i].id, nothing))
         for i in 1:length(selected_records)
     ]
-    labeled_pairs = Tuple{Any,Any}[]
-    warnings = String[]
-    for (mat_item, record) in pairs
-        d = try
-            data_raw = item_data(mat_item)
-            data_raw isa DataFrame ? data_raw : nothing
-        catch
-            nothing
-        end
-        if d === nothing
-            lbl = record !== nothing ? record.item_label : "item"
-            push!(warnings, "Item '$lbl' has non-tabular data; skipped.")
-            continue
-        end
-        lbl = record !== nothing ? record.item_label : string(mat_item)
-        push!(labeled_pairs, (lbl, d))
-    end
+    labeled_pairs = Tuple{Any,Any}[
+        (
+            record !== nothing ? record.item_label : string(mat_item),
+            item_data(mat_item),
+        )
+        for (mat_item, record) in pairs
+    ]
 
-    # Build InspectorTable from labeled pairs (label is the "item" here)
-    col_set = Set{String}()
-    columns = String[]
-    dfs = DataFrame[]
-    labels = String[]
-    for (lbl, df) in labeled_pairs
-        cols = String.(names(df))
-        for c in cols
-            if c ∉ col_set
-                push!(col_set, c)
-                push!(columns, c)
-            end
-        end
-        push!(dfs, df)
-        push!(labels, lbl)
-    end
-
-    if isempty(dfs)
-        inspector.inspector_table = InspectorTable(columns, 0, Int[], labels, (_, _) -> "")
-        inspector.inspector_warnings = warnings
+    try
+        table = merge_item_tables(labeled_pairs)
+    catch err
+        bt = catch_backtrace()
+        @error "Table inspector: failed to build table" exception=(err, bt)
+        inspector.inspector_table = nothing
+        inspector.inspector_warnings = [
+            "Error building table: $(first(split(sprint(showerror, err), '\n'; limit=2)))",
+        ]
         inspector.inspector_key = key
-        inspector.grid.selected_rows = Int[]
         return nothing
     end
 
-    # Add provenance column if requested and multi-item
-    show_prov = inspector.show_provenance_column && length(dfs) > 1
+    show_prov = inspector.show_provenance_column && length(table.item_labels) > 1
     if show_prov
-        pushfirst!(columns, "_item_")
-    end
-
-    row_item = Int[]
-    row_offsets = Int[]
-    for (i, df) in enumerate(dfs)
-        for r in 1:nrow(df)
-            push!(row_item, i)
-            push!(row_offsets, r)
+        columns = vcat(["_item_"], table.columns)
+        function getcell(row::Int, col::Int)::String
+            col == 1 && return table.item_labels[table.row_item[row]]
+            return table.getcell(row, col - 1)
         end
+        table = InspectorTable(
+            columns, table.rows, table.row_item, table.item_labels, getcell)
     end
 
-    total_rows = length(row_item)
-    col_indices = [
-        Dict(c => j for (j, c) in enumerate(String.(names(df))))
-        for df in dfs
-    ]
-
-    # Offset for provenance column
-    prov_offset = show_prov ? 1 : 0
-
-    function getcell(row::Int, col::Int)::String
-        item_i = row_item[row]
-        row_in_item = row_offsets[row]
-        # Provenance column is col=1 when show_prov
-        if show_prov && col == 1
-            return labels[item_i]
-        end
-        actual_col = col - prov_offset
-        actual_col < 1 && return ""
-        df = dfs[item_i]
-        col_name = columns[col]
-        ci = get(col_indices[item_i], col_name, nothing)
-        ci === nothing && return ""
-        text = sprint(show, df[row_in_item, ci])
-        return length(text) > 90 ? first(text, 87) * "..." : text
-    end
-
-    inspector.inspector_table = InspectorTable(columns, total_rows, row_item, labels, getcell)
-    inspector.inspector_warnings = warnings
+    inspector.inspector_table = table
+    inspector.inspector_warnings = String[]
     inspector.inspector_key = key
     inspector.grid.selected_rows = Int[]
     inspector.figure = nothing
