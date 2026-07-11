@@ -341,7 +341,7 @@ uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
 
 [[deps.DataBrowserAPI]]
-deps = ["CancellationTokens", "Dates", "InteractiveUtils"]
+deps = ["CancellationTokens", "Dates", "InteractiveUtils", "Tables"]
 path = "lib/DataBrowserAPI"
 uuid = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 version = "0.1.0"
@@ -353,7 +353,7 @@ uuid = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
 version = "0.1.0"
 
 [[deps.DataBrowserCache]]
-deps = ["DBInterface", "DataBrowserAPI", "DataBrowserProfiling", "DataFrames", "Dates", "DuckDB", "Serialization"]
+deps = ["DBInterface", "DataBrowserAPI", "DataBrowserProfiling", "Dates", "DuckDB", "Serialization", "Tables"]
 path = "lib/DataBrowserCache"
 uuid = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 version = "0.1.0"

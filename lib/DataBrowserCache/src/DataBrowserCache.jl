@@ -20,7 +20,7 @@ using DataBrowserProfiling: @profile_span, ProfileAttributes
 
 using DuckDB
 using DBInterface
-using DataFrames: AbstractDataFrame, DataFrame, groupby, names, nrow
+import Tables
 using Serialization
 using Dates
 

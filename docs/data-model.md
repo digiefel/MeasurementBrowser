@@ -190,8 +190,8 @@ missing ids from the source-item path, kind, and the `metadata` that distinguish
 The source item is read once for the expansion. Its children enter the workspace work graph and may
 run on different scheduler threads. A child may carry a view into the parsed data instead of a copy;
 the package keeps the interpreted parent alive until processing finishes. Because siblings may run
-concurrently, overlapping views must be treated as read-only. DataFrames restored from the cache are
-independent ordinary `DataFrame`s.
+concurrently, overlapping views must be treated as read-only. Payloads restored from the cache are
+independent values, rebuilt as the container type they were stored with.
 
 Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
 into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number

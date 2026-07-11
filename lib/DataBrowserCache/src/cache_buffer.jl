@@ -22,9 +22,10 @@ function _quote_identifier(identifier::AbstractString)::String
     return "\"" * replace(String(identifier), "\"" => "\"\"") * "\""
 end
 
-function _duckdb_sql_type(T::Type)::String
+"""The DuckDB column type storing Julia element type `T`, or `nothing` when none does."""
+function _duckdb_sql_type_maybe(T::Type)::Union{Nothing,String}
     candidates = Type[m for m in Base.uniontypes(T) if m !== Nothing && m !== Missing]
-    isempty(candidates) && error("No DuckDB column type for Julia element type $T")
+    length(candidates) == 1 || return nothing
     U = only(candidates)
     U <: Bool && return "BOOLEAN"
     U <: Int8 && return "TINYINT"
@@ -41,8 +42,17 @@ function _duckdb_sql_type(T::Type)::String
     U <: AbstractString && return "VARCHAR"
     U <: DateTime && return "TIMESTAMP"
     U <: Date && return "DATE"
-    U <: AbstractArray && return "$(_duckdb_sql_type(eltype(U)))[]"
-    error("No DuckDB column type for Julia element type $U")
+    if U <: AbstractArray
+        inner = _duckdb_sql_type_maybe(eltype(U))
+        return inner === nothing ? nothing : "$(inner)[]"
+    end
+    return nothing
+end
+
+function _duckdb_sql_type(T::Type)::String
+    sql = _duckdb_sql_type_maybe(T)
+    sql === nothing && error("No DuckDB column type for Julia element type $T")
+    return sql
 end
 
 function create_table_sql(
@@ -85,16 +95,37 @@ function _append_table!(emit::Function, connection, table::AbstractString)::Noth
     return nothing
 end
 
-const DataFrameShape = Tuple{Tuple{Vararg{String}},Tuple{Vararg{String}}}
+const PayloadShape = Tuple{Tuple{Vararg{String}},Tuple{Vararg{String}}}
 
-function _dataframe_shape(data::AbstractDataFrame)::DataFrameShape
+"""Column names and DuckDB column types of one tabular payload, via the Tables.jl interface."""
+function _payload_shape(data)::PayloadShape
+    columns = Tables.columns(data)
+    column_names = Tables.columnnames(columns)
     return (
-        Tuple(String(name) for name in names(data)),
-        Tuple(_duckdb_sql_type(eltype(data[!, name])) for name in names(data)),
+        Tuple(String(name) for name in column_names),
+        Tuple(_duckdb_sql_type(eltype(Tables.getcolumn(columns, name)))
+              for name in column_names),
     )
 end
 
-_dataframe_table_name(storage_id::UInt16)::String = "dataframe_$(storage_id)"
+"""
+Whether a payload can land in the columnar payload store: it implements Tables.jl and every
+column's element type maps to a DuckDB column type. Anything else stays memory-only.
+"""
+function _storable_table(payload)::Bool
+    Tables.istable(payload) || return false
+    columns = Tables.columns(payload)
+    column_names = Tables.columnnames(columns)
+    isempty(column_names) && return false
+    return all(
+        _duckdb_sql_type_maybe(eltype(Tables.getcolumn(columns, name))) !== nothing
+        for name in column_names)
+end
+
+"""Number of rows in one tabular payload."""
+_payload_rows(data)::Int = Tables.rowcount(Tables.columns(data))
+
+_payload_table_name(storage_id::UInt16)::String = "payload_$(storage_id)"
 
 function _buffer_rows end
 
@@ -568,13 +599,18 @@ _payload_stage_code(stage::Symbol)::Int8 =
 """One item's payload key: its integer surrogate and the payload stage it belongs to."""
 const PayloadKey = Tuple{Int64,Int8}
 
+# `body` is the caller's original Tables.jl container; pending reads hand it back untouched, and
+# the flush loop reads it only through the interface. `container` is the hex-serialized container
+# type, carried in the batch because the store's `containers` map can drop a superseded location
+# while its append is still being flushed.
 struct TabularBodyBatch
     item_key::Int64
     stage::Int8
-    body::AbstractDataFrame
+    body::Any
+    container::String
 end
 
-_buffer_rows(batch::TabularBodyBatch)::Int = nrow(batch.body)
+_buffer_rows(batch::TabularBodyBatch)::Int = _payload_rows(batch.body)
 
 mutable struct TabularFamilyStore <:
                AbstractDiskStore{Tuple{UInt16,UInt32},TabularBodyBatch}
@@ -593,7 +629,9 @@ mutable struct TabularFamilyStore <:
     closing::Bool
     flush_task::Task
     item_locations::Dict{PayloadKey,Tuple{UInt16,UInt32}}
-    dataframe_schemas::Dict{DataFrameShape,UInt16}
+    payload_schemas::Dict{PayloadShape,UInt16}
+    # Hex-serialized container type per stored payload, rebuilt on read via Tables.materializer.
+    containers::Dict{Tuple{UInt16,UInt32},String}
     next_seq::UInt32
 end
 
@@ -607,15 +645,17 @@ function TabularFamilyStore(
     read_connection = DBInterface.connect(database)
     write_connection = DBInterface.connect(database)
     locations = Dict{PayloadKey,Tuple{UInt16,UInt32}}()
+    containers = Dict{Tuple{UInt16,UInt32},String}()
     for row in DBInterface.execute(
-        read_connection, "SELECT item_key, stage, storage_id, seq FROM item_data")
-        locations[(Int64(row.item_key), Int8(row.stage))] =
-            (UInt16(row.storage_id), UInt32(row.seq))
+        read_connection, "SELECT item_key, stage, storage_id, seq, container FROM item_data")
+        location = (UInt16(row.storage_id), UInt32(row.seq))
+        locations[(Int64(row.item_key), Int8(row.stage))] = location
+        containers[location] = String(row.container)
     end
-    schemas = Dict{DataFrameShape,UInt16}()
+    schemas = Dict{PayloadShape,UInt16}()
     for row in DBInterface.execute(
         read_connection,
-        "SELECT storage_id, column_names, column_types FROM dataframe_schemas",
+        "SELECT storage_id, column_names, column_types FROM payload_schemas",
     )
         shape = (
             Tuple(String(name) for name in row.column_names),
@@ -645,6 +685,7 @@ function TabularFamilyStore(
         current_task(),
         locations,
         schemas,
+        containers,
         UInt32(max_seq + 1),
     )
     store.flush_task = Base.Threads.@spawn _flush_loop!(store)
@@ -763,6 +804,7 @@ function _queue_delete_location!(
     store::TabularFamilyStore,
     location::Tuple{UInt16,UInt32},
 )::Nothing
+    delete!(store.containers, location)
     previous = get(store.queued, location, nothing)
     if previous !== nothing && previous.kind === BUFFER_APPEND
         _set_queued!(store, location, nothing)
@@ -779,14 +821,17 @@ end
 function Base.append!(
     store::TabularFamilyStore,
     payload_key::PayloadKey,
-    body::AbstractDataFrame,
+    body,
 )::Bool
-    any(name -> name in (MB_SEQ_COLUMN, MB_ROW_COLUMN), names(body)) &&
-        error(
-            "Tabular item '$(payload_key[1])' uses a reserved cache column name " *
-            "'$MB_SEQ_COLUMN' or '$MB_ROW_COLUMN'",
-        )
-    batch = TabularBodyBatch(payload_key[1], payload_key[2], body)
+    any(
+        name -> String(name) in (MB_SEQ_COLUMN, MB_ROW_COLUMN),
+        Tables.columnnames(Tables.columns(body)),
+    ) && error(
+        "Tabular item '$(payload_key[1])' uses a reserved cache column name " *
+        "'$MB_SEQ_COLUMN' or '$MB_ROW_COLUMN'",
+    )
+    batch = TabularBodyBatch(
+        payload_key[1], payload_key[2], body, something(_serialize_hex(typeof(body))))
     lock(store.flush_condition)
     try
         _require_writable(store)
@@ -805,22 +850,23 @@ function Base.append!(
                 nothing : get(store.queued, old_location, nothing)
             old_rows = _mutation_rows(store, old_mutation)
         end
-        shape = _dataframe_shape(body)
+        shape = _payload_shape(body)
         store.next_seq < typemax(UInt32) ||
             error("Processed-data cache exhausted its UInt32 sequence space")
-        storage_id = get(store.dataframe_schemas, shape, nothing)
+        storage_id = get(store.payload_schemas, shape, nothing)
         if storage_id === nothing
-            next_storage_id = isempty(store.dataframe_schemas) ?
-                0 : maximum(Int, values(store.dataframe_schemas)) + 1
+            next_storage_id = isempty(store.payload_schemas) ?
+                0 : maximum(Int, values(store.payload_schemas)) + 1
             next_storage_id <= typemax(UInt16) ||
-                error("Processed-data cache exhausted its UInt16 DataFrame shape space")
+                error("Processed-data cache exhausted its UInt16 payload shape space")
             storage_id = UInt16(next_storage_id)
-            store.dataframe_schemas[shape] = storage_id
+            store.payload_schemas[shape] = storage_id
         end
         location = (storage_id, store.next_seq)
         store.next_seq += UInt32(1)
         old_location = pop!(store.item_locations, payload_key, nothing)
         store.item_locations[payload_key] = location
+        store.containers[location] = batch.container
         old_location === nothing || _queue_delete_location!(store, old_location)
         _set_queued!(
             store,
@@ -888,7 +934,7 @@ function _flush_rows(
     for mutation in values(batch)
         mutation.kind === BUFFER_DELETE && continue
         row = something(mutation.row)
-        rows += nrow(row.body)
+        rows += _payload_rows(row.body)
     end
     return Int64(rows)
 end
@@ -1002,7 +1048,7 @@ end
 function _pending_tabular_body(
     store::TabularFamilyStore,
     location::Tuple{UInt16,UInt32},
-)::Tuple{Bool,Union{Nothing,AbstractDataFrame}}
+)::Tuple{Bool,Any}
     queued = _read_mutation(store.queued, location)
     queued[1] && return (true, queued[2] === nothing ? nothing : queued[2].body)
     writing = _read_mutation(store.writing, location)
@@ -1014,18 +1060,18 @@ end
 function _read_tabular_locations(
     store::TabularFamilyStore,
     locations::Vector{Tuple{UInt16,UInt32}},
-)::Dict{Tuple{UInt16,UInt32},AbstractDataFrame}
+)::Dict{Tuple{UInt16,UInt32},Any}
     by_storage = Dict{UInt16,Vector{UInt32}}()
     for (storage_id, seq) in locations
         push!(get!(() -> UInt32[], by_storage, storage_id), seq)
     end
-    rows_by_location = Dict{Tuple{UInt16,UInt32},AbstractDataFrame}()
+    rows_by_location = Dict{Tuple{UInt16,UInt32},Any}()
     for (storage_id, seqs) in by_storage
         unique_seqs = unique(seqs)
-        table = _quote_identifier(_dataframe_table_name(storage_id))
+        table = _quote_identifier(_payload_table_name(storage_id))
         placeholders = join(fill("?", length(unique_seqs)), ", ")
         rows = lock(store.read_lock) do
-            DataFrame(DBInterface.execute(
+            Tables.columntable(DBInterface.execute(
                 DBInterface.prepare(store.read_connection, """
                     SELECT *
                     FROM $table
@@ -1035,23 +1081,57 @@ function _read_tabular_locations(
                 Tuple(unique_seqs),
             ))
         end
-        data_columns = String[
-            name for name in names(rows) if name ∉ (MB_SEQ_COLUMN, MB_ROW_COLUMN)
-        ]
-        for group in groupby(rows, MB_SEQ_COLUMN)
-            rows_by_location[(storage_id, UInt32(group[1, MB_SEQ_COLUMN]))] =
-                DataFrame(group[:, data_columns])
+        data_names = Tuple(
+            name for name in keys(rows) if String(name) ∉ (MB_SEQ_COLUMN, MB_ROW_COLUMN)
+        )
+        # The query orders by seq, so one payload is one contiguous run of the seq column.
+        seq_column = rows[Symbol(MB_SEQ_COLUMN)]
+        run_start = 1
+        while run_start <= length(seq_column)
+            run_end = run_start
+            while run_end < length(seq_column) &&
+                  seq_column[run_end + 1] == seq_column[run_start]
+                run_end += 1
+            end
+            rows_by_location[(storage_id, UInt32(seq_column[run_start]))] =
+                NamedTuple{data_names}(
+                    Tuple(rows[name][run_start:run_end] for name in data_names))
+            run_start = run_end + 1
+        end
+        # A zero-row payload has a pointer and schema but no physical rows; it reconstructs as
+        # an empty value with the correct columns and types.
+        for seq in unique_seqs
+            location = (storage_id, seq)
+            haskey(rows_by_location, location) && continue
+            rows_by_location[location] =
+                NamedTuple{data_names}(Tuple(rows[name][1:0] for name in data_names))
         end
     end
     return rows_by_location
 end
 
+"""
+Rebuild one disk payload as the container type it was stored with, via `Tables.materializer`.
+A container type that no longer deserializes (changed project code) is a cache miss — the cache
+may always be rebuilt — so the caller recomputes and replaces the entry.
+"""
+function _materialize_payload(store::TabularFamilyStore, location::Tuple{UInt16,UInt32}, columns)
+    hex = get(store.containers, location, nothing)
+    hex === nothing && return columns
+    container = try
+        _deserialize_hex(hex)
+    catch
+        return nothing
+    end
+    return Tables.materializer(container)(columns)
+end
+
 function Base.read(
     store::TabularFamilyStore,
     payload_keys::Vector{PayloadKey},
-)::Dict{PayloadKey,Union{Nothing,AbstractDataFrame}}
+)::Dict{PayloadKey,Any}
     remaining = unique(payload_keys)
-    results = Dict{PayloadKey,Union{Nothing,AbstractDataFrame}}()
+    results = Dict{PayloadKey,Any}()
     while !isempty(remaining)
         locations = Dict{PayloadKey,Tuple{UInt16,UInt32}}()
         lock(store.flush_condition) do
@@ -1088,7 +1168,7 @@ function Base.read(
                 if handled
                     results[key] = data
                 elseif current_location == location
-                    results[key] = disk_rows[location]
+                    results[key] = _materialize_payload(store, location, disk_rows[location])
                 else
                     push!(retry, key)
                 end
@@ -1204,7 +1284,7 @@ function _delete_payloads!(
     locations::Vector{Tuple{UInt16,UInt32}},
 )::Nothing
     # TODO: add a cold processed-data maintenance pass that drops unreferenced
-    # DataFrame tables, prunes stale dataframe_schemas rows, checkpoints/compacts
+    # payload tables, prunes stale payload_schemas rows, checkpoints/compacts
     # DuckDB, and optionally rewrites rows in WorkspaceIndex item order for locality.
     # Keep it out of flush: deletes here should stay blind and cheap.
     isempty(locations) && return nothing
@@ -1213,7 +1293,7 @@ function _delete_payloads!(
         push!(get!(() -> UInt32[], by_storage, storage_id), seq)
     end
     for (storage_id, seqs) in by_storage
-        table = _quote_identifier(_dataframe_table_name(storage_id))
+        table = _quote_identifier(_payload_table_name(storage_id))
         for first_index in 1:CACHE_DELETE_KEY_BATCH:length(seqs)
             chunk = @view seqs[first_index:min(first_index + CACHE_DELETE_KEY_BATCH - 1, end)]
             placeholders = join(fill("?", length(chunk)), ", ")
@@ -1266,13 +1346,13 @@ function _flush_to_db!(
                 ), append)
             end
             for (storage_id, storage_appends) in groups
-                columns, types = _dataframe_shape(first(storage_appends).second.body)
+                columns, types = _payload_shape(first(storage_appends).second.body)
                 definitions = join(
                     ("$(_quote_identifier(name)) $type" for
                      (name, type) in zip(columns, types)),
                     ", ",
                 )
-                table = _quote_identifier(_dataframe_table_name(storage_id))
+                table = _quote_identifier(_payload_table_name(storage_id))
                 DBInterface.execute(
                     store.write_connection,
                     "CREATE TABLE IF NOT EXISTS $table (" *
@@ -1282,7 +1362,7 @@ function _flush_to_db!(
                     DBInterface.prepare(
                         store.write_connection,
                         """
-                        INSERT INTO dataframe_schemas VALUES (?, ?, ?)
+                        INSERT INTO payload_schemas VALUES (?, ?, ?)
                         ON CONFLICT (storage_id) DO NOTHING
                         """,
                     ),
@@ -1290,14 +1370,16 @@ function _flush_to_db!(
                 )
                 _append_table!(
                     store.write_connection,
-                    _dataframe_table_name(storage_id),
+                    _payload_table_name(storage_id),
                 ) do appender
                     for (location, entry) in storage_appends
-                        body = entry.body
-                        _dataframe_shape(body) == (columns, types) ||
-                            error("Storage id $storage_id has incompatible DataFrame shapes")
-                        vectors = [body[!, name] for name in columns]
-                        for row_index in 1:nrow(body)
+                        body_columns = Tables.columns(entry.body)
+                        _payload_shape(entry.body) == (columns, types) ||
+                            error("Storage id $storage_id has incompatible payload shapes")
+                        vectors = [
+                            Tables.getcolumn(body_columns, Symbol(name)) for name in columns
+                        ]
+                        for row_index in 1:_payload_rows(entry.body)
                             DuckDB.append(appender, location[2])
                             DuckDB.append(appender, UInt64(row_index))
                             for column in vectors
@@ -1314,6 +1396,7 @@ function _flush_to_db!(
                     DuckDB.append(appender, entry.stage)
                     DuckDB.append(appender, location[1])
                     DuckDB.append(appender, location[2])
+                    DuckDB.append(appender, entry.container)
                     DuckDB.end_row(appender)
                 end
             end
@@ -1335,13 +1418,13 @@ function _clear_db!(store::TabularFamilyStore)::Nothing
     _transaction(store.write_connection) do
         for row in DBInterface.execute(
             store.write_connection,
-            "SELECT storage_id FROM dataframe_schemas",
+            "SELECT storage_id FROM payload_schemas",
         )
-            table = _quote_identifier(_dataframe_table_name(UInt16(row.storage_id)))
+            table = _quote_identifier(_payload_table_name(UInt16(row.storage_id)))
             DBInterface.execute(store.write_connection, "DROP TABLE $table")
         end
         DBInterface.execute(store.write_connection, "DELETE FROM item_data")
-        DBInterface.execute(store.write_connection, "DELETE FROM dataframe_schemas")
+        DBInterface.execute(store.write_connection, "DELETE FROM payload_schemas")
     end
     return nothing
 end
@@ -1350,7 +1433,8 @@ _reset_memory!(store::RowStore)::Nothing = nothing
 
 function _reset_memory!(store::TabularFamilyStore)::Nothing
     empty!(store.item_locations)
-    empty!(store.dataframe_schemas)
+    empty!(store.payload_schemas)
+    empty!(store.containers)
     store.next_seq = UInt32(1)
     return nothing
 end
