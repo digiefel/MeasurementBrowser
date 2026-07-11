@@ -188,6 +188,8 @@ function render_menu_bar(state::BrowserState)::Nothing
             )
                 state.show_performance_window = !state.show_performance_window
             end
+            ig.Separator()
+            render_debug_tools_menu!(state)
             ig.EndMenu()
         end
         for ext in state.extensions
@@ -571,6 +573,7 @@ function _run_browser(
         on_exit=() -> begin
             _shutdown_background_jobs!(state)
             _shutdown_extensions!(state)
+            _shutdown_implot_context!(state)
             _save_project_view_if_changed!(state)
             _print_perf_summary(state)
         end,
@@ -633,6 +636,9 @@ function _run_browser(
             end
             _time!(state, :perf_window) do
                 render_perf_window(state)
+            end
+            _time!(state, :debug_tools) do
+                render_debug_tools!(state)
             end
             _time!(state, :persist_view) do
                 _save_project_view_if_changed!(state)

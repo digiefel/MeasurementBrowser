@@ -69,6 +69,18 @@ starts one clean rebuild. With
 `profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
 raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
 
+## Development tools
+
+The Debug menu exposes Dear ImGui's Metrics/Debugger, Debug Log, ID Stack Tool, debugger-gated Item
+Picker, runtime debug options, style/font editor, user guide, and build information beside the
+DataBrowser Performance window. An ImPlot submenu exposes its metrics, style/configuration tools,
+user guide, and demo; its context is created lazily and destroyed before the Dear ImGui context. These
+tools are available for diagnostics that need axes, zooming, or dense interaction without treating
+ImPlot as the default for simple tables and bars.
+
+The Dear ImGui and ImPlot demos are secondary reference entries after their diagnostic tools.
+Tool-window state is transient and does not change `databrowser.toml`.
+
 ### Selection flow (tree → plot)
 
 1. A tree or future spatial-browser interaction writes collection paths and item keys to

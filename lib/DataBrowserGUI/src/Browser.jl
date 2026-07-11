@@ -12,6 +12,7 @@ include("Gui/DataGrid.jl")
 include("Gui/TableInspector.jl")
 include("Gui/TreePanel.jl")
 include("Gui/InfoModal.jl")
+include("Gui/DebugTools.jl")
 include("Gui/Layout.jl")
 include("Gui/PerformanceWindow.jl")
 
