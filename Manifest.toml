@@ -353,7 +353,7 @@ uuid = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
 version = "0.1.0"
 
 [[deps.DataBrowserCache]]
-deps = ["DBInterface", "DataBrowserAPI", "DataBrowserProfiling", "DataFrames", "Dates", "DuckDB", "SHA", "Serialization"]
+deps = ["DBInterface", "DataBrowserAPI", "DataBrowserProfiling", "DataFrames", "Dates", "DuckDB", "Serialization"]
 path = "lib/DataBrowserCache"
 uuid = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 version = "0.1.0"

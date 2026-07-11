@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 12
+const PROJECT_CACHE_SCHEMA_VERSION = 13
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -294,7 +294,6 @@ end
 struct SourceItemRow
     id::String
     fingerprint_hex::Union{Nothing,String}
-    fingerprint_hash::Union{Nothing,String}
     path::Union{Nothing,String}
     timestamp::Union{Nothing,DateTime}
 end
@@ -302,7 +301,6 @@ end
 SourceItemRow(row)::SourceItemRow = SourceItemRow(
     String(row.id),
     _null_to_nothing(row.fingerprint_hex),
-    _null_to_nothing(row.fingerprint_hash),
     _null_to_nothing(row.path),
     _null_to_nothing(row.timestamp),
 )
@@ -640,9 +638,9 @@ function store_interpreted_records!(
 )::Vector{String}
     started = time_ns()
     id = source_item_id(source_item)
-    hex, hash = _encode_fingerprint(fingerprint(source_item))
+    hex = _serialize_hex(fingerprint(source_item))
     append!(cache.source_items, id, SourceItemRow(
-        id, hex, hash, source_item_path(source_item), source_item_timestamp(source_item)))
+        id, hex, source_item_path(source_item), source_item_timestamp(source_item)))
     _stage_ledger_source!(cache.stage_ledger, id, true)
     dropped = WideConflict[]
     for (record, _) in zip(records, effective)
@@ -1265,13 +1263,6 @@ end
 
 """Map a SQL NULL (`missing`) to `nothing`, passing other values through."""
 _null_to_nothing(value) = ismissing(value) ? nothing : value
-
-"""Hex-text storage and content hash for one fingerprint, as `(hex, hash)` (`nothing` when absent)."""
-function _encode_fingerprint(fingerprint)::Tuple{Union{Nothing,String},Union{Nothing,String}}
-    fingerprint === nothing && return (nothing, nothing)
-    bytes = _serialize_bytes(fingerprint)
-    return (bytes2hex(bytes), bytes2hex(sha1(bytes)))
-end
 
 # Index construction + comparison (in memory)
 
