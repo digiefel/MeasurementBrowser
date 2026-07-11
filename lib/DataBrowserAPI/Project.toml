@@ -5,7 +5,6 @@ authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 
 [deps]
 CancellationTokens = "2e8d271d-f2e2-407b-a864-17eb2156783e"
-DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
 
@@ -19,6 +18,3 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["Test"]
-
-[sources]
-DataBrowserProfiling = {path = "../DataBrowserProfiling"}

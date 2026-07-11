@@ -87,7 +87,7 @@ registration order; the first match wins, so register specific filename patterns
 | Editing… | Look in… | Doc |
 |---|---|---|
 | `register_*`, item callbacks | `lib/DataBrowserAPI/` | [api.md](docs/api.md) |
-| Scanning, item records, hierarchy | `lib/DataBrowserAPI/src/ItemIndex.jl` | [data-model.md](docs/data-model.md) |
+| Item records, hierarchy | `lib/DataBrowserAPI/src/ItemIndex.jl` | [data-model.md](docs/data-model.md) |
 | Directory traversal, `metadata.txt` | `lib/DataBrowserSources/` | [storage.md](docs/storage.md) |
 | DuckDB cache, writes, reopen | `lib/DataBrowserCache/` | [cache.md](docs/cache.md) |
 | Background work, loading item data | `lib/DataBrowserCore/src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |

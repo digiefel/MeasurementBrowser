@@ -90,7 +90,6 @@ using DataBrowserAPI.ItemIndex:
     ItemFailure,
     ItemRecord,
     MetadataDict,
-    SourceItemInterpretation,
     SourceScan,
     all_items,
     clear_node_analysis!,
@@ -103,8 +102,8 @@ using DataBrowserAPI.ItemIndex:
     finish_edit!,
     insert_record!,
     metadata_dict,
-    interpret_source_item,
     remove_records!
+using ..DataBrowserCore: SourceItemInterpretation, interpret_source_item
 import DataBrowserAPI
 import DataBrowserAPI:
     AbstractDataSource,
