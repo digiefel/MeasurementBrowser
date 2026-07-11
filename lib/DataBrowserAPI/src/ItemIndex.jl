@@ -35,7 +35,7 @@ import ..DataBrowserAPI:
     source_items,
     source_label,
     cacheable,
-    cacheable_payload
+    cacheable_data
 
 """
 Failure produced while interpreting or analyzing one source item.
@@ -276,7 +276,7 @@ fingerprint(item::DataItem) = nothing
 # The built-in item delegates to the payload trait: storage backends declare which payload types
 # they can store natively (DataBrowserCache opts in DataFrames). Other data types remain
 # source-backed until a backend claims them. Type-API items opt in themselves.
-cacheable(item::DataItem)::Bool = cacheable_payload(item.data)
+cacheable(item::DataItem)::Bool = cacheable_data(item.data)
 
 """
 One node in the collection hierarchy.

@@ -32,7 +32,7 @@ Whether a payload value can be stored natively by the data cache. Storage backen
 the payload types they support (`DataBrowserCache` opts in `AbstractDataFrame`); everything else
 stays source-backed. The built-in `DataItem` answers `cacheable` through this trait.
 """
-cacheable_payload(::Any)::Bool = false
+cacheable_data(::Any)::Bool = false
 
 fingerprint(::AbstractDataItem) = nothing
 

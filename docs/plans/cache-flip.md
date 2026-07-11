@@ -54,10 +54,10 @@ the cache stores or how (the DuckDB schema, buffers, and write paths move verbat
   Item records, hierarchy, and source scans are shared vocabulary of the whole family, next to
   `MetadataDict`/`MetadataValue` which already live in API. (User decision, 2026-07-11.)
 - **API does not gain a DataFrames dependency.** The one line needing it becomes a dispatch hook:
-  API defines `cacheable_payload(::Any)::Bool = false` and
-  `cacheable(item::DataItem) = cacheable_payload(item.data)`; `DataBrowserCache` — which owns the
+  API defines `cacheable_data(::Any)::Bool = false` and
+  `cacheable(item::DataItem) = cacheable_data(item.data)`; `DataBrowserCache` — which owns the
   columnar storage that makes DataFrames natively cacheable — defines
-  `DataBrowserAPI.cacheable_payload(::AbstractDataFrame) = true`. Core always loads Cache, so
+  `DataBrowserAPI.cacheable_data(::AbstractDataFrame) = true`. Core always loads Cache, so
   behavior is identical in the app. No wrapper helpers beyond this hook; dispatch is the contract.
 - **No re-export shims.** Core does not keep a `const ItemIndex = ...` alias or re-export Cache
   names it doesn't use. Every call site updates to the new home (`DataBrowserAPI.ItemIndex`,
@@ -78,8 +78,8 @@ the cache stores or how (the DuckDB schema, buffers, and write paths move verbat
    to `lib/DataBrowserAPI/Project.toml` `[deps]` (path source not needed — Profiling has no path
    deps; mirror how other lib packages declare it, with a `[sources]` entry like Core's).
 3. Replace `cacheable(item::DataItem)::Bool = item.data isa AbstractDataFrame` (ItemIndex.jl:279)
-   with the `cacheable_payload` hook per the decisions above: the generic
-   `cacheable_payload(::Any)::Bool = false` lives in `lib/DataBrowserAPI/src/item_contract.jl`
+   with the `cacheable_data` hook per the decisions above: the generic
+   `cacheable_data(::Any)::Bool = false` lives in `lib/DataBrowserAPI/src/item_contract.jl`
    next to `cacheable`, with a docstring saying storage backends extend it for payload types they
    can store natively. Delete `using DataFrames: AbstractDataFrame` from ItemIndex.jl. Until
    Phase 1 adds the DataFrame method in DataBrowserCache, add it temporarily at the top of
@@ -105,7 +105,7 @@ the cache stores or how (the DuckDB schema, buffers, and write paths move verbat
    Profiling import, `DuckDB`/`DBInterface`/`DataFrames`/`SHA`/`Serialization`/`Dates`, and the
    ItemIndex import (now `import DataBrowserAPI.ItemIndex: ...`) — followed by plain local
    `include("build_metrics.jl")` etc. for the three files, followed by the existing `export` list.
-   Add `DataBrowserAPI.cacheable_payload(::AbstractDataFrame)::Bool = true` here (with the
+   Add `DataBrowserAPI.cacheable_data(::AbstractDataFrame)::Bool = true` here (with the
    temporary copy in Core's Cache.jl deleted along with that file). Keep the module docstring but
    drop its "re-exports DataBrowserCore.Cache" claim.
 2. `lib/DataBrowserCache/Project.toml`: remove `DataBrowserCore`; add `DataBrowserAPI`,
@@ -151,5 +151,5 @@ the cache stores or how (the DuckDB schema, buffers, and write paths move verbat
 - Warm reopen still works: `test_wide_cache.jl` / `test_open_options.jl` pass unchanged in what
   they assert (only their import lines change).
 - A DataFrame payload still reports `cacheable(item) == true` once DataBrowserCache is loaded
-  (covered by existing cache tests; add one direct `cacheable_payload` test only if none fails
+  (covered by existing cache tests; add one direct `cacheable_data` test only if none fails
   without the hook wired).
