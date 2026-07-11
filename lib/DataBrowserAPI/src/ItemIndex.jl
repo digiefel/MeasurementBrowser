@@ -2,8 +2,6 @@ module ItemIndex
 
 using Dates
 
-import DataBrowserProfiling as Profiling
-
 import ..DataBrowserAPI
 import ..DataBrowserAPI:
     AbstractDataSource,
@@ -15,24 +13,17 @@ import ..DataBrowserAPI:
     collection,
     collection_metadata,
     collection_path_label,
-    data_items,
     fingerprint,
-    finish_source_profile!,
     has_collection_metadata,
     id,
     item_data,
     item_label,
     kind,
-    kind_label,
     metadata,
-    project_name,
-    reset_scan_profile!,
     source_id,
     source_item_id,
-    source_item_label,
     source_item_path,
     source_item_timestamp,
-    source_items,
     source_label,
     cacheable,
     cacheable_data
@@ -366,6 +357,30 @@ function SourceScan(
         hierarchy,
         ItemFailure[],
     )
+end
+
+"""
+Send one structured progress update when a callback is present.
+"""
+function emit_progress(
+    on_progress::Union{Nothing,Function};
+    phase::Symbol,
+    total_source_items::Int,
+    processed_source_items::Int,
+    loaded_items::Int,
+    skipped_source_items::Int,
+    current_source_item::String="",
+)::Nothing
+    on_progress === nothing && return nothing
+    on_progress((
+        phase=phase,
+        total_source_items=total_source_items,
+        processed_source_items=processed_source_items,
+        loaded_items=loaded_items,
+        skipped_source_items=skipped_source_items,
+        current_source_item=current_source_item,
+    ))
+    return nothing
 end
 
 """
@@ -707,7 +722,5 @@ function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarch
     # so an incremental publish no longer rebuilds an O(total) vector.
     return hierarchy
 end
-
-include(joinpath(@__DIR__, "ItemIndex", "Scanning.jl"))
 
 end

@@ -1,9 +1,7 @@
 # Cache Edge Flip — Execution Plan
 
-**Status (2026-07-11): executed.** Phases 0–2 landed on `cache-flip`: `ItemIndex` lives in
-`DataBrowserAPI`, `DataBrowserCache` is a real package with no Core dependency, and Core consumes
-it. Kept for reference; current behavior is documented in [../cache.md](../cache.md) and
-[../data-model.md](../data-model.md).
+**Status (2026-07-11): executed.** Kept for reference; current behavior is documented in
+[../cache.md](../cache.md) and [../data-model.md](../data-model.md).
 
 Flip the residual dependency edge from the package split: today `DataBrowserCache` is a re-export
 shell over `DataBrowserCore.Cache`, and Core's [Cache.jl](../../lib/DataBrowserCore/src/Cache.jl)
