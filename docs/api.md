@@ -210,7 +210,7 @@ register_plot!(project, :iv; label="I–V", setup=…, draw=…)   # one or more
   such as `view(data, rows, :)`; the view keeps the parsed source table alive without copying its
   columns. The workspace work graph owns those items until processing and any cache write finish.
   Overlapping views share storage and sibling callbacks may run concurrently, so project callbacks
-  should treat them as read-only. Later cache materialization returns independent `DataFrame`s.
+  should treat them as read-only. Later cache materialization returns independent copies, rebuilt as the payload's original container type.
   Records are streamed to the workspace as each source item finishes. The adapter derives each
   internal record from the returned item and the `SourceFile`. When a recipe entry does not provide
   an id, the adapter mints one from the source-item path, kind, and `metadata`.

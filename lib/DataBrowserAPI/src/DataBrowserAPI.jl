@@ -9,6 +9,7 @@ module DataBrowserAPI
 
 using Dates
 using InteractiveUtils: subtypes
+import Tables
 
 include("project_types.jl")
 include("metadata_types.jl")

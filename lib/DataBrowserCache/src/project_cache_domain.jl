@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 13
+const PROJECT_CACHE_SCHEMA_VERSION = 14
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -569,7 +569,7 @@ set_cache_memory_limit!(::AbstractCacheDB, mib::Integer)::Int =
 
 function _buffer_rows(item::AbstractDataItem)::Int
     data = item_data(item)
-    return data isa AbstractDataFrame ? nrow(data) : 1
+    return Tables.istable(data) ? _payload_rows(data) : 1
 end
 
 """Create the cache tables if they do not already exist."""
@@ -608,11 +608,12 @@ function ensure_schema!(connection)::Nothing
             stage TINYINT,
             storage_id USMALLINT,
             seq UINTEGER,
+            container TEXT,
             PRIMARY KEY (item_key, stage),
             UNIQUE (storage_id, seq))
     """)
     DBInterface.execute(connection, """
-        CREATE TABLE IF NOT EXISTS dataframe_schemas(
+        CREATE TABLE IF NOT EXISTS payload_schemas(
             storage_id USMALLINT PRIMARY KEY,
             column_names VARCHAR[],
             column_types VARCHAR[])
@@ -710,8 +711,9 @@ end
 """
 Store one processed payload for a record at a payload stage (`:processed` or `:collection_processed`).
 
-Cacheable DataFrame payloads land in the payload family; non-cacheable ones stay in the memory-only
-processed buffer. Only the `:processed` stage tracks the `PROCESSING_RESULT` ledger.
+Cacheable tabular payloads with DuckDB-storable columns land in the payload family; everything
+else stays in the memory-only processed buffer. Only the `:processed` stage tracks the
+`PROCESSING_RESULT` ledger.
 """
 function store_processed!(
     cache::CacheDB,
@@ -721,7 +723,7 @@ function store_processed!(
 )::Nothing
     key = item_key!(cache, record.id)
     payload = item_data(item)
-    disk = cacheable(item) && payload isa AbstractDataFrame && !isempty(names(payload))
+    disk = cacheable(item) && _storable_table(payload)
     if disk
         started = time_ns()
         stage === :processed && delete!(cache.processed_memory, record.id)
@@ -1188,7 +1190,7 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     end
 
     disk_data = isempty(disk_keys) ?
-        Dict{Tuple{Int64,Int8},Union{Nothing,AbstractDataFrame}}() :
+        Dict{Tuple{Int64,Int8},Any}() :
         read(cache.payload, unique(disk_keys))
     for (index, record) in pairs(records)
         loaded[index] !== nothing && continue

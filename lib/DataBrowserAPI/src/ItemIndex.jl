@@ -264,9 +264,8 @@ metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
 item_data(item::DataItem) = item.data
 fingerprint(item::DataItem) = nothing
 
-# The built-in item delegates to the payload trait: storage backends declare which payload types
-# they can store natively (DataBrowserCache opts in DataFrames). Other data types remain
-# source-backed until a backend claims them. Type-API items opt in themselves.
+# The built-in item delegates to the payload trait: anything tabular is cacheable by default.
+# Type-API items opt in themselves.
 cacheable(item::DataItem)::Bool = cacheable_data(item.data)
 
 """

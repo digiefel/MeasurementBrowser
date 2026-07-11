@@ -143,6 +143,73 @@ end
     end
 end
 
+@testset "payload cache round-trips container types across reopen" begin
+    mktempdir() do dir
+        write(joinpath(dir, "a.csv"), "x\n1\n")
+        name = "PayloadContainers_$(basename(dir))"
+        interpret_count = Ref(0)
+        make_project() = begin
+            project = DataBrowser.define_project(name)
+            DataBrowser.register_item!(project, :table;
+                detect=file -> endswith(file.filename, ".csv"),
+                read=file -> read(file.filepath, String),
+                entries=(file, _data) -> begin
+                    interpret_count[] += 1
+                    [
+                        DataBrowser.DataItem(
+                            id="full",
+                            kind=:table,
+                            collection=["c"],
+                            data=(
+                                x=Int64[1, 2, 3],
+                                y=[0.5, 0.25, 0.125],
+                                session=fill(interpret_count[], 3),
+                            )),
+                        DataBrowser.DataItem(
+                            id="empty",
+                            kind=:table,
+                            collection=["c"],
+                            data=(x=Int64[], y=Float64[])),
+                    ]
+                end,
+            )
+            project
+        end
+        workspace = DataBrowser.open_workspace(
+            make_project(), DataBrowser.DirectorySource(dir); background_processing=true)
+        try
+            wait_workspace_idle!(workspace)
+        finally
+            DataBrowser.close_workspace!(workspace)
+        end
+        reopened = DataBrowser.open_workspace(
+            make_project(), DataBrowser.DirectorySource(dir); background_processing=false)
+        try
+            wait_workspace_idle!(reopened)
+            records = WIDE_INDEX.all_items(reopened.index.hierarchy)
+            items = DataBrowserCore.Workspace.materialize_items(reopened, records)
+            by_id = Dict(item.id => item for item in items)
+            full = by_id["full"]
+            # The payload comes back from the DuckDB cache as the container it was stored
+            # with — a NamedTuple of vectors, not a DataFrame — with values intact.
+            @test full.data isa NamedTuple
+            @test full.data.x == Int64[1, 2, 3]
+            @test full.data.x isa Vector{Int64}
+            @test full.data.y == [0.5, 0.25, 0.125]
+            # The session marker proves it was read from disk, not re-interpreted.
+            @test full.data.session == fill(1, 3)
+            # A zero-row payload reconstructs empty with the correct columns and types.
+            empty_item = by_id["empty"]
+            @test empty_item.data isa NamedTuple
+            @test empty_item.data.x == Int64[]
+            @test empty_item.data.x isa Vector{Int64}
+            @test empty_item.data.y isa Vector{Float64}
+        finally
+            DataBrowser.close_workspace!(reopened)
+        end
+    end
+end
+
 @testset "wide cache widens under concurrent reads" begin
     _with_wide_cache("WideConcurrent") do cache
         store = cache.analyzed_collection_metadata

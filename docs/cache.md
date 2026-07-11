@@ -30,7 +30,7 @@ These terms have one meaning throughout the cache code:
 
 - **Result store** — one independently buffered set of keyed values, such as source-item rows,
   logical-item rows, metadata, result states, or processed payloads. Most result stores map to one
-  table; processed payloads span their pointer table, schema registry, and physical DataFrame tables.
+  table; processed payloads span their pointer table, schema registry, and physical payload tables.
 - **Buffer** — bounded memory in front of one result store. It owns pending mutation intent, reads,
   capacity, its connections when disk-backed, and background flushing.
 - **Append, edit, or delete** — a mutation submitted to a buffer. Submission changes memory only and
@@ -48,10 +48,11 @@ There is no separate producer/consumer framework. Package code submits semantic 
 
 The cache is its own package, `lib/DataBrowserCache/`, depending only on `DataBrowserAPI` (for the
 item contracts and `ItemIndex` types it reconstructs on reopen), `DataBrowserProfiling`, and its
-storage backend (DuckDB/DBInterface/DataFrames). `DataBrowserCore`'s `Workspace` consumes it.
-Which payload types are cacheable is caching logic, not storage: Core claims `AbstractDataFrame`
-for the `cacheable_data` trait (tables are first-class), and an extension package that supports a
-type claims that type itself.
+storage backend (DuckDB/DBInterface). `DataBrowserCore`'s `Workspace` consumes it. The cache never
+requires a specific table container: payloads come in as anything implementing Tables.jl (the
+`cacheable_data` default is `Tables.istable`) and come back out as the container type they were
+stored with. A non-tabular type can opt in by dispatching `cacheable_data` and implementing the
+interface.
 
 `project_cache_domain.jl` owns everything specific to DataBrowser's project cache:
 
@@ -109,7 +110,7 @@ data from becoming an unbounded Julia object cache.
 ## Capacity and backpressure
 
 Capacity is counted directly in retained payload rows. ProjectCache supplies the row limit when it
-constructs each payload buffer and defines how that payload type reports its DataFrame row count.
+constructs each payload buffer and defines how that payload type reports its row count.
 There is no estimated byte weight.
 
 Bookkeeping buffers have no row limit. They still report the number of pending keys for workspace
@@ -251,7 +252,7 @@ The fixed DuckDB stores are:
   outcomes;
 - `item_data` — pointers to cacheable processed payloads, keyed by `(item_key, stage)`;
 - `dataframe_schemas` — the ordered user-column names belonging to each payload shape;
-- per-shape DataFrame tables — native rows of processed tabular payloads.
+- per-shape payload tables — native rows of processed tabular payloads.
 
 Queued and running work is not persisted. It belongs to the work dependency graph.
 
@@ -297,11 +298,16 @@ over a view `items LEFT JOIN analyzed_item_metadata USING (item_key)`. The view 
 when the effective-metadata column signature changes. Queries read committed DB state, so a value
 written within the buffer flush window may not appear yet.
 
-### Processed DataFrames
+### Processed tabular payloads
 
-Cacheable processed `AbstractDataFrame` values are stored in native DuckDB tables. One physical table
-is used for each ordered combination of user column names and element types. The shape's stable digest
-becomes an internal storage ID and table name; user text is never used directly as a table name.
+Cacheable processed values implementing the Tables.jl interface are stored in native DuckDB tables,
+provided every column's element type maps to a DuckDB column type. One physical table is used for
+each ordered combination of user column names and element types. The shape's stable digest becomes
+an internal storage ID and table name; user text is never used directly as a table name. The
+payload's container type is stored with its pointer, and a read rebuilds that container via
+`Tables.materializer` — the caller gets back what it stored, whether that was a `DataFrame`, a
+`NamedTuple` of vectors, or any other Tables.jl sink. A container type that no longer deserializes
+is a cache miss and the work reruns.
 
 Each payload receives a compact integer sequence. Its `item_data` pointer and all physical rows share
 that sequence instead of repeating the logical item ID in every row. Two reserved internal columns
@@ -309,7 +315,7 @@ store the sequence and the row order. User-derived identifiers are quoted, and t
 prefix cannot collide with user columns.
 
 The pointer, schema registration when needed, and physical payload rows are committed in one
-transaction. A reader cannot observe a committed pointer without its payload. A zero-row DataFrame
+transaction. A reader cannot observe a committed pointer without its payload. A zero-row payload
 still has a pointer and schema, so it reconstructs as an empty value with the correct columns and
 types.
 

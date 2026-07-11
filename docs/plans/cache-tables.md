@@ -1,5 +1,7 @@
 # Tables-Native Cache — Execution Plan
 
+**Status (2026-07-11): executed.** Current behavior is documented in [../cache.md](../cache.md).
+
 Make the cache speak the Tables.jl interface instead of requiring DataFrames: any tabular payload
 goes in, the *same container type* comes back out, and the user never notices the database in
 between. This also drops DataFrames from `DataBrowserCache`'s dependencies — DuckDB.jl itself
