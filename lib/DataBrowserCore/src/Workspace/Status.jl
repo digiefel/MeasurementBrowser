@@ -16,9 +16,12 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
     end
     scan = workspace.scan
     counts = workspace_stage_counts(workspace)
-    calm_level = workspace.status.level in (:none, :busy) ? :fresh : workspace.status.level
-    calm_label = workspace.status.label in ("Opening", "Caching", "Scanning") ? "Fresh" :
-        workspace.status.label
+    # During active work, keep the last settled verdict on the chip instead of flashing colors.
+    # Without one — first open, after a cancel or error — nothing is known fresh yet, so the
+    # chip honestly says Building.
+    settled = workspace.status.label in ("Fresh", "Loaded", "Errors")
+    calm_level = settled ? workspace.status.level : :busy
+    calm_label = settled ? workspace.status.label : "Building"
 
     # Active work: one live line, determinate bar when totals are known.
     if scan.state == :discovering
