@@ -39,7 +39,7 @@ import DataBrowserAPI.ItemIndex:
     metadata_dict
 
 # The columnar cache stores DataFrame payloads natively; this claims them for the payload trait.
-DataBrowserAPI.cacheable_payload(::AbstractDataFrame)::Bool = true
+DataBrowserAPI.cacheable_data(::AbstractDataFrame)::Bool = true
 
 include("build_metrics.jl")
 include("cache_buffer.jl")
