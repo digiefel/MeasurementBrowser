@@ -16,10 +16,11 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
     end
     scan = workspace.scan
     counts = workspace_stage_counts(workspace)
-    # During active work, keep the last settled verdict on the chip instead of flashing colors.
-    # Without one — first open, after a cancel or error — nothing is known fresh yet, so the
-    # chip honestly says Building.
-    settled = workspace.status.label in ("Fresh", "Loaded", "Errors")
+    # During an incremental update, keep the last settled verdict on the chip instead of flashing
+    # colors. A rebuild or first build voids any verdict — the cache was just discarded or has
+    # never existed — and without one nothing is known fresh yet, so the chip says Building.
+    settled = workspace.cache.operation === :update &&
+        workspace.status.label in ("Fresh", "Loaded", "Errors")
     calm_level = settled ? workspace.status.level : :busy
     calm_label = settled ? workspace.status.label : "Building"
 
