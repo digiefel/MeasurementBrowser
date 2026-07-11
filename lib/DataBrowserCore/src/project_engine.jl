@@ -9,7 +9,7 @@ touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
 using DataBrowserAPI
 using DataBrowserAPI: AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, collection, id, item_data, item_label, kind, metadata, source_id
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
-using DataFrames: DataFrame
+using DataFrames: AbstractDataFrame, DataFrame
 import Serialization
 import DataBrowserAPI:
     _analyze_collection,
@@ -31,6 +31,11 @@ import DataBrowserAPI:
     scan_profile_summary,
     scan_source_profile
 import DataBrowserAPI.ItemIndex: DataItem, ItemFailure, ItemRecord, _effective_metadata
+
+# Tables are first-class: Core declares DataFrame payloads natively cacheable. Support for further
+# payload types is caching logic owned here or by the extension package providing the type, never
+# by the storage backend.
+DataBrowserAPI.cacheable_data(::AbstractDataFrame)::Bool = true
 
 # Only registered recipes are persisted; transient scan state (read cache, profiling, locks) is
 # rebuilt empty on load. This keeps the cache format stable when transient fields change, so adding

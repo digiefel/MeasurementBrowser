@@ -48,9 +48,10 @@ There is no separate producer/consumer framework. Package code submits semantic 
 
 The cache is its own package, `lib/DataBrowserCache/`, depending only on `DataBrowserAPI` (for the
 item contracts and `ItemIndex` types it reconstructs on reopen), `DataBrowserProfiling`, and its
-storage backend (DuckDB/DBInterface/DataFrames). `DataBrowserCore`'s `Workspace` consumes it; it
-also claims DataFrame payloads for the `cacheable_data` trait, since the columnar store is what
-makes them natively cacheable.
+storage backend (DuckDB/DBInterface/DataFrames). `DataBrowserCore`'s `Workspace` consumes it.
+Which payload types are cacheable is caching logic, not storage: Core claims `AbstractDataFrame`
+for the `cacheable_data` trait (tables are first-class), and an extension package that supports a
+type claims that type itself.
 
 `project_cache_domain.jl` owns everything specific to DataBrowser's project cache:
 

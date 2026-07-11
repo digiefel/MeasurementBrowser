@@ -28,9 +28,10 @@ process(item::AbstractDataItem) = item
 cacheable(::AbstractDataItem)::Bool = false
 
 """
-Whether a payload value can be stored natively by the data cache. Storage backends add methods for
-the payload types they support (`DataBrowserCache` opts in `AbstractDataFrame`); everything else
-stays source-backed. The built-in `DataItem` answers `cacheable` through this trait.
+Whether a payload value can be stored natively by the data cache. Core claims the first-class
+payload types (`AbstractDataFrame`); extension packages that provide support for a type add its
+method alongside that support. Everything else stays source-backed. The built-in `DataItem`
+answers `cacheable` through this trait.
 """
 cacheable_data(::Any)::Bool = false
 
