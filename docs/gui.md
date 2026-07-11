@@ -216,3 +216,12 @@ notes are not yet shown or edited by the GUI.
 Makie integration keeps **one Makie screen per `title_id`** in a global context. Multiple
 independent canvases require either a unique `title_id` per canvas or a non-Makie renderer for the
 secondary surface.
+
+ImGui never samples the Makie framebuffer's color attachment directly. Each embedded figure owns
+a plain 2D texture; after every Makie render the color attachment is copied into it and flushed
+(`_sync_display_texture!`), and that copy is what reaches the draw list. Sampling an FBO-attached
+texture from another GL context — a plot window dragged outside the main window becomes its own
+platform viewport with multi-viewport enabled — makes the macOS driver log "GLD_TEXTURE_INDEX_2D
+is unloadable" and substitute a zero texture; the plain copy is legal from every shared context,
+so detached windows render on any monitor. The hidden warmup window additionally stays pinned to
+the main viewport (`SetNextWindowViewport`) so startup never creates a platform window.

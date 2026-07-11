@@ -11,20 +11,74 @@ struct ImMakieWindow
     glfw_window::GLFW.Window
 end
 
-"""One embedded Makie figure, its reusable screen, and pointer-gesture state."""
+"""One embedded Makie figure, its reusable screen, display texture, and pointer-gesture state."""
 mutable struct ImMakieFigure
     figure::GLMakie.Figure
     screen::GLMakie.Screen{ImMakieWindow}
     was_dragging::Bool
     was_ctrl_left_click::Bool
+    display_texture::gl.GLuint
+    display_size::Tuple{Int,Int}
 end
 
 const MAKIE_CONTEXT = Dict{String,ImMakieFigure}()
+
+"""
+Copy the screen's framebuffer color attachment into a plain 2D texture and return its id.
+
+ImGui samples this texture, never the FBO attachment itself. With multi-viewport enabled, a plot
+window dragged outside the main window is drawn from its own platform-window GL context, and
+sampling another context's FBO-attached texture makes the macOS driver log "GLD_TEXTURE_INDEX_2D
+is unloadable ... using zero texture". A plain texture, flushed after the copy, is legal to
+sample from every shared context, so detached windows render on any monitor without the warning.
+"""
+function _sync_display_texture!(imfigure::ImMakieFigure, rendered::Bool)::gl.GLuint
+    color_buffer = imfigure.screen.framebuffer.buffers[:color]
+    texture_size = size(color_buffer)
+    if imfigure.display_texture == 0
+        texture_ref = Ref{gl.GLuint}(0)
+        gl.glGenTextures(1, texture_ref)
+        imfigure.display_texture = texture_ref[]
+        gl.glBindTexture(gl.GL_TEXTURE_2D, imfigure.display_texture)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    end
+    resized = imfigure.display_size != texture_size
+    (rendered || resized) || return imfigure.display_texture
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, imfigure.screen.framebuffer.id)
+    gl.glReadBuffer(imfigure.screen.framebuffer.buffer_ids[:color])
+    gl.glBindTexture(gl.GL_TEXTURE_2D, imfigure.display_texture)
+    if resized
+        gl.glCopyTexImage2D(
+            gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, 0, 0, texture_size[1], texture_size[2], 0)
+        imfigure.display_size = texture_size
+    else
+        gl.glCopyTexSubImage2D(
+            gl.GL_TEXTURE_2D, 0, 0, 0, 0, 0, texture_size[1], texture_size[2])
+    end
+    gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+    gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, 0)
+    # Make the copy visible to the platform-window contexts before they sample it.
+    gl.glFlush()
+    return imfigure.display_texture
+end
+
+"""Delete the plain display texture owned by one embedded figure."""
+function _destroy_display_texture!(imfigure::ImMakieFigure)::Nothing
+    imfigure.display_texture == 0 && return nothing
+    texture_ref = Ref{gl.GLuint}(imfigure.display_texture)
+    gl.glDeleteTextures(1, texture_ref)
+    imfigure.display_texture = 0
+    imfigure.display_size = (0, 0)
+    return nothing
+end
 
 """Destroy every Makie screen owned by the browser render context."""
 function destroy_context!()::Nothing
     for imfigure in values(MAKIE_CONTEXT)
         empty!(imfigure.figure)
+        _destroy_display_texture!(imfigure)
         GLMakie.destroy!(imfigure.screen)
     end
 
@@ -37,6 +91,7 @@ function destroy_figure!(title_id::String)::Nothing
     imfigure = pop!(MAKIE_CONTEXT, title_id, nothing)
     imfigure === nothing && return nothing
     empty!(imfigure.figure)
+    _destroy_display_texture!(imfigure)
     GLMakie.destroy!(imfigure.screen)
     return nothing
 end
@@ -159,7 +214,7 @@ function MakieFigure(
         window = ig.current_window()
         makie_window = ImMakieWindow(window)
         screen = GLMakie.Screen(; window=makie_window, start_renderloop=false)
-        MAKIE_CONTEXT[id] = ImMakieFigure(figure, screen, false, false)
+        MAKIE_CONTEXT[id] = ImMakieFigure(figure, screen, false, false, gl.GLuint(0), (0, 0))
         scene = Makie.get_scene(figure)
         scene.events.window_open[] = true
         display(screen, figure)
@@ -186,17 +241,17 @@ function MakieFigure(
 
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0) # Unbind the framebuffer to avoid issues with ImGui rendering
 
-    # The color texture is what we need to render as an image. We add it to the
-    # drawlist and then create an InvisibleButton of the same size to create a
-    # space in the layout that can respond to key presses and clicks etc (which
-    # a regular Image() can't do).
-    color_buffer = imfigure.screen.framebuffer.buffers[:color]
+    # ImGui draws a plain copy of the render, never the FBO attachment itself (see
+    # `_sync_display_texture!`). We add it to the drawlist and then create an InvisibleButton of
+    # the same size to create a space in the layout that can respond to key presses and clicks
+    # etc (which a regular Image() can't do).
+    display_texture = _sync_display_texture!(imfigure, do_render)
     drawlist = ig.GetWindowDrawList()
     cursor_pos = ig.GetCursorScreenPos()
-    texture_size = size(color_buffer)
+    texture_size = imfigure.display_size
     image_size = _texture_display_size(texture_size, imfigure.screen.px_per_unit[])
     ig.AddImage(drawlist,
-        ig.ImTextureRef(ig.ImTextureID(color_buffer.id)),
+        ig.ImTextureRef(ig.ImTextureID(display_texture)),
         cursor_pos,
         (cursor_pos.x + image_size[1], cursor_pos.y + image_size[2]),
         (0, 1), (1, 0))
