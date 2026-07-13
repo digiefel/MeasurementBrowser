@@ -16,11 +16,25 @@ An `AbstractDataItem` represents one item. A concrete subtype can itself be the 
 struct Spectrum <: AbstractDataItem
     energy::Vector{Float64}
     intensity::Vector{Float64}
+    temperature_k::Float64
 end
 ```
 
 That definition is sufficient when source-derived defaults are appropriate. DataBrowser does not
 convert the value to another public item type.
+
+Metadata does not need to be stored in a `Dict`. A concrete item can keep it in typed fields and
+expose the fields that should be indexed:
+
+```julia
+metadata(spectrum::Spectrum) = Dict(
+    :temperature_k => spectrum.temperature_k,
+    :point_count => length(spectrum.energy),
+)
+```
+
+The `Dict` is the metadata view consumed by DataBrowser; it does not constrain how the concrete
+item stores its values.
 
 Projects implement only the behavior they need:
 

@@ -11,33 +11,42 @@ end
 struct PhotoSourceItem <: DataBrowserAPI.AbstractDataSourceItem
     key::String
     exposure::Float64
+    camera::String
+    gain::Int
 end
 
 DataBrowserAPI.source_id(source::PhotoSource) = source.name
 DataBrowserAPI.source_label(source::PhotoSource) = source.name
 DataBrowserAPI.source_items(::PhotoSource; kwargs...) = [
-    PhotoSourceItem("a.photo", 2.0),
-    PhotoSourceItem("b.photo", 4.0),
+    PhotoSourceItem("a.photo", 2.0, "typed camera", 1),
+    PhotoSourceItem("b.photo", 4.0, "typed camera", 1),
 ]
 DataBrowserAPI.source_item_id(item::PhotoSourceItem) = item.key
 DataBrowserAPI.source_item_label(item::PhotoSourceItem) = item.key
-DataBrowserAPI.metadata(::PhotoSourceItem) = Dict(:camera => "typed camera", :gain => 1)
+DataBrowserAPI.metadata(item::PhotoSourceItem) =
+    Dict(:camera => item.camera, :gain => item.gain)
 
 struct Photo <: MB.AbstractDataItem
     exposure::Float64
     pixels::Matrix{Float64}
-    metadata::Dict{Symbol,Any}
+    camera::String
+    gain::Int
     collection::Vector{String}
 end
 
 MB.collection(photo::Photo) = photo.collection
-MB.metadata(photo::Photo) = photo.metadata
+MB.metadata(photo::Photo) = Dict(
+    :exposure => photo.exposure,
+    :camera => photo.camera,
+    :gain => photo.gain,
+)
 
 function MB.process(photo::Photo)
     return Photo(
         photo.exposure,
-        photo.pixels .* photo.metadata[:gain],
-        photo.metadata,
+        photo.pixels .* photo.gain,
+        photo.camera,
+        photo.gain,
         photo.collection,
     )
 end
@@ -53,7 +62,8 @@ function DataBrowserAPI.data_items(
     return [Photo(
         source_item.exposure,
         fill(source_item.exposure, 2, 2),
-        merge(metadata(source_item), Dict(:exposure => source_item.exposure)),
+        source_item.camera,
+        source_item.gain,
         ["micrographs"],
     )]
 end
@@ -87,11 +97,15 @@ end
         @test all(record -> !isempty(record.id), records)
         @test all(record -> record.item_label in ("a.photo", "b.photo"), records)
         @test all(record -> record.collection == ["micrographs"], records)
+        @test Set(record.metadata[:exposure] for record in records) == Set([2.0, 4.0])
+        @test all(record -> record.metadata[:camera] == "typed camera", records)
+        @test all(record -> record.metadata[:gain] == 1, records)
 
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         @test all(item -> item isa Photo, loaded)
         @test Set(item.exposure for item in loaded) == Set([2.0, 4.0])
-        @test all(item -> item.metadata[:camera] == "typed camera", loaded)
+        @test all(item -> item.camera == "typed camera", loaded)
+        @test all(item -> item.gain == 1, loaded)
 
         figure = MB.setup_plot(workspace, plot_kind, records)
         @test figure isa Figure
