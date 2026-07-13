@@ -13,13 +13,13 @@ function filename_parts(filename::AbstractString)
     return (chip=parts[1], device=parts[2])
 end
 
-function clean_iv(table, metadata::AbstractDict)::DataFrame
+function clean_iv(table, metadata::Dict)::DataFrame
     table = copy(table)
     sort!(table, :voltage_v)
     return table
 end
 
-function analyze_iv(table::DataFrame, metadata::AbstractDict)::Dict{Symbol,Any}
+function analyze_iv(table::DataFrame, metadata::Dict)::Dict{Symbol,Any}
     return Dict{Symbol,Any}(
         :points => size(table, 1),
         :maximum_current_a => maximum(abs, table.current_a),
@@ -33,12 +33,13 @@ function define_ferroelectric_project()::Project
         detect = (file::SourceFile) -> endswith(file.filename, "_iv.csv"),
         read = (file::SourceFile) -> begin
             parts = filename_parts(file.filename)
-            DataItem(CSV.read(file.filepath, DataFrame);
-                metadata=(chip=parts.chip, device=parts.device),
-                label="$(parts.device) I-V",
-                collection=[parts.chip, parts.device],
+            (
+                data=CSV.read(file.filepath, DataFrame),
+                metadata=Dict(:chip => parts.chip, :device => parts.device),
             )
         end,
+        label = (table, metadata::Dict) -> "$(metadata[:device]) I-V",
+        collection = (table, metadata::Dict) -> [metadata[:chip], metadata[:device]],
         process = clean_iv,
         analyze = analyze_iv,
     )
@@ -48,16 +49,22 @@ function define_ferroelectric_project()::Project
         read = (file::SourceFile) -> begin
             table = CSV.read(file.filepath, DataFrame)
             parts = filename_parts(file.filename)
-            [
-                DataItem(view(table, findall(==(pulse), table.pulse), :);
-                    metadata=(chip=parts.chip, device=parts.device, pulse=String(pulse)),
-                    id=String(pulse),
-                    label="$(parts.device) $(String(pulse))",
-                    collection=[parts.chip, parts.device],
-                )
-                for pulse in unique(table.pulse)
-            ]
+            (
+                data=table,
+                metadata=Dict(:chip => parts.chip, :device => parts.device),
+            )
         end,
+        entries = (table::DataFrame, metadata::Dict) -> [
+            (
+                data=view(table, findall(==(pulse), table.pulse), :),
+                metadata=Dict(:pulse => String(pulse)),
+            )
+            for pulse in unique(table.pulse)
+        ],
+        id = (table, metadata::Dict) -> metadata[:pulse],
+        label = (table, metadata::Dict) ->
+            "$(metadata[:device]) $(metadata[:pulse])",
+        collection = (table, metadata::Dict) -> [metadata[:chip], metadata[:device]],
         process = (table, metadata) -> DataFrame(table),
         analyze = (table, metadata) -> Dict{Symbol,Any}(:points => size(table, 1)),
     )

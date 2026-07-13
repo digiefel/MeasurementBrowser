@@ -5,7 +5,7 @@ the data itself.
 
 ## Metadata is an ordinary dictionary
 
-Public callbacks receive metadata as a `Dict`. Keys name facts and values contain their Julia
+Public callbacks receive metadata as a `Dict`. Keys name metadata fields and values contain their Julia
 values:
 
 ```julia
@@ -25,18 +25,20 @@ Metadata is accumulated through the pipeline:
 
 ```mermaid
 flowchart TB
-    read["read metadata<br/>shared by the source"] --> entries["entries metadata<br/>specific to one item"]
+    source["source-item metadata"] --> read["read metadata<br/>shared by the source"]
+    read --> entries["entries metadata<br/>specific to one item"]
     entries --> inherited["collection metadata<br/>shared by a group"]
     inherited --> analysis["analyze metadata<br/>derived from processed data"]
     analysis --> effective["effective item metadata"]
 ```
 
-Later values with the same key take precedence. Project code receives the effective metadata needed
-by its current pipeline stage.
+Later values with the same key take precedence. Registration callbacks receive the metadata
+accumulated before their stage. In the type API, data and metadata remain together in the concrete
+item passed to `process(item)` and `analyze(item)`.
 
-Metadata required to label, group, or immediately query an item should be discovered by `read` or
-`entries`. Metadata that requires processed data belongs in `analyze` and appears when that work
-finishes.
+Metadata required to label, group, or immediately query an item should be supplied by the source
+item or discovered by `read` or `entries`. Metadata that requires processed data belongs in
+`analyze` and appears when that work finishes.
 
 ## Collections
 

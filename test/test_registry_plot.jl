@@ -17,12 +17,8 @@ const MB = DataBrowser
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        entries=(file, data) -> [DataItem(
-            kind=:table,
-            collection=["dev"],
-            label=file.filename,
-            data=data,
-        )],
+        collection=(_data, _metadata) -> ["dev"],
+        label=(_data, metadata) -> metadata[:filename],
     )
     drew = Ref(0)
     drew_rows = Ref(0)
@@ -33,13 +29,13 @@ const MB = DataBrowser
         setup=(workspace, items) -> Figure(),
         draw=function (workspace, items, figure)
             drew[] = length(items)
-            # Each item is an AbstractDataItem carrying its own materialized data as `item.data`,
-            # and answering the contract accessors.
+            # Each loaded item answers the item contract; its project value is available through
+            # `item_data`.
             @test all(it -> it isa MB.AbstractDataItem, items)
-            @test all(it -> MB.item_data(it) === it.data, items)
+            @test all(it -> MB.item_data(it) isa DataFrame, items)
             @test all(it -> MB.kind(it) === :table, items)
             @test all(it -> !isempty(MB.collection(it)), items)
-            drew_rows[] = sum(nrow(item.data) for item in items)
+            drew_rows[] = sum(nrow(MB.item_data(item)) for item in items)
             Axis(figure[1, 1])
             nothing
         end,
@@ -90,7 +86,7 @@ const MB = DataBrowser
     @test figure isa Figure
     @test plot_data!(workspace, table_plot, items, figure) === nothing
     @test drew[] == length(items)
-    @test drew_rows[] == 2   # the 2-row fixture flowed through as item.data
+    @test drew_rows[] == 2   # the 2-row fixture flowed through as the project data
     figure = setup_plot(workspace, table_summary, items)
     @test plot_data!(workspace, table_summary, items, figure) === nothing
     @test drew[] == -1

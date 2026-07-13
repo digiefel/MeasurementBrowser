@@ -284,7 +284,8 @@ function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
     process_started = time_ns()
     materialized_record = effective_record(workspace.index.hierarchy, record)
-    input = DataItem(materialized_record, item_data(interpreted))
+    input = interpreted isa RegisteredDataItem ?
+        RegisteredDataItem(materialized_record, item_data(interpreted)) : interpreted
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=record.kind,
         source_id=record.source_item_id,
@@ -295,7 +296,7 @@ function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
     record_scan_phase!(workspace.project, record.source_item_id, record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
     return (
-        item=DataItem(input, item_data(processed)),
+        item=processed,
         record=materialized_record,
         cacheable=cacheable(processed),
     )
@@ -330,13 +331,12 @@ function run_item_analysis(workspace::Workspace, record::ItemRecord)::MetadataDi
         source_id=record.source_item_id,
         item_id=record.id,
     ) begin
+        input = processed isa RegisteredDataItem ?
+            RegisteredDataItem(delivered_record, item_data(processed)) : processed
         metadata_dict(_analyze_item(
             workspace.project,
             workspace.source,
-            DataItem(
-                delivered_record,
-                item_data(processed),
-            ),
+            input,
         ))
     end
     record_scan_phase!(workspace.project, record.source_item_id, record.kind,
@@ -360,26 +360,31 @@ function run_collection_process(workspace::Workspace, key::String)::NamedTuple
     end
     delivered = delivered_records(workspace, records)
     payloads = read_item_data(workspace.cache.db, delivered; stage=:processed)
+    any(isnothing, payloads) && error(
+        "Cannot process collection '$key': one or more processed members are missing",
+    )
     inputs = AbstractDataItem[
-        DataItem(delivered[index],
-            payloads[index] === nothing ? nothing : item_data(payloads[index]))
-        for index in eachindex(delivered)
+        payload isa RegisteredDataItem ?
+            RegisteredDataItem(delivered[index], item_data(payload)) :
+            payload::AbstractDataItem
+        for (index, payload) in pairs(payloads)
     ]
     outputs = _process_collection(
-        workspace.project, workspace.source, collect(path), inputs)
+        workspace.project,
+        workspace.source,
+        collect(path),
+        inputs,
+    )
     by_id = Dict(id(input) => input for input in inputs)
-    metadata_by_id = Dict{String,MetadataDict}()
     rewritten_ids = String[]
     for output in outputs
         input = by_id[id(output)]
-        metadata_by_id[id(output)] = metadata_dict(metadata(output))
         item_data(output) === item_data(input) && continue
         push!(rewritten_ids, id(output))
     end
     return (
         records=records,
         outputs=outputs,
-        metadata_by_id=metadata_by_id,
         rewritten_ids=Set(rewritten_ids),
     )
 end
@@ -407,10 +412,14 @@ function run_collection_analysis(workspace::Workspace, key::String)::MetadataDic
     for (position, index) in pairs(remaining)
         payloads[index] = base[position]
     end
+    any(isnothing, payloads) && error(
+        "Cannot analyze collection '$key': one or more processed members are missing",
+    )
     items = AbstractDataItem[
-        DataItem(delivered[index],
-            payloads[index] === nothing ? nothing : item_data(payloads[index]))
-        for index in eachindex(delivered)
+        payload isa RegisteredDataItem ?
+            RegisteredDataItem(delivered[index], item_data(payload)) :
+            payload::AbstractDataItem
+        for (index, payload) in pairs(payloads)
     ]
     return metadata_dict(_analyze_collection(
         workspace.project,
@@ -441,7 +450,11 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                     interpretation.interpreted_items,
                 )
             end
-            (records=interpretation.records, failures=interpretation.failures, conflicts)
+            (
+                records=interpretation.records,
+                failures=interpretation.failures,
+                conflicts,
+            )
         elseif key.kind === ITEM_PROCESS
             record = lock(workspace.work.lock) do
                 get(workspace.index.items, key.entity, nothing)
@@ -574,10 +587,11 @@ function request_processed_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
 )::Vector{AbstractDataItem}
-    loaded_item(record, item) = DataItem(
-        ItemRecord(record; metadata=delivered_metadata(workspace, record)),
-        item_data(item),
-    )
+    loaded_item(record, item) = item isa RegisteredDataItem ?
+        RegisteredDataItem(
+            ItemRecord(record; metadata=delivered_metadata(workspace, record)),
+            item_data(item),
+        ) : item
     loaded = Vector{AbstractDataItem}(undef, length(records))
     for (position, record) in pairs(records)
         gate, mode = delivery_gate(workspace, record)
@@ -612,14 +626,14 @@ function request_processed_items(
             if result.failure !== nothing
                 throw(result.failure)
             elseif result.item !== nothing
-                loaded[position] = result.item::AbstractDataItem
+                loaded[position] = loaded_item(record, result.item::AbstractDataItem)
                 continue
             end
         end
         payload = _delivered_payload(workspace, record, mode)
         payload === nothing && error(
             "Delivered data for item '$(record.id)' is missing from the cache")
-        loaded[position] = loaded_item(record, payload)
+        loaded[position] = loaded_item(record, payload::AbstractDataItem)
     end
     return loaded
 end

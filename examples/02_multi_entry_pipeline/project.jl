@@ -7,13 +7,13 @@ length(ARGS) == 1 || error("Usage: julia --project project.jl DATA_DIRECTORY")
 
 project = define_project("Fatigue cycles")
 
-function clean_cycle(table, metadata::AbstractDict)::DataFrame
+function clean_cycle(table, metadata::Dict)::DataFrame
     table = DataFrame(table)
     sort!(table, :time_s)
     return table
 end
 
-function analyze_cycle(table::DataFrame, metadata::AbstractDict)::Dict{Symbol,Any}
+function analyze_cycle(table::DataFrame, metadata::Dict)::Dict{Symbol,Any}
     return Dict{Symbol,Any}(
         :points => size(table, 1),
         :maximum_voltage_v => maximum(abs, table.voltage_v),
@@ -23,19 +23,17 @@ end
 
 register_item!(project, :cycles;
     detect = (file::SourceFile) -> endswith(file.filename, "_fatigue.csv"),
-    read = (file::SourceFile) -> begin
-        table = CSV.read(file.filepath, DataFrame)
-        [
-            DataItem(
-                view(table, findall(==(cycle), table.cycle), :);
-                metadata=(cycle=Int(cycle),),
-                id=Int(cycle),
-                label="Cycle $(Int(cycle))",
-                collection=["Fatigue"],
-            )
-            for cycle in unique(table.cycle)
-        ]
-    end,
+    read = (file::SourceFile) -> CSV.read(file.filepath, DataFrame),
+    entries = (table::DataFrame, metadata::Dict) -> [
+        (
+            data=view(table, findall(==(cycle), table.cycle), :),
+            metadata=Dict(:cycle => Int(cycle)),
+        )
+        for cycle in unique(table.cycle)
+    ],
+    id = (table, metadata::Dict) -> metadata[:cycle],
+    label = (table, metadata::Dict) -> "Cycle $(metadata[:cycle])",
+    collection = (table, metadata::Dict) -> ["Fatigue"],
     process = clean_cycle,
     analyze = analyze_cycle,
 )

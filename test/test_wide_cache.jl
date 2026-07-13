@@ -87,12 +87,11 @@ end
         DataBrowser.register_item!(project, :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> read(file.filepath, String),
-            entries=(file, _data) -> [DataBrowser.DataItem(
-                kind=:table,
-                collection=["dev", splitext(file.filename)[1]],
-                data=nothing)],
-            analyze=item -> Dict{Symbol,Any}(
-                :peak => splitext(basename(item.id))[1] == "hot" ? 5.0 : 1.0),
+            entries=(_data, _metadata) -> [nothing],
+            collection=(_data, metadata) ->
+                ["dev", splitext(metadata[:filename])[1]],
+            analyze=(_data, metadata) -> Dict{Symbol,Any}(
+                :peak => splitext(metadata[:filename])[1] == "hot" ? 5.0 : 1.0),
         )
         workspace = DataBrowser.open_workspace(
             project, DataBrowser.DirectorySource(dir); background_processing=true)
@@ -153,25 +152,26 @@ end
             DataBrowser.register_item!(project, :table;
                 detect=file -> endswith(file.filename, ".csv"),
                 read=file -> read(file.filepath, String),
-                entries=(file, _data) -> begin
+                entries=(_data, _metadata) -> begin
                     interpret_count[] += 1
                     [
-                        DataBrowser.DataItem(
-                            id="full",
-                            kind=:table,
-                            collection=["c"],
+                        (
                             data=(
                                 x=Int64[1, 2, 3],
                                 y=[0.5, 0.25, 0.125],
                                 session=fill(interpret_count[], 3),
-                            )),
-                        DataBrowser.DataItem(
-                            id="empty",
-                            kind=:table,
-                            collection=["c"],
-                            data=(x=Int64[], y=Float64[])),
+                            ),
+                            metadata=Dict{Symbol,Any}(:entry_id => "full"),
+                        ),
+                        (
+                            data=(x=Int64[], y=Float64[]),
+                            metadata=Dict{Symbol,Any}(:entry_id => "empty"),
+                        ),
                     ]
                 end,
+                collection=(_data, _metadata) -> ["c"],
+                label=(_data, metadata) -> metadata[:entry_id],
+                id=(_data, metadata) -> metadata[:entry_id],
             )
             project
         end
@@ -188,22 +188,25 @@ end
             wait_workspace_idle!(reopened)
             records = WIDE_INDEX.all_items(reopened.index.hierarchy)
             items = DataBrowserCore.Workspace.materialize_items(reopened, records)
-            by_id = Dict(item.id => item for item in items)
-            full = by_id["full"]
+            data_by_label = Dict(
+                record.item_label => DataBrowser.item_data(item)
+                for (record, item) in zip(records, items)
+            )
+            full = data_by_label["full"]
             # The payload comes back from the DuckDB cache as the container it was stored
             # with — a NamedTuple of vectors, not a DataFrame — with values intact.
-            @test full.data isa NamedTuple
-            @test full.data.x == Int64[1, 2, 3]
-            @test full.data.x isa Vector{Int64}
-            @test full.data.y == [0.5, 0.25, 0.125]
+            @test full isa NamedTuple
+            @test full.x == Int64[1, 2, 3]
+            @test full.x isa Vector{Int64}
+            @test full.y == [0.5, 0.25, 0.125]
             # The session marker proves it was read from disk, not re-interpreted.
-            @test full.data.session == fill(1, 3)
+            @test full.session == fill(1, 3)
             # A zero-row payload reconstructs empty with the correct columns and types.
-            empty_item = by_id["empty"]
-            @test empty_item.data isa NamedTuple
-            @test empty_item.data.x == Int64[]
-            @test empty_item.data.x isa Vector{Int64}
-            @test empty_item.data.y isa Vector{Float64}
+            empty_data = data_by_label["empty"]
+            @test empty_data isa NamedTuple
+            @test empty_data.x == Int64[]
+            @test empty_data.x isa Vector{Int64}
+            @test empty_data.y isa Vector{Float64}
         finally
             DataBrowser.close_workspace!(reopened)
         end

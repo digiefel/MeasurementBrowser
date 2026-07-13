@@ -25,7 +25,7 @@ using Serialization
 using Dates
 
 import DataBrowserAPI.ItemIndex:
-    DataItem,
+    RegisteredDataItem,
     Hierarchy,
     ItemFailure,
     ItemRecord,

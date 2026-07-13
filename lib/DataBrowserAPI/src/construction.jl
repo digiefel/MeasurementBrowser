@@ -16,7 +16,9 @@ function Base.show(io::IO, ::MIME"text/plain", project::Project)
     pad = isempty(project.recipes) ? 0 : maximum(length(string(r.kind)) for r in project.recipes)
     for recipe in project.recipes
         optional = [name for (name, f) in
-            (("process", recipe.process), ("analyze", recipe.analyze), ("label", recipe.label))
+            (("entries", recipe.entries), ("process", recipe.process),
+             ("analyze", recipe.analyze), ("label", recipe.label),
+             ("collection", recipe.collection), ("id", recipe.id))
             if f !== nothing]
         steps = isempty(optional) ? "" : " · " * join(optional, " · ")
         print(io, "\n    ", rstrip(rpad(string(recipe.kind), pad) * steps))
@@ -53,40 +55,47 @@ function define_project(name::AbstractString; description::AbstractString="")::P
     )
 end
 
-"""
-Register (or replace) the recipe for one item kind.
+const UNNAMED_ITEM_REGISTRATION = Symbol("#unnamed")
 
-`detect`, `read`, and `entries` are required. `entries(file, data)` returns the per-item entries as
-`AbstractDataItem`s — the package's `DataItem` (recipe API) or your own subtype (type API); a
-single-item file just returns a vector of one. Attach the raw per-item data as `item.data`;
-optional `process`/`analyze`/`label` refine the recipe
-API. Re-calling with the same `kind` replaces the recipe in place, so editing and re-running the line
-updates a live project.
+"""
+    register_item!(project, [registration_name]; read, callbacks...) -> project
+
+Register or replace one item pipeline. `read` is the only required callback. Registration
+callbacks receive ordinary project data and metadata dictionaries; DataBrowser owns item identity
+and storage records internally.
+
+Calling the unnamed form again replaces the project's unnamed registration. Calling the named form
+again with the same name replaces that registration in place.
 """
 function register_item!(
     project::Project,
     kind::Symbol;
-    detect::Function,
     read::Function,
-    entries::Function,
+    detect::Function=Returns(true),
+    entries::Union{Nothing,Function}=nothing,
     process::Union{Nothing,Function}=nothing,
     analyze::Union{Nothing,Function}=nothing,
     label::Union{Nothing,Function}=nothing,
+    collection::Union{Nothing,Function}=nothing,
+    id::Union{Nothing,Function}=nothing,
 )::Project
-    recipe = ItemRecipe(kind, detect, read, entries, process, analyze, label)
+    recipe = ItemRecipe(
+        kind, detect, read, entries, process, analyze, label, collection, id)
     index = findfirst(r -> r.kind === kind, project.recipes)
     index === nothing ? push!(project.recipes, recipe) : (project.recipes[index] = recipe)
     return project
 end
 
+function register_item!(project::Project; kwargs...)::Project
+    return register_item!(project, UNNAMED_ITEM_REGISTRATION; kwargs...)
+end
+
 """
 Register (or replace) the collection recipe for one item kind.
 
-`process(items)` receives the collection's members of `kind` and returns one output per input (same
-ids), rewriting per-item data or metadata (the down-flow). `analyze(items)` receives the
-post-process members and returns a `Dict{Symbol,Any}` attached to the collection node only. The
-callback adapter implements these through the low-level `_process_collection`/`_analyze_collection`
-hooks. Re-calling with the same `kind` replaces the recipe.
+`process(data, metadata)` receives aligned vectors and returns one data value per input.
+`analyze(data, metadata)` receives the processed values and returns metadata for the collection.
+Re-calling with the same registration name replaces the recipe.
 """
 function register_collection_analysis!(
     project::Project,

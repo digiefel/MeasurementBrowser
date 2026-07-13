@@ -14,21 +14,17 @@ function _precompile_project()
     register_item!(project, :iv;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
-        entries=(file, data) -> [DataItem(
-            kind=:iv,
-            collection=[splitext(file.filename)[1]],
-            label=file.filename,
-            data=data,
-        )],
-        process=function (item)
-            data = copy(item.data)
+        label=(data, metadata) -> metadata[:filename],
+        collection=(data, metadata) -> [splitext(metadata[:filename])[1]],
+        process=function (input, metadata)
+            data = copy(input)
             data.engine_warm = data.Current_A ./ max.(abs.(data.VoltageHigh_V), 1e-12)
-            return DataItem(item, data)
+            return data
         end,
-        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        analyze=(data, metadata) -> Dict{Symbol,Any}(:rows => nrow(data)),
     )
     register_collection_analysis!(project, :iv;
-        analyze=items -> Dict{Symbol,Any}(:items => length(items)),
+        analyze=(data, metadata) -> Dict{Symbol,Any}(:items => length(data)),
     )
     register_plot!(project, :iv; label="I-V",
         setup=(_workspace, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),

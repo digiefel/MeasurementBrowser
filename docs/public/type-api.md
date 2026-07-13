@@ -8,9 +8,9 @@ Type-based projects use the same pipeline described in [How DataBrowser works](p
 difference is that behavior dispatches on domain types instead of being stored as registered
 callbacks.
 
-## Atomic data items
+## Data items
 
-An `AbstractDataItem` represents one atomic item. A concrete subtype can itself be the item's data:
+An `AbstractDataItem` represents one item. A concrete subtype can itself be the item's data:
 
 ```julia
 struct Spectrum <: AbstractDataItem
@@ -26,12 +26,12 @@ Projects implement only the behavior they need:
 
 | Method | Receives | Produces | Default |
 |---|---|---|---|
-| `item_data` | one concrete item | its atomic data | the item itself |
-| `metadata` | one concrete item | cheap metadata as a `Dict` | empty `Dict` |
+| `item_data` | one concrete item | its data | the item itself |
+| `metadata` | one concrete item | metadata supplied by the item as a `Dict` | empty `Dict` |
 | `item_label` | one concrete item | browser text | source-derived label |
 | `collection` | one concrete item | collection path | source-derived path |
 | `id` | one concrete item | stable sibling key | returned position |
-| `process` | one concrete item | the value consumed by views | the item unchanged |
+| `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
 | `fingerprint` | one concrete item | an item-specific invalidation value | none |
 | `cacheable` | one concrete item | whether its data can be persisted | determined by its data |
@@ -52,6 +52,11 @@ cacheable(item::MyItem)::Bool
 
 Multiple dispatch replaces registration names as the behavior selector. Different item types can
 provide entirely different processing and analysis methods while sharing one workspace.
+
+`process(item)` and `analyze(item)` receive the concrete item itself. Metadata needed by those
+methods belongs in that item or in the values it contains.
+
+`metadata(::AbstractDataItem)` defaults to an empty `Dict`.
 
 ## Sources and source items
 
@@ -105,6 +110,7 @@ that owns live resources. `close_source!` releases those resources.
 | `fingerprint(item)` | detect changes to this source item | always reinterpret |
 | `source_item_path(item)` | expose a filesystem path when one exists | nothing |
 | `source_item_timestamp(item)` | expose acquisition or modification time | nothing |
+| `metadata(item)` | metadata supplied directly by this source item | empty `Dict` |
 
 The method signatures are:
 
@@ -114,7 +120,11 @@ source_item_label(item::MySourceItem)::String
 fingerprint(item::MySourceItem)::Any
 source_item_path(item::MySourceItem)::Union{Nothing,String}
 source_item_timestamp(item::MySourceItem)::Any
+metadata(item::MySourceItem)::Dict
 ```
+
+`metadata(::AbstractDataSourceItem)` defaults to an empty `Dict`. `data_items` receives the source
+item, so it can place any metadata needed during processing into each returned data item.
 
 ## Interpretation
 

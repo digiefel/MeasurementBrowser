@@ -15,13 +15,10 @@ function _profile_project()
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        entries=(file, data) -> [DataItem(
-            kind=:table,
-            collection=["dev", splitext(file.filename)[1]],
-            label=file.filename,
-            data=data,
-        )],
-        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        collection=(_data, metadata) ->
+            ["dev", splitext(metadata[:filename])[1]],
+        label=(_data, metadata) -> metadata[:filename],
+        analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => nrow(data)),
     )
     return project
 end
@@ -37,12 +34,10 @@ end
             :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> DataFrame(CSV.File(file.filepath)),
-            entries=(file, data) -> [DataItem(
-                kind=:table,
-                collection=["dev", splitext(file.filename)[1]],
-                data=data,
-            )],
-            analyze=item -> Dict{Symbol,Any}(:area_um2 => item.metadata[:area_um2]),
+            collection=(_data, metadata) ->
+                ["dev", splitext(metadata[:filename])[1]],
+            analyze=(_data, metadata) ->
+                Dict{Symbol,Any}(:area_um2 => metadata[:area_um2]),
         )
 
         workspace = MB.open_workspace(
@@ -163,16 +158,13 @@ end
             :table;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> DataFrame(CSV.File(file.filepath)),
-            entries=(file, data) -> [DataItem(
-                kind=:table,
-                collection=["dev", splitext(file.filename)[1]],
-                label=file.filename,
-                data=data,
-            )],
-            analyze=function (item)
+            collection=(_data, metadata) ->
+                ["dev", splitext(metadata[:filename])[1]],
+            label=(_data, metadata) -> metadata[:filename],
+            analyze=function (data, metadata)
                 return Dict{Symbol,Any}(
-                    :rows => nrow(item.data),
-                    :area_um2 => item.metadata[:area_um2],
+                    :rows => nrow(data),
+                    :area_um2 => metadata[:area_um2],
                 )
             end,
         )
@@ -224,24 +216,22 @@ end
                 Threads.atomic_add!(reads[file.filename], 1)
                 return DataFrame(CSV.File(file.filepath))
             end,
-            entries=function (file, data)
-                Threads.atomic_add!(entries[file.filename], 1)
-                name = splitext(file.filename)[1]
-                return [DataItem(
-                    kind=:table,
-                    collection=["dev", name],
-                    metadata=name == "b" ? Dict{Symbol,Any}(:scale => 20) :
-                        Dict{Symbol,Any}(),
-                    data=data,
-                )]
+            entries=function (data, metadata)
+                Threads.atomic_add!(entries[metadata[:filename]], 1)
+                name = splitext(metadata[:filename])[1]
+                item_metadata = name == "b" ? Dict{Symbol,Any}(:scale => 20) :
+                    Dict{Symbol,Any}()
+                return [(data=data, metadata=item_metadata)]
             end,
-            process=function (item)
-                name = last(item.collection)
+            collection=(_data, metadata) ->
+                ["dev", splitext(metadata[:filename])[1]],
+            process=function (data, metadata)
+                name = splitext(metadata[:filename])[1]
                 Threads.atomic_add!(processes[name], 1)
-                scale = get(item.metadata, :scale, 1)
-                return DataItem(item, DataFrame(y=item.data.x .* scale))
+                scale = get(metadata, :scale, 1)
+                return DataFrame(y=data.x .* scale)
             end,
-            analyze=item -> Dict{Symbol,Any}(:maximum => maximum(item.data.y)),
+            analyze=(data, _metadata) -> Dict{Symbol,Any}(:maximum => maximum(data.y)),
         )
 
         workspace = MB.open_workspace(
@@ -268,8 +258,14 @@ end
             loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
 
-            @test only(item.data.y for item in loaded if last(item.collection) == "a") == [6]
-            @test only(item.data.y for item in loaded if last(item.collection) == "b") == [60]
+            @test only(
+                item_data(item).y for (record, item) in zip(records, loaded)
+                if last(record.collection) == "a"
+            ) == [6]
+            @test only(
+                item_data(item).y for (record, item) in zip(records, loaded)
+                if last(record.collection) == "b"
+            ) == [60]
             @test all(counter[] == 1 for counter in values(reads))
             @test all(counter[] == 1 for counter in values(entries))
             @test processes["a"][] == 2
@@ -330,31 +326,27 @@ end
                 Threads.atomic_add!(read_count, 1)
                 return CSV.read(file.filepath, DataFrame)
             end,
-            entries=function (_file, data)
-                items = MB.AbstractDataItem[]
+            entries=function (data, _metadata)
+                items = NamedTuple[]
                 sizehint!(items, 100)
                 for part in 1:100
                     mask = data.part .== part
-                    push!(items, DataItem(
-                        kind=:table,
-                        collection=["expanded"],
-                        metadata=Dict{Symbol,Any}(:part => part),
+                    push!(items, (
                         data=DataFrame(x=data.x[mask], y=data.y[mask]),
+                        metadata=Dict{Symbol,Any}(:part => part),
                     ))
                 end
                 return items
             end,
-            process=item -> DataItem(
-                item,
-                DataFrame(
-                    x=item.data.x,
-                    y=item.data.y,
-                    sum=item.data.x .+ item.data.y,
-                ),
+            collection=(_data, _metadata) -> ["expanded"],
+            process=(data, _metadata) -> DataFrame(
+                x=data.x,
+                y=data.y,
+                sum=data.x .+ data.y,
             ),
-            analyze=item -> Dict{Symbol,Any}(
-                :rows => nrow(item.data),
-                :sum_max => maximum(item.data.sum),
+            analyze=(data, _metadata) -> Dict{Symbol,Any}(
+                :rows => nrow(data),
+                :sum_max => maximum(data.sum),
             ),
         )
 
@@ -371,7 +363,7 @@ end
 
             loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
             @test length(loaded) == 100
-            @test all(item -> nrow(item.data) == 10, loaded)
+            @test all(item -> nrow(item_data(item)) == 10, loaded)
             @test read_count[] == 1
         finally
             MB.close_workspace!(workspace)
@@ -395,11 +387,11 @@ end
                 Threads.atomic_add!(read_count, 1)
                 return CSV.read(file.filepath, DataFrame)
             end,
-            entries=(file, data) -> [DataItem(
-                kind=:table, collection=[splitext(file.filename)[1]], data=data)],
-            analyze=function (item)
-                item.collection == ["f2"] && error("persistent f2 analysis failure")
-                return Dict{Symbol,Any}(:rows => nrow(item.data))
+            collection=(_data, metadata) -> [splitext(metadata[:filename])[1]],
+            analyze=function (data, metadata)
+                metadata[:filename] == "f2.csv" &&
+                    error("persistent f2 analysis failure")
+                return Dict{Symbol,Any}(:rows => nrow(data))
             end,
         )
 

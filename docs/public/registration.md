@@ -60,10 +60,10 @@ read = (file::SourceFile) -> loaded_data::LoadedData
 reading a shared header, decompression, and calculations required by every item from the source
 belong here.
 
-When `entries` is omitted, the result of `read` is one atomic item. A vector is not implicitly
+When `entries` is omitted, the result of `read` is one item. A vector is not implicitly
 expanded: `Vector{Float64}` remains one item's data.
 
-Return `(data=..., metadata=Dict(...))` when reading also discovers facts shared by every item in the
+Return `(data=..., metadata=Dict(...))` when reading also discovers metadata shared by every item in the
 source. That metadata is supplied to `entries` and inherited by its returned items.
 
 ## `entries`
@@ -72,7 +72,7 @@ source. That metadata is supplied to `entries` and inherited by its returned ite
 entries = (loaded_data::LoadedData, metadata::Dict) -> items::Vector
 ```
 
-`entries` interprets a loaded source as zero or more atomic items. Each returned element is ordinary
+`entries` interprets a loaded source as zero or more items. Each returned element is ordinary
 item data or `(data=..., metadata=Dict(...))`.
 
 This stage may be expensive. It runs once after `read` and should compute item metadata during the
@@ -132,7 +132,7 @@ representation, and other repeatable per-item transformations belong here.
 analyze = (processed_data::ProcessedData, metadata::Dict) -> additional_metadata::Dict
 ```
 
-`analyze` derives searchable facts from processed data. Its dictionary is merged into the item's
+`analyze` derives searchable metadata from processed data. Its dictionary is merged into the item's
 metadata and does not replace the processed value.
 
 Analysis is deferred and can be cached. Expensive statistics, quality checks, extracted parameters,
@@ -195,7 +195,8 @@ Directory-backed workspaces discover files before registrations run. Each callba
 | `fingerprint` | value used to detect source changes |
 
 The source object lets DataBrowser perform filesystem discovery once and keeps that work out of
-project callbacks.
+project callbacks. Its metadata dictionary contains `:filename` and, when a timestamp was
+discovered, `:timestamp`. This dictionary is passed to `entries` and the other item callbacks.
 
 ## Collection operations
 
@@ -204,8 +205,8 @@ related group of items:
 
 ```julia
 register_collection_analysis!(project, registration_name;
-    process = (data::Vector, metadata::Vector{Dict}) -> processed_data::Vector,
-    analyze = (processed_data::Vector, metadata::Vector{Dict}) -> collection_metadata::Dict,
+    process = (data::Vector, metadata::Vector{<:Dict}) -> processed_data::Vector,
+    analyze = (processed_data::Vector, metadata::Vector{<:Dict}) -> collection_metadata::Dict,
 )
 ```
 

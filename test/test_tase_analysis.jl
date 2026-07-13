@@ -50,16 +50,13 @@ function _tase_project()
         :four_terminal_iv;
         detect=file -> match(REGEX_TASE, file.filename) !== nothing,
         read=file -> _read_tase(file.filepath),
-        entries=function (file, data)
-            m = match(REGEX_TASE, file.filename)
+        collection=function (_data, metadata)
+            m = match(REGEX_TASE, metadata[:filename])
             location = String.(collect(m.captures))
-            return [DataItem(
-                kind=:four_terminal_iv,
-                collection=location,
-                label=join(location, "_"),
-                data=data,
-            )]
+            return location
         end,
+        label=(_data, metadata) -> join(
+            String.(collect(match(REGEX_TASE, metadata[:filename]).captures)), "_"),
     )
     MB.register_plot!(
         project,
@@ -69,7 +66,7 @@ function _tase_project()
         draw=function (_workspace, items, figure)
             axis = only(contents(figure[1, 1]))
             for item in items
-                df = item.data
+                df = item_data(item)
                 nrow(df) == 0 && continue
                 lines!(axis, df.i, df.v)
             end

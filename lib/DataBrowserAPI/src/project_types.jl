@@ -1,26 +1,21 @@
-"""
-One registered item recipe for a kind.
-
-`entries(file, data)` returns the per-item entries (`Vector{<:AbstractDataItem}`): the package's
-`DataItem` for the recipe API, or a project's own subtype for the type API. Later callbacks receive
-items and read `item.data`.
-"""
+"""One registered item pipeline."""
 mutable struct ItemRecipe
     kind::Symbol
     detect::Function
     read::Function
-    entries::Function
+    entries::Union{Nothing,Function}
     process::Union{Nothing,Function}
     analyze::Union{Nothing,Function}
     label::Union{Nothing,Function}
+    collection::Union{Nothing,Function}
+    id::Union{Nothing,Function}
 end
 
 """
 One registered collection recipe for a kind.
 
-`process(items)` rewrites each member (one output per input, same ids) and may change per-item data
-or metadata. `analyze(items)` folds the post-process members into a `Dict{Symbol,Any}` attached to
-the collection node only.
+`process(data, metadata)` rewrites each member's data (one output per input).
+`analyze(data, metadata)` folds the post-process members into a `Dict` attached to the collection.
 """
 struct CollectionRecipe
     kind::Symbol

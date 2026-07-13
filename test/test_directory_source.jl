@@ -35,19 +35,17 @@ end
             :table;
             detect=file -> endswith(lowercase(file.filename), ".csv"),
             read=file -> read(file.filepath, String),
-            entries=function (file, data)
-                name = splitext(file.filename)[1]
-                metadata = name == "root" ?
+            entries=function (data, source_metadata)
+                name = splitext(source_metadata[:filename])[1]
+                item_metadata = name == "root" ?
                     Dict{Symbol,Any}(:area_um2 => 7.0, :local_only => true) :
                     Dict{Symbol,Any}()
-                return [MBD.DataItem(
-                    kind=:table,
-                    collection=["test", name],
-                    label="Table $name",
-                    metadata=metadata,
-                    data=data,
-                )]
+                return [(data=data, metadata=item_metadata)]
             end,
+            collection=(_data, metadata) ->
+                ["test", splitext(metadata[:filename])[1]],
+            label=(_data, metadata) ->
+                "Table $(splitext(metadata[:filename])[1])",
         )
 
         workspace = _open_settled(project, MBD.DirectorySource(dir))
@@ -97,7 +95,10 @@ end
             hierarchy = without_metadata.index.hierarchy
             @test !hierarchy.has_collection_metadata
             @test all(isempty(node.metadata) for node in values(hierarchy.index))
-            @test all(isempty(record.metadata) for record in DataBrowserAPI.ItemIndex.all_items(hierarchy))
+            @test all(
+                record.metadata == Dict{Symbol,Any}(:filename => basename(record.source_item_id))
+                for record in DataBrowserAPI.ItemIndex.all_items(hierarchy)
+            )
         finally
             MBD.close_workspace!(without_metadata)
         end

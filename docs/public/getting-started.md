@@ -1,7 +1,7 @@
 # Your first project
 
-The smallest project treats every discovered file as one atomic item. DataBrowser supplies empty
-metadata, a source-derived label, a directory-derived collection, and an internal identity.
+The smallest project treats every discovered file as one item. DataBrowser supplies source
+metadata, a source-derived label, a directory-derived collection, and an identity.
 
 The complete pipeline is therefore:
 
@@ -26,7 +26,8 @@ workspace = open_workspace(project, "/path/to/csv-files")
 open_browser(workspace)
 ```
 
-There is no item type to define and no metadata container to construct. A returned
+There is no item type to define and no metadata container to construct. `SourceFile` metadata
+includes `:filename` and, when available, `:timestamp`. A returned
 `Vector{Float64}`, `DataFrame`, image, or domain object is one item's data.
 
 ## What DataBrowser does with this definition
@@ -34,7 +35,7 @@ There is no item type to define and no metadata container to construct. A return
 For every discovered file, DataBrowser:
 
 1. calls `read` once;
-2. treats the returned value as one atomic item;
+2. treats the returned value as one item;
 3. publishes the item using its source filename and directory;
 4. processes requests in the background;
 5. persists reusable workspace state and results.
@@ -68,5 +69,5 @@ register_item!(project;
 )
 ```
 
-`read` still runs once. `entries` receives its result and returns one value per atomic item. The
+`read` still runs once. `entries` receives its result and returns one value per item. The
 [Registration API](registration.md) explains the accepted return shapes and every optional stage.

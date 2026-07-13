@@ -377,6 +377,7 @@ mutable struct CacheDB <: AbstractCacheDB
     payload::TabularFamilyStore
     interpreted::MemoryStore{String,AbstractDataItem}
     processed_memory::MemoryStore{String,AbstractDataItem}
+    collection_processed_memory::MemoryStore{String,AbstractDataItem}
     # One integer surrogate per item id, shared with the payload store; minted at interpretation.
     item_keys::Dict{String,Int64}
     next_item_key::Int64
@@ -483,6 +484,7 @@ function open_cache_db(
             failures,
             result_states,
             payload,
+            MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             item_keys,
@@ -723,10 +725,14 @@ function store_processed!(
 )::Nothing
     key = item_key!(cache, record.id)
     payload = item_data(item)
-    disk = cacheable(item) && _storable_table(payload)
+    disk = item isa RegisteredDataItem && cacheable(item) && _storable_table(payload)
     if disk
         started = time_ns()
-        stage === :processed && delete!(cache.processed_memory, record.id)
+        if stage === :processed
+            delete!(cache.processed_memory, record.id)
+        else
+            delete!(cache.collection_processed_memory, record.id)
+        end
         append!(cache.payload, (key, _payload_stage_code(stage)), payload)
         record_cache_phase!(
             cache.metrics.processed_write_ns,
@@ -747,7 +753,11 @@ function store_processed!(
         end
     else
         delete!(cache.payload, (key, _payload_stage_code(stage)))
-        stage === :processed && append!(cache.processed_memory, record.id, item)
+        if stage === :processed
+            append!(cache.processed_memory, record.id, item)
+        else
+            append!(cache.collection_processed_memory, record.id, item)
+        end
         if stage === :processed
             delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
             _stage_ledger_result!(
@@ -972,6 +982,7 @@ function delete_source_item!(
         delete!(cache.payload, (key, PAYLOAD_STAGE_COLLECTION_PROCESSED))
         delete!(cache.interpreted, record.id)
         delete!(cache.processed_memory, record.id)
+        delete!(cache.collection_processed_memory, record.id)
         delete!(cache.failures, (record.id, source_id))
         _stage_ledger_failure!(cache.stage_ledger, (record.id, source_id), false)
         delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
@@ -1178,12 +1189,12 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     loaded = Vector{Any}(undef, length(records))
     disk_keys = Tuple{Int64,Int8}[]
     for (index, record) in pairs(records)
-        if stage === :processed
-            held = read(cache.processed_memory, record.id)
-            if held !== nothing
-                loaded[index] = held
-                continue
-            end
+        held = stage === :processed ?
+            read(cache.processed_memory, record.id) :
+            read(cache.collection_processed_memory, record.id)
+        if held !== nothing
+            loaded[index] = held
+            continue
         end
         push!(disk_keys, (item_key!(cache, record.id), stage_code))
         loaded[index] = nothing
@@ -1195,7 +1206,7 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     for (index, record) in pairs(records)
         loaded[index] !== nothing && continue
         data = get(disk_data, (item_key!(cache, record.id), stage_code), nothing)
-        loaded[index] = data === nothing ? nothing : DataItem(record, data)
+        loaded[index] = data === nothing ? nothing : RegisteredDataItem(record, data)
     end
     return loaded
 end
@@ -1220,7 +1231,8 @@ function close_cache_db!(cachedb::CacheDB)::Nothing
         (cachedb.source_items, cachedb.items, cachedb.source_item_metadata,
          cachedb.source_collection_metadata, cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
-         cachedb.result_states, cachedb.payload, cachedb.interpreted, cachedb.processed_memory)
+         cachedb.result_states, cachedb.payload, cachedb.interpreted,
+         cachedb.processed_memory, cachedb.collection_processed_memory)
         try
             close!(buffer)
         catch error
@@ -1293,7 +1305,8 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
         (cachedb.source_items, cachedb.items, cachedb.source_item_metadata,
          cachedb.source_collection_metadata, cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
-         cachedb.result_states, cachedb.payload, cachedb.interpreted, cachedb.processed_memory)
+         cachedb.result_states, cachedb.payload, cachedb.interpreted,
+         cachedb.processed_memory, cachedb.collection_processed_memory)
         clear!(buffer)
     end
     lock(cachedb.key_lock) do

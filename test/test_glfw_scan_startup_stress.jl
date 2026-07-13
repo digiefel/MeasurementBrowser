@@ -25,18 +25,15 @@ function build_csv_stress_project(items_per_file::Int)::MB.Project
         :table;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(CSV.File(file.filepath)),
-        entries=(file, data) -> [
-            MB.DataItem(
-                kind=:table,
-                collection=["stress"],
-                label="$(file.filename) item $item_index",
-                metadata=Dict{Symbol,Any}(:item_index => item_index),
-                data=data,
-                id=file.filepath * "#table_$item_index",
-            )
+        entries=(data, _metadata) -> [
+            (data=data, metadata=Dict{Symbol,Any}(:item_index => item_index))
             for item_index in 1:items_per_file
         ],
-        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        collection=(_data, _metadata) -> ["stress"],
+        label=(_data, metadata) ->
+            "$(metadata[:filename]) item $(metadata[:item_index])",
+        id=(_data, metadata) -> "table_$(metadata[:item_index])",
+        analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => nrow(data)),
     )
     return project
 end

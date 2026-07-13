@@ -7,7 +7,7 @@ touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
 """
 
 using DataBrowserAPI
-using DataBrowserAPI: AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, collection, id, item_data, item_label, kind, metadata, source_id
+using DataBrowserAPI: AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, fingerprint, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import Serialization
@@ -22,6 +22,12 @@ import DataBrowserAPI:
     _has_collection_analysis,
     _has_collection_process,
     kind_label,
+    collection,
+    id,
+    item_data,
+    item_label,
+    kind,
+    metadata,
     process,
     _process_collection,
     project_description,
@@ -30,7 +36,16 @@ import DataBrowserAPI:
     reset_scan_profile!,
     scan_profile_summary,
     scan_source_profile
-import DataBrowserAPI.ItemIndex: DataItem, ItemFailure, ItemRecord, _effective_metadata
+import DataBrowserAPI.ItemIndex:
+    ItemFailure,
+    ItemRecord,
+    MetadataDict,
+    RegisteredDataItem,
+    metadata_dict
+
+function _with_data(item::RegisteredDataItem, data)::RegisteredDataItem
+    return RegisteredDataItem(item, data)
+end
 
 # Only registered recipes are persisted; transient scan state (read cache, profiling, locks) is
 # rebuilt empty on load. This keeps the cache format stable when transient fields change, so adding
@@ -170,16 +185,61 @@ function _detect_recipe(project::Project, file::SourceFile)::Union{Nothing,ItemR
     return nothing
 end
 
-"""Default item identity for recipe entries that do not provide one."""
+"""Stable private identity for one value returned by a registration."""
 function _mint_id(
     source_item_id::AbstractString,
     kind::Symbol,
-    metadata::Dict{Symbol,Any},
+    position::Integer,
+    supplied_key=nothing,
 )::String
-    source_id = String(source_item_id)
-    isempty(metadata) && return source_id
-    ordered = sort!(collect(keys(metadata)))
-    return "$source_id#kind=$(kind)," * join(("$(k)=$(metadata[k])" for k in ordered), ",")
+    suffix = supplied_key === nothing ? string(position) : string(supplied_key)
+    return "$(source_item_id)#$(kind):$(suffix)"
+end
+
+"""Split the documented `(data=..., metadata=Dict(...))` result form."""
+function _data_and_metadata(value)::Tuple{Any,MetadataDict}
+    if value isa NamedTuple && keys(value) == (:data, :metadata)
+        return value.data, metadata_dict(value.metadata)
+    end
+    return value, MetadataDict()
+end
+
+function _default_collection(
+    source::AbstractDataSource,
+    source_item::AbstractDataSourceItem,
+)::Vector{String}
+    path = source_item_path(source_item)
+    path === nothing && return String[]
+    root = source_id(source)
+    isabspath(root) || return String[]
+    relative_directory = dirname(relpath(path, root))
+    relative_directory == "." && return String[]
+    return splitpath(relative_directory)
+end
+
+function _registered_item(
+    recipe::ItemRecipe,
+    source::AbstractDataSource,
+    source_item::AbstractDataSourceItem,
+    position::Integer,
+    value,
+    inherited_metadata::MetadataDict,
+)::RegisteredDataItem
+    data, entry_metadata = _data_and_metadata(value)
+    local_metadata = merge(copy(inherited_metadata), entry_metadata)
+    collection_value = recipe.collection === nothing ?
+        _default_collection(source, source_item) : recipe.collection(data, local_metadata)
+    collection_path = String[String(segment) for segment in collection_value]
+    supplied_key = recipe.id === nothing ? nothing : recipe.id(data, local_metadata)
+    label = recipe.label === nothing ? "" : String(recipe.label(data, local_metadata))
+    return RegisteredDataItem(
+        _mint_id(source_item_id(source_item), recipe.kind, position, supplied_key),
+        label,
+        recipe.kind,
+        collection_path,
+        data,
+        local_metadata,
+    )
 end
 
 # ---------------------------------------------------------------------------
@@ -199,36 +259,15 @@ function kind_label(::Project, kind::Symbol)::String
 end
 
 function display_label(project::Project, item::ItemRecord)::String
-    recipe = _recipe(project, item.kind)
-    (recipe === nothing || recipe.label === nothing) && return item.item_label
-    return recipe.label(DataItem(item, nothing))::String
+    return item.item_label
 end
 
-function _normalize_entry(
+function _processed_item(
     recipe::ItemRecipe,
-    source_item_id::AbstractString,
-    item::AbstractDataItem,
-)::AbstractDataItem
-    entry_id = id(item)
-    isempty(entry_id) || return item
-    return DataItem(;
-        kind=recipe.kind,
-        collection=collection(item),
-        label=item_label(item),
-        metadata=metadata(item),
-        data=item_data(item),
-        id=_mint_id(source_item_id, recipe.kind, metadata(item)),
-    )
-end
-
-function _processed_item(recipe::ItemRecipe, item::AbstractDataItem)::AbstractDataItem
+    item::RegisteredDataItem,
+)::RegisteredDataItem
     recipe.process === nothing && return item
-    result = recipe.process(item)
-    result isa AbstractDataItem && return result
-    error(
-        "process callback for kind $(recipe.kind) must return an AbstractDataItem; " *
-        "got $(typeof(result)). Return DataItem(item, processed) or a custom AbstractDataItem instead."
-    )
+    return _with_data(item, recipe.process(item.data, item.metadata))
 end
 
 """
@@ -239,8 +278,15 @@ function process(
     ::AbstractDataSource,
     item::AbstractDataItem,
 )::AbstractDataItem
-    recipe = _recipe(project, kind(item))
-    (recipe === nothing || recipe.process === nothing) && return process(item)
+    if !(item isa RegisteredDataItem)
+        result = process(item)
+        result isa AbstractDataItem || error(
+            "process(::$(typeof(item))) must return an AbstractDataItem; got $(typeof(result))",
+        )
+        return result
+    end
+    recipe = _recipe(project, item.registration)
+    recipe === nothing && error("Missing registration $(item.registration)")
     return _processed_item(recipe, item)
 end
 
@@ -264,9 +310,9 @@ function data_items(
             recipe === nothing ? :unmatched : recipe.kind,
             :detect, (time_ns() - started) / 1e9, Base.Threads.threadid())
     end
-    recipe === nothing && return DataItem[]
+    recipe === nothing && return AbstractDataItem[]
     started = time_ns()
-    data = try
+    read_result = try
         Profiling.@profile_span profiler :project :read Profiling.ProfileAttributes(
             kind=recipe.kind,
             source_id=file.filepath,
@@ -278,15 +324,24 @@ function data_items(
             project, file.filepath, recipe.kind, :read,
             (time_ns() - started) / 1e9, Base.Threads.threadid())
     end
+    loaded_data, read_metadata = _data_and_metadata(read_result)
+    inherited_metadata = merge(metadata_dict(metadata(file)), read_metadata)
     started = time_ns()
     items = try
         Profiling.@profile_span profiler :project :entries Profiling.ProfileAttributes(
             kind=recipe.kind,
             source_id=file.filepath,
         ) begin
+            values = recipe.entries === nothing ? Any[loaded_data] :
+                recipe.entries(loaded_data, inherited_metadata)
+            values isa AbstractVector || error(
+                "entries callback for registration $(recipe.kind) must return a vector; " *
+                "got $(typeof(values))",
+            )
             AbstractDataItem[
-                _normalize_entry(recipe, file.filepath, item)
-                for item in recipe.entries(file, data)::Vector{<:AbstractDataItem}
+                _registered_item(
+                    recipe, source, file, position, value, inherited_metadata)
+                for (position, value) in pairs(values)
             ]
         end
     finally
@@ -313,8 +368,8 @@ end
 """
 Interpret every logical data item produced by one source item.
 
-The source item is read only by `data_items`. Each result is normalized to a package `DataItem` with
-effective metadata. Processing and analysis belong to the workspace work graph.
+The source item is read only by `data_items`. Concrete typed items remain unchanged; registered data
+uses a private carrier. Processing and analysis belong to the workspace work graph.
 """
 function interpret_source_item(
     project::Project,
@@ -350,14 +405,31 @@ function interpret_source_item(
         isempty(item_kinds) ? :unmatched : :mixed
     records = Vector{ItemRecord}(undef, item_count)
     interpreted_items = Vector{AbstractDataItem}(undef, item_count)
+    source_metadata = metadata_dict(metadata(source_item))
     for (index, handle) in pairs(handles)
-        record = ItemRecord(handle; source_item)
-        records[index] = record
-        interpreted_items[index] = DataItem(
-            ItemRecord(record; metadata=_effective_metadata(
-                source, record.collection, record.metadata)),
-            item_data(handle),
+        item_metadata = handle isa RegisteredDataItem ? handle.metadata : metadata_dict(metadata(handle))
+        record_metadata = merge(copy(source_metadata), item_metadata)
+        item_collection = collection(handle)
+        path = isempty(item_collection) ?
+            _default_collection(source, source_item) :
+            String[String(segment) for segment in item_collection]
+        item_id = isempty(id(handle)) ?
+            _mint_id(source_item_id_value, kind(handle), index) : id(handle)
+        label = item_label(handle)
+        record = ItemRecord(;
+            source_item_id=source_item_id_value,
+            source_item_path=source_item_path_value,
+            source_item_timestamp=source_item_timestamp(source_item),
+            id=item_id,
+            item_label=isempty(label) ? source_item_label(source_item) : label,
+            kind=kind(handle),
+            collection=path,
+            metadata=record_metadata,
+            item_fingerprint=fingerprint(handle),
         )
+        records[index] = record
+        interpreted_items[index] = handle isa RegisteredDataItem ?
+            RegisteredDataItem(record, item_data(handle)) : handle
     end
     finish_source_profile!(
         project, source_item_id_value, source_item_label_value, source_item_path_value,
@@ -398,13 +470,23 @@ function _process_collection(
     items::Vector{<:AbstractDataItem},
 )::Vector{<:AbstractDataItem}
     rewritten = AbstractDataItem[]
-    for group in _group_by_kind(items)
-        recipe = get(project.collections, kind(first(group)), nothing)
+    for positions in _group_positions_by_kind(items)
+        group = items[positions]
+        first(group) isa RegisteredDataItem || (append!(rewritten, group); continue)
+        recipe = get(project.collections, first(group).registration, nothing)
         if recipe === nothing || recipe.process === nothing
             append!(rewritten, group)
             continue
         end
-        outputs = recipe.process(group)::Vector{<:AbstractDataItem}
+        output_data = recipe.process(item_data.(group), metadata.(group))
+        output_data isa AbstractVector || error(
+            "collection process for kind $(kind(first(group))) must return a vector; " *
+            "got $(typeof(output_data))",
+        )
+        outputs = AbstractDataItem[
+            _with_data(input::RegisteredDataItem, data)
+            for (input, data) in zip(group, output_data)
+        ]
         length(outputs) == length(group) || error(
             "collection process for kind $(kind(first(group))) must return one item per input; " *
             "got $(length(outputs)) for $(length(group)) members",
@@ -429,24 +511,27 @@ function _analyze_collection(
     items::Vector{<:AbstractDataItem},
 )::Dict{Symbol,Any}
     merged = Dict{Symbol,Any}()
-    for group in _group_by_kind(items)
-        recipe = get(project.collections, kind(first(group)), nothing)
+    for positions in _group_positions_by_kind(items)
+        group = items[positions]
+        first(group) isa RegisteredDataItem || continue
+        recipe = get(project.collections, first(group).registration, nothing)
         (recipe === nothing || recipe.analyze === nothing) && continue
-        merge!(merged, recipe.analyze(group)::Dict{Symbol,Any})
+        merge!(merged, metadata_dict(recipe.analyze(
+            item_data.(group), metadata.(group))))
     end
     return merged
 end
 
-"""Group items by kind, preserving first-seen kind order."""
-function _group_by_kind(items::Vector{<:AbstractDataItem})::Vector{Vector{AbstractDataItem}}
-    groups = Dict{Symbol,Vector{AbstractDataItem}}()
-    order = Symbol[]
-    for item in items
-        item_kind = kind(item)
-        haskey(groups, item_kind) || push!(order, item_kind)
-        push!(get!(() -> AbstractDataItem[], groups, item_kind), item)
+"""Group item positions by kind, preserving first-seen kind order."""
+function _group_positions_by_kind(items::Vector{<:AbstractDataItem})::Vector{Vector{Int}}
+    groups = Dict{Tuple{Bool,Symbol},Vector{Int}}()
+    order = Tuple{Bool,Symbol}[]
+    for (position, item) in pairs(items)
+        key = (item isa RegisteredDataItem, kind(item))
+        haskey(groups, key) || push!(order, key)
+        push!(get!(() -> Int[], groups, key), position)
     end
-    return Vector{AbstractDataItem}[groups[item_kind] for item_kind in order]
+    return Vector{Int}[groups[key] for key in order]
 end
 
 function _analyze_item(
@@ -454,9 +539,13 @@ function _analyze_item(
     ::AbstractDataSource,
     item::AbstractDataItem,
 )::Dict{Symbol,Any}
-    recipe = _recipe(project, kind(item))
-    (recipe === nothing || recipe.analyze === nothing) && return Dict{Symbol,Any}()
-    return recipe.analyze(item)::Dict{Symbol,Any}
+    if !(item isa RegisteredDataItem)
+        return metadata_dict(analyze(item))
+    end
+    recipe = _recipe(project, item.registration)
+    recipe === nothing && error("Missing registration $(item.registration)")
+    recipe.analyze === nothing && return Dict{Symbol,Any}()
+    return metadata_dict(recipe.analyze(item_data(item), metadata(item)))
 end
 
 function _has_collection_process(project::Project, item_kind::Symbol)::Bool

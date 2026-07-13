@@ -956,13 +956,8 @@ function publish_work_success!(
         publish_item_metadata_layer!(workspace, record, metadata_dict(result))
         enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
     elseif key.kind === COLLECTION_PROCESS
-        # Members' rewritten payloads and metadata were persisted worker-side; publish their layers.
-        for output in result.outputs
-            member_id = id(output)
-            record = get(workspace.index.items, member_id, nothing)
-            record === nothing && continue
-            publish_item_metadata_layer!(workspace, record, result.metadata_by_id[member_id])
-        end
+        # Rewritten member payloads were persisted worker-side before publication.
+        nothing
     else
         path = collection_path_tuple(key.entity)
         hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)

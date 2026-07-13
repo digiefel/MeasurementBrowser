@@ -95,6 +95,7 @@ source_item_label(item::MySourceItem)::String
 fingerprint(item::MySourceItem)::Any
 source_item_path(item::MySourceItem)::Union{Nothing,String}
 source_item_timestamp(item::MySourceItem)::Any
+metadata(item::MySourceItem)::Dict
 
 data_items(
     project,

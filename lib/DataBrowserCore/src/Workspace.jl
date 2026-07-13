@@ -85,11 +85,11 @@ using DataBrowserCache:
     write_meta_header!
 import DataBrowserCache: query_items, read_item_data, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
-    DataItem,
     Hierarchy,
     ItemFailure,
     ItemRecord,
     MetadataDict,
+    RegisteredDataItem,
     SourceScan,
     all_items,
     clear_node_analysis!,

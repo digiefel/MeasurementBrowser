@@ -16,22 +16,18 @@ function _event_driven_project(name::AbstractString; process_delay::Real=0.0)
         :table;
         detect=file -> endswith(lowercase(file.filename), ".csv"),
         read=file -> CSV.read(file.filepath, DataFrame),
-        entries=(file, data) -> [DataItem(
-            kind=:table,
-            collection=["run"],
-            label=file.filename,
-            data=data,
-        )],
-        process=function (item)
+        collection=(_data, _metadata) -> ["run"],
+        label=(_data, metadata) -> metadata[:filename],
+        process=function (data, _metadata)
             process_delay > 0 && sleep(process_delay)
-            data = DataFrame(item.data)
-            data.sum = data.x .+ data.y
-            return DataItem(item, data)
+            processed = DataFrame(data)
+            processed.sum = data.x .+ data.y
+            return processed
         end,
-        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
+        analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => nrow(data)),
     )
     register_collection_analysis!(project, :table;
-        analyze=items -> Dict{Symbol,Any}(:members => length(items)),
+        analyze=(data, _metadata) -> Dict{Symbol,Any}(:members => length(data)),
     )
     register_plot!(project, :table; label="Sum",
         setup=(_ws, _items) -> (figure = Figure(); Axis(figure[1, 1]); figure),
@@ -154,16 +150,14 @@ end
     register_item!(project, :cycle;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> CSV.read(file.filepath, DataFrame),
-        entries=(file, data) -> [DataItem(
-            kind=:cycle,
-            collection=["run"],
-            label=file.filename,
-            metadata=Dict{Symbol,Any}(
-                :cycle => parse(Int, match(r"\d+", file.filename).match)),
+        entries=(data, metadata) -> [(
             data=data,
+            metadata=Dict{Symbol,Any}(
+                :cycle => parse(Int, match(r"\d+", metadata[:filename]).match)),
         )],
-        analyze=item -> Dict{Symbol,Any}(:rows => nrow(item.data)),
-        label=item -> "cycle $(item.metadata[:cycle])",
+        collection=(_data, _metadata) -> ["run"],
+        analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => nrow(data)),
+        label=(_data, metadata) -> "cycle $(metadata[:cycle])",
     )
     workspace = DataBrowser.open_workspace(
         project, test_source(project, dir); background_processing=true)

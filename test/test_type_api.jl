@@ -4,73 +4,99 @@ using GLMakie: Figure, Axis
 
 const MB = DataBrowser
 
-# A custom item via the type API: subtype AbstractDataItem, carry metadata as typed fields and the
-# data directly. The engine indexes it through the same contract the package's DataItem answers.
-struct Photo <: MB.AbstractDataItem
-    id::String
-    collection::Vector{String}
-    exposure::Float64
-    data::Matrix{Float64}
+struct PhotoSource <: DataBrowserAPI.AbstractDataSource
+    name::String
 end
-MB.id(p::Photo) = p.id
-MB.item_label(p::Photo) = "exp=$(p.exposure)"
-MB.kind(::Photo) = :photo
-MB.collection(p::Photo) = p.collection
-MB.metadata(p::Photo) = Dict{Symbol,Any}(:exposure => p.exposure)
-MB.item_data(p::Photo) = p.data
 
-@testset "type API: custom AbstractDataItem end to end" begin
-    dir = mktempdir()
-    write(joinpath(dir, "a.photo"), "2.0\n")
-    write(joinpath(dir, "b.photo"), "4.0\n")
+struct PhotoSourceItem <: DataBrowserAPI.AbstractDataSourceItem
+    key::String
+    exposure::Float64
+end
 
-    project = MB.define_project("Photos")
-    MB.register_item!(
-        project,
-        :photo;
-        detect=file -> endswith(file.filename, ".photo"),
-        read=file -> parse(Float64, strip(read(file.filepath, String))),
-        entries=function (file, exposure)
-            name = splitext(file.filename)[1]
-            return [Photo(file.filepath, [name], exposure, fill(exposure, 2, 2))]
-        end,
+DataBrowserAPI.source_id(source::PhotoSource) = source.name
+DataBrowserAPI.source_label(source::PhotoSource) = source.name
+DataBrowserAPI.source_items(::PhotoSource; kwargs...) = [
+    PhotoSourceItem("a.photo", 2.0),
+    PhotoSourceItem("b.photo", 4.0),
+]
+DataBrowserAPI.source_item_id(item::PhotoSourceItem) = item.key
+DataBrowserAPI.source_item_label(item::PhotoSourceItem) = item.key
+DataBrowserAPI.metadata(::PhotoSourceItem) = Dict(:camera => "typed camera", :gain => 1)
+
+struct Photo <: MB.AbstractDataItem
+    exposure::Float64
+    pixels::Matrix{Float64}
+    metadata::Dict{Symbol,Any}
+    collection::Vector{String}
+end
+
+MB.collection(photo::Photo) = photo.collection
+MB.metadata(photo::Photo) = photo.metadata
+
+function MB.process(photo::Photo)
+    return Photo(
+        photo.exposure,
+        photo.pixels .* photo.metadata[:gain],
+        photo.metadata,
+        photo.collection,
     )
+end
 
+MB.analyze(photo::Photo) =
+    Dict(:mean_intensity => sum(photo.pixels) / length(photo.pixels))
+
+function DataBrowserAPI.data_items(
+    ::DataBrowserAPI.Project,
+    ::PhotoSource,
+    source_item::PhotoSourceItem,
+)
+    return [Photo(
+        source_item.exposure,
+        fill(source_item.exposure, 2, 2),
+        merge(metadata(source_item), Dict(:exposure => source_item.exposure)),
+        ["micrographs"],
+    )]
+end
+
+@testset "type API preserves custom AbstractDataItem values" begin
+    project = MB.define_project("Photos")
     drawn_pixels = Ref(0)
-    MB.register_plot!(
-        project,
-        :photo;
+    MB.register_plot!(project, :Photo;
         label="Image",
-        setup=(ws, items) -> Figure(),
-        draw=function (ws, items, figure)
+        setup=(workspace, items) -> Figure(),
+        draw=function (workspace, items, figure)
             Axis(figure[1, 1])
-            for it in items
-                # The persistent boundary keeps the data, while the view receives the package item.
-                @test it isa MB.DataItem
-                drawn_pixels[] += length(MB.item_data(it))
-            end
+            @test all(item -> item isa Photo, items)
+            drawn_pixels[] += sum(length(item.pixels) for item in items)
             nothing
         end,
     )
 
-    # Scan: entries returns Photos; the engine derives records via the contract (no filepath needed
-    # on the item — it comes from the SourceFile) and frees the data-bearing items.
-    workspace = MB.open_workspace(project, test_source(project, dir); cache=false)
-    plot_kind = RegisteredPlot{:photo,Symbol("Image")}
+    workspace = MB.open_workspace(
+        project,
+        PhotoSource("typed photos");
+        cache=true,
+        background_processing=true,
+    )
+    plot_kind = RegisteredPlot{:Photo,Symbol("Image")}
     try
-        wait_workspace_idle!(workspace)
+        DataBrowserCore.Workspace.wait_workspace_idle!(workspace)
         records = DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy)
         @test length(records) == 2
-        @test all(r -> r.kind == :photo, records)
-        @test Set(r.metadata[:exposure] for r in records) == Set([2.0, 4.0])
-        @test all(r -> !isempty(r.collection), records)
+        @test all(record -> record.kind == :Photo, records)
+        @test all(record -> !isempty(record.id), records)
+        @test all(record -> record.item_label in ("a.photo", "b.photo"), records)
+        @test all(record -> record.collection == ["micrographs"], records)
 
-        # Plot: the bridge re-runs read+entries for the type API and matches items to records by
-        # id, so draw receives the Photos with item.data populated.
+        loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
+        @test all(item -> item isa Photo, loaded)
+        @test Set(item.exposure for item in loaded) == Set([2.0, 4.0])
+        @test all(item -> item.metadata[:camera] == "typed camera", loaded)
+
         figure = MB.setup_plot(workspace, plot_kind, records)
         @test figure isa Figure
         @test MB.plot_data!(workspace, plot_kind, records, figure) === nothing
-        @test drawn_pixels[] == 8   # two 2x2 matrices
+        @test drawn_pixels[] == 8
     finally
         MB.close_workspace!(workspace)
     end

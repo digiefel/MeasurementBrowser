@@ -22,6 +22,7 @@ import ..DataBrowserAPI:
     metadata,
     source_id,
     source_item_id,
+    source_item_label,
     source_item_path,
     source_item_timestamp,
     source_label,
@@ -167,68 +168,38 @@ function ItemRecord(
 end
 
 """
-The normal concrete item the package ships and `register_item!` produces: a loaded, data-bearing
-value handed to plot/view callbacks. It answers the `AbstractDataItem` contract from its own fields
-and carries its loaded data as `item.data`. A project that needs more subtypes `AbstractDataItem`
-directly instead, side by side with this type.
+Private carrier for ordinary data produced by `register_item!`.
 
-The engine materializes a `DataItem` from an internal `ItemRecord` plus loaded data at view time,
-sharing the record's `collection`/`metadata` so engine-computed metadata is already present.
-`ItemRecord` is never a field of a `DataItem`.
+Project callbacks do not construct or depend on this type.
 """
-struct DataItem <: AbstractDataItem
+struct RegisteredDataItem{D} <: AbstractDataItem
     id::String
     label::String
-    kind::Symbol
+    registration::Symbol
     collection::Vector{String}
-    metadata::Dict{Symbol,Any}
-    data::Any
+    data::D
+    metadata::MetadataDict
 end
 
-"""Materialize a loaded item from an internal record and its processed data."""
-DataItem(record::ItemRecord, data)::DataItem = DataItem(
+"""Reconstruct registered data from an internal record and persisted payload."""
+RegisteredDataItem(record::ItemRecord, data)::RegisteredDataItem = RegisteredDataItem(
     record.id,
     record.item_label,
     record.kind,
     record.collection,
-    record.metadata,
     data,
+    record.metadata,
 )
 
-"""Copy one `DataItem`, replacing only its data."""
-DataItem(item::DataItem, data)::DataItem = DataItem(
+"""Copy registered data while replacing only its payload."""
+RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = RegisteredDataItem(
     item.id,
     item.label,
-    item.kind,
+    item.registration,
     item.collection,
-    item.metadata,
     data,
+    item.metadata,
 )
-
-"""
-Construct a `DataItem` from an `entries` callback — the recipe API's per-item entry.
-
-A recipe supplies the metadata it knows: `kind`, `collection`, and optionally
-`label`/`metadata`/`id`. `data` carries the raw per-item data; an optional `process` callback
-can return another item before views receive it.
-"""
-function DataItem(;
-    kind::Symbol,
-    collection::AbstractVector{<:AbstractString},
-    label::AbstractString="",
-    metadata::Dict{Symbol,Any}=Dict{Symbol,Any}(),
-    data=nothing,
-    id::AbstractString="",
-)::DataItem
-    return DataItem(
-        String(id),
-        String(label),
-        kind,
-        String[String(segment) for segment in collection],
-        metadata,
-        data,
-    )
-end
 
 """
 Derive the internal `ItemRecord` from any item via the source and item contracts.
@@ -236,18 +207,17 @@ Derive the internal `ItemRecord` from any item via the source and item contracts
 function ItemRecord(
     item::AbstractDataItem;
     source_item::AbstractDataSourceItem,
+    id::AbstractString=id(item),
     kind::Symbol=kind(item),
     metadata=metadata(item),
 )::ItemRecord
     label = item_label(item)
-    title = isempty(label) ?
-        strip(join(filter(!isnothing, Any[source_item_timestamp(source_item), string(kind)]), " ")) :
-        String(label)
+    title = isempty(label) ? source_item_label(source_item) : String(label)
     return ItemRecord(;
         source_item_id=source_item_id(source_item),
         source_item_path=source_item_path(source_item),
         source_item_timestamp=source_item_timestamp(source_item),
-        id=id(item),
+        id,
         item_label=title,
         kind,
         collection=collection(item),
@@ -256,17 +226,17 @@ function ItemRecord(
     )
 end
 
-id(item::DataItem)::String = item.id
-item_label(item::DataItem)::String = item.label
-kind(item::DataItem)::Symbol = item.kind
-collection(item::DataItem)::Vector{String} = item.collection
-metadata(item::DataItem)::Dict{Symbol,Any} = item.metadata
-item_data(item::DataItem) = item.data
-fingerprint(item::DataItem) = nothing
+id(item::RegisteredDataItem)::String = item.id
+item_label(item::RegisteredDataItem)::String = item.label
+kind(item::RegisteredDataItem)::Symbol = item.registration
+collection(item::RegisteredDataItem)::Vector{String} = item.collection
+metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
+item_data(item::RegisteredDataItem) = item.data
+fingerprint(item::RegisteredDataItem) = nothing
 
 # The built-in item delegates to the payload trait: anything tabular is cacheable by default.
 # Type-API items opt in themselves.
-cacheable(item::DataItem)::Bool = cacheable_data(item.data)
+cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
 
 """
 One node in the collection hierarchy.
@@ -543,7 +513,7 @@ function effective_metadata(hierarchy::Hierarchy, record::ItemRecord)::MetadataD
     return effective
 end
 
-"""Materialize a record with the effective metadata consumed by project callbacks."""
+"""Materialize a record with its inherited collection metadata."""
 function effective_record(hierarchy::Hierarchy, record::ItemRecord)::ItemRecord
     return ItemRecord(record; metadata=effective_metadata(hierarchy, record))
 end

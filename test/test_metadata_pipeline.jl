@@ -14,38 +14,31 @@ function _pipeline_project(name::AbstractString; fail_process::Bool=false)
     MBP.register_item!(project, :cycle;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(count=[parse(Int, strip(read(file.filepath, String)))]),
-        entries=function (file, data)
-            cycle = parse(Int, match(r"\d+", file.filename).match)
-            return [MBP.DataItem(
-                kind=:cycle,
-                collection=["fatigue"],
-                label="cycle $cycle",
-                metadata=Dict{Symbol,Any}(:cycle => cycle),
-                data=data)]
+        entries=function (data, source_metadata)
+            cycle = parse(Int, match(r"\d+", source_metadata[:filename]).match)
+            return [(data=data, metadata=Dict{Symbol,Any}(:cycle => cycle))]
         end,
-        process=item -> MBP.DataItem(item, DataFrame(count=item.data.count)),
-        analyze=item -> Dict{Symbol,Any}(:events => item.data.count[1]),
+        collection=(data, metadata) -> ["fatigue"],
+        label=(data, metadata) -> "cycle $(metadata[:cycle])",
+        process=(data, metadata) -> DataFrame(count=data.count),
+        analyze=(data, metadata) -> Dict{Symbol,Any}(:events => data.count[1]),
     )
     MBP.register_collection_analysis!(project, :cycle;
-        process=function (items)
+        process=function (data, metadata)
             fail_process && error("collection process failed")
-            ordered = sort(items; by=it -> MBP.metadata(it)[:cycle])
+            order = sortperm(metadata; by=values -> values[:cycle])
             running = 0
-            outputs = MBP.AbstractDataItem[]
-            for it in ordered
-                running += it.data.count[1]
-                data = DataFrame(count=it.data.count, cumulative=[running])
-                push!(outputs, MBP.DataItem(
-                    kind=MBP.kind(it),
-                    collection=MBP.collection(it),
-                    label=MBP.item_label(it),
-                    metadata=merge(MBP.metadata(it), Dict{Symbol,Any}(:cumulative => running)),
-                    data=data,
-                    id=MBP.id(it)))
+            outputs = copy(data)
+            for position in order
+                running += data[position].count[1]
+                outputs[position] = DataFrame(
+                    count=data[position].count,
+                    cumulative=[running],
+                )
             end
             return outputs
         end,
-        analyze=items -> Dict{Symbol,Any}(:members => length(items)),
+        analyze=(data, metadata) -> Dict{Symbol,Any}(:members => length(data)),
     )
     return project
 end
@@ -71,18 +64,17 @@ end
         records = sort(
             DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
-        loaded = sort(loaded; by=item -> item.metadata[:cycle])
+        loaded_by_id = Dict(record.id => item for (record, item) in zip(records, loaded))
+        delivered = [DataBrowserCore.Workspace.delivered_metadata(workspace, record) for record in records]
 
-        # Item analyze put :events on each item; collection process pushed cumulative totals down
-        # and rewrote the data column — delivered items carry both.
-        @test [item.metadata[:events] for item in loaded] == [2, 3, 5]
-        @test [item.metadata[:cumulative] for item in loaded] == [2, 5, 10]
-        @test [item.data.cumulative[1] for item in loaded] == [2, 5, 10]
+        @test [values[:events] for values in delivered] == [2, 3, 5]
+        @test [MBP.item_data(loaded_by_id[record.id]).cumulative[1] for record in records] ==
+            [2, 5, 10]
 
         # Collection analyze landed on the collection node only, not on items.
         node = workspace.index.hierarchy.index[("fatigue",)]
         @test node.analysis[:members] == 3
-        @test all(item -> !haskey(item.metadata, :members), loaded)
+        @test all(values -> !haskey(values, :members), delivered)
 
         conflict = "metadata :events expected Int64, got Bool; value dropped"
         @test_logs (:warn, r"Workspace metadata conflict") begin
@@ -103,12 +95,12 @@ end
     MBP.register_item!(project, :cycle;
         detect=file -> endswith(file.filename, ".csv"),
         read=file -> DataFrame(count=[parse(Int, strip(read(file.filepath, String)))]),
-        entries=function (file, data)
-            cycle = parse(Int, match(r"\d+", file.filename).match)
-            return [MBP.DataItem(kind=:cycle, collection=["fatigue"],
-                metadata=Dict{Symbol,Any}(:cycle => cycle), data=data)]
+        entries=function (data, source_metadata)
+            cycle = parse(Int, match(r"\d+", source_metadata[:filename]).match)
+            return [(data=data, metadata=Dict{Symbol,Any}(:cycle => cycle))]
         end,
-        analyze=item -> Dict{Symbol,Any}(:events => item.data.count[1]),
+        collection=(data, metadata) -> ["fatigue"],
+        analyze=(data, metadata) -> Dict{Symbol,Any}(:events => data.count[1]),
     )
     workspace = MBP.open_workspace(
         project, test_source(project, dir); background_processing=true)
@@ -122,12 +114,12 @@ end
         MBP.register_item!(project, :cycle;
             detect=file -> endswith(file.filename, ".csv"),
             read=file -> DataFrame(count=[parse(Int, strip(read(file.filepath, String)))]),
-            entries=function (file, data)
-                cycle = parse(Int, match(r"\d+", file.filename).match)
-                return [MBP.DataItem(kind=:cycle, collection=["fatigue"],
-                    metadata=Dict{Symbol,Any}(:cycle => cycle), data=data)]
+            entries=function (data, source_metadata)
+                cycle = parse(Int, match(r"\d+", source_metadata[:filename]).match)
+                return [(data=data, metadata=Dict{Symbol,Any}(:cycle => cycle))]
             end,
-            analyze=item -> Dict{Symbol,Any}(:doubled => item.data.count[1] * 2),
+            collection=(data, metadata) -> ["fatigue"],
+            analyze=(data, metadata) -> Dict{Symbol,Any}(:doubled => data.count[1] * 2),
         )
         recomputed = DataBrowserCore.Workspace.run_item_analysis(workspace, record)
         lock(workspace.publish_lock) do
@@ -154,10 +146,7 @@ end
         records = sort(
             DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
-        loaded = sort(loaded; by=item -> item.metadata[:cycle])
-
-        @test [item.metadata[:cumulative] for item in loaded] == [2, 5, 10]
-        @test [item.data.cumulative[1] for item in loaded] == [2, 5, 10]
+        @test [MBP.item_data(item).cumulative[1] for item in loaded] == [2, 5, 10]
     finally
         MBP.close_workspace!(workspace)
     end
@@ -175,7 +164,7 @@ end
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         # The fold failed, so members deliver their :processed payloads (no cumulative column).
         @test length(loaded) == 2
-        @test all(item -> !hasproperty(item.data, :cumulative), loaded)
+        @test all(item -> !hasproperty(MBP.item_data(item), :cumulative), loaded)
         # The collection-process error is surfaced on the collection key.
         key = DataBrowserAPI.ItemIndex.collection_path_key(["fatigue"])
         @test haskey(workspace.index.analysis_errors, key)

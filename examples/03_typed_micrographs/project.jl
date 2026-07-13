@@ -1,5 +1,19 @@
 using DataBrowser
 using DelimitedFiles: readdlm
+import DataBrowser:
+    collection,
+    data_items,
+    fingerprint,
+    item_data,
+    item_label,
+    metadata,
+    process,
+    source_id,
+    source_item_id,
+    source_item_label,
+    source_item_path,
+    source_items,
+    source_label
 
 length(ARGS) == 1 || error("Usage: julia --project project.jl DATA_DIRECTORY")
 
@@ -43,7 +57,7 @@ metadata(image::Micrograph)::Dict{Symbol,Any} = Dict{Symbol,Any}(
 )
 item_data(image::Micrograph)::Matrix{Float32} = image.pixels
 
-function process(image::Micrograph, metadata::AbstractDict)::Micrograph
+function process(image::Micrograph)::Micrograph
     low, high = extrema(image.pixels)
     scale = high == low ? one(Float32) : high - low
     normalized = (image.pixels .- low) ./ scale
