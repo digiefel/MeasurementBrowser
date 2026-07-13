@@ -7,6 +7,17 @@ abstract type AbstractDataSource end
 abstract type AbstractDataSourceItem end
 
 """
+    metadata(value) -> Dict
+
+Return metadata supplied directly by `value`. It does not include metadata supplied by source
+items or collections around that value.
+"""
+function metadata end
+
+"""Return metadata supplied directly by a source item. The default is an empty `Dict`."""
+metadata(::AbstractDataSourceItem)::Dict = Dict()
+
+"""
 One source-owned change batch.
 
 Sources report physical source-item replacements/removals and source-provided metadata changes

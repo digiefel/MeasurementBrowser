@@ -3,26 +3,29 @@ abstract type AbstractDataItem end
 """Nestable container an item is placed in. Future home for collection behaviour."""
 abstract type AbstractCollection end
 
-"""Stable string identity of an item."""
-function id end
+"""Stable identity of an item. An empty value lets DataBrowser assign one."""
+id(::AbstractDataItem) = ""
 
-"""Human-readable label for an item."""
-function item_label end
+"""Human-readable label for an item. An empty value uses a source-derived label."""
+item_label(::AbstractDataItem)::String = ""
 
-"""The kind symbol the plot registry is keyed on."""
-function kind end
+"""Internal item category. Custom item types default to their type name."""
+kind(item::AbstractDataItem)::Symbol = Symbol(nameof(typeof(item)))
 
-"""Canonical tree placement of an item, as nested collection names (`Vector{String}`)."""
-function collection end
+"""Return an item's collection path."""
+collection(::AbstractDataItem) = String[]
 
-"""Metadata of an item (`Dict{Symbol,Any}`): parsed parameters, computed values, provenance merged."""
-function metadata end
+"""Return metadata supplied directly by a data item. The default is an empty `Dict`."""
+metadata(::AbstractDataItem)::Dict = Dict()
 
-"""The materialized data carried by an item (also reachable as `item.data`)."""
-function item_data end
+"""The data represented by an item. A custom item is its own data by default."""
+item_data(item::AbstractDataItem) = item
 
-"""Process an item into the item a view consumes. Optional; default identity."""
+"""Process an item. Optional; default identity."""
 process(item::AbstractDataItem) = item
+
+"""Analyze a processed item into additional metadata. Optional; default empty `Dict`."""
+analyze(::AbstractDataItem)::Dict = Dict()
 
 """Whether an item's data should be persisted by the data cache. Optional; default `false`."""
 cacheable(::AbstractDataItem)::Bool = false
@@ -30,8 +33,7 @@ cacheable(::AbstractDataItem)::Bool = false
 """
 Whether a payload value can be stored natively by the data cache. Tables are first-class: by
 default anything implementing the Tables.jl interface is cacheable, and the cache still requires
-storable column types at write time. A type can opt out (or a non-tabular type opt in) by
-dispatch. The built-in `DataItem` answers `cacheable` through this trait.
+storable column types at write time. A type can opt out (or a non-tabular type opt in) by dispatch.
 """
 cacheable_data(data)::Bool = Tables.istable(data)
 

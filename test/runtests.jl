@@ -3,6 +3,7 @@ using DataBrowserAPI
 using DataBrowserCache
 using DataBrowserCore
 using DataBrowserGUI
+using DataBrowserSources
 
 const TEST_CACHE_DEPOT = mktempdir()
 pushfirst!(DEPOT_PATH, TEST_CACHE_DEPOT)
@@ -20,6 +21,7 @@ include("test_project.jl")
     include("test_scan_profile.jl")
     include("test_wide_cache.jl")
     include("test_metadata_pipeline.jl")
+    include("test_metadata_contract.jl")
     include("test_event_driven_workspace.jl")
     include("test_profiling.jl")
     include("test_registry_plot.jl")

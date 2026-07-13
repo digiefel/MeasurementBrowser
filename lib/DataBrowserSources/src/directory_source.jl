@@ -14,6 +14,7 @@ import DataBrowserAPI:
     collection_metadata,
     fingerprint,
     has_collection_metadata,
+    metadata,
     open_source,
     source_id,
     source_item_id,
@@ -88,6 +89,11 @@ source_item_label(file::SourceFile)::String = file.filename
 fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
 source_item_path(file::SourceFile)::String = file.filepath
 source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
+function metadata(file::SourceFile)::Dict
+    values = Dict{Symbol,Any}(:filename => file.filename)
+    file.timestamp === nothing || (values[:timestamp] = file.timestamp)
+    return values
+end
 
 source_id(source::DirectorySource)::String = source.root_path
 source_label(source::DirectorySource)::String = basename(source.root_path)
