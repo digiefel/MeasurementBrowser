@@ -161,9 +161,11 @@ fit, annotate, export) — intent, not pixels. An **annotation** is user-authore
 (arrow, region, fit label, text). A tag describes an item; an arrow describes a figure. These are
 detailed in §8.
 
-A note on the registration API: `define_project` / `register_*` is *one convenient way* to hand the
-system callbacks — a shallow entry point, not the center of the model. The center is the workspace and
-the commands over it.
+A note on the registration API: `define_project` / `register_*` is one convenient way to describe a
+data pipeline with ordinary values and functions. Its reader is the only required callback; identity,
+labels, collection placement, metadata, processing, and analysis have useful defaults. The type API
+is the fundamental layer for packages that model sources and items directly with multiple dispatch.
+Both paths drive the same workspace and commands.
 
 ### Scriptable shape (illustrative)
 
@@ -242,25 +244,28 @@ phasing.
 
 ## 7. Registration and Callback Model
 
-Callbacks remain important, but they are a way to define behavior inside the broader workspace system,
-not the whole model.
+The registration API defines named or default pipelines over ordinary Julia data. `read` performs
+the per-source-item interpretation once and returns either one data value, one `DataItem`, or
+several data items. `DataItem` construction supplies cheap sibling identity, labels, collection placement,
+and metadata at the same time data is split. Deferred `process` and `analyze` callbacks receive data
+and effective metadata. A registration name provides stable replacement and associates extension or
+collection operations. It is not stored as a property of the user's data.
 
-The registration API lets users and packages register loaders, processors, visualizers, commands,
-inspectors, and UI windows. A callback can create data, transform data, render views, or respond to
-user actions. It runs in the context of a workspace (the engine passes the workspace in); it is owned
-by the project's definitions. Project code should stay close to natural scripts — identify items, load
-data, compute results, define domain views — and should not manage cache files, UI state, background
-jobs, or package lifecycle.
+The type API models `AbstractDataSource`, `AbstractDataSourceItem`, and `AbstractDataItem` values
+directly. Concrete item types survive materialization, processing, and visualization. Their behavior
+comes from multiple dispatch, and item methods have defaults for source-derived identity, labels,
+collections, empty metadata, identity processing, and source-backed storage.
+
+Project code stays close to natural scripts: identify data, load it, compute results, and define
+domain views. The workspace owns cache files, UI state, background jobs, and package lifecycle.
 
 Callbacks need not be serializable. The system records what it can: callback name, package origin,
 signature or declared capability, input data, parameters, outputs, logs, errors, cache keys, and
 package version.
 
-Registration should be simple: write a Julia function and register it without learning a framework.
-Richer metadata is optional and may be eventually encouraged for package authors — a minimal 
-callback works; a better one declares accepted input types, produced types, parameter schema, 
-cache behavior, visualizer compatibility, and documentation; a fully packaged extension adds tests,
-examples, UI metadata, and reproducibility information.
+Registration remains simple: one reader is a complete pipeline. Additional callbacks express only
+the stages the data requires. Packages can instead expose their own constructors and project APIs over
+the type layer, including domain-specific configuration and concrete item types.
 
 Python callbacks are supported where realistic, especially for loading and processing. Python
 visualizers may return supported data structures, plot specifications, or Makie-compatible objects via

@@ -47,7 +47,7 @@ Directory sources are watched continuously.
 | Panel | Role |
 |---|---|
 | Hierarchy tree | Multi-select tree, primary navigation. |
-| Plot Area | Main plot window with plot-kind chooser, Live toggle, Detach, Export, and Help. |
+| Plot Area | Main plot window with visualizer chooser, Live toggle, Detach, Export, and Help. |
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance and multi-select. |
 | Table Plot (DBPlots) | Independent X/Y plot over the workspace selection's merged table; toggled from the Plot menu. |
@@ -99,19 +99,22 @@ rendering, so browser state never keeps a second copy of item records. The main 
 plots use the same type and the same rendering path.
 
 When a plot view no longer owns a visible figure — closed detached window, empty selection, invalid
-plot kind, or draw failure — the browser destroys its embedded Makie screen instead of only dropping
+plot selection, or draw failure — the browser destroys its embedded Makie screen instead of only dropping
 the `Figure` reference. This keeps old scene graphs and OpenGL render resources from accumulating
 while browsing.
 
-One render materializes its selection once. The same processed item objects are passed to plot setup
-and drawing; the resulting Makie figure owns the plotted values for that plot state. There is no
-package-level object LRU and no separate debug-plot path.
+One render materializes its selection once. Registration plots receive parallel processed-data and
+metadata vectors; type-based plots receive the concrete processed item values. The resulting Makie
+figure owns the plotted values for that plot state. There is no package-level object LRU and no
+separate debug-plot path.
 
-Each plot window owns its plot kind and Live setting. The main plot starts with Live enabled, so it follows the browser selection. Detached plot windows start with Live disabled, so they keep the items they were created with unless the user enables Live in that window.
+Each plot window owns its plot selection and Live setting. The main plot starts with Live enabled, so
+it follows the browser selection. Detached plot windows start with Live disabled, so they keep the
+items they were created with unless the user enables Live in that window.
 
-While the app runs, plot choices are stored as `item kind => plot type`. Project-local
-persistence writes the type names to `databrowser.toml`. When the main Live plot sees one
-item kind, it restores that kind's last plot choice.
+While the app runs, plot choices are stored by registration identity or concrete data-item type.
+Project-local persistence writes the selected plot names to `databrowser.toml`. The main Live plot
+restores the last plot choice associated with the selected data.
 
 ## Context menus (right-click)
 
@@ -196,10 +199,10 @@ The Table Inspector shows data in two modes, both rendered through the same `Dat
 - The inspector only shows tables. Plotting columns lives in the separate Table Plot window
   (DBPlots), an independent visualizer over the same workspace selection.
 
-**Column width persistence (item mode)**: The DataGrid is called with a per-kind `id` —
-`string(kind)` for a single-kind selection, `"mixed"` when multiple kinds are selected. ImGui
-keys `[Table]` entries in the ini file by that id, so column widths are stored and restored
-per kind globally across restarts. There is no toml layer for column widths.
+**Column width persistence (item mode)**: The DataGrid uses the registration identity or concrete
+item type for a uniform selection and `"mixed"` for a heterogeneous selection. ImGui keys `[Table]`
+entries by that value, so column widths are stored and restored for compatible data across restarts.
+There is no toml layer for column widths.
 
 **Secondary raw-file mode**: `Inspect → Table Inspector` exposes the path bar, `Live` checkbox,
 `Open...`, and `Reload` controls for inspecting arbitrary delimited files. The full file is

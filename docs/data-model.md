@@ -1,208 +1,119 @@
 # Data Model
 
-The model has three core source/data layers and one internal record, in increasing specificity:
+DataBrowser separates physical discovery from logical data:
+
+```mermaid
+flowchart LR
+    source["AbstractDataSource<br/>dataset, directory, query, stream"]
+    source_item["AbstractDataSourceItem<br/>file, row, run, channel"]
+    data_item["AbstractDataItem or registered data<br/>table, spectrum, image, model"]
+    source -->|discovers| source_item
+    source_item -->|interprets into zero, one, or many| data_item
+```
+
+A source item is the unit of scanning, invalidation, progress, and source errors. A data item is the
+unit users browse, select, inspect, process, and visualize. One file can contain one table, several
+measurement cycles, or no recognized data at all.
+
+## Two project styles
+
+The registration API produces logical items from ordinary data. DataBrowser supplies identity,
+labels, collection placement, and empty metadata when callbacks omit them.
+
+The type API returns concrete `AbstractDataItem` values from `data_items`. Their Julia types remain
+intact, so processing and visualization can use multiple dispatch.
+
+```mermaid
+flowchart TB
+    registration["register_item!<br/>ordinary data callbacks"] --> workspace["Workspace pipeline"]
+    typed["data_items<br/>concrete AbstractDataItem values"] --> workspace
+    workspace --> index["Browse and query metadata"]
+    workspace --> materialize["Materialize selected data"]
+    materialize --> views["Inspect and visualize"]
+```
+
+## Identity
+
+Workspace identity is assembled from stable parts:
 
 ```text
-AbstractDataSource      → owns lifecycle + discovery               (a dataset root, DB query, stream)
-AbstractDataSourceItem  → one discovered unit                      (a file, row, run id, channel)
-AbstractDataItem        → one logical browsable item               (what you index/select/plot)
-ItemRecord              → internal, data-less index/cache record   (never seen by source/project code)
+source identity
+  + source-item identity
+  + registration identity or concrete item type
+  + sibling identity when one source item expands into several items
 ```
 
-`DataSources/DirectorySource.jl` defines the built-in file-backed source item (`SourceFile`).
-`DataBrowserAPI.ItemIndex` defines the internal `ItemRecord`, the concrete `DataItem`, and the collection hierarchy.
-The project-facing API is in [api.md](api.md); the design rationale is in
-[plans/data-model-generalization.md](plans/data-model-generalization.md).
+The common one-source-item-to-one-data-item case requires no explicit item identity. When a source
+item expands into several logical items, DataBrowser uses their returned positions by default. An
+entry supplies an explicit id when its sibling order can change. Stable explicit ids keep selection,
+annotations, saved views, and cached results attached when siblings are inserted or reordered.
 
-## Source item vs. data item
+A registration name such as `:cycles` identifies the registered pipeline. It is not a property of
+the data and does not replace the concrete type of a typed item.
 
-A **source item** is one addressable thing a source discovers — the unit of scan progress, failure
-reporting, and invalidation. A **data item** is one logical browsable object. The mapping is
-one-to-many: `data_items(project, source, source_item)` interprets a single unit into zero, one, or
-many data items. A `SourceFile` is a source item; the items a project reads out of it are data items.
+## Labels and collections
 
-## Two representations: record vs. item
-
-Metadata and data live in two forms, bridged by the engine via the `AbstractDataItem` contract:
-
-- **`ItemRecord`** — the **internal**, data-less metadata record the hierarchy, scan, and cache store.
-  Source and project code never construct or name it.
-- **`AbstractDataItem`** instances — what callbacks and views see: the package's `DataItem` or a
-  source's own subtype. They carry interpreted data into the work graph and processed data into
-  views. Later selections materialize the processed stage from DuckDB or repeat the required
-  interpreted/processing work through the normal source path.
+An item label is its user-facing title. A collection is its canonical path in the browser hierarchy:
 
 ```julia
-abstract type AbstractDataItem end   # contract: id, item_label, kind, collection, metadata,
-                                     # item_data (+ optional process, cacheable, item_fingerprint)
-
-struct DataItem <: AbstractDataItem  # the normal item; the recipe API's `entries` produces it
-    id::String
-    label::String
-    kind::Symbol
-    collection::Vector{String}
-    metadata::Dict{Symbol,Any}       # one dict: parsed parameters + computed values, provenance merged
-    data::Any                        # loaded item data, reachable as `item.data`
-end
-
-struct ItemRecord                    # internal metadata record (never seen by source/project code)
-    # source-item identity — which discovered unit produced this, and how to reload it
-    source_item_id::String
-    source_item_path::Union{String,Nothing}
-    source_item_timestamp::Union{DateTime,Nothing}
-    # logical item identity + metadata
-    id::String                         # stable within its source
-    item_label::String
-    kind::Symbol
-    collection::Vector{String}       # ["RuO2test", "A9", "VI", "D1"] — canonical tree placement
-    metadata::Dict{Symbol,Any}       # the entries layer: metadata from interpreting this item
-    item_fingerprint::Any            # nothing → item data not persistently cacheable
-end
+["Chip A9", "Device D1", "IV"]
 ```
 
-An item carries **one `metadata` dict**. Internally the engine tracks provenance in layers — the
-entries layer (`ItemRecord.metadata`, written at interpretation and restored on reload), inherited
-collection metadata, and the computed layers from item `analyze` and collection `process` — but
-project code only ever sees the merged result. Delivery is one unconditional merge: inherited
-collection metadata ⊕ entries ⊕ computed layers, deeper/newer wins.
+Registration readers can compute both while constructing a `DataItem`. Typed items implement
+`item_label` or `collection` only when the source-derived defaults are not appropriate.
 
-Source-*level* identity (`source_id`, `source_label`) is **not** copied onto every record — it lives
-once on the `SourceScan`. A record carries only the source-*item* identity it needs to be reloaded.
+Collections have variable depth. The last path segment is the leaf containing the item; preceding
+segments are ordinary parent collections. Code does not assign fixed meaning to a particular depth.
 
-## Scan Result
+## Metadata
 
-The completed scan is source-neutral. It stores source-level identity once and the hierarchy of
-`ItemRecord`s. No records are stored on the public `SourceFile`:
+Metadata is a `Symbol`-keyed dictionary of scalar or homogeneous vector values suitable for display,
+filtering, and queries. It is built in layers:
 
-```julia
-struct SourceScan                     # the result of one full scan, source-neutral
-    source_id::String
-    source_label::String
-    hierarchy::Hierarchy
-    analysis_failures::Vector{ItemFailure}
-end
+```mermaid
+flowchart TB
+    entry["DataItem metadata"] --> merge1["Merge"]
+    inherited["Inherited collection metadata"] --> merge1
+    merge1 --> process["Process input"]
+    process --> analysis["Item analysis"]
+    analysis --> effective["Effective item metadata"]
 ```
 
-Source-item fingerprints (for reopen invalidation) live only in the cache `source_items` table.
-`scan_source!` loads them directly at reopen; a memory-only cache holds none, so every discovered
-item re-interprets. Collection-metadata freshness at reopen diffs cached `source_collection_metadata` against current
-`collection_metadata(source, path)` for each hierarchy path.
+More specific and later layers win on key conflicts. Processing receives the effective metadata
+available before item analysis. Views receive processed data and the final effective metadata.
 
-## Hierarchy
+Collection analysis produces metadata for the collection node itself. Collection processing returns
+one rewritten data value per member and can use metadata from every member.
 
-Records organize into a tree by their `collection::Vector{String}`. Each node keeps two dicts: the
-source-provided `metadata` (re-applied wholesale on source updates) and the `analysis` output of
-collection `analyze` (filled by workspace background analysis). The GUI shows them merged:
+## Data pipeline
 
-```julia
-struct HierarchyNode
-    name::String                       # one path segment
-    kind::Symbol                       # :root | :level (intermediate) | :leaf (last segment)
-    metadata::Dict{Symbol,Any}         # effective source-provided collection metadata at this node
-    children::Vector{HierarchyNode}
-    items::Vector{ItemRecord}          # records, populated only on :leaf nodes
-    analysis::Dict{Symbol,Any}         # collection `analyze` output for this node
-end
+The item pipeline is deterministic and shared by both project styles:
 
-struct Hierarchy
-    root::HierarchyNode
-    all_items::Vector{ItemRecord}
-    source_id::String
-    index::Dict{Tuple{Vararg{String}}, HierarchyNode}   # path tuple → node
-    has_collection_metadata::Bool
-    skipped_count::Int
-end
+```mermaid
+flowchart TB
+    interpret["Interpret"] --> process["Item process"]
+    process --> analyze["Item analyze"]
+    analyze --> collection_process["Collection process"]
+    collection_process --> collection_analyze["Collection analyze"]
+    collection_analyze --> deliver["Deliver to views"]
 ```
 
-## Variable hierarchy depth
+Each stage receives the output of the preceding stage. Recomputing a stage replaces its previous
+output. Sibling items may execute concurrently, so callbacks treat shared input data as read-only.
 
-Depth is **not** uniform. One branch may be `RuO2test/A9/VI/D1` (4 segments) while another is
-`RuO2test_A10/VI/25um/D1` (also 4) and another could be 3 or 5. Don't assign semantic meaning to a
-fixed depth.
+## Data and caching
 
-- All items attach at `:leaf` nodes (the last segment).
-- Intermediate nodes are `:level`.
-- A leaf is **the last segment of its path**, not "depth N from root."
+Registration data implementing the Tables.jl interface is persisted natively when its column types
+are supported. Other registration data remains available through the source and in-memory pipeline.
 
-## Identity / path keys
+Typed items are source-backed and recreated through `data_items` when selected. Domain sources may
+own their own loading cache. Cache policy changes how DataBrowser obtains a value; it does not change
+the value delivered to processing or visualization.
 
-An item's `collection::Vector{String}` is its canonical placement. Two equivalent representations:
+## Live changes
 
-- **Tuple** (used for `index` lookup): `("RuO2test", "A9", "VI", "D1")`.
-- **String** (used in on-disk files): `"RuO2test/A9/VI/D1"` — built by `collection_path_key(collection)`.
-- **Round-trip**: `collection_path_tuple("RuO2test/A9/VI/D1")` parses and validates the string form.
+Sources report additions, changes, removals, and metadata updates. The workspace invalidates only the
+affected downstream work and keeps stable selections and views attached by identity. Re-running a
+registration replaces its callbacks and recomputes the results owned by that registration.
 
-The slash-joined string is the canonical identifier in any stored metadata. New metadata systems
-should reuse it.
-
-## Collection metadata
-
-Sources may provide collection metadata for a collection path through
-`collection_metadata(source, collection_path)`. The hierarchy owns inheritance: parent collection
-metadata flows to child nodes. `ItemRecord.metadata` stores only the item's entries layer. The
-workspace materializes each item's effective metadata by merging the containing hierarchy node with
-the item-local values; item values win on key conflicts.
-
-For `DirectorySource`, `metadata.txt` rows are keyed by slash-joined collection path fragments. The
-source owns loading, watching, parsing, and excluding that configured file from source discovery.
-Metadata changes re-merge effective item inputs without reinterpreting unchanged source files. The
-on-disk format is documented in [storage.md](storage.md).
-
-## The metadata pipeline
-
-Each item runs a fixed staged pipeline, each stage fed the previous output:
-
-```text
-entries → item process → item analyze → collection process → collection analyze
-```
-
-`entries` seeds the item's initial metadata and data. `process` may change per-item data or metadata.
-`analyze` returns a dict merged over the item's computed layer (new keys win). The collection stages
-are gated on every member of a registered kind finishing its item stages, and group by collection
-path plus registered kind:
-
-- **collection `process`** is the down-flow: it rewrites each member (one output per input, same ids),
-  overwriting per-item data or metadata for the whole collection. Returning the same `data` object
-  skips the payload rewrite, so metadata-only recipes cost nothing extra.
-- **collection `analyze`** folds the post-process members into one dict attached to the collection
-  node's `analysis` only. It does not flow down to items.
-
-Re-running a stage replaces that stage's previous output; the internal layering keeps stale keys from
-accumulating.
-
-## Freshness
-
-Freshness comes from source data only. In-session it is event-driven: a source upsert/removal or a
-collection-metadata change propagates through the work graph, bumping the affected keys' revisions
-(plain per-key counters) and re-marking their results stale; recompute overwrites the stored rows.
-At reopen the same mechanism replays from a source-fingerprint diff — the scan compares per-source-item
-fingerprints and the source's collection-metadata fingerprints against the stored `SourceScan`, and
-marks the subtrees downstream of anything changed. A result's validity is derived from its position
-downstream of unchanged sources, not from a stored per-result claim. Callback code is not tracked yet:
-an edited callback leaves stale stored results until the next recompute or rebuild.
-
-## Virtual item expansion
-
-A single source item may yield several data items when `data_items` returns more than one. They share
-a source-item identity but must have distinct `id` values within the source. The recipe API mints
-missing ids from the source-item path, kind, and the `metadata` that distinguishes siblings.
-
-The source item is read once for the expansion. Its children enter the workspace work graph and may
-run on different scheduler threads. A child may carry a view into the parsed data instead of a copy;
-the package keeps the interpreted parent alive until processing finishes. Because siblings may run
-concurrently, overlapping views must be treated as read-only. Payloads restored from the cache are
-independent values, rebuilt as the container type they were stored with.
-
-Expansion is purely a source/project concern. For example, a source may split a multi-device sweep
-into one item per device, or expand a fatigue file into one item per cycle (storing the cycle number
-in `metadata`).
-
-Item kinds and discovery rules belong to source/project implementations. The package stores the
-resulting `Symbol` (`kind`) without assigning it project-specific meaning.
-
-## Direct I-V data
-
-DC current-voltage measurements use `:i` for current in amperes and `:v` for voltage in volts.
-Voltage-driven sweeps, four-terminal measurements, breakdown measurements, and their visualizers
-share these names so the same data can be reused across compatible views.
-</content>
+The full method and callback reference is in [api.md](api.md).

@@ -8,3 +8,4 @@ test/*
 !test/fixtures/annotations/
 !test/fixtures/annotations/**
 imgui.ini
+docs/build/

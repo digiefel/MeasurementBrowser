@@ -249,7 +249,7 @@ The fixed DuckDB stores are:
 - `wide_columns` — the registry naming each wide table's columns and their logical type;
 - `item_failures` — source interpretation and logical-item failures published with the index;
 - `result_states` — independent processing, item-analysis, collection-process, and collection-analysis
-  outcomes;
+  outcomes keyed by registration identity or concrete item type;
 - `item_data` — pointers to cacheable processed payloads, keyed by `(item_key, stage)`;
 - `dataframe_schemas` — the ordered user-column names belonging to each payload shape;
 - per-shape payload tables — native rows of processed tabular payloads.
@@ -279,8 +279,8 @@ resets them. Payloads are keyed by `(item_key, stage)`, where the stage is eithe
 
 Successful empty analysis produces no metadata rows, so absence of metadata cannot mean "not
 computed." `result_states` therefore records processing, item-analysis, collection-process, and
-collection-analysis outcomes (success — including empty — or failure), each as `(kind, entity, status,
-message)`. Non-cacheable processed success remains memory-only.
+collection-analysis outcomes (success — including empty — or failure), each as
+`(pipeline_identity, entity, status, message)`. Source-backed typed-item success remains memory-only.
 
 `result_states` carries no per-result input fingerprint: a result's validity is derived from its
 position downstream of unchanged sources, not from a stored claim. At reopen the cache index

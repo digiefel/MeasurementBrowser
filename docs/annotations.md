@@ -7,14 +7,14 @@ cache data, browser state, and annotations drawn on figures.
 ## Purpose
 
 The implementation is the path-dependency package
-[src/Annotations/](../src/Annotations/). Each namespace reads or writes one focused source-root
+[`DataBrowserAnnotations`](../lib/DataBrowserAnnotations/). Each namespace reads or writes one focused source-root
 format. Path keys are
 slash-joined strings such as `"RuO2test/A9/VI/D1"`, shared with the rest of the package through
 `collection_path_key`.
 
 ## Current API
 
-Code imports `Annotations` and uses four namespaces:
+Code imports `DataBrowserAnnotations` and uses four namespaces:
 
 | API | Purpose |
 |---|---|
@@ -77,4 +77,4 @@ supplies the ancestor list.
 Neither module rewrites stored state when it inherits — assignments and note bodies stay anchored to the path they were authored against.
 
 See [storage.md](storage.md) for file formats and
-[data-model.md](data-model.md#identity--path-keys) for path-key conventions.
+[data-model.md](data-model.md#identity) for identity conventions.

@@ -41,7 +41,7 @@ structured event stream for normal use.
 Keep the parts that help diagnose user/project code:
 
 - Per-source-item scan rows: `detect`, `read`, `entries`, item count, total time, and thread ids.
-- Per-kind scan summaries.
+- Per-registration and concrete-type scan summaries.
 - Plot redraw phase rows: materialize/load, setup, draw, and total, with allocations.
 - A bounded history of recent timing/allocation samples.
 - Julia CPU sampling for an explicit user-triggered diagnostic run.

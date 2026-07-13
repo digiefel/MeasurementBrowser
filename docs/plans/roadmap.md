@@ -5,37 +5,20 @@ entangled — to the `DataBrowser` family in [../vision.md](../vision.md): a scr
 agent-ready scientific toolkit. Stages run roughly in order; each lists what it delivers and when it
 is done. Near-term stages are concrete; later ones are directional and get detailed as they approach.
 
-## Stage 1 — Split into the DataBrowser family
+## Stage 1 — Public foundation
 
-Break the monolith into the functional family in [../vision.md](../vision.md) §6 —
-`DataBrowserAPI · Sources · Cache · Core · Plots · GUI`, the leaves `DataBrowserProfiling` and
-`DataBrowserAnnotations`, and the `DataBrowser` umbrella. The payoff: the engine builds and tests
-without the GLMakie/CImGui stack, and every package edge lands where extensions plug in.
+The functional package family is in place: `DataBrowserAPI · Sources · Cache · Core · Plots · GUI`,
+the Profiling and Annotations leaves, and the `DataBrowser` umbrella. Core loads headlessly without
+the GUI or Makie stack, Cache is below Core, and Plots extends the GUI host.
 
-Do it by **extracting one real, finally-named package at a time**, bottom-up (leaves first), each
-wired back into the shrinking main package through `[sources]` path deps so the whole thing keeps
-compiling and testing at every step. Naming is part of extraction, not a later pass: each package
-lands as `DataBrowser*` with its real boundary, so every step is reviewable on its own terms — "does
-`DataBrowserCache` hold the right things and depend on the right things?" — instead of as a reshuffle
-under the old names. There is no separate rename phase: once everything else has been lifted out,
-the residual umbrella module is `DataBrowser`.
+The public data foundation has two paths described in [../api.md](../api.md): ordinary-data
+registration pipelines and concrete type-based sources/items. Both paths share one workspace engine,
+identity model, metadata pipeline, and cache.
 
-The order, leaves first, is Profiling → API → Annotations → Sources → Cache → Core → GUI → Plots →
-umbrella-rename, with the cross-cutting rules enforced at the step that owns them (payload-agnostic API
-when API is cut, cache-on-project when Cache is cut, workspace-as-context when Core is cut,
-GUI-extension registration when GUI is cut). The file-by-file mapping, per-package deps, and the
-keep-it-green procedure live in [package-split.md](package-split.md); the corrected GUI/Plots boundary
-lives in [gui-extension-architecture.md](gui-extension-architecture.md).
-
-Residual from the split, executed on the `cache-flip` branch: the Cache edge is flipped.
-`DataBrowserCache` is a real package depending only on API, Profiling, and its storage backend;
-`DataBrowserCore` depends on it, and `ItemIndex` lives in `DataBrowserAPI`. Execution plan:
-[cache-flip.md](cache-flip.md).
-
-- *Done when:* `DataBrowserCore` loads and tests headless with no GLMakie/CImGui; the GUI loads on top
-  via the umbrella; a domain package can register loaders/plots against `DataBrowserAPI` without
-  touching engine internals; a cache built in one session is reused by the next; and `bench/` depends
-  on Core alone (the `MB_BENCH_ENGINE_ONLY` branch is deleted).
+- *Done when:* the four projects under [`examples/`](../../examples/README.md) execute through the
+  documented public API; custom item types remain intact through processing and visualization;
+  registration replacement works under Revise; and no public callback receives internal index,
+  cache, scheduler, or browser values.
 
 ## Stage 2 — Generic plotter and the window registry
 
@@ -44,8 +27,26 @@ visualizers for Core-supported data shapes in `DataBrowserGUI`, then build the M
 in `DataBrowserPlots` (1-D signals, multiple traces, 2-D arrays, images, collections, scalar metadata,
 nested structures, enhanced table plots, Makie figures) as a default GUI extension. Stand up the GUI
 **window registry** — the public surface external packages add their own windows through.
+
+Add a global pipeline-stage control for inspecting how the selected data changes through the project.
+It is a view control: moving it changes what the browser displays without rewinding or invalidating
+the workspace. The minimum path is **Source → Loaded → Items**. Optional positions appear when the
+project defines them: **Processed → Analyzed → Collection processed → Collection analyzed**. Missing
+positions are skipped, giving three to seven meaningful stops rather than exposing internal work
+states. The Items position also shows the results of `label`, `collection`, and `id`; those cheap
+descriptions are not separate stops.
+
+Moving backwards coalesces sibling items into their shared loaded value and source. Moving into
+collection positions groups selected items by collection. Analysis positions show the metadata added
+at that point alongside the unchanged data. Intermediate values use generic inspectors when a custom
+visualizer only supports the final form. Results come from the existing cache where available;
+`read` and `entries` become separately observable internal results, with bounded in-memory retention
+for values that are not persisted.
+
 - *Done when:* common exploration works with no custom draw functions, DBPlots is registered through
-  the same public surface an external package would use, and `DataBrowserGUI` can load without GLMakie.
+  the same public surface an external package would use, `DataBrowserGUI` can load without GLMakie,
+  and moving the pipeline-stage control gives responsive access to every meaningful result available
+  for the current selection without rerunning work that is still cached.
 
 ## Stage 3 — Command unification
 

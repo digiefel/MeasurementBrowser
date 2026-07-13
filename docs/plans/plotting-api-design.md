@@ -1,60 +1,42 @@
-# Plotting API Design
+# Figure Composition and Workflows
 
-## Purpose
-
-Project code describes how one plot is laid out and how processed items are drawn. The package owns
-selection, materialization, plot windows, composition, and export; the GUI shell owns browser
-lifecycle and hosts the registered plot windows.
-
-```julia
-register_plot!(project, :iv;
-    label="I-V",
-    setup=(workspace, items) -> Figure(),
-    draw=(workspace, items, figure) -> draw_iv!(figure, items),
-)
-```
-
-`setup` returns the Makie `Figure`. `draw` fills that figure and returns `nothing`. Both callbacks
-receive processed `AbstractDataItem`s whose data is available through `item_data(item)` or
-`item.data` for `DataItem`.
+The public plot callback contracts are defined in [../api.md](../api.md). A registration plot
+receives processed data and effective metadata; a type-based plot receives concrete
+`AbstractDataItem` values. This plan owns composition above those units.
 
 ## Ownership
 
-| Package owns | Plot callback owns |
-|---|---|
-| resolving stable selection ids | figure layout required by that plot |
-| loading or producing processed items | axes, legends, labels, and series |
-| materializing the selection once | interpreting the selected item's domain data |
-| main and detached plot windows | drawing into the supplied figure |
-| Live selection behavior | project-specific visual meaning |
-| export and error presentation | clear callback failures |
+DataBrowser owns selection, materialization, plot windows, live updates, composition, persistence,
+and export. A plot callback owns the axes, legends, labels, and series required to present its data.
 
-The browser never passes internal `ItemRecord`s to project callbacks. One render materializes its
-selection once and passes the same item objects to `setup` and `draw`. This prevents duplicate DuckDB
-reads or processing and gives both callbacks one consistent snapshot.
-
-## Dispatch
-
-Plots are registered by `(kind, label)`. The browser restores the most recently selected label for an
-item kind and resolves it to the corresponding `RegisteredPlot` type. `Visualization.setup_plot` and
-`Visualization.plot_data!` are the internal bridge; project code uses only `register_plot!`.
-
-The main plot follows browser selection while Live is enabled. Detached plots start with Live off and
-keep their stable item ids until the user enables it. Both use the same rendering path.
-
-## Data Rules
-
-- Plot callbacks always receive processed data.
-- Cache policy changes how the data is obtained, not the plotting contract.
-- Callbacks treat item data as read-only.
-- A plot failure is attached to that plot state and does not discard valid processed data.
-- Returning no figure from `setup` is an error.
-
-There is no debug-plot mode. A future diagnostic tool should be designed after the processing and plot
-lifecycle are stable; it should not add a second source-loading or processing path.
+One render materializes its selection once and passes one consistent snapshot to setup and drawing.
+Plot callbacks treat their inputs as read-only. A failure belongs to that plot state and leaves
+processed data available to other views.
 
 ## Composition
 
-Today one registered plot produces one figure. Future composition should combine figures or plot
-descriptions in `DataBrowserPlots` without making project callbacks manage browser windows, selection,
-or workspace state. The current `setup`/`draw` contract remains the small project-facing unit.
+A registered or type-based plot produces one figure. Figure composition combines those figures or
+their plot descriptions without moving browser selection, workspace state, or source access into
+project callbacks.
+
+```julia
+figure = Figure(workspace)
+plot!(figure, items, X(:voltage_v), Y(:current_a); visualizer=LinePlot)
+fit = linear_fit!(figure, items, X(:voltage_v), Y(:current_a))
+annotate!(figure, Arrow(fit; label="linear region"))
+```
+
+The package owns:
+
+- live selections and matching rules;
+- editable visualizer state;
+- multi-panel layout and linked axes;
+- figure annotations;
+- data snapshots for self-contained figures;
+- export and workflow persistence.
+
+## Workflows
+
+A workflow records actions in public package terms: select data, create a visualizer, map columns or
+dimensions, change style, fit, annotate, and export. Replaying it restores every visualizer window
+and its independent state. Concrete selections and live matching rules use the same action model.

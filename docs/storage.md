@@ -45,7 +45,10 @@ Tab-separated, one record per line, no header:
 <path>	<x_um>	<y_um>
 ```
 
-Lines starting with `#` and blank lines are ignored. Saved sorted by path. Loaded and saved by [src/Annotations/src/Layout.jl](../src/Annotations/src/Layout.jl) (`Annotations.Layout.load` / `Annotations.Layout.save`). Saving an empty map removes the file. Malformed rows raise `LayoutParseError`.
+Lines starting with `#` and blank lines are ignored. Saved sorted by path. Loaded and saved by
+[`layout.jl`](../lib/DataBrowserAnnotations/src/layout.jl)
+(`DataBrowserAnnotations.Layout.load` / `DataBrowserAnnotations.Layout.save`). Saving an empty map
+removes the file. Malformed rows raise `LayoutParseError`.
 
 ## tags.txt
 
@@ -62,7 +65,10 @@ RuO2test/A9/VI/D1                                          bad
 RuO2test/A10/VI                                            todo
 ```
 
-Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are either collection-path strings (slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item keys. The two namespaces never overlap, so no kind prefix is written. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by [src/Annotations/src/Tags.jl](../src/Annotations/src/Tags.jl) (`Annotations.Tags.load` / `Annotations.Tags.save`). Saving empty state removes the file. Malformed rows raise `TagsParseError`.
+Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are either collection-path strings (slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item keys. The two namespaces never overlap, so no kind prefix is written. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by
+[`tags.jl`](../lib/DataBrowserAnnotations/src/tags.jl)
+(`DataBrowserAnnotations.Tags.load` / `DataBrowserAnnotations.Tags.save`). Saving empty state removes
+the file. Malformed rows raise `TagsParseError`.
 
 ## notes.txt
 
@@ -80,7 +86,10 @@ dust particle visible
 ```
 ````
 
-Each section is `[<path>]` on its own line, followed by an opening triple-backtick fence, then body lines, then a closing fence. The parser keys on the fences, not the brackets, so `[anything]` inside a body is preserved verbatim. The trailing newline before the closing fence is trimmed; other whitespace is preserved. Loaded and saved by [src/Annotations/src/Notes.jl](../src/Annotations/src/Notes.jl) (`Annotations.Notes.read_section`, `Annotations.Notes.merged_view`, `Annotations.Notes.write_section!`). Malformed sections raise `NotesParseError`.
+Each section is `[<path>]` on its own line, followed by an opening triple-backtick fence, then body lines, then a closing fence. The parser keys on the fences, not the brackets, so `[anything]` inside a body is preserved verbatim. The trailing newline before the closing fence is trimmed; other whitespace is preserved. Loaded and saved by
+[`notes.jl`](../lib/DataBrowserAnnotations/src/notes.jl)
+(`DataBrowserAnnotations.Notes.read_section`, `DataBrowserAnnotations.Notes.merged_view`,
+`DataBrowserAnnotations.Notes.write_section!`). Malformed sections raise `NotesParseError`.
 
 ## File ownership matrix
 

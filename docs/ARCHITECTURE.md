@@ -35,9 +35,9 @@ presentation tools.
 ## Core Flow
 
 ```
-source item → data_items → interpreted data → process → analyze → collection process/analyze → views
-                    │              │              │
-                    └─ ItemRecord  └─ DuckDB      └─ DuckDB + item metadata
+source item → interpret → logical data → process → analyze → collection process/analyze → views
+                 │             │             │
+                 └─ index      └─ DuckDB     └─ DuckDB + item metadata
 ```
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
@@ -74,14 +74,16 @@ When a view needs item data, delivery consults the live graph then the cache: a 
 until it publishes; a `RESULT_READY` row loads the payload; absence enqueues work. Otherwise the
 processing job loads interpreted data from the in-memory interpreted store or reuses the normal
 `data_items` path as source fallback, then runs `process`.
-Each materialized item carries `item.data`.
+Registration views receive processed data with effective metadata. Type-based views receive the
+project's concrete `AbstractDataItem` values.
 GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
 uses the built-in `DirectorySource <: AbstractDataSource`: the source walks a data root into
-`SourceFile`s, while project methods apply the recipes' `detect`/`read`/`entries`/`process`/`analyze`
-through the same engine. Nothing downstream can tell a callback project from a hand-written
-project/source pair.
+`SourceFile`s, while the registration adapter applies `detect`/`read`, resolves the returned
+`DataItem` descriptions, then applies `process`/`analyze` through the same engine. Registered callbacks operate
+on ordinary data and metadata. A hand-written project/source pair returns concrete
+`AbstractDataItem` values and keeps those types through processing and visualization.
 
 ## Ownership Boundaries
 
@@ -124,15 +126,15 @@ See [profiling.md](profiling.md). No diagnostic is persisted in the generated ca
 Source code should not know whether data came from memory, cache, or the origin. Package code should
 not know the meaning of a source item beyond the contract methods it calls.
 
-The package expresses that boundary through focused internal modules. `Projects` defines the
-`AbstractDataItem` contract and the `Project` recipe type. `DataSources/DirectorySource.jl` owns the
-built-in directory source, `SourceFile`, file fingerprints, directory traversal, sidecar exclusion,
-and `metadata.txt` collection parameter input. `ItemIndex` (in `DataBrowserAPI`) owns the internal `ItemRecord`, the concrete
-`DataItem`, and hierarchy construction; source-item interpretation is engine code in `DataBrowserCore`. `DataBrowserCache` owns generated DuckDB state. `Workspace` owns
-one project/source pair, its index, selection, cache, loaded data, and background work.
-`Visualization` defines the shared plotting operations. `Browser` owns typed frontend state and
-CImGui rendering. `DataBrowser` exports the small high-level API while keeping most low-level
-source contract names internal.
+The package expresses that boundary through focused packages. `DataBrowserAPI` defines the source
+and item contracts plus the registration-based `Project`. `DataBrowserSources` owns the built-in
+directory source, `SourceFile`, file fingerprints, directory traversal, sidecar exclusion, and
+`metadata.txt` collection input. Its registration adapter is one high-level API over the same source
+contract used by typed projects. `DataBrowserCore` owns interpretation, hierarchy construction,
+workspace state, selection, and background work. `DataBrowserCache` owns generated DuckDB state.
+`DataBrowserPlots` owns plotting operations and Makie integration. `DataBrowserGUI` owns typed
+frontend state and CImGui rendering. `DataBrowser` exports the public API and wires the default
+packages together.
 
 `open_workspace(project, source)` or `open_workspace(project, root_path)` creates that owner and
 opens the source, starts cache loading and scanning, and attaches its watcher. Source code does not
@@ -171,8 +173,8 @@ Current-state reference docs:
 
 | Topic | When to read |
 |---|---|
-| [api.md](api.md) | You're writing project code: registering item kinds, stats, or plots, or a custom `AbstractDataItem`. |
-| [data-model.md](data-model.md) | You're touching source-file records, items, hierarchy traversal, or paths/IDs. |
+| [api.md](api.md) | You're writing project code with registration callbacks or typed sources/items. |
+| [data-model.md](data-model.md) | You're working with identity, metadata, collections, or pipeline semantics. |
 | [gui.md](gui.md) | You're adding/modifying a panel, window, or interaction. |
 | [storage.md](storage.md) | You're adding a new metadata file or changing a format. |
 | [cache.md](cache.md) | You're touching DuckDB cache identity, loading, writing, status, or item data. |
