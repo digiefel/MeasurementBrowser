@@ -53,17 +53,31 @@ the data and does not replace the concrete type of a typed item.
 
 ## Labels and collections
 
-An item label is its user-facing title. A collection is its canonical path in the browser hierarchy:
+An item label is its user-facing title. A collection is its canonical path in the browser hierarchy.
+Registration callbacks describe it with strings:
 
 ```julia
 ["Chip A9", "Device D1", "IV"]
 ```
 
 Registration readers can compute both while constructing a `DataItem`. Typed items implement
-`item_label` or `collection` only when the source-derived defaults are not appropriate.
+`item_label` or `collection` only when the source-derived defaults are not appropriate. Their
+`collection(item)` method returns the complete vector of concrete `AbstractCollection` values;
+registered items instead retain the callback's `Vector{String}` when materialized. The registration
+adapter converts those strings only while constructing package-owned collection records.
 
 Collections have variable depth. The last path segment is the leaf containing the item; preceding
 segments are ordinary parent collections. Code does not assign fixed meaning to a particular depth.
+Collection records retain no representative user value. Their deterministic ID is derived
+from the parent ID, concrete collection type, and a canonical encoding of `id(collection)`.
+The default `id(collection) = collection` means ordinary immutable collection structs require no
+method. Override it only to exclude presentation or metadata state from the ID, or to return a
+stable encodable value for a collection that contains unsupported state.
+
+Labels and metadata are not compared to decide whether records coalesce. Julia equality remains the
+collection type author's concern but is not a competing collection ID rule. The engine also
+assigns compact integer surrogates for work and cache tables; saved selection and annotation state
+uses the deterministic ID so it survives deleting and rebuilding generated cache state.
 
 ## Metadata
 

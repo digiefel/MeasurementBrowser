@@ -48,4 +48,14 @@ end
     @test index.records[second].analysis == Dict(:count => 1)
     COLLECTION_RECORD_INDEX.clear_collection_analysis!(index, second)
     @test isempty(index.records[second].analysis)
+
+    registered = COLLECTION_RECORD_INDEX.CollectionIndex("registered")
+    registered_inputs = COLLECTION_RECORD_INDEX.collection_inputs(AbstractCollection[
+        COLLECTION_RECORD_INDEX.RegisteredCollection("wafer"),
+        COLLECTION_RECORD_INDEX.RegisteredCollection("device"),
+    ])
+    registered_key = COLLECTION_RECORD_INDEX.resolve_collection_path!(
+        registered, registered_inputs)
+    @test COLLECTION_RECORD_INDEX.registration_names(registered, registered_key) ==
+        ["wafer", "device"]
 end
