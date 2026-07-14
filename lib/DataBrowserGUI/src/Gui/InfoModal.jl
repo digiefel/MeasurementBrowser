@@ -104,7 +104,8 @@ function render_collection_metadata_modal(state::BrowserState)::Nothing
     ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
 
     if state.collection_metadata_modal &&
-       !workspace.index.hierarchy.has_collection_metadata
+       all(record -> isempty(record.own_metadata) && isempty(record.analysis),
+           values(workspace.index.collections.records))
         ig.OpenPopup("Collection Parameters Missing")
     end
 

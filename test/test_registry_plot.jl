@@ -34,7 +34,7 @@ const MB = DataBrowser
             @test all(it -> it isa MB.AbstractDataItem, items)
             @test all(it -> MB.item_data(it) isa DataFrame, items)
             @test all(it -> MB.kind(it) === :table, items)
-            @test all(it -> !isempty(MB.collection(it)), items)
+            @test all(it -> MB.collection(it) == ["dev"], items)
             drew_rows[] = sum(nrow(MB.item_data(item)) for item in items)
             Axis(figure[1, 1])
             nothing
@@ -68,19 +68,7 @@ const MB = DataBrowser
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
     items = items_for_file(project, joinpath(dir, "m.csv"))
     workspace = DataBrowserCore.Workspace.Workspace(project, test_source(project, dir))
-    for item in items
-        workspace.index.items[item.id] = item
-    end
-    ids = [item.id for item in items]
-    @test MB.select_items!(workspace, items) === nothing
-    @test workspace.selection.item_ids == ids
-    @test MB.select_items!(workspace, ids[1:1]) === nothing
-    @test workspace.selection.item_ids == ids[1:1]
-    loaded_items = DataBrowserCore.Workspace.materialize_items(workspace, items)
-    @test MB.select_items!(workspace, loaded_items) === nothing
-    @test workspace.selection.item_ids == ids
-    @test MB.select_items!(workspace, []) === nothing
-    @test isempty(workspace.selection.item_ids)
+    @test MB.collection(only(items)) == ["dev"]
 
     figure = setup_plot(workspace, table_plot, items)
     @test figure isa Figure

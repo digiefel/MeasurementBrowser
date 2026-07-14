@@ -83,9 +83,9 @@ Tool-window state is transient and does not change `databrowser.toml`.
 
 ### Selection flow (tree → plot)
 
-1. A tree or future spatial-browser interaction writes collection paths and item keys to
-   `workspace.selection`.
-2. Each frame resolves those stable ids against `workspace.index` and applies tag visibility.
+1. A tree or future spatial-browser interaction writes deterministic collection IDs and
+   item ids to `workspace.selection`.
+2. Each frame resolves those stable IDs against `workspace.index` and applies tag visibility.
 3. Plot windows with `Live` enabled use that visible selection and redraw when it changes.
 
 A new panel changes selection only through the workspace. It does not maintain its own selected

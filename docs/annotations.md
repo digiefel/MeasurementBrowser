@@ -8,9 +8,10 @@ cache data, browser state, and annotations drawn on figures.
 
 The implementation is the path-dependency package
 [`DataBrowserAnnotations`](../lib/DataBrowserAnnotations/). Each namespace reads or writes one focused source-root
-format. Path keys are
-slash-joined strings such as `"RuO2test/A9/VI/D1"`, shared with the rest of the package through
-`collection_path_key`.
+format. The annotation package treats attachment keys as opaque strings. The browser uses readable
+slash-joined labels such as `"RuO2test/A9/VI/D1"` for registration collections. Typed collections
+instead use `@collection/<identity>`, where the identity is deterministically derived from the typed
+collection path. Unequal collection values may share a label without sharing annotation state.
 
 ## Current API
 
@@ -50,7 +51,7 @@ spatial browser and should not be described as existing user-facing features.
 ### `Tags`
 
 - `TagDef(name, color::NTuple{3,UInt8}, priority::Int)` — single catalog entry.
-- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string: collection paths (slash-joined segments, e.g. `"RuO2test/A9/VI/D1"`) and item ids share the same map and never collide. `TagState()` is the empty state.
+- `TagState(catalog::Vector{TagDef}, assignments::Dict{String, Set{String}})` — full state. `assignments` holds all explicitly attached tags, keyed by any string. Browser-created registration-collection keys are slash-joined labels; typed-collection keys use an `@collection/` prefix plus the deterministic node identity. Item ids and collection keys share the same map. `TagState()` is the empty state.
 - `load(root) -> TagState`. Reads `tags.txt` when present. Missing file returns an empty state.
 - `save(root, state)` — writes `tags.txt`. Empty state removes the file.
 - `effective(state, key, ancestor_keys) -> Set{String}` — union of `key`'s own assignments with assignments on every entry of `ancestor_keys`. To get the full applicable tag set for an item, call `effective(state, id, [collection_path; collection_ancestors...])`: the item id and the collection-path ancestors are looked up uniformly in the same map.
@@ -75,6 +76,11 @@ supplies the ancestor list.
 - **`Notes.merged_view`** — each ancestor section is included read-only in the order supplied; the focal node's section is appended last and marked editable. Ancestors that have no section are skipped silently.
 
 Neither module rewrites stored state when it inherits — assignments and note bodies stay anchored to the path they were authored against.
+
+Registration collection keys remain human-editable and reconnect from their string paths. A typed
+collection assignment reconnects from its deterministic ID. Deleting and rebuilding the
+generated cache may assign a different compact integer key, but does not detach typed collection
+tags or notes as long as the collection type and `id(collection)` result remain compatible.
 
 See [storage.md](storage.md) for file formats and
 [data-model.md](data-model.md#identity) for identity conventions.

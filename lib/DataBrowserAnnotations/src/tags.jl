@@ -12,8 +12,9 @@ The file has two sections, each introduced by a bracketed header:
     /Users/davide/data/RuO2test/A9/VI/D1/3V FE PUND.csv        bad
     RuO2test/A10/VI                                            todo
 
-Assignment rows are `<key>\\t<tag_name>`. Keys are either collection-path strings
-(slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item ids from [`id`](@ref).
+Assignment rows are `<key>\\t<tag_name>`. Keys are registration collection-path strings
+(slash-joined segments, e.g. `RuO2test/A9/VI/D1`), typed collection IDs prefixed with
+`@collection/`, or item ids from [`id`](@ref).
 The two namespaces never overlap, so no kind prefix is needed. Fields are
 tab-separated on write; whitespace-tolerant on read. Lines starting with `#`
 are comments. Malformed rows raise `TagsParseError`.

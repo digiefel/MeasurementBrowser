@@ -2,10 +2,12 @@ using DataBrowserAnnotations
 
 import DataBrowserCore.Workspace
 using DataBrowserAPI.ItemIndex:
-    HierarchyNode,
+    CollectionRecord,
     ItemRecord,
-    collection_path_key,
-    collection_path_tuple,
+    collection_item_ids,
+    collection_location,
+    collection_path_keys,
+    has_collection_children,
     item_timestamp_key
 
 const BAD_TAG_NAME = "bad"
@@ -66,27 +68,31 @@ function _tag_state_or_error(state::BrowserState)::DataBrowserAnnotations.Tags.T
     return state.tag_state
 end
 
-"""Return the stable collection path represented by a leaf hierarchy node."""
-function _collection_path_key(node::HierarchyNode)::String
-    isempty(node.items) && error("Leaf node '$(node.name)' has no items")
-    return collection_path_key(first(node.items).collection)
-end
-
-"""Return the collection path segments represented by a leaf hierarchy node."""
-function _collection_location(node::HierarchyNode)::Vector{String}
-    isempty(node.items) && error("Leaf node '$(node.name)' has no items")
-    return copy(first(node.items).collection)
-end
-
-"""Return every parent path used when resolving inherited tags."""
-function _ancestor_keys_for_path(path::AbstractString)::Vector{String}
-    parts = split(path, '/')
-    length(parts) <= 1 && return String[]
-    out = String[]
-    for i in 1:(length(parts) - 1)
-        push!(out, join(parts[1:i], '/'))
+"""Return the persisted annotation key for one collection record."""
+function _collection_annotation_key(
+    collections,
+    collection_record::CollectionRecord,
+)::String
+    path = CollectionRecord[
+        collections.records[key]
+        for key in collection_path_keys(collections, collection_record.key)
+    ]
+    if all(segment -> segment.registration_name !== nothing, path)
+        return join((segment.registration_name::String for segment in path), '/')
     end
-    return out
+    return "@collection/$(collection_record.id)"
+end
+
+"""Return every parent annotation key used when resolving inherited tags."""
+function _ancestor_annotation_keys(
+    collections,
+    collection_record::CollectionRecord,
+)::Vector{String}
+    path = collection_path_keys(collections, collection_record.key)
+    return String[
+        _collection_annotation_key(collections, collections.records[key])
+        for key in path[1:end-1]
+    ]
 end
 
 """Return whether an item or one of its supplied parents has the bad tag."""
@@ -99,13 +105,18 @@ function _has_bad_tag(
 end
 
 """Return whether a collection remains visible after applying the bad-tag filter."""
-function _collection_is_visible(state::BrowserState, collection_key::String)::Bool
+function _collection_is_visible(
+    state::BrowserState,
+    collection_record::CollectionRecord,
+)::Bool
     _show_bad_effective(state) && return true
     tag_state = _tag_state_or_error(state)
+    collections = (state.workspace::Workspace.Workspace).index.collections
+    collection_key = _collection_annotation_key(collections, collection_record)
     return !_has_bad_tag(
         tag_state,
         collection_key,
-        _ancestor_keys_for_path(collection_key),
+        _ancestor_annotation_keys(collections, collection_record),
     )
 end
 
@@ -116,8 +127,14 @@ function _item_is_visible(
 )::Bool
     _show_bad_effective(state) && return true
     tag_state = _tag_state_or_error(state)
-    collection_key = collection_path_key(item.collection)
-    ancestors = [collection_key; _ancestor_keys_for_path(collection_key)]
+    collections = (state.workspace::Workspace.Workspace).index.collections
+    item.collection_key === nothing && return true
+    collection_record = collections.records[item.collection_key]
+    collection_key = _collection_annotation_key(collections, collection_record)
+    ancestors = [
+        collection_key;
+        _ancestor_annotation_keys(collections, collection_record)
+    ]
     return !_has_bad_tag(tag_state, item.id, ancestors)
 end
 
@@ -127,34 +144,37 @@ The persisted selection ids are left untouched; this returns only the currently 
 """
 function _project_visible_selection(
     state::BrowserState,
-)::Tuple{Vector{HierarchyNode},Vector{ItemRecord},Vector{String}}
+)::Tuple{Vector{CollectionRecord},Vector{ItemRecord},Vector{String}}
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
-        return HierarchyNode[], ItemRecord[], String[]
+        return CollectionRecord[], ItemRecord[], String[]
     end
-    hierarchy = workspace.index.hierarchy
+    collections = workspace.index.collections
 
-    selected_collections = HierarchyNode[]
-    for path_key in workspace.selection.collection_paths
-        node = get(hierarchy.index, collection_path_tuple(path_key), nothing)
-        node === nothing && continue
-        node.kind == :leaf ||
-            error("Selected collection path '$path_key' does not point to a leaf collection")
-        !_collection_is_visible(state, path_key) && continue
-        push!(selected_collections, node)
+    selected_collections = CollectionRecord[]
+    for collection_id in workspace.selection.collection_ids
+        key = get(collections.key_by_id, collection_id, nothing)
+        key === nothing && continue
+        collection_record = collections.records[key]
+        !has_collection_children(collections, key) ||
+            error("Selected collection ID '$collection_id' does not point to a leaf collection")
+        !_collection_is_visible(state, collection_record) && continue
+        push!(selected_collections, collection_record)
     end
 
-    visible_collection_keys = Set(_collection_path_key(node) for node in selected_collections)
+    visible_collection_ids = Set(collection_record.id for collection_record in selected_collections)
     item_index = workspace.index.items
     selected_items = ItemRecord[]
     for id in workspace.selection.item_ids
         item = get(item_index, id, nothing)
         item === nothing && continue
-        collection_path_key(item.collection) in visible_collection_keys || continue
+        item.collection_key === nothing && continue
+        collections.records[item.collection_key].id in visible_collection_ids || continue
         !_item_is_visible(state, item) && continue
         push!(selected_items, item)
     end
-    selected_path = length(selected_collections) == 1 ? _collection_location(selected_collections[1]) : String[]
+    selected_path = length(selected_collections) == 1 ?
+        collection_location(collections, selected_collections[1].key) : String[]
     return selected_collections, selected_items, selected_path
 end
 
@@ -166,10 +186,14 @@ function _items_of_selected_collections(
 )::Vector{ItemRecord}
     selected_collections, _, _ = _project_visible_selection(state)
     all_items = ItemRecord[]
-    sizehint!(all_items, sum(length(collection.items) for collection in selected_collections; init=0))
-    for collection in selected_collections
-        for item in collection.items
-            push!(all_items, item)
+    collections = (state.workspace::Workspace.Workspace).index.collections
+    items = (state.workspace::Workspace.Workspace).index.items
+    sizehint!(all_items, sum(
+        length(collection_item_ids(collections, collection_record.key))
+        for collection_record in selected_collections; init=0))
+    for collection_record in selected_collections
+        for id in collection_item_ids(collections, collection_record.key)
+            haskey(items, id) && push!(all_items, items[id])
         end
     end
     sort!(all_items, by=item_timestamp_key)
@@ -194,11 +218,11 @@ Returns `false` when tag state is unavailable or there is nothing to change.
 """
 function _set_collections_bad!(
     state::BrowserState,
-    collection_keys::Vector{String},
+    annotation_keys::Vector{String},
     bad::Bool,
 )::Bool
-    unique_keys = unique(copy(collection_keys))
-    isempty(unique_keys) && return false
+    unique_annotation_keys = unique(copy(annotation_keys))
+    isempty(unique_annotation_keys) && return false
     _tag_state_ready(state) || return false
 
     workspace = state.workspace::Workspace.Workspace
@@ -206,15 +230,15 @@ function _set_collections_bad!(
     tag_state = _tag_state_or_error(state)
     _ensure_bad_catalog_entry!(tag_state)
 
-    for collection_key in unique_keys
+    for annotation_key in unique_annotation_keys
         if bad
-            set = get!(() -> Set{String}(), tag_state.assignments, collection_key)
+            set = get!(() -> Set{String}(), tag_state.assignments, annotation_key)
             push!(set, BAD_TAG_NAME)
         else
-            tags = get(tag_state.assignments, collection_key, nothing)
+            tags = get(tag_state.assignments, annotation_key, nothing)
             if tags !== nothing
                 delete!(tags, BAD_TAG_NAME)
-                isempty(tags) && delete!(tag_state.assignments, collection_key)
+                isempty(tags) && delete!(tag_state.assignments, annotation_key)
             end
         end
     end
