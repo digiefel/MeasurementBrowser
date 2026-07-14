@@ -64,6 +64,15 @@ Items in one collection remain independent. They may have different data types a
 visualizers. Collection operations provide the point where a project intentionally compares or
 combines them.
 
+The string vector remains the registration API's collection value when registered items are passed
+to plot callbacks. In the type API, one `AbstractCollection` value represents one hierarchy level
+and `collection(item)` returns a vector of those values. Concrete collection types keep typed
+domain fields, supply `label(collection)` for the tree, and may project queryable fields through
+`metadata(collection)`. DataBrowser derives
+hierarchy identity from the parent identity, concrete type, and a stable canonical encoding of
+`id(collection)`. The default uses the complete collection value; an override can return an integer
+or another stable value when display or metadata fields should not affect identity.
+
 ## Labels
 
 `label` returns the text shown for an individual item:

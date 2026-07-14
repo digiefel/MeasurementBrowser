@@ -3,6 +3,8 @@ using BetterFileWatching
 using CancellationTokens: CancellationToken, CancellationTokenSource, OperationCanceledException, cancel, get_token, is_cancellation_requested
 
 import DataBrowserAPI
+using DataBrowserAPI.ItemIndex: CollectionInput, RegisteredCollection
+import DataBrowserAPI.ItemIndex: collection_inputs
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -11,9 +13,7 @@ using DataBrowserAPI:
     SourceError
 import DataBrowserAPI:
     close_source!,
-    collection_metadata,
     fingerprint,
-    has_collection_metadata,
     metadata,
     open_source,
     source_id,
@@ -122,7 +122,10 @@ function parse_timestamp(filename::AbstractString)::Union{DateTime,Nothing}
     end
 end
 
-function file_fingerprint(path::AbstractString; normalized::Bool=false)::FileFingerprint
+function file_fingerprint(
+    path::AbstractString;
+    normalized::Bool=false,
+)::FileFingerprint
     normalized_path = normalized ? String(path) : normpath(abspath(expanduser(String(path))))
     stat_info = stat(normalized_path)
     return FileFingerprint(
@@ -299,27 +302,48 @@ function matching_collection_metadata(
     return merged
 end
 
+"""Metadata owned by the final collection level in `location`."""
+function own_collection_metadata(
+    entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
+    location::AbstractVector{<:AbstractString},
+)::Dict{Symbol,Any}
+    isempty(location) && return Dict{Symbol,Any}()
+    own = Dict{Symbol,Any}()
+    # Short fragments apply first; longer, more specific fragments ending at this level win.
+    for start in reverse(eachindex(location))
+        values = get(entries, Tuple(location[start:end]), nothing)
+        values === nothing || merge!(own, values)
+    end
+    return own
+end
+
+"""Normalize a directory registration path with source-owned metadata on each level."""
+function collection_inputs(
+    source::DirectorySource,
+    path::AbstractVector{<:AbstractString},
+)::Vector{CollectionInput}
+    names = String.(path)
+    collections = lock(source.metadata_lock) do
+        DataBrowserAPI.AbstractCollection[
+            RegisteredCollection(
+                name;
+                metadata=own_collection_metadata(
+                    source.collection_metadata_entries,
+                    names[1:depth],
+                ),
+            )
+            for (depth, name) in pairs(names)
+        ]
+    end
+    return collection_inputs(collections)
+end
+
 function source_items(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
     cancel_token::CancellationToken,
 )::Vector{SourceFile}
     return collect_source_files(source; on_progress, cancel_token)
-end
-
-function has_collection_metadata(source::DirectorySource)::Bool
-    return lock(source.metadata_lock) do
-        source.has_metadata
-    end
-end
-
-function collection_metadata(
-    source::DirectorySource,
-    collection_path::AbstractVector{<:AbstractString},
-)::Dict{Symbol,Any}
-    return lock(source.metadata_lock) do
-        matching_collection_metadata(source.collection_metadata_entries, collection_path)
-    end
 end
 
 function open_source(source::DirectorySource)::DirectorySource

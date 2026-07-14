@@ -43,7 +43,7 @@ Projects implement only the behavior they need:
 | `item_data` | one concrete item | its data | the item itself |
 | `metadata` | one concrete item | metadata supplied by the item as a `Dict` | empty `Dict` |
 | `item_label` | one concrete item | browser text | source-derived label |
-| `collection` | one concrete item | collection path | source-derived path |
+| `collection` | one concrete item | complete vector of `AbstractCollection` values | empty root path |
 | `id` | one concrete item | stable sibling key | returned position |
 | `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
@@ -56,7 +56,7 @@ The complete signatures are:
 item_data(item::MyItem)::MyData
 metadata(item::MyItem)::Dict
 item_label(item::MyItem)::String
-collection(item::MyItem)::Vector{String}
+collection(item::MyItem)::Vector{<:AbstractCollection}
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
@@ -71,6 +71,43 @@ provide entirely different processing and analysis methods while sharing one wor
 methods belongs in that item or in the values it contains.
 
 `metadata(::AbstractDataItem)` defaults to an empty `Dict`.
+
+## Collections
+
+One `AbstractCollection` value represents one hierarchy level. `collection(item)` always returns
+the complete root-to-leaf vector; use an empty vector for the root and `[collection]` for a flat
+hierarchy. Different levels may have different concrete types by returning an
+`AbstractCollection[...]` vector.
+
+```julia
+struct Session <: AbstractCollection
+    started_at::DateTime
+end
+
+struct ParameterSet <: AbstractCollection
+    temperature_k::Float64
+end
+
+label(session::Session) = string(session.started_at)
+metadata(parameters::ParameterSet) = Dict(:temperature_k => parameters.temperature_k)
+
+collection(item::MyItem) = AbstractCollection[item.session, item.parameters]
+```
+
+`label(collection)` defaults to Julia's normal text representation and
+`metadata(collection)` defaults to an empty `Dict`. `id(collection)` defaults to the complete
+collection value. DataBrowser canonically encodes that result together with the concrete collection
+type and parent identity, so ordinary immutable structs require no identity method.
+
+Override `id` only when some fields are display or metadata rather than identity, or when the full
+value contains state that cannot be canonically encoded:
+
+```julia
+id(session::Session) = Dates.value(session.started_at)
+```
+
+The override may return an integer or another supported stable value. Julia `==`, `isequal`, and
+`hash` remain available for the type's own semantics, but do not determine hierarchy coalescing.
 
 ## Sources and source items
 

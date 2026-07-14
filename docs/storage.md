@@ -65,7 +65,7 @@ RuO2test/A9/VI/D1                                          bad
 RuO2test/A10/VI                                            todo
 ```
 
-Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are either collection-path strings (slash-joined segments, e.g. `RuO2test/A9/VI/D1`) or item keys. The two namespaces never overlap, so no kind prefix is written. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by
+Catalog rows: `<name>\t<color_hex_rrggbb>\t<priority>`. Assignment rows: `<key>\t<tag_name>`. Keys are registration collection paths (slash-joined segments such as `RuO2test/A9/VI/D1`), typed collection IDs prefixed with `@collection/`, or item ids. Fields are tab-separated on write; whitespace-tolerant on read. Lines starting with `#` and blank lines are ignored. Loaded and saved by
 [`tags.jl`](../lib/DataBrowserAnnotations/src/tags.jl)
 (`DataBrowserAnnotations.Tags.load` / `DataBrowserAnnotations.Tags.save`). Saving empty state removes
 the file. Malformed rows raise `TagsParseError`.
@@ -104,7 +104,7 @@ Each section is `[<path>]` on its own line, followed by an opening triple-backti
 
 - Live at source root. No subdirectories unless there's volume reason.
 - Prefer line-oriented text. CSV if there are columns; key/value with simple delimiters otherwise.
-- Use `collection_path_key(collection)` (slash-joined) for any path-keyed entry.
+- Use slash-separated collection labels for hand-edited registration-path entries.
 - Provide a load + save function pair in a focused module/file.
 - Update this doc and any relevant cross-references in [ARCHITECTURE.md](ARCHITECTURE.md).
 - Tolerate missing/malformed files quietly on read; fail loudly on write.

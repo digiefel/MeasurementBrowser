@@ -2,6 +2,15 @@ using CSV
 using DataFrames: DataFrame
 using DataBrowser
 
+function _registered_collection_key(collections, names...)
+    id_path = DataBrowserAPI.collection_id_path(
+        DataBrowserAPI.ItemIndex.RegisteredCollection.(String.(names)))
+    return collections.key_by_id[last(id_path)]
+end
+
+_registered_collection_record(collections, names...) =
+    collections.records[_registered_collection_key(collections, names...)]
+
 if !isdefined(Main, :TEST_CACHE_DEPOT)
     const TEST_CACHE_DEPOT = mktempdir()
     pushfirst!(DEPOT_PATH, TEST_CACHE_DEPOT)

@@ -26,8 +26,8 @@ item_label(::AbstractDataItem)::String = ""
 """Internal item category. Custom item types default to their type name."""
 kind(item::AbstractDataItem)::Symbol = Symbol(nameof(typeof(item)))
 
-"""Return an item's collection path."""
-collection(::AbstractDataItem) = String[]
+"""Return a typed item's complete root-to-leaf path of concrete collection values."""
+collection(::AbstractDataItem)::Vector{AbstractCollection} = AbstractCollection[]
 
 """Return metadata supplied directly by a data item. The default is an empty `Dict`."""
 metadata(::AbstractDataItem)::Dict = Dict()
@@ -52,13 +52,6 @@ storable column types at write time. A type can opt out (or a non-tabular type o
 cacheable_data(data)::Bool = Tables.istable(data)
 
 fingerprint(::AbstractDataItem) = nothing
-
-"""Collection metadata contributed by a source for one collection path."""
-collection_metadata(::AbstractDataSource, ::AbstractVector{<:AbstractString})::Dict{Symbol,Any} =
-    Dict{Symbol,Any}()
-
-"""Whether a source supplied collection metadata for this scan."""
-has_collection_metadata(::AbstractDataSource)::Bool = false
 
 # ---------------------------------------------------------------------------
 # Internal workspace hooks
