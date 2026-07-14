@@ -43,6 +43,9 @@ Wafer A / Chip B / Device A
 
 The complete path distinguishes the two devices. A segment needs to be unique only among siblings;
 its displayed label does not need to be globally unique.
+The two "Device A" segments are both distinct, in the sense that they can have different metadata
+and contain different data items, and are both alike, in the sense that it should be possible
+to reorganize the hierarchy view to group their items under a common "Device A" parent.
 
 ### Basic projects use ordinary strings
 
