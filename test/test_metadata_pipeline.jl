@@ -62,18 +62,20 @@ end
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+            collect(values(workspace.index.items)); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         loaded_by_id = Dict(record.id => item for (record, item) in zip(records, loaded))
-        delivered = [DataBrowserCore.Workspace.delivered_metadata(workspace, record) for record in records]
+        delivered = [DataBrowserCore.Workspace.delivered_metadata(
+            workspace, record, workspace.index.collections) for record in records]
 
         @test [values[:events] for values in delivered] == [2, 3, 5]
         @test [MBP.item_data(loaded_by_id[record.id]).cumulative[1] for record in records] ==
             [2, 5, 10]
 
         # Collection analyze landed on the collection node only, not on items.
-        node = workspace.index.hierarchy.index[("fatigue",)]
-        @test node.analysis[:members] == 3
+        collection_record = _registered_collection_record(
+            workspace.index.collections, "fatigue")
+        @test collection_record.analysis[:members] == 3
         @test all(values -> !haskey(values, :members), delivered)
 
         conflict = "metadata :events expected Int64, got Bool; value dropped"
@@ -106,7 +108,7 @@ end
         project, test_source(project, dir); background_processing=true)
     try
         wait_workspace_idle!(workspace)
-        record = only(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy))
+        record = only(collect(values(workspace.index.items)))
         @test workspace.index.item_metadata[record.id][:events] == 4
 
         # Re-register analyze with a different key, then re-run the item's analyze stage: its output
@@ -121,7 +123,8 @@ end
             collection=(data, metadata) -> ["fatigue"],
             analyze=(data, metadata) -> Dict{Symbol,Any}(:doubled => data.count[1] * 2),
         )
-        recomputed = DataBrowserCore.Workspace.run_item_analysis(workspace, record)
+        recomputed = DataBrowserCore.Workspace.run_item_analysis(
+            workspace, workspace.index.collections, record)
         lock(workspace.publish_lock) do
             workspace.index.item_metadata[record.id] =
                 Dict{Symbol,Any}(k => v for (k, v) in recomputed)
@@ -144,7 +147,7 @@ end
         @test isempty(workspace.index.analysis_errors)
 
         records = sort(
-            DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+            collect(values(workspace.index.items)); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         @test [MBP.item_data(item).cumulative[1] for item in loaded] == [2, 5, 10]
     finally
@@ -160,13 +163,13 @@ end
     try
         wait_workspace_idle!(workspace)
         records = sort(
-            DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.metadata[:cycle])
+            collect(values(workspace.index.items)); by=record -> record.metadata[:cycle])
         loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
         # The fold failed, so members deliver their :processed payloads (no cumulative column).
         @test length(loaded) == 2
         @test all(item -> !hasproperty(MBP.item_data(item), :cumulative), loaded)
         # The collection-process error is surfaced on the collection key.
-        key = DataBrowserAPI.ItemIndex.collection_path_key(["fatigue"])
+        key = _registered_collection_key(workspace.index.collections, "fatigue")
         @test haskey(workspace.index.analysis_errors, key)
     finally
         MBP.close_workspace!(workspace)

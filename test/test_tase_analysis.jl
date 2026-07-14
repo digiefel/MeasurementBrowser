@@ -1,5 +1,5 @@
 using DataBrowser
-using DataBrowser: items_for_file, read_item_data, setup_plot, plot_data!
+using DataBrowser: items_for_file, setup_plot, plot_data!
 using Test
 using DataFrames: DataFrame, nrow
 using GLMakie: Figure, Axis, lines!, contents
@@ -85,15 +85,18 @@ end
         only(items_for_file(project, fixture2)),
     ]
 
-    @test items[1].collection == ["TASESNS1c1f", "A", "2TSNJunction", "11"]
+    interpretation = DataBrowserCore.interpret_source_item(
+        project,
+        DirectorySource(dirname(fixture1)),
+        DataBrowserSources.index_source_file(fixture1),
+    )
+    @test DataBrowser.collection(only(interpretation.interpreted_items)) ==
+        ["TASESNS1c1f", "A", "2TSNJunction", "11"]
 
     @testset "plot data api" begin
         workspace = DataBrowserCore.Workspace.Workspace(project, DirectorySource(dirname(fixture1)))
         try
-            for item in items
-                workspace.index.items[item.id] = item
-            end
-            data = read_item_data(workspace, items)
+            data = item_data.(items)
             @test length(data) == 2
             @test all(nrow(df) == 3 for df in data)
             @test all(names(df) == ["i", "v"] for df in data)

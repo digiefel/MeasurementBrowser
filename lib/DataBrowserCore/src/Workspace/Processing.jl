@@ -39,9 +39,9 @@ Finished work lives in the cache ledger; live jobs are detected via `haskey(work
 """
 function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
     cachedb = workspace.cache.db
-    entity = String(key.entity)
     memory = !(cachedb isa CacheDB)
     if key.kind === SOURCE_INTERPRET
+        entity = key.entity::String
         if memory
             return lock(cachedb.lock) do
                 haskey(cachedb.failures, (entity, entity)) && return :failed
@@ -53,8 +53,17 @@ function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
         return haskey(read(cachedb.source_items), entity) ? :ready : :absent
     end
     kind = _work_key_cache_kind(key)
+    if key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE)
+        collection_key = key.entity::Int64
+        states = memory ? lock(() -> copy(cachedb.collection_result_states), cachedb.lock) :
+            read(cachedb.collection_result_states)
+        state = get(states, (Int8(kind), collection_key), nothing)
+        state === nothing && return :absent
+        return CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
+    end
     states = memory ? lock(() -> copy(cachedb.result_states), cachedb.lock) :
         read(cachedb.result_states)
+    entity = key.entity::String
     state = get(states, (Int8(kind), entity), nothing)
     state === nothing && return :absent
     return CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
@@ -63,12 +72,14 @@ end
 """Drop one work key's finished-state ledger row so invalidation must rerun it."""
 function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     cachedb = workspace.cache.db
-    entity = String(key.entity)
     if key.kind === SOURCE_INTERPRET
+        entity = key.entity::String
         clear_cached_source_state!(cachedb, entity)
         return nothing
     end
-    clear_cached_result_state!(cachedb, _work_key_cache_kind(key), entity)
+    cache_entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
+        key.entity::Int64 : key.entity::String
+    clear_cached_result_state!(cachedb, _work_key_cache_kind(key), cache_entity)
     return nothing
 end
 
@@ -263,10 +274,14 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
         end
         interpretation = interpret_source_item(
             workspace.project, workspace.source, source_item, workspace.profiler)
+        resolved_records = ItemRecord[
+            get(workspace.index.items, candidate.id, candidate)
+            for candidate in interpretation.records
+        ]
         store_interpreted!(
             workspace.cache.db,
             source_item,
-            interpretation.records,
+            resolved_records,
             interpretation.interpreted_items,
         )
         requested = findfirst(item -> item.id == record.id, interpretation.records)
@@ -277,15 +292,37 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     end
 end
 
+"""Materialize a registered item with its user-facing registration string path."""
+function registered_data_item(
+    collections::CollectionIndex,
+    record::ItemRecord,
+    data,
+)::RegisteredDataItem
+    names = registration_names(collections, record.collection_key)
+    names === nothing && error(
+        "Cannot materialize registered item '$(record.id)' from a typed collection path",
+    )
+    return RegisteredDataItem(
+        record,
+        data,
+        names,
+    )
+end
+
 """Run processing without computing or publishing statistics."""
-function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
+function run_processing(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    record::ItemRecord,
+)::NamedTuple
     interpreted = only(read_item_data(
         workspace.cache.db, [record]; stage=:interpreted))
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
     process_started = time_ns()
-    materialized_record = effective_record(workspace.index.hierarchy, record)
+    materialized_record = effective_record(collections, record)
     input = interpreted isa RegisteredDataItem ?
-        RegisteredDataItem(materialized_record, item_data(interpreted)) : interpreted
+        registered_data_item(
+            collections, materialized_record, item_data(interpreted)) : interpreted
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=record.kind,
         source_id=record.source_item_id,
@@ -303,23 +340,37 @@ function run_processing(workspace::Workspace, record::ItemRecord)::NamedTuple
 end
 
 """Return the delivered metadata for one record: inherited ⊕ entries ⊕ computed layers."""
-function delivered_metadata(workspace::Workspace, record::ItemRecord)::MetadataDict
-    effective = effective_metadata(workspace.index.hierarchy, record)
+function delivered_metadata(
+    workspace::Workspace,
+    record::ItemRecord,
+    collections::CollectionIndex,
+)::MetadataDict
+    effective = effective_metadata(collections, record)
     computed = get(workspace.index.item_metadata, record.id, nothing)
     computed === nothing || merge!(effective, metadata_dict(computed))
     return effective
 end
 
 """Return records carrying their delivered metadata, for materializing a collection's members."""
-function delivered_records(workspace::Workspace, records::Vector{ItemRecord})::Vector{ItemRecord}
+function delivered_records(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    records::Vector{ItemRecord},
+)::Vector{ItemRecord}
     return ItemRecord[
-        ItemRecord(record; metadata=delivered_metadata(workspace, record)) for record in records
+        ItemRecord(record; metadata=delivered_metadata(workspace, record, collections))
+        for record in records
     ]
 end
 
 """Run item analysis from the already-published processed result; merge output over the item's layer."""
-function run_item_analysis(workspace::Workspace, record::ItemRecord)::MetadataDict
-    delivered_record = ItemRecord(record; metadata=delivered_metadata(workspace, record))
+function run_item_analysis(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    record::ItemRecord,
+)::MetadataDict
+    delivered_record = ItemRecord(
+        record; metadata=delivered_metadata(workspace, record, collections))
     processed = only(read_item_data(
         workspace.cache.db, [delivered_record]; stage=:processed))
     processed === nothing && error(
@@ -332,7 +383,8 @@ function run_item_analysis(workspace::Workspace, record::ItemRecord)::MetadataDi
         item_id=record.id,
     ) begin
         input = processed isa RegisteredDataItem ?
-            RegisteredDataItem(delivered_record, item_data(processed)) : processed
+            registered_data_item(
+                collections, delivered_record, item_data(processed)) : processed
         metadata_dict(_analyze_item(
             workspace.project,
             workspace.source,
@@ -351,28 +403,33 @@ Members are materialized from their processed payloads, folded, and each rewritt
 `data` is not `===` the input) is re-cached at the `:collection_processed` stage. Returns the
 rewritten members and the ids whose payload was rewritten, persisted worker-side before publish.
 """
-function run_collection_process(workspace::Workspace, key::String)::NamedTuple
-    path = collection_path_tuple(key)
+function run_collection_process(workspace::Workspace, collection_key::Int64)::NamedTuple
+    index = workspace.index
+    collections = index.collections
     records = lock(workspace.work.lock) do
-        node = get(workspace.index.hierarchy.index, path, nothing)
-        node === nothing && error("Cannot process missing collection '$key'")
-        copy(node.items)
+        haskey(collections.records, collection_key) ||
+            error("Cannot process missing collection '$collection_key'")
+        ItemRecord[
+            index.items[id]
+            for id in collection_item_ids(collections, collection_key)
+            if haskey(index.items, id)
+        ]
     end
-    delivered = delivered_records(workspace, records)
+    delivered = delivered_records(workspace, collections, records)
     payloads = read_item_data(workspace.cache.db, delivered; stage=:processed)
     any(isnothing, payloads) && error(
-        "Cannot process collection '$key': one or more processed members are missing",
+        "Cannot process collection '$collection_key': one or more processed members are missing",
     )
     inputs = AbstractDataItem[
         payload isa RegisteredDataItem ?
-            RegisteredDataItem(delivered[index], item_data(payload)) :
+            registered_data_item(
+                collections, delivered[index], item_data(payload)) :
             payload::AbstractDataItem
         for (index, payload) in pairs(payloads)
     ]
     outputs = _process_collection(
         workspace.project,
         workspace.source,
-        collect(path),
         inputs,
     )
     by_id = Dict(id(input) => input for input in inputs)
@@ -390,14 +447,19 @@ function run_collection_process(workspace::Workspace, key::String)::NamedTuple
 end
 
 """Run one collection's analyze folds over the post-process members."""
-function run_collection_analysis(workspace::Workspace, key::String)::MetadataDict
-    path = collection_path_tuple(key)
+function run_collection_analysis(workspace::Workspace, collection_key::Int64)::MetadataDict
+    index = workspace.index
+    collections = index.collections
     records = lock(workspace.work.lock) do
-        node = get(workspace.index.hierarchy.index, path, nothing)
-        node === nothing && error("Cannot summarize missing collection '$key'")
-        copy(node.items)
+        haskey(collections.records, collection_key) ||
+            error("Cannot summarize missing collection '$collection_key'")
+        ItemRecord[
+            index.items[id]
+            for id in collection_item_ids(collections, collection_key)
+            if haskey(index.items, id)
+        ]
     end
-    delivered = delivered_records(workspace, records)
+    delivered = delivered_records(workspace, collections, records)
     payloads = Vector{Any}(nothing, length(delivered))
     rewritten = [
         index for index in eachindex(records)
@@ -413,18 +475,18 @@ function run_collection_analysis(workspace::Workspace, key::String)::MetadataDic
         payloads[index] = base[position]
     end
     any(isnothing, payloads) && error(
-        "Cannot analyze collection '$key': one or more processed members are missing",
+        "Cannot analyze collection '$collection_key': one or more processed members are missing",
     )
     items = AbstractDataItem[
         payload isa RegisteredDataItem ?
-            RegisteredDataItem(delivered[index], item_data(payload)) :
+            registered_data_item(
+                collections, delivered[index], item_data(payload)) :
             payload::AbstractDataItem
         for (index, payload) in pairs(payloads)
     ]
     return metadata_dict(_analyze_collection(
         workspace.project,
         workspace.source,
-        collect(path),
         items,
     ))
 end
@@ -441,36 +503,24 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                 error("Cannot interpret removed source item '$(key.entity)'")
             interpretation = interpret_source_item(
                 workspace.project, workspace.source, source_item, workspace.profiler)
-            conflicts = String[]
-            if work_node_current(workspace, node)
-                conflicts = store_interpreted!(
-                    workspace.cache.db,
-                    source_item,
-                    interpretation.records,
-                    interpretation.interpreted_items,
-                )
-            end
             (
-                records=interpretation.records,
-                failures=interpretation.failures,
-                conflicts,
+                source_item=source_item,
+                interpretation=interpretation,
             )
         elseif key.kind === ITEM_PROCESS
-            record = lock(workspace.work.lock) do
-                get(workspace.index.items, key.entity, nothing)
-            end
+            index = workspace.index
+            record = get(index.items, key.entity, nothing)
             record === nothing && error("Cannot process removed item '$(key.entity)'")
-            processing = run_processing(workspace, record)
+            processing = run_processing(workspace, index.collections, record)
             if work_node_current(workspace, node)
                 store_processed!(workspace.cache.db, processing.record, processing.item)
             end
             processing
         elseif key.kind === ITEM_ANALYZE
-            record = lock(workspace.work.lock) do
-                get(workspace.index.items, key.entity, nothing)
-            end
+            index = workspace.index
+            record = get(index.items, key.entity, nothing)
             record === nothing && error("Cannot analyze removed item '$(key.entity)'")
-            run_item_analysis(workspace, record)
+            run_item_analysis(workspace, index.collections, record)
         elseif key.kind === COLLECTION_PROCESS
             processing = run_collection_process(workspace, key.entity)
             if work_node_current(workspace, node)
@@ -481,7 +531,10 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                         workspace.cache.db, by_id[id(output)], output;
                         stage=:collection_processed)
                 end
-                store_collection_process_result!(workspace.cache.db, key.entity)
+                store_collection_process_result!(
+                    workspace.cache.db,
+                    key.entity::Int64,
+                )
             end
             processing
         else
@@ -526,14 +579,23 @@ read the `:collection_processed` payload (falling back to `:processed`); others 
 """
 function delivery_gate(workspace::Workspace, record::ItemRecord)::Tuple{WorkKey,Symbol}
     if _has_collection_process(workspace.project, record.kind)
-        return WorkKey(COLLECTION_PROCESS, collection_path_key(record.collection)), :collection
+        return WorkKey(
+            COLLECTION_PROCESS,
+            record.collection_key::Int64,
+        ), :collection
     end
     return WorkKey(ITEM_PROCESS, record.id), :item
 end
 
 """Read one record's delivered payload from the cache, honoring its gate's payload stage."""
-function _delivered_payload(workspace::Workspace, record::ItemRecord, mode::Symbol)::Any
-    delivered = ItemRecord(record; metadata=delivered_metadata(workspace, record))
+function _delivered_payload(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    record::ItemRecord,
+    mode::Symbol,
+)::Any
+    delivered = ItemRecord(
+        record; metadata=delivered_metadata(workspace, record, collections))
     if mode === :collection
         payload = only(read_item_data(
             workspace.cache.db, [delivered]; stage=:collection_processed))
@@ -587,21 +649,28 @@ function request_processed_items(
     workspace::Workspace,
     records::Vector{ItemRecord},
 )::Vector{AbstractDataItem}
+    index = workspace.index
+    collections = index.collections
     loaded_item(record, item) = item isa RegisteredDataItem ?
-        RegisteredDataItem(
-            ItemRecord(record; metadata=delivered_metadata(workspace, record)),
+        registered_data_item(
+            collections,
+            ItemRecord(record; metadata=delivered_metadata(workspace, record, collections)),
             item_data(item),
         ) : item
     loaded = Vector{AbstractDataItem}(undef, length(records))
     for (position, record) in pairs(records)
         gate, mode = delivery_gate(workspace, record)
         if mode === :collection
-            path = collection_path_tuple(gate.entity)
-            hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
-            hierarchy_node === nothing && error(
+            collection_key = gate.entity::Int64
+            haskey(collections.records, collection_key) || error(
                 "Cannot deliver item '$(record.id)': collection '$(gate.entity)' is missing")
+            members = ItemRecord[
+                index.items[id]
+                for id in collection_item_ids(collections, collection_key)
+                if haskey(index.items, id)
+            ]
             lock(workspace.work.lock) do
-                for member in hierarchy_node.items
+                for member in members
                     process_key = WorkKey(ITEM_PROCESS, member.id)
                     get(workspace.work.nodes, process_key, nothing) === nothing && continue
                     enqueue_work!(
@@ -616,7 +685,7 @@ function request_processed_items(
                 workspace, gate;
                 priority=3,
                 dependencies=WorkKey[
-                    WorkKey(ITEM_ANALYZE, member.id) for member in hierarchy_node.items],
+                    WorkKey(ITEM_ANALYZE, member.id) for member in members],
             )
             if result.failure !== nothing
                 result.failure.ex isa OperationCanceledException && throw(result.failure)
@@ -630,7 +699,7 @@ function request_processed_items(
                 continue
             end
         end
-        payload = _delivered_payload(workspace, record, mode)
+        payload = _delivered_payload(workspace, collections, record, mode)
         payload === nothing && error(
             "Delivered data for item '$(record.id)' is missing from the cache")
         loaded[position] = loaded_item(record, payload::AbstractDataItem)

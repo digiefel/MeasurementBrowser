@@ -43,22 +43,22 @@ end
         identity = workspace.cache.identity
         try
             wait_workspace_idle!(workspace)
-            record = only(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy))
+            record = only(collect(values(workspace.index.items)))
             @test workspace.index.item_metadata[record.id][:area_um2] == 42
         finally
             MB.close_workspace!(workspace)
         end
 
-        # The metadata file changed while the workspace was closed: reopen diffs
-        # source_collection_metadata and recomputes affected items.
+        # The metadata file changed while the workspace was closed: reopen refreshes the
+        # registered collection values and recomputes affected items.
         write(joinpath(dir, "metadata.txt"), "collection_path,area_um2\ndev,43\n")
         reopened = MB.open_workspace(
             project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(reopened)
-            record = only(DataBrowserAPI.ItemIndex.all_items(reopened.index.hierarchy))
+            record = only(collect(values(reopened.index.items)))
             @test DataBrowserAPI.ItemIndex.effective_metadata(
-                reopened.index.hierarchy, record)[:area_um2] == 43
+                reopened.index.collections, record)[:area_um2] == 43
             @test reopened.index.item_metadata[record.id][:area_um2] == 43
         finally
             MB.close_workspace!(reopened)
@@ -149,7 +149,7 @@ end
 
             @test workspace.scan.state == :done
             @test isempty(workspace.index.analysis_errors)
-            ok = only(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy))
+            ok = only(collect(values(workspace.index.items)))
             @test workspace.index.item_metadata[ok.id][:rows] == 1
             @test workspace.index.item_metadata[ok.id][:area_um2] == 42
         finally
@@ -160,8 +160,8 @@ end
             project, test_source(project, dir); background_processing=true)
         try
             wait_workspace_idle!(reopened)
-            ok = only(DataBrowserAPI.ItemIndex.all_items(reopened.index.hierarchy))
-            effective = DataBrowserAPI.ItemIndex.effective_metadata(reopened.index.hierarchy, ok)
+            ok = only(collect(values(reopened.index.items)))
+            effective = DataBrowserAPI.ItemIndex.effective_metadata(reopened.index.collections, ok)
             @test effective[:area_um2] == 42
             @test reopened.index.item_metadata[ok.id][:area_um2] == 42
         finally
@@ -214,7 +214,7 @@ end
         )
         try
             wait_workspace_idle!(workspace)
-            records = sort(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
             DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test [counter[] for counter in values(reads)] == [1, 1]
@@ -224,20 +224,23 @@ end
 
             write(metadata_path, "collection_path,scale\ndev/a,3\ndev/b,5\n")
             @test Base.timedwait(
-                () -> workspace.index.hierarchy.index[("dev", "a")].metadata[:scale] == 3,
+                () -> _registered_collection_record(
+                    workspace.index.collections, "dev", "a").own_metadata[:scale] == 3,
                 5,
             ) === :ok
-            records = sort(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
             loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
 
             @test only(
                 item_data(item).y for (record, item) in zip(records, loaded)
-                if last(record.collection) == "a"
+                if last(DataBrowserAPI.ItemIndex.collection_location(
+                    workspace.index.collections, record.collection_key)) == "a"
             ) == [6]
             @test only(
                 item_data(item).y for (record, item) in zip(records, loaded)
-                if last(record.collection) == "b"
+                if last(DataBrowserAPI.ItemIndex.collection_location(
+                    workspace.index.collections, record.collection_key)) == "b"
             ) == [60]
             @test all(counter[] == 1 for counter in values(reads))
             @test all(counter[] == 1 for counter in values(entries))
@@ -247,12 +250,13 @@ end
             write(metadata_path, "collection_path,scale\ndev/b,5\n")
             @test Base.timedwait(
                 () -> !haskey(
-                    workspace.index.hierarchy.index[("dev", "a")].metadata,
+                    _registered_collection_record(
+                        workspace.index.collections, "dev", "a").own_metadata,
                     :scale,
                 ),
                 5,
             ) === :ok
-            records = sort(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
             DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test processes["a"][] == 3
@@ -262,13 +266,14 @@ end
             write(metadata_path, "collection_path,scale\ndev/a,4\ndev/b,5\n")
             @test Base.timedwait(
                 () -> get(
-                    workspace.index.hierarchy.index[("dev", "a")].metadata,
+                    _registered_collection_record(
+                        workspace.index.collections, "dev", "a").own_metadata,
                     :scale,
                     nothing,
                 ) == 4,
                 5,
             ) === :ok
-            records = sort(DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
             DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test processes["a"][] == 4
@@ -330,7 +335,7 @@ end
 
             @test workspace.scan.state == :done
             @test read_count[] == 1
-            records = DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy)
+            records = collect(values(workspace.index.items))
             @test length(records) == 100
             @test all(record -> workspace.index.item_metadata[record.id][:rows] == 10, records)
 
@@ -380,12 +385,13 @@ end
         ws1 = run_scan!()
         identity = ws1.cache.identity
         @test read_count[] == 5
-        @test length(DataBrowserAPI.ItemIndex.all_items(ws1.index.hierarchy)) == 5
+        @test length(collect(values(ws1.index.items))) == 5
         @test ws1.cache.status.new_source_items == 5
         failed_item_id = only(
             record.id
-            for record in DataBrowserAPI.ItemIndex.all_items(ws1.index.hierarchy)
-            if record.collection == ["f2"]
+            for record in collect(values(ws1.index.items))
+            if DataBrowserAPI.ItemIndex.collection_location(
+                ws1.index.collections, record.collection_key) == ["f2"]
         )
         @test haskey(ws1.index.analysis_errors, failed_item_id)
 
@@ -396,7 +402,7 @@ end
             Threads.atomic_xchg!(read_count, 0)
             ws2 = run_scan!()
             @test read_count[] == 0
-            @test length(DataBrowserAPI.ItemIndex.all_items(ws2.index.hierarchy)) == 5
+            @test length(collect(values(ws2.index.items))) == 5
             @test ws2.cache.status.new_source_items == 0
             @test ws2.cache.status.stale_source_items == 0
             @test ws2.cache.status.deleted_source_items == 0
@@ -411,7 +417,9 @@ end
             @test ws3.cache.status.stale_source_items == 1
             @test ws3.cache.status.new_source_items == 0
             changed = only(
-                r for r in DataBrowserAPI.ItemIndex.all_items(ws3.index.hierarchy) if r.collection == ["f3"])
+                r for r in collect(values(ws3.index.items))
+                if DataBrowserAPI.ItemIndex.collection_location(
+                    ws3.index.collections, r.collection_key) == ["f3"])
             @test ws3.index.item_metadata[changed.id][:rows] == 7
             @test haskey(ws3.index.analysis_errors, failed_item_id)
             MB.close_workspace!(ws3)
@@ -422,7 +430,7 @@ end
             ws4 = run_scan!()
             @test read_count[] == 1
             @test ws4.cache.status.new_source_items == 1
-            @test length(DataBrowserAPI.ItemIndex.all_items(ws4.index.hierarchy)) == 6
+            @test length(collect(values(ws4.index.items))) == 6
             MB.close_workspace!(ws4)
 
             # Deleting a file reads nothing and drops its records.
@@ -431,7 +439,7 @@ end
             ws5 = run_scan!()
             @test read_count[] == 0
             @test ws5.cache.status.deleted_source_items == 1
-            @test length(DataBrowserAPI.ItemIndex.all_items(ws5.index.hierarchy)) == 5
+            @test length(collect(values(ws5.index.items))) == 5
             MB.close_workspace!(ws5)
         finally
             rm(dirname(identity.cache_path); force=true, recursive=true)

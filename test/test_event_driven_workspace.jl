@@ -58,8 +58,8 @@ end
         # Background processing ran item and collection analysis purely on completion events.
         @test all(md -> md[:rows] == 2, values(workspace.index.item_metadata))
         @test length(workspace.index.item_metadata) == 3
-        node = workspace.index.hierarchy.index[("run",)]
-        @test node.analysis[:members] == 3
+        collection_record = _registered_collection_record(workspace.index.collections, "run")
+        @test collection_record.analysis[:members] == 3
     finally
         DataBrowser.close_workspace!(workspace)
     end
@@ -165,7 +165,7 @@ end
         # Mimic the GUI: render labels continuously while stats publishes rebuild the hierarchy.
         failures = Base.Threads.Atomic{Int}(0)
         reader = Threads.@spawn while DataBrowserCore.Workspace.engine_work_running(workspace)
-            for record in DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy)
+            for record in collect(values(workspace.index.items))
                 try
                     display_label(project, record)
                 catch

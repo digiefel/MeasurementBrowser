@@ -138,21 +138,21 @@ end
         try
             CACHE.store_collection_metadata!(
                 cache,
-                "device-A",
+                Int64(1),
                 Dict(:mean => 1.0, :count => 2),
             )
-            @test read(cache.analyzed_collection_metadata)["device-A"][:mean] == 1.0
+            @test read(cache.analyzed_collection_metadata)[Int64(1)][:mean] == 1.0
             @test haskey(
-                read(cache.result_states),
-                (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), "device-A"),
+                read(cache.collection_result_states),
+                (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), Int64(1)),
             )
 
-            CACHE.delete_collection_metadata!(cache, ["device-A"])
+            CACHE.delete_collection_metadata!(cache, Int64[1])
 
-            @test !haskey(read(cache.analyzed_collection_metadata), "device-A")
+            @test !haskey(read(cache.analyzed_collection_metadata), Int64(1))
             @test !haskey(
-                read(cache.result_states),
-                (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), "device-A"),
+                read(cache.collection_result_states),
+                (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), Int64(1)),
             )
         finally
             CACHE.close_cache_db!(cache)

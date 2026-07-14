@@ -45,6 +45,7 @@ using DataBrowserCache:
     ITEM_ANALYSIS_RESULT,
     PROCESSING_RESULT,
     ProjectCacheSchemaError,
+    ProjectCacheDataError,
     ProjectCacheIdentity,
     ProjectCacheIndex,
     ProjectCacheStatus,
@@ -73,39 +74,43 @@ using DataBrowserCache:
     start_cache!,
     stop_cache!,
     store_collection_metadata!,
+    store_collection_index!,
     store_collection_process_result!,
     store_interpreted!,
     store_item_metadata!,
     store_processed!,
     store_result_failure!,
     store_source_item_failure!,
-    edit_source_collection_metadata!,
     edit_source_item_metadata!,
     wait_condition_deadline,
     write_meta_header!
 import DataBrowserCache: query_items, read_item_data, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
-    Hierarchy,
+    CollectionIndex,
+    CollectionInput,
     ItemFailure,
     ItemRecord,
     MetadataDict,
     RegisteredDataItem,
     SourceScan,
-    all_items,
-    clear_node_analysis!,
-    collection_path_key,
-    collection_path_tuple,
-    edit_changed_structure,
-    edit_hierarchy,
+    clear_collection_analysis!,
+    collection_inputs,
+    collection_item_ids,
+    collection_path_keys,
     effective_metadata,
     effective_record,
-    finish_edit!,
-    insert_record!,
+    insert_item!,
     metadata_dict,
-    remove_records!
-using ..DataBrowserCore: SourceItemInterpretation, interpret_source_item
+    registration_names,
+    remove_item!,
+    resolve_collection_path!,
+    set_collection_analysis!
+using ..DataBrowserCore:
+    SourceItemInterpretation,
+    interpret_source_item
 import DataBrowserAPI
 import DataBrowserAPI:
+    AbstractCollection,
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
@@ -119,11 +124,10 @@ import DataBrowserAPI:
     _has_collection_process,
     _process_collection,
     cacheable,
-    collection_metadata,
     fingerprint,
-    has_collection_metadata,
     id,
     item_data,
+    label,
     metadata,
     process,
     open_source,
@@ -138,6 +142,7 @@ import DataBrowserAPI:
     source_label,
     source_open_options,
     watch_source
+
 
 """
 One cancellable workspace operation and its latest visible state.
@@ -156,14 +161,14 @@ WorkspaceJob()::WorkspaceJob = WorkspaceJob(0, :idle, "", nothing, Base.Threads.
 The progressively populated item index for one open source.
 """
 mutable struct WorkspaceIndex
-    hierarchy::Hierarchy
+    collections::CollectionIndex
     items::Dict{String,ItemRecord}
     # The computed metadata layers per item (analyze output merged with any collection-process
     # overwrite); the entries layer stays on the record.
     item_metadata::Dict{String,Dict{Symbol,Any}}
     collection_metadata_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
-    analysis_errors::Dict{String,String}
+    analysis_errors::Dict{Union{String,Int64},String}
     # Published item ids per source item, so per-publish lookups avoid scanning every item.
     items_by_source::Dict{String,Vector{String}}
 end
@@ -172,7 +177,7 @@ end
 Stable selection identities owned by a workspace.
 """
 Base.@kwdef mutable struct WorkspaceSelection
-    collection_paths::Vector{String} = String[]
+    collection_ids::Vector{String} = String[]
     item_ids::Vector{String} = String[]
 end
 
@@ -281,7 +286,7 @@ function Workspace(
     cache::Bool=true,
     background_processing::Bool=false,
 )::Workspace{S} where {S<:AbstractDataSource}
-    hierarchy = Hierarchy(source_id(source), has_collection_metadata(source))
+    collections = CollectionIndex(source_id(source))
     identity = project_cache_identity(project_name(project), source)
     profiler = Profiling.ProfileSession(
         profile_internal, profile_cpu, profile_output, crash_trace)
@@ -318,12 +323,12 @@ function Workspace(
         project,
         source,
         WorkspaceIndex(
-            hierarchy,
+            collections,
             Dict{String,ItemRecord}(),
             Dict{String,Dict{Symbol,Any}}(),
             Symbol[],
             nothing,
-            Dict{String,String}(),
+            Dict{Union{String,Int64},String}(),
             Dict{String,Vector{String}}(),
         ),
         WorkspaceSelection(),

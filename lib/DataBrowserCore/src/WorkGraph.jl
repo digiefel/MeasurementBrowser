@@ -11,10 +11,10 @@ import DataBrowserAPI: AbstractDataSourceItem
     COLLECTION_ANALYZE
 end
 
-"""Stable identity of one result-producing operation."""
+"""One operation key: source/item work uses String IDs; collection work uses Int64 keys."""
 struct WorkKey
     kind::WorkKind
-    entity::String
+    entity::Union{String,Int64}
 end
 
 """One revision of a live background job (`:waiting`, `:queued`, or `:running` only)."""
