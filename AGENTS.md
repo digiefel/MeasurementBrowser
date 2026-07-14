@@ -1,5 +1,7 @@
-# Repository Guidelines
+# Guidelines
 
+IMPORTANT: before planning multi-package changes, 
+and whenever broad context is needed, read the north-star document: [docs/vision.md](docs/vision.md).
 For the full architectural model, when needed, see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -17,6 +19,9 @@ julia --project=bench bench/scaling.jl [n1,n2,...]
 
 # Realistic browse — compare scorecard.csv + profile.json (very slow)
 julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
+
+# Generate public docs
+julia --project=docs docs/make.jl
 ```
 
 Benchmark details: [bench/README.md](bench/README.md).
@@ -33,20 +38,16 @@ whole pipeline in your head. The package keeps owning everything stateful and ex
 sources, interpreting once, caching at multiple stages, background work with selection priority,
 rendering); project code stays thin script logic that shouldn’t know any of that machinery exists.
 The bet is on live work: files and project code can change while views stay attached via selections
-or rules, plots can be built while the cache is still filling, and the same operations should
-eventually be callable from the REPL as from the GUI so a saved workflow is just a replayable session,
-not exported figure code. Generic table/column visualizers and composable figures are the main
-product expansion; `register_plot!` per kind is the bootstrap, not the end state. Spatial
-navigation, tags, and notes are there to make the tree match how people actually think about
-devices on a chip, not to replace the tree. Broader “DataBrowser” generalization (non-DataFrame
-payloads, tree as a derived view) is a type-system widening on the same workspace model, not a
-pivot. Performance isn’t polish — if browse-while-building and warm reopen aren’t fast, none of the
+or rules, visualizations can be built while the cache is still filling, and the same operations
+should be callable from the REPL as from the GUI. Generic data visualizers and composable figures 
+are the main expansion focus. 
+Additional item hierarchy visualizers are also intended to be included and extension surface.
+Performance isn’t polish — if browse-while-building and warm reopen aren’t fast, none of the
 rest matters. What’s explicitly being left behind: figure-script export, browser-owned project
 state, bundled experiment projects in the core package, and compatibility layers that slow down
-getting to that live workspace. North star: [docs/plans/workspace-vision.md](docs/plans/workspace-vision.md).
+getting to that live workspace. 
 
 ## Target applications
-
 Before pre-made domain projects ship with the app, DataBrowser needs to be installable as a
 standalone executable (or equivalent distribution) that a user can launch without hand-assembling a
 Julia environment.
@@ -67,7 +68,6 @@ application is scoped.
 - **Further techniques** — this list will grow.
 
 ## Architecture
-
 Project scripts describe how to recognize files, parse them into items, and draw plots. The package
 handles directory scanning, background processing, DuckDB caching, the item tree, selection, and the
 browser UI. Project code should not touch cache files, background jobs, or UI state.
@@ -86,7 +86,8 @@ registration order; the first match wins, so register specific filename patterns
 
 | Editing… | Look in… | Doc |
 |---|---|---|
-| `register_*`, item callbacks | `lib/DataBrowserAPI/` | [api.md](docs/api.md) |
+| `register_item!`, `register_collection_analysis!`, item callbacks | `lib/DataBrowserAPI/` | [api.md](docs/api.md) |
+| Plot registration, `PlotKind`, Makie rendering | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
 | Item records, hierarchy | `lib/DataBrowserAPI/src/ItemIndex.jl` | [data-model.md](docs/data-model.md) |
 | Directory traversal, `metadata.txt` | `lib/DataBrowserSources/` | [storage.md](docs/storage.md) |
 | DuckDB cache, writes, reopen | `lib/DataBrowserCache/` | [cache.md](docs/cache.md) |
@@ -101,20 +102,17 @@ behavior that affects the model, update the relevant doc in the same commit — 
 architecture into this file.
 
 ## Working rules
-
 Julia 1.12; 4-space indent; `snake_case` functions, `UpperCamelCase` types. Don't catch errors that
-should be fixed. Docstrings on public APIs. Pre-pre-alpha: replace cleanly, no compatibility shims.
+should be fixed. Docstrings on public APIs. Pre-pre-alpha with ZERO users: refactor and replace CLEANLY, zero compatibility shims.
 When code and docs disagree, fix the doc in the same commit.
 
 ## Testing
-
 When a change needs validation, run the full suite once:
 `julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
 harmless local edits. Fixtures in `test/fixtures/`; inline projects in `test/test_project.jl` and
 `test/test_scan_profile.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
 
 ## Benchmarks
-
 Use `bench/` for performance work (`julia --project=bench`). Results persist under
 `bench/results/` (gitignored). See [bench/README.md](bench/README.md).
 
@@ -126,8 +124,3 @@ Use `bench/` for performance work (`julia --project=bench`). Results persist und
 
 Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. Set `MB_PROFILE_INTERNAL=0`
 to skip the structured trace.
-
-## Notes
-
-- The UI needs OpenGL (GLMakie + CImGui).
-- Use `test/` fixtures or small subfolders during development — full tree scans are slow.

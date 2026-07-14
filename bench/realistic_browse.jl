@@ -25,7 +25,11 @@ import DataBrowserAPI: _has_collection_analysis
 using DataBrowserAPI.ItemIndex: DataItem, ItemRecord, collection_path_key
 using DataBrowserCore.Workspace
 using DataBrowserCache
-using DataBrowserPlots
+using DataBrowserPlots:
+    register_plot!,
+    registered_plot_kinds,
+    setup_plot,
+    plot_data!
 using DataBrowserSources
 import DataBrowserProfiling as Profiling
 using CSV

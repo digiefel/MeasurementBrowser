@@ -23,21 +23,6 @@ struct CollectionRecipe
     analyze::Union{Nothing,Function}
 end
 
-"""
-One registered plot recipe for an item kind.
-
-`setup(workspace, items)` returns the figure handle; `draw(workspace, items, figure)` fills it.
-`items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`);
-`process(item)`, if registered, already returned the item shape these callbacks receive. Neither
-callback resolves data itself.
-"""
-struct PlotRecipe
-    kind::Symbol
-    label::String
-    setup::Function
-    draw::Function
-end
-
 """Timing retained for one source item in the current scan."""
 mutable struct SourceItemProfile
     source_item_id::String
@@ -93,15 +78,15 @@ end
 """
 A callback project assembled from registered recipes.
 
-Source interpretation, data processing, and presentation are defined by the registered callbacks.
-Package-owned cache, job, and browser state does not belong here.
+Source interpretation and data processing are defined by the registered callbacks.
+Plot registration lives in `DataBrowserPlots`. Package-owned cache, job, and browser state does
+not belong here.
 """
 mutable struct Project
     name::String
     description::String
     recipes::Vector{ItemRecipe}
     collections::Dict{Symbol,CollectionRecipe}
-    plots::Dict{Symbol,Dict{String,PlotRecipe}}
     # Transient timing for the latest scan, surfaced in the performance window. One row per source
     # item keeps the profile useful without retaining every expanded data-item event.
     scan_profile::Dict{String,SourceItemProfile}

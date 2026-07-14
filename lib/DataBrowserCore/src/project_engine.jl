@@ -1,16 +1,15 @@
 """
 Project.jl - engine methods for the registration-based project API.
 
-Construction (`define_project`, `register_*`) and the payload-agnostic contracts live in
-`DataBrowserAPI`. This file keeps serialization, scan profiling, and callback-driving methods that
-touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
+Construction (`define_project`, `register_item!`, `register_collection_analysis!`) and the
+payload-agnostic contracts live in `DataBrowserAPI`. This file keeps scan profiling and
+callback-driving methods that touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
 """
 
 using DataBrowserAPI
 using DataBrowserAPI: AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, fingerprint, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
-import Serialization
 import DataBrowserAPI:
     _analyze_collection,
     _analyze_item,
@@ -45,36 +44,6 @@ import DataBrowserAPI.ItemIndex:
 
 function _with_data(item::RegisteredDataItem, data)::RegisteredDataItem
     return RegisteredDataItem(item, data)
-end
-
-# Only registered recipes are persisted; transient scan state (read cache, profiling, locks) is
-# rebuilt empty on load. This keeps the cache format stable when transient fields change, so adding
-# scan instrumentation never silently invalidates a cache.
-function Serialization.serialize(s::Serialization.AbstractSerializer, project::Project)
-    Serialization.serialize_cycle(s, project) && return nothing
-    Serialization.serialize_type(s, Project, true)
-    Serialization.serialize(s, project.name)
-    Serialization.serialize(s, project.description)
-    Serialization.serialize(s, project.recipes)
-    Serialization.serialize(s, project.collections)
-    Serialization.serialize(s, project.plots)
-    return nothing
-end
-
-function Serialization.deserialize(s::Serialization.AbstractSerializer, ::Type{Project})
-    project = Project(
-        "", "", ItemRecipe[],
-        Dict{Symbol,CollectionRecipe}(),
-        Dict{Symbol,Dict{String,PlotRecipe}}(),
-        Dict{String,SourceItemProfile}(), ReentrantLock(),
-    )
-    Serialization.deserialize_cycle(s, project)
-    project.name = Serialization.deserialize(s)
-    project.description = Serialization.deserialize(s)
-    project.recipes = Serialization.deserialize(s)
-    project.collections = Serialization.deserialize(s)
-    project.plots = Serialization.deserialize(s)
-    return project
 end
 
 function record_scan_phase!(

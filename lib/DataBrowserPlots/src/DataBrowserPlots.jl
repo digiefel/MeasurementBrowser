@@ -6,15 +6,14 @@ using GLMakie: Figure
 import DataBrowserAPI
 import DataBrowserAPI:
     AbstractDataItem,
-    PlotKind,
-    RegisteredPlot,
-    plot_data!,
-    setup_plot
+    Project
 import DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
 import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
+
+include("plots.jl")
 
 include("MakieIntegration.jl")
 using .MakieImguiIntegration
@@ -25,7 +24,7 @@ include("TablePlotPanel.jl")
 include("PlotsExtension.jl")
 
 """Materialize records and create the figure layout required by a visualizer."""
-function DataBrowserAPI.setup_plot(
+function setup_plot(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
@@ -35,7 +34,7 @@ function DataBrowserAPI.setup_plot(
 end
 
 """Materialize records and draw their items into an existing figure."""
-function DataBrowserAPI.plot_data!(
+function plot_data!(
     workspace::Workspace.Workspace,
     plot_kind::Type{<:PlotKind},
     records::Vector{ItemRecord},
@@ -46,12 +45,12 @@ function DataBrowserAPI.plot_data!(
     return nothing
 end
 
-function DataBrowserAPI.setup_plot(
+function setup_plot(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
     items::Vector{<:AbstractDataItem},
 )::Figure where {Kind,Label}
-    recipe = workspace.project.plots[Kind][String(Label)]
+    recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
     return Profiling.@profile_span workspace.profiler :visualization :setup_plot Profiling.ProfileAttributes(
         kind=Kind,
         items=Int64(length(items)),
@@ -60,13 +59,13 @@ function DataBrowserAPI.setup_plot(
     end
 end
 
-function DataBrowserAPI.plot_data!(
+function plot_data!(
     workspace::Workspace.Workspace,
     ::Type{RegisteredPlot{Kind,Label}},
     items::Vector{<:AbstractDataItem},
     figure::Figure,
 )::Nothing where {Kind,Label}
-    recipe = workspace.project.plots[Kind][String(Label)]
+    recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
     Profiling.@profile_span workspace.profiler :visualization :draw_plot Profiling.ProfileAttributes(
         kind=Kind,
         items=Int64(length(items)),
@@ -80,7 +79,22 @@ function __init__()
     Browser.register_gui_extension!(PlotsExtension)
 end
 
-export PlotsExtension, plots_extension, request_plot_profile!
-export PlotState, PlotViewState, PersistedPlotView
+export PlotsExtension,
+    plots_extension,
+    request_plot_profile!,
+    PlotState,
+    PlotViewState,
+    PersistedPlotView,
+    PlotKind,
+    PlotRecipe,
+    RegisteredPlot,
+    register_plot!,
+    setup_plot,
+    plot_data!,
+    registered_plot_kinds,
+    plot_kind_label,
+    plot_kind_name,
+    plot_kind_from_name,
+    plot_kinds
 
 end

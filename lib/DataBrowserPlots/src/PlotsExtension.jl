@@ -3,11 +3,6 @@ import CImGui as ig
 import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
 
-using DataBrowserAPI:
-    PlotKind,
-    plot_kind_from_name,
-    plot_kind_name
-
 """
 The Makie plotting extension registered with the `DataBrowserGUI` shell.
 

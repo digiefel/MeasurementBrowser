@@ -1,8 +1,6 @@
 using DataBrowser
-using DataBrowserAPI: SourceItemProfile
 using CSV
 using DataFrames: DataFrame, nrow
-using Serialization: serialize, deserialize
 using Test
 
 const MB = DataBrowser
@@ -120,31 +118,6 @@ end
             rm(dirname(identity.cache_path); force=true, recursive=true)
         end
     end
-end
-
-@testset "Project serialization drops transient state" begin
-    project = _profile_project()
-    # Dirty the transient fields the cache must never persist.
-    project.scan_profile["source.csv"] = SourceItemProfile("source.csv")
-
-    io = IOBuffer()
-    serialize(io, project)
-    seekstart(io)
-    restored = deserialize(io)
-
-    @test restored isa MB.Project
-    @test restored.name == project.name
-    @test length(restored.recipes) == 1
-    @test restored.recipes[1].kind == :table
-    # Transient state is rebuilt empty rather than carried across the cache boundary.
-    @test isempty(restored.scan_profile)
-
-    # Project serialization should preserve shared references.
-    shared = IOBuffer()
-    serialize(shared, (project, project))
-    seekstart(shared)
-    a, b = deserialize(shared)
-    @test a === b
 end
 
 @testset "workspace stats see effective parameters" begin

@@ -8,7 +8,6 @@ using DataBrowserAPI
 using DataBrowserAPI:
     CollectionRecipe,
     ItemRecipe,
-    PlotRecipe,
     Project,
     SourceItemProfile,
     data_items,

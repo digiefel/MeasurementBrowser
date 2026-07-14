@@ -341,7 +341,7 @@ uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
 
 [[deps.DataBrowserAPI]]
-deps = ["CancellationTokens", "Dates", "InteractiveUtils", "Tables"]
+deps = ["CancellationTokens", "Dates", "Tables"]
 path = "lib/DataBrowserAPI"
 uuid = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 version = "0.1.0"
@@ -371,7 +371,7 @@ uuid = "f3a4b5c6-d7e8-9f0a-1b2c-3d4e5f6a7b8c"
 version = "0.1.0"
 
 [[deps.DataBrowserPlots]]
-deps = ["CImGui", "DataBrowserAPI", "DataBrowserCore", "DataBrowserGUI", "DataBrowserProfiling", "DataFrames", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Printf"]
+deps = ["CImGui", "DataBrowserAPI", "DataBrowserCore", "DataBrowserGUI", "DataBrowserProfiling", "DataFrames", "GLFW", "GLMakie", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Printf"]
 path = "lib/DataBrowserPlots"
 uuid = "e2f3a4b5-c6d7-8e9f-0a1b-2c3d4e5f6a7b"
 version = "0.1.0"

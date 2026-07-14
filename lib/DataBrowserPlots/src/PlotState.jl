@@ -1,6 +1,5 @@
 using GLMakie: Figure
 
-using DataBrowserAPI: PlotKind
 using DataBrowserCore: InspectorTable
 
 """Runtime state for one plot window."""

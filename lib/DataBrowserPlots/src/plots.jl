@@ -1,3 +1,31 @@
+using InteractiveUtils: subtypes
+
+using DataBrowserAPI: AbstractDataItem, Project
+
+"""
+One registered plot recipe for an item kind.
+
+`setup(workspace, items)` returns the figure handle; `draw(workspace, items, figure)` fills it.
+`items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`);
+`process(item)`, if registered, already returned the item shape these callbacks receive. Neither
+callback resolves data itself.
+"""
+struct PlotRecipe
+    kind::Symbol
+    label::String
+    setup::Function
+    draw::Function
+end
+
+const PROJECT_PLOT_RECIPES = WeakKeyDict{Project, Dict{Symbol, Dict{String, PlotRecipe}}}()
+
+"""Plot recipes registered for one project."""
+function _plot_recipes(project::Project)::Dict{Symbol, Dict{String, PlotRecipe}}
+    return get!(PROJECT_PLOT_RECIPES, project) do
+        Dict{Symbol, Dict{String, PlotRecipe}}()
+    end
+end
+
 """
 Base type for visualizers selectable by the browser and Julia API.
 
@@ -35,9 +63,33 @@ function setup_plot end
 """Materialize records and draw their items into an existing figure."""
 function plot_data! end
 
+"""
+Register (or replace) one plot recipe for an item kind.
+
+`setup(workspace, items)` builds and returns the figure; `draw(workspace, items, figure)` fills it
+in. `items` are the loaded, data-bearing items for the selection (`Vector{<:AbstractDataItem}`);
+each has already passed through `process(item)`, if registered, so neither callback resolves item
+data itself. A kind may have multiple plots; re-registering the same `label` for the same kind
+replaces that plot, which keeps REPL iteration stable.
+"""
+function register_plot!(
+    project::Project,
+    kind::Symbol;
+    label::AbstractString,
+    setup::Function,
+    draw::Function,
+)::Project
+    label_string = String(label)
+    recipes = get!(_plot_recipes(project), kind) do
+        Dict{String,PlotRecipe}()
+    end
+    recipes[label_string] = PlotRecipe(kind, label_string, setup, draw)
+    return project
+end
+
 """Every plot registered for an item kind, sorted by label."""
 function registered_plot_kinds(project, kind::Symbol)::Vector{Type{<:PlotKind}}
-    recipes = get(project.plots, kind, nothing)
+    recipes = get(_plot_recipes(project), kind, nothing)
     recipes === nothing && return Type{<:PlotKind}[]
     return Type{<:PlotKind}[
         RegisteredPlot{kind,Symbol(label)}
@@ -47,7 +99,7 @@ end
 
 """Human label for a registered plot kind, taken from its recipe."""
 function plot_kind_label(project, ::Type{RegisteredPlot{Kind,Label}})::String where {Kind,Label}
-    return project.plots[Kind][String(Label)].label
+    return _plot_recipes(project)[Kind][String(Label)].label
 end
 
 """

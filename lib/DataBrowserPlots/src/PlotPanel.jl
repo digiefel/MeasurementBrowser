@@ -13,14 +13,6 @@ using DataBrowserAPI:
 using DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
-using DataBrowserAPI:
-    PlotKind,
-    plot_data!,
-    plot_kind_label,
-    plot_kind_name,
-    registered_plot_kinds,
-    setup_plot,
-    plot_kind_from_name
 using .MakieImguiIntegration: MakieFigure, destroy_figure!
 
 _plot_state(state::Browser.BrowserState) = plots_extension(state).plots
