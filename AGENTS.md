@@ -1,9 +1,8 @@
 # Guidelines
 
-IMPORTANT: before planning multi-package changes, 
-and whenever broad context is needed, read the north-star document: [docs/vision.md](docs/vision.md).
-For the full architectural model, when needed, see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+IMPORTANT: before planning multi-package changes, and whenever broad context is needed, read the north-star document: [docs/vision.md](docs/vision.md).
+For the full architectural model, when needed, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+When making a change or looking to add a feature, read the roadmap: [docs/plans/roadmap.md](docs/plans/roadmap.md).
 
 ## Commands
 
