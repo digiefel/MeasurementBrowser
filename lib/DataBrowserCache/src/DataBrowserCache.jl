@@ -33,9 +33,9 @@ import DataBrowserAPI.ItemIndex:
     ItemRecord,
     MetadataValue,
     SourceScan,
+    append_item!,
     collection_path_keys,
     emit_progress,
-    insert_item!,
     metadata_dict,
     register_collection!
 
@@ -68,6 +68,7 @@ export AbstractCacheDB,
     clear_cached_result_state!,
     clear_cached_source_state!,
     close_cache_db!,
+    delete_collection_records!,
     delete_collection_metadata!,
     delete_source_item!,
     load_cache_index,

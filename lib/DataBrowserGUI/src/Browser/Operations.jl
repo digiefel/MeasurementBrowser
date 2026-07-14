@@ -99,9 +99,11 @@ function select_source_item!(
     isempty(items) && return false
 
     collections = workspace.index.collections
-    collection_ids = unique([
-        collections.records[item.collection_key].id
-        for item in items if item.collection_key !== nothing
+    collection_ids = unique(String[
+        item.collection_key === nothing ?
+            ROOT_COLLECTION_SELECTION_ID :
+            collections.records[item.collection_key].id
+        for item in items
     ])
     expanded_ids = copy(state.expanded_collection_ids)
     for item in items

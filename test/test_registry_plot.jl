@@ -70,6 +70,16 @@ const MB = DataBrowser
     workspace = DataBrowserCore.Workspace.Workspace(project, test_source(project, dir))
     @test MB.collection(only(items)) == ["dev"]
 
+    collection_meta = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(
+        ("dev",) => Dict{Symbol,Any}(:wafer => "A"),
+    )
+    item_with_collection_meta = only(items_for_file(
+        project,
+        joinpath(dir, "m.csv");
+        meta=collection_meta,
+    ))
+    @test MB.metadata(item_with_collection_meta)[:wafer] == "A"
+
     figure = setup_plot(workspace, table_plot, items)
     @test figure isa Figure
     @test plot_data!(workspace, table_plot, items, figure) === nothing

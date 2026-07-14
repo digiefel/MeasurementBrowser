@@ -1166,6 +1166,22 @@ function delete_source_item!(
     return nothing
 end
 
+"""Delete collection records that the live index pruned after item removal or replacement."""
+function delete_collection_records!(
+    cache::CacheDB,
+    collection_keys::Vector{Int64},
+)::Nothing
+    lock(cache.key_lock) do
+        for collection_key in unique(collection_keys)
+            delete!(cache.collections, collection_key)
+            delete!(cache.persisted_collection_keys, collection_key)
+        end
+    end
+    return nothing
+end
+
+delete_collection_records!(::MemoryCacheDB, ::Vector{Int64})::Nothing = nothing
+
 """Delete cached analysis for collections whose published metadata is invalid."""
 function delete_collection_metadata!(
     cache::CacheDB,
@@ -1686,7 +1702,7 @@ function _load_source_scan(
             metadata=get(item_metadata_by_key, row.item_key, MetadataDict()),
             item_fingerprint=_deserialize_hex(row.item_fingerprint_hex),
         ))
-        insert_item!(collections, row.id, row.collection_key)
+        append_item!(collections, row.id, row.collection_key)
     end
 
     sort!(records; by=record -> (record.source_item_id, record.id))

@@ -22,8 +22,9 @@ persisted results already exist. The work dependency graph decides what remains 
 application.
 
 Cached item records carry the entries layer of their metadata. Collection nodes separately persist
-their representative concrete values, whose `metadata(collection)` projection supplies inherited
-collection metadata after reopen.
+the package-owned label, metadata, and registration-name projections needed to reconstruct the
+hierarchy and inherited collection metadata after reopen. Concrete project collection values do not
+enter the cache.
 
 ## Vocabulary
 

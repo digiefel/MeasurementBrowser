@@ -4,6 +4,7 @@ CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 DataBrowserCache = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 DataBrowserCore = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
+DataBrowserGUI = "f3a4b5c6-d7e8-9f0a-1b2c-3d4e5f6a7b8c"
 DataBrowserPlots = "e2f3a4b5-c6d7-8e9f-0a1b-2c3d4e5f6a7b"
 DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 DataBrowserSources = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
@@ -18,6 +19,7 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 DataBrowserAPI = {path = "../lib/DataBrowserAPI"}
 DataBrowserCache = {path = "../lib/DataBrowserCache"}
 DataBrowserCore = {path = "../lib/DataBrowserCore"}
+DataBrowserGUI = {path = "../lib/DataBrowserGUI"}
 DataBrowserPlots = {path = "../lib/DataBrowserPlots"}
 DataBrowserProfiling = {path = "../lib/DataBrowserProfiling"}
 DataBrowserSources = {path = "../lib/DataBrowserSources"}

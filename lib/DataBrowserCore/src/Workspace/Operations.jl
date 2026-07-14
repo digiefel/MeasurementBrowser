@@ -224,6 +224,32 @@ function refresh_collection_metadata_keys!(index::WorkspaceIndex)::Nothing
     return nothing
 end
 
+"""
+    include_collection_metadata_keys!(index, collection_keys) -> Nothing
+
+Add metadata keys from newly registered collection records without rescanning the complete
+collection index.
+"""
+function include_collection_metadata_keys!(index::WorkspaceIndex, collection_keys)::Nothing
+    changed = false
+    for collection_key in collection_keys
+        collection_record = get(index.collections.records, collection_key, nothing)
+        collection_record === nothing && continue
+        for metadata_key in keys(collection_record.own_metadata)
+            metadata_key in index.collection_metadata_keys && continue
+            push!(index.collection_metadata_keys, metadata_key)
+            changed = true
+        end
+        for metadata_key in keys(collection_record.analysis)
+            metadata_key in index.collection_metadata_keys && continue
+            push!(index.collection_metadata_keys, metadata_key)
+            changed = true
+        end
+    end
+    changed && sort!(index.collection_metadata_keys; by=String)
+    return nothing
+end
+
 """Refresh derived collection metadata after indexed records change."""
 function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
     refresh_collection_metadata_keys!(workspace.index)
@@ -247,7 +273,11 @@ function reconcile_source_metadata_cache!(
             workspace.source,
             names,
         )
-        resolve_collection_path!(workspace.index.collections, inputs)
+        resolve_collection_path!(
+            workspace.index.collections,
+            inputs;
+            update_existing=true,
+        )
     end
     refresh_collection_metadata_keys!(workspace.index)
     records = collect(values(workspace.index.items))
@@ -346,33 +376,39 @@ function remove_source_item_output!(
 )::Tuple{Vector{ItemRecord},Vector{Int64}}
     old_records = source_item_records(workspace.index, source_item_id_value)
     invalidated = affected_collection_keys(workspace.index.collections, old_records)
-    updated_items = copy(workspace.index.items)
-    updated_collections = copy(workspace.index.collections)
+    items = workspace.index.items
+    collections = workspace.index.collections
     for record in old_records
-        remove_item!(updated_collections, record.id, record.collection_key)
-        delete!(updated_items, record.id)
+        remove_item!(collections, record.id, record.collection_key)
+        delete!(items, record.id)
         delete!(workspace.index.item_metadata, record.id)
         delete!(workspace.index.analysis_errors, record.id)
     end
     delete!(workspace.index.analysis_errors, source_item_id_value)
     delete!(workspace.index.items_by_source, source_item_id_value)
+    analysis_cleared = false
     for collection_key in invalidated
-        haskey(updated_collections.records, collection_key) || continue
-        clear_collection_analysis!(updated_collections, collection_key)
+        haskey(collections.records, collection_key) || continue
+        analysis_cleared |= !isempty(collections.records[collection_key].analysis)
+        clear_collection_analysis!(collections, collection_key)
     end
-    updated_index = WorkspaceIndex(
-        updated_collections,
-        updated_items,
-        workspace.index.item_metadata,
-        workspace.index.collection_metadata_keys,
-        workspace.index.source,
-        workspace.index.analysis_errors,
-        workspace.index.items_by_source,
-    )
-    isempty(old_records) || refresh_collection_metadata_keys!(updated_index)
-    workspace.index = updated_index
-    filter!(id -> haskey(updated_items, id), workspace.selection.item_ids)
+    (analysis_cleared || any(key -> !haskey(collections.records, key), invalidated)) &&
+        refresh_collection_metadata_keys!(workspace.index)
+    filter!(id -> haskey(items, id), workspace.selection.item_ids)
     return old_records, invalidated
+end
+
+"""Delete persisted collection rows no longer present in the published collection index."""
+function delete_pruned_collection_records!(
+    workspace::Workspace,
+    collection_keys::Vector{Int64},
+)::Nothing
+    pruned = Int64[
+        key for key in unique(collection_keys)
+        if !haskey(workspace.index.collections.records, key)
+    ]
+    delete_collection_records!(workspace.cache.db, pruned)
+    return nothing
 end
 
 """Publish one source item's current records after validating duplicate IDs."""
@@ -403,28 +439,37 @@ function publish_source_item_records!(
         )
     end
 
-    updated_collections = copy(workspace.index.collections)
+    collections = workspace.index.collections
+    next_collection_key = collections.next_key
+    collection_keys = resolve_collection_paths!(collections, collection_paths)
     resolved = ItemRecord[
-        ItemRecord(record; collection_key=resolve_collection_path!(
-            updated_collections, path))
-        for (record, path) in zip(records, collection_paths)
+        ItemRecord(record; collection_key)
+        for (record, collection_key) in zip(records, collection_keys)
     ]
     old_keys = affected_collection_keys(workspace.index.collections, old_records)
-    retained = Set((record.id, record.collection_key) for record in resolved)
-    for record in resolved
-        insert_item!(updated_collections, record.id, record.collection_key)
-    end
-    updated_items = copy(workspace.index.items)
-    for record in old_records
-        (record.id, record.collection_key) in retained ||
-            remove_item!(updated_collections, record.id, record.collection_key)
-        delete!(updated_items, record.id)
-        delete!(workspace.index.item_metadata, record.id)
-        delete!(workspace.index.analysis_errors, record.id)
+    items = workspace.index.items
+    if isempty(old_records)
+        for record in resolved
+            append_item!(collections, record.id, record.collection_key)
+        end
+    else
+        old_memberships = Set((record.id, record.collection_key) for record in old_records)
+        retained = Set((record.id, record.collection_key) for record in resolved)
+        for record in resolved
+            (record.id, record.collection_key) in old_memberships ||
+                append_item!(collections, record.id, record.collection_key)
+        end
+        for record in old_records
+            (record.id, record.collection_key) in retained ||
+                remove_item!(collections, record.id, record.collection_key)
+            delete!(items, record.id)
+            delete!(workspace.index.item_metadata, record.id)
+            delete!(workspace.index.analysis_errors, record.id)
+        end
     end
     delete!(workspace.index.analysis_errors, source_item_id_value)
     for record in resolved
-        updated_items[record.id] = record
+        items[record.id] = record
         delete!(workspace.index.item_metadata, record.id)
     end
     if isempty(resolved)
@@ -433,23 +478,23 @@ function publish_source_item_records!(
         workspace.index.items_by_source[source_item_id_value] =
             String[record.id for record in resolved]
     end
-    filter!(id -> haskey(updated_items, id), workspace.selection.item_ids)
-    new_keys = affected_collection_keys(updated_collections, resolved)
+    filter!(id -> haskey(items, id), workspace.selection.item_ids)
+    new_keys = affected_collection_keys(collections, resolved)
     invalidated = unique([old_keys; new_keys])
+    analysis_cleared = false
     for collection_key in invalidated
-        haskey(updated_collections.records, collection_key) || continue
-        clear_collection_analysis!(updated_collections, collection_key)
+        haskey(collections.records, collection_key) || continue
+        analysis_cleared |= !isempty(collections.records[collection_key].analysis)
+        clear_collection_analysis!(collections, collection_key)
     end
-    workspace.index = WorkspaceIndex(
-        updated_collections,
-        updated_items,
-        workspace.index.item_metadata,
-        workspace.index.collection_metadata_keys,
-        workspace.index.source,
-        workspace.index.analysis_errors,
-        workspace.index.items_by_source,
-    )
-    refresh_collection_metadata_keys!(workspace.index)
+    if analysis_cleared || any(key -> !haskey(collections.records, key), old_keys)
+        refresh_collection_metadata_keys!(workspace.index)
+    elseif next_collection_key < collections.next_key
+        include_collection_metadata_keys!(
+            workspace.index,
+            next_collection_key:(collections.next_key - 1),
+        )
+    end
     return resolved, invalidated
 end
 
@@ -468,6 +513,7 @@ function ingest_source_changes!(
         old_records, invalidated = remove_source_item_output!(workspace, removed)
         delete_source_item!(workspace.cache.db, removed, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
+        delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         lock(workspace.work.lock) do
             delete!(workspace.work.source_items, removed)
@@ -825,7 +871,7 @@ function apply_cache_index!(
                 workspace.index.items[id] for id in member_ids
                 if haskey(workspace.index.items, id)
             ]
-            collection_key = string(collection_key_value)
+            collection_key = collection_key_value
             member_kinds = unique(record.kind for record in members)
             if any(k -> _has_collection_process(workspace.project, k), member_kinds) &&
                     !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key)
@@ -944,6 +990,7 @@ function publish_work_success!(
         )
         store_collection_index!(workspace.cache.db, workspace.index.collections, resolved)
         delete_collection_metadata!(workspace.cache.db, invalidated)
+        delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, resolved; collection_keys=invalidated)
         publish_metadata_conflicts!(workspace, key.entity, key.kind, conflicts)
         reconcile_source_metadata_cache!(workspace; collections=invalidated)
@@ -1041,6 +1088,7 @@ function publish_work_failure!(
         old_records, invalidated = remove_source_item_output!(workspace, key.entity)
         delete_source_item!(workspace.cache.db, key.entity, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
+        delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
         store_source_item_failure!(workspace.cache.db, key.entity, message)

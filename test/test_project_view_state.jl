@@ -180,3 +180,49 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
     @test Browser._project_view_to_toml(loaded_after_ui_save) ==
           Browser._project_view_to_toml(saved_view)
 end
+
+@testset "root items participate in browser selection" begin
+    mktempdir() do root_path
+        project = DataBrowser.define_project("RootItemSelection_$(basename(root_path))")
+        workspace = DataBrowserCore.Workspace.Workspace(
+            project,
+            test_source(project, root_path),
+        )
+        try
+            collections = DataBrowserAPI.ItemIndex.CollectionIndex(root_path)
+            root_item = DataBrowserAPI.ItemIndex.ItemRecord(;
+                source_item_id="root-file",
+                source_item_path=joinpath(root_path, "root.csv"),
+                id="root-item",
+                item_label="Root Item",
+                kind=:table,
+                collection_key=nothing,
+            )
+            DataBrowserAPI.ItemIndex.insert_item!(collections, root_item.id, nothing)
+            DataBrowserCore.Workspace.replace_item_index!(
+                workspace,
+                collections,
+                [root_item],
+            )
+            state = Browser.BrowserState(workspace=workspace)
+
+            workspace.selection.collection_ids = [Browser.ROOT_COLLECTION_SELECTION_ID]
+            workspace.selection.item_ids = [root_item.id]
+            selected_collections, selected_items, selected_path =
+                Browser._project_visible_selection(state)
+            @test isempty(selected_collections)
+            @test selected_items == [root_item]
+            @test isempty(selected_path)
+            @test Browser._items_of_selected_collections(state) == [root_item]
+
+            empty!(workspace.selection.collection_ids)
+            empty!(workspace.selection.item_ids)
+            @test Browser.select_source_item!(state, root_item.source_item_id)
+            @test workspace.selection.collection_ids ==
+                [Browser.ROOT_COLLECTION_SELECTION_ID]
+            @test workspace.selection.item_ids == [root_item.id]
+        finally
+            DataBrowser.close_workspace!(workspace)
+        end
+    end
+end

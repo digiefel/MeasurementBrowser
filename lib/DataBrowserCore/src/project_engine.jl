@@ -36,12 +36,15 @@ import DataBrowserAPI:
     scan_profile_summary,
     scan_source_profile
 import DataBrowserAPI.ItemIndex:
+    CollectionIndex,
     CollectionInput,
     ItemFailure,
     ItemRecord,
     MetadataDict,
     RegisteredDataItem,
     collection_inputs,
+    effective_record,
+    resolve_collection_path!,
     metadata_dict
 
 function _with_data(item::RegisteredDataItem, data)::RegisteredDataItem
@@ -454,7 +457,24 @@ function items_for_file(
         source,
         index_source_file(filepath),
     )
-    return interpretation.interpreted_items
+    collections = CollectionIndex(source_id(source))
+    records = ItemRecord[
+        ItemRecord(record; collection_key=resolve_collection_path!(collections, path))
+        for (record, path) in zip(
+            interpretation.records,
+            interpretation.collection_paths,
+        )
+    ]
+    return AbstractDataItem[
+        item isa RegisteredDataItem ?
+            RegisteredDataItem(
+                effective_record(collections, record),
+                item_data(item),
+                collection(item),
+            ) :
+            item
+        for (record, item) in zip(records, interpretation.interpreted_items)
+    ]
 end
 
 """

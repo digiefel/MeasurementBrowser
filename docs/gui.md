@@ -53,6 +53,10 @@ Directory sources are watched continuously.
 | Table Plot (DBPlots) | Independent X/Y plot over the workspace selection's merged table; toggled from the Plot menu. |
 | Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
 
+Items without a collection path appear under the hierarchy's `Root` row. That row participates in
+the same multi-selection, filtering, saved-view, and source-item reveal behavior as collection
+leaves.
+
 ## Scan profiling
 
 The Performance window's always-on scan profile keeps one bounded row per source item. It shows

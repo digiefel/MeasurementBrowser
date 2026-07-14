@@ -441,6 +441,15 @@ end
             @test ws5.cache.status.deleted_source_items == 1
             @test length(collect(values(ws5.index.items))) == 5
             MB.close_workspace!(ws5)
+
+            # A later cache-only first view must not resurrect the pruned collection row.
+            ws6 = run_scan!()
+            @test read_count[] == 0
+            @test all(
+                record -> record.label != "f6",
+                values(ws6.index.collections.records),
+            )
+            MB.close_workspace!(ws6)
         finally
             rm(dirname(identity.cache_path); force=true, recursive=true)
         end

@@ -214,10 +214,72 @@ function register_collection!(index::CollectionIndex, collection_record::Collect
     return nothing
 end
 
+_projection_changed(record::CollectionRecord, input::CollectionInput)::Bool =
+    record.label != input.label ||
+    record.own_metadata != input.own_metadata ||
+    record.registration_name != input.registration_name
+
+_projection_changed(left::CollectionInput, right::CollectionInput)::Bool =
+    left.label != right.label ||
+    left.own_metadata != right.own_metadata ||
+    left.registration_name != right.registration_name
+
+"""
+    validate_collection_paths(index, paths) -> Nothing
+
+Validate a batch of collection paths against the live index and against each other without mutating
+the index. This keeps batched publication atomic when two source items project one deterministic
+collection ID inconsistently.
+"""
+function validate_collection_paths(
+    index::CollectionIndex,
+    paths::Vector{Vector{CollectionInput}},
+)::Nothing
+    pending = Dict{String,Tuple{Union{Nothing,String},CollectionInput}}()
+    for inputs in paths
+        parent_id::Union{Nothing,String} = nothing
+        labels = String[]
+        for input in inputs
+            push!(labels, input.label)
+            key = get(index.key_by_id, input.id, nothing)
+            if key === nothing
+                previous = get(pending, input.id, nothing)
+                if previous === nothing
+                    pending[input.id] = (parent_id, input)
+                else
+                    previous_parent_id, previous_input = previous
+                    previous_parent_id == parent_id || error(
+                        "Collection '$(join(labels, " / "))' resolved below inconsistent parents",
+                    )
+                    _projection_changed(previous_input, input) && throw(ArgumentError(
+                        "Collection '$(join(labels, " / "))' produced inconsistent label, " *
+                        "metadata, or registration name for deterministic id $(input.id)",
+                    ))
+                end
+            else
+                existing = index.records[key]
+                existing_parent_id = existing.parent_key === nothing ? nothing :
+                    index.records[existing.parent_key].id
+                existing_parent_id == parent_id || error(
+                    "Collection '$(join(labels, " / "))' resolved below inconsistent parents",
+                )
+                _projection_changed(existing, input) && throw(ArgumentError(
+                    "Collection '$(join(labels, " / "))' produced inconsistent label, " *
+                    "metadata, or registration name for deterministic id $(existing.id)",
+                ))
+            end
+            parent_id = input.id
+        end
+    end
+    return nothing
+end
+
 """Resolve one interpreted path into collection records and return its leaf key."""
 function resolve_collection_path!(
     index::CollectionIndex,
     inputs::Vector{CollectionInput},
+    ;
+    update_existing::Bool=false,
 )::Union{Nothing,Int64}
     parent_key::Union{Nothing,Int64} = nothing
     labels = String[]
@@ -240,9 +302,14 @@ function resolve_collection_path!(
             existing.parent_key == parent_key || error(
                 "Collection '$(join(labels, " / "))' resolved below inconsistent parents",
             )
-            if existing.label != input.label ||
-               existing.own_metadata != input.own_metadata ||
-               existing.registration_name != input.registration_name
+            projection_changed = _projection_changed(existing, input)
+            if projection_changed && !update_existing
+                throw(ArgumentError(
+                    "Collection '$(join(labels, " / "))' produced inconsistent label, " *
+                    "metadata, or registration name for deterministic id $(existing.id)",
+                ))
+            end
+            if projection_changed
                 index.records[key] = CollectionRecord(
                     existing.key,
                     existing.id,
@@ -257,6 +324,26 @@ function resolve_collection_path!(
         parent_key = key
     end
     return parent_key
+end
+
+"""
+    resolve_collection_paths!(index, paths) -> Vector{Union{Nothing,Int64}}
+
+Validate and resolve a batch of interpreted collection paths. Validation completes before the first
+record is inserted, so a conflicting projection cannot leave a partially published path behind.
+"""
+function resolve_collection_paths!(
+    index::CollectionIndex,
+    paths::Vector{Vector{CollectionInput}},
+)::Vector{Union{Nothing,Int64}}
+    length(paths) == 1 && return Union{Nothing,Int64}[
+        resolve_collection_path!(index, only(paths)),
+    ]
+    validate_collection_paths(index, paths)
+    return Union{Nothing,Int64}[
+        resolve_collection_path!(index, path)
+        for path in paths
+    ]
 end
 
 """Return one record's ancestor-to-self collection keys."""
@@ -311,11 +398,17 @@ function sorted_child_keys(
     return keys
 end
 
-"""Attach one item id to its direct collection membership."""
+"""Append one already-validated item id to its direct collection membership in constant time."""
+function append_item!(index::CollectionIndex, item_id::AbstractString, key)::Nothing
+    ids = get!(() -> String[], index.item_ids_by_collection, key)
+    push!(ids, String(item_id))
+    return nothing
+end
+
+"""Attach one item id to its direct collection membership unless it is already present."""
 function insert_item!(index::CollectionIndex, item_id::AbstractString, key)::Nothing
     ids = get!(() -> String[], index.item_ids_by_collection, key)
-    stable_id = String(item_id)
-    stable_id in ids || push!(ids, stable_id)
+    item_id in ids || push!(ids, String(item_id))
     return nothing
 end
 

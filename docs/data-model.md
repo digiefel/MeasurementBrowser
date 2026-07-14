@@ -78,6 +78,10 @@ Labels and metadata are not compared to decide whether records coalesce. Julia e
 collection type author's concern but is not a competing collection ID rule. The engine also
 assigns compact integer surrogates for work and cache tables; saved selection and annotation state
 uses the deterministic ID so it survives deleting and rebuilding generated cache state.
+Values that resolve to the same deterministic ID must nevertheless project the same label and
+metadata. Conflicting projections are rejected instead of making the displayed collection depend on
+source processing order. Authoritative source metadata updates may replace those projections during
+an explicit metadata refresh.
 
 ## Metadata
 

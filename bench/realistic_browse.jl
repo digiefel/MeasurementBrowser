@@ -20,10 +20,11 @@
 # it; add MB_PROFILE_CPU=1 for Julia sampling. Set MB_BENCH_START_PROFILE=0 to measure
 # enabled-but-idle overhead.
 
-using DataBrowserAPI
+using DataBrowserAPI: define_project, item_data, register_item!
 import DataBrowserAPI: _has_collection_analysis
-using DataBrowserAPI.ItemIndex: DataItem, ItemRecord, collection_path_key
+using DataBrowserAPI.ItemIndex: ItemRecord, collection_item_ids
 using DataBrowserCore.Workspace
+using DataBrowserCore.Workspace: close_workspace!, open_workspace, select_items!
 using DataBrowserCache
 using DataBrowserPlots:
     register_plot!,
@@ -232,42 +233,54 @@ end
 # Project: three kinds mirroring the real read/entries/process/analyze/plot shape
 # --------------------------------------------------------------------------------------------------
 
-_collection(file) = [splitpath(dirname(file.filepath))[end-1], splitpath(dirname(file.filepath))[end]]
+function _read_table(file)
+    parts = splitpath(dirname(file.filepath))
+    return (
+        data=DataFrame(CSV.File(file.filepath; ntasks=1)),
+        metadata=Dict{Symbol,Any}(
+            :wafer => parts[end-1],
+            :measurement_kind => parts[end],
+        ),
+    )
+end
+
+_collection(_data, metadata) =
+    String[metadata[:wafer], metadata[:measurement_kind]]
 
 function build_project(; plots::Bool=true)
     project = define_project("BenchRealistic"; description="Realistic browse-while-build benchmark")
 
     register_item!(project, :kind1;
         detect  = file -> endswith(file.filename, "_kind1.csv"),
-        read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
-        entries = (file, data) -> [DataItem(; kind=:kind1, collection=_collection(file),
-            label=file.filename, data=data, id=file.filepath * "#kind1")],
-        process = item -> DataItem(item, transform(item.data, [:voltage, :current] =>
-            ByRow((v, i) -> iszero(v) ? 0.0 : i / v) => :conductance)),
-        analyze = item -> Dict{Symbol,Any}(:imax => maximum(abs, item.data.current)),
-        label   = item -> "K1 $(item.label)")
+        read    = _read_table,
+        collection = _collection,
+        process = (data, _metadata) -> transform(data, [:voltage, :current] =>
+            ByRow((v, i) -> iszero(v) ? 0.0 : i / v) => :conductance),
+        analyze = (data, _metadata) -> Dict{Symbol,Any}(:imax => maximum(abs, data.current)),
+        label   = (_data, metadata) -> "K1 $(metadata[:filename])")
 
     register_item!(project, :kind2;
         detect  = file -> endswith(file.filename, "_kind2.csv"),
-        read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
-        entries = (file, data) -> [DataItem(; kind=:kind2, collection=_collection(file),
-            label=file.filename, data=data, id=file.filepath * "#kind2")],
-        analyze = item -> Dict{Symbol,Any}(:cmean => mean(item.data.cap)),
-        label   = item -> "K2 $(item.label)")
+        read    = _read_table,
+        collection = _collection,
+        analyze = (data, _metadata) -> Dict{Symbol,Any}(:cmean => mean(data.cap)),
+        label   = (_data, metadata) -> "K2 $(metadata[:filename])")
 
     # The fatigue-style kind: one file → one item per cycle (where item count explodes).
     register_item!(project, :kind3;
         detect  = file -> endswith(file.filename, "_kind3.csv"),
-        read    = file -> DataFrame(CSV.File(file.filepath; ntasks=1)),
-        entries = (file, data) -> [
-            DataItem(; kind=:kind3, collection=_collection(file),
-                label=string(file.filename, " cycle ", c), metadata=Dict{Symbol,Any}(:cycle => c),
-                data=(@view data[data.cycle .== c, :]), id=string(file.filepath, "#kind3,cycle=", c))
-            for c in sort(unique(data.cycle))],
-        process = item -> DataItem(item, transform(item.data, [:voltage, :current] =>
-            ByRow((v, i) -> v * i) => :power)),
-        analyze = item -> Dict{Symbol,Any}(:pmax => maximum(abs, item.data.current)),
-        label   = item -> "K3 $(item.label)")
+        read    = _read_table,
+        entries = (data, _metadata) -> [
+            (data=(@view data[data.cycle .== cycle, :]),
+                metadata=Dict{Symbol,Any}(:cycle => cycle))
+            for cycle in sort(unique(data.cycle))],
+        collection = _collection,
+        id = (_data, metadata) -> metadata[:cycle],
+        process = (data, _metadata) -> transform(data, [:voltage, :current] =>
+            ByRow((v, i) -> v * i) => :power),
+        analyze = (data, _metadata) -> Dict{Symbol,Any}(:pmax => maximum(abs, data.current)),
+        label   = (_data, metadata) ->
+            "K3 $(metadata[:filename]) cycle $(metadata[:cycle])")
 
     plots || return project
 
@@ -698,10 +711,15 @@ function run_benchmark()
                     probe.plot_ms, probe.bytes, probe.ready))
         end
         completed, total, active = Workspace.work_counts(ws)
-        collection_nodes = count(ws.index.hierarchy.index) do (path, hierarchy_node)
-            isempty(hierarchy_node.items) && return false
-            collection_key = collection_path_key(collect(String, path))
-            member_kinds = unique(record.kind for record in hierarchy_node.items)
+        collections = ws.index.collections
+        collection_nodes = count(keys(collections.records)) do collection_key
+            member_ids = collection_item_ids(collections, collection_key)
+            isempty(member_ids) && return false
+            members = ItemRecord[
+                ws.index.items[id] for id in member_ids
+                if haskey(ws.index.items, id)
+            ]
+            member_kinds = unique(record.kind for record in members)
             has_analyze = any(k -> _has_collection_analysis(ws.project, k), member_kinds)
             has_analyze || return false
             key = Workspace.WorkKey(Workspace.COLLECTION_ANALYZE, collection_key)

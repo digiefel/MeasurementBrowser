@@ -13,6 +13,7 @@ using DataBrowserAPI.ItemIndex:
 const BAD_TAG_NAME = "bad"
 const BAD_TAG_COLOR = (UInt8(0xff), UInt8(0x30), UInt8(0x30))
 const BAD_TAG_PRIORITY = 100
+const ROOT_COLLECTION_SELECTION_ID = ""
 
 """
 Load tags for one source root.
@@ -128,7 +129,8 @@ function _item_is_visible(
     _show_bad_effective(state) && return true
     tag_state = _tag_state_or_error(state)
     collections = (state.workspace::Workspace.Workspace).index.collections
-    item.collection_key === nothing && return true
+    item.collection_key === nothing &&
+        return !_has_bad_tag(tag_state, item.id, String[])
     collection_record = collections.records[item.collection_key]
     collection_key = _collection_annotation_key(collections, collection_record)
     ancestors = [
@@ -163,13 +165,17 @@ function _project_visible_selection(
     end
 
     visible_collection_ids = Set(collection_record.id for collection_record in selected_collections)
+    root_selected = ROOT_COLLECTION_SELECTION_ID in workspace.selection.collection_ids
     item_index = workspace.index.items
     selected_items = ItemRecord[]
     for id in workspace.selection.item_ids
         item = get(item_index, id, nothing)
         item === nothing && continue
-        item.collection_key === nothing && continue
-        collections.records[item.collection_key].id in visible_collection_ids || continue
+        if item.collection_key === nothing
+            root_selected || continue
+        else
+            collections.records[item.collection_key].id in visible_collection_ids || continue
+        end
         !_item_is_visible(state, item) && continue
         push!(selected_items, item)
     end
@@ -190,7 +196,16 @@ function _items_of_selected_collections(
     items = (state.workspace::Workspace.Workspace).index.items
     sizehint!(all_items, sum(
         length(collection_item_ids(collections, collection_record.key))
-        for collection_record in selected_collections; init=0))
+        for collection_record in selected_collections; init=0) +
+        (ROOT_COLLECTION_SELECTION_ID in
+         (state.workspace::Workspace.Workspace).selection.collection_ids ?
+            length(collection_item_ids(collections, nothing)) : 0))
+    if ROOT_COLLECTION_SELECTION_ID in
+       (state.workspace::Workspace.Workspace).selection.collection_ids
+        for id in collection_item_ids(collections, nothing)
+            haskey(items, id) && push!(all_items, items[id])
+        end
+    end
     for collection_record in selected_collections
         for id in collection_item_ids(collections, collection_record.key)
             haskey(items, id) && push!(all_items, items[id])

@@ -10,6 +10,74 @@ function _insert_registered!(index, item_id, names...)
     return key
 end
 
+@testset "workspace collection publication edits indexes in place" begin
+    mktempdir() do dir
+        project = DataBrowser.define_project("InPlacePublish_$(basename(dir))")
+        workspace = DataBrowserCore.Workspace.Workspace(
+            project,
+            test_source(project, dir);
+            cache=false,
+        )
+        try
+            index = workspace.index
+            collections = index.collections
+            items = index.items
+            path = HE_INDEX.collection_inputs(AbstractCollection[
+                HE_INDEX.RegisteredCollection("batch"),
+            ])
+            for number in 1:2
+                record = HE_INDEX.ItemRecord(;
+                    source_item_id="source-$number",
+                    id="item-$number",
+                    item_label="Item $number",
+                    kind=:row,
+                )
+                DataBrowserCore.Workspace.publish_source_item_records!(
+                    workspace,
+                    record.source_item_id,
+                    [record],
+                    [path],
+                )
+                @test workspace.index === index
+                @test workspace.index.collections === collections
+                @test workspace.index.items === items
+                if number == 1
+                    collection_key = only(keys(collections.records))
+                    HE_INDEX.set_collection_analysis!(
+                        collections,
+                        collection_key,
+                        Dict(:score => 1.0),
+                    )
+                    DataBrowserCore.Workspace.refresh_collection_metadata_keys!(index)
+                    @test index.collection_metadata_keys == [:score]
+                end
+            end
+            @test length(items) == 2
+            @test isempty(index.collection_metadata_keys)
+            @test HE_INDEX.collection_item_ids(collections, only(keys(collections.records))) ==
+                ["item-1", "item-2"]
+
+            existing = items["item-1"]
+            DataBrowserCore.Workspace.publish_source_item_records!(
+                workspace,
+                existing.source_item_id,
+                [existing],
+                [path],
+            )
+            @test HE_INDEX.collection_item_ids(collections, only(keys(collections.records))) ==
+                ["item-1", "item-2"]
+
+            DataBrowserCore.Workspace.remove_source_item_output!(workspace, "source-1")
+            @test workspace.index === index
+            @test workspace.index.collections === collections
+            @test workspace.index.items === items
+            @test collect(keys(items)) == ["item-2"]
+        finally
+            DataBrowser.close_workspace!(workspace)
+        end
+    end
+end
+
 @testset "collection index edits" begin
     original = HE_INDEX.CollectionIndex("source")
     run_2 = _insert_registered!(original, "a1", "dev-A", "run-2")

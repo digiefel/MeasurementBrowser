@@ -7,6 +7,7 @@ using DataBrowserAPI:
 using DataBrowserAPI.ItemIndex:
     CollectionRecord,
     ItemRecord,
+    collection_item_ids,
     collection_metadata,
     sorted_child_keys
 import DataBrowserCore.Workspace
@@ -102,7 +103,10 @@ function _render_hierarchy_tree_panel(
     all_collection_count = Ref(0)
     filter_active = ig.ImGuiTextFilter_IsActive(filter_tree)
 
-    if collections !== nothing && !isempty(collections.records)
+    root_item_ids = collections === nothing ? String[] :
+        collection_item_ids(collections, nothing)
+    has_root_items = !isempty(root_item_ids)
+    if collections !== nothing && (!isempty(collections.records) || has_root_items)
         has_visible_leaf_cache = Dict{Int64,Bool}()
         subtree_matches_cache = Dict{Int64,Bool}()
 
@@ -172,8 +176,11 @@ function _render_hierarchy_tree_panel(
         end
 
         roots = sorted_child_keys(collections, nothing)
+        root_visible = has_root_items &&
+            ig.ImGuiTextFilter_PassFilter(filter_tree, "Root", C_NULL)
         _time!(state, :hierarchy_prep) do
-            all_collection_count[] = sum(count_leaf_collections, roots; init=0)
+            all_collection_count[] = sum(count_leaf_collections, roots; init=0) +
+                (has_root_items ? 1 : 0)
             for child in roots
                 collect_visible_collections!(child, false)
             end
@@ -184,14 +191,16 @@ function _render_hierarchy_tree_panel(
             ids = visible_collection_ids_ref[]
             if ids === nothing
                 ids = [collection_record.id for collection_record in visible_collections]
+                root_visible && pushfirst!(ids, ROOT_COLLECTION_SELECTION_ID)
                 visible_collection_ids_ref[] = ids
             end
             return ids
         end
 
         _render_selection_toolbar!(
-            length(selected_collections),
-            length(visible_collections),
+            length(selected_collections) +
+                (ROOT_COLLECTION_SELECTION_ID in workspace.selection.collection_ids ? 1 : 0),
+            length(visible_collections) + (root_visible ? 1 : 0),
             all_collection_count[],
             filter_tree,
             () -> begin
@@ -204,6 +213,47 @@ function _render_hierarchy_tree_panel(
         next_row_id(parent_id::UInt64, key::Int64) =
             hash(collections.records[key].id, parent_id)
         to_imgui_id(row_id::UInt64) = Int32(row_id % UInt64(typemax(Int32)))
+
+        """Render the GUI-only selector for items attached directly to the source root."""
+        function render_root_items()::Nothing
+            root_visible || return nothing
+            state.performance.node_count += 1
+            ig.TableNextRow()
+            ig.TableSetColumnIndex(0)
+            ig.PushID("##root_items")
+            selected = ROOT_COLLECTION_SELECTION_ID in selected_collection_id_set
+            flags = (
+                ig.ImGuiTreeNodeFlags_Leaf |
+                ig.ImGuiTreeNodeFlags_Bullet |
+                ig.ImGuiTreeNodeFlags_NoTreePushOnOpen |
+                ig.ImGuiTreeNodeFlags_SpanFullWidth |
+                ig.ImGuiTreeNodeFlags_SpanAllColumns
+            )
+            selected && (flags |= ig.ImGuiTreeNodeFlags_Selected)
+            ig.TreeNodeEx("", flags, "Root")
+            if state.scroll_to_collection_id == ROOT_COLLECTION_SELECTION_ID
+                ig.SetScrollHereY(0.5)
+                state.scroll_to_collection_id = nothing
+            end
+            if ig.IsItemClicked()
+                io = ig.GetIO()
+                selected_ids = copy(workspace.selection.collection_ids)
+                _update_multi_selection!(
+                    selected_ids,
+                    ROOT_COLLECTION_SELECTION_ID,
+                    visible_collection_ids(),
+                    unsafe_load(io.KeyShift),
+                    unsafe_load(io.KeyCtrl),
+                )
+                workspace.selection.collection_ids = selected_ids
+            end
+            for i in eachindex(parameter_keys)
+                ig.TableSetColumnIndex(i)
+                ig.TextDisabled("--")
+            end
+            ig.PopID()
+            return nothing
+        end
 
         """Render one hierarchy row and recursively render its open descendants."""
         function render_collection(
@@ -356,6 +406,7 @@ function _render_hierarchy_tree_panel(
             ig.TableSetupColumn("")
             ig.TableAngledHeadersRow()
             ig.TableHeadersRow()
+            render_root_items()
             for child in roots
                 render_collection(child, next_row_id(row_seed, child), false)
             end
@@ -446,6 +497,7 @@ function _render_items_panel(
 
     selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
+    root_selected = ROOT_COLLECTION_SELECTION_ID in workspace.selection.collection_ids
     all_items_ref = Ref{Vector{ItemRecord}}()
     _time!(state, :items_panel) do
         all_items_ref[] = _items_of_selected_collections(state)
@@ -472,20 +524,27 @@ function _render_items_panel(
         item_label="items", filter_id="##items_filter"
     )
 
-    if !isempty(selected_collections)
-        if length(selected_collections) == 1
+    selected_collection_count = length(selected_collections) + (root_selected ? 1 : 0)
+    if selected_collection_count > 0
+        if root_selected && isempty(selected_collections)
+            ig.Text("Items at root")
+            ig.Separator()
+        elseif !root_selected && length(selected_collections) == 1
             sel_name = join(selected_path, "/")
             ig.Text("Items for $sel_name")
             ig.Separator()
         else
-            shown = min(3, length(selected_collections))
-            first_names = join((selected_collections[i].label for i in 1:shown), ", ")
-            ig.Text("Items from $(length(selected_collections)) collections: $first_names$(length(selected_collections) > 3 ? "..." : "")")
+            names = String[]
+            root_selected && push!(names, "Root")
+            append!(names, collection.label for collection in selected_collections)
+            shown = min(3, length(names))
+            first_names = join(names[1:shown], ", ")
+            ig.Text("Items from $selected_collection_count collections: $first_names$(length(names) > 3 ? "..." : "")")
             ig.Separator()
         end
     end
 
-    if isempty(selected_collections)
+    if selected_collection_count == 0
         ig.Text("Select one or more collections to view their items")
         ig.EndChild()
         return nothing
@@ -528,6 +587,9 @@ function _render_items_panel(
                                     workspace.index.collections, collection_record)
                                 bad_text_pushed = _push_tag_text_style!(
                                     tag_state, id, [dev_key; ancestor_keys])
+                            else
+                                bad_text_pushed = _push_tag_text_style!(
+                                    tag_state, id, String[])
                             end
                         end
                         if ig.Selectable(

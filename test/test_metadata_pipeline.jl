@@ -155,6 +155,40 @@ end
     end
 end
 
+@testset "disk cache reopens collection-process results" begin
+    dir = _fatigue_dir([2, 3, 5])
+    project = _pipeline_project("reopen_$(basename(dir))")
+    first_workspace = MBP.open_workspace(
+        project, test_source(project, dir); background_processing=true)
+    identity = first_workspace.cache.identity
+    try
+        wait_workspace_idle!(first_workspace)
+        @test isempty(first_workspace.index.analysis_errors)
+    finally
+        MBP.close_workspace!(first_workspace)
+    end
+
+    try
+        reopened = MBP.open_workspace(
+            project, test_source(project, dir); background_processing=true)
+        try
+            wait_workspace_idle!(reopened)
+            @test reopened.scan.state in (:done, :unchanged)
+            @test isempty(reopened.index.analysis_errors)
+            records = sort(
+                collect(values(reopened.index.items));
+                by=record -> record.metadata[:cycle],
+            )
+            loaded = DataBrowserCore.Workspace.materialize_items(reopened, records)
+            @test [MBP.item_data(item).cumulative[1] for item in loaded] == [2, 5, 10]
+        finally
+            MBP.close_workspace!(reopened)
+        end
+    finally
+        rm(dirname(identity.cache_path); force=true, recursive=true)
+    end
+end
+
 @testset "collection-process failure delivers processed payloads with the error surfaced" begin
     dir = _fatigue_dir([1, 2])
     project = _pipeline_project(basename(dir); fail_process=true)
