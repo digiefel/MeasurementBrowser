@@ -341,7 +341,7 @@ uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
 
 [[deps.DataBrowserAPI]]
-deps = ["CancellationTokens", "Dates", "Tables"]
+deps = ["CancellationTokens", "Dates", "SHA", "Tables"]
 path = "lib/DataBrowserAPI"
 uuid = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 version = "0.1.0"

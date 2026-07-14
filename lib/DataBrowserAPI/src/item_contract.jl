@@ -1,7 +1,21 @@
 abstract type AbstractDataItem end
 
-"""Nestable container an item is placed in. Future home for collection behaviour."""
+"""One concrete level in an item's collection hierarchy."""
 abstract type AbstractCollection end
+
+"""
+Value used to derive one collection level's deterministic occurrence ID.
+
+The default uses the complete concrete collection value. Override this only when the value contains
+state that is deliberately not part of the collection ID or cannot be canonically encoded.
+"""
+id(collection::AbstractCollection) = collection
+
+"""Human-readable label for one collection level."""
+label(collection::AbstractCollection)::String = string(collection)
+
+"""Return metadata supplied directly by one collection level."""
+metadata(::AbstractCollection)::Dict = Dict()
 
 """Stable identity of an item. An empty value lets DataBrowser assign one."""
 id(::AbstractDataItem) = ""
