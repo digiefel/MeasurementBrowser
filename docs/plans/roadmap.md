@@ -27,8 +27,8 @@ workspace internals.
   ([#8](https://github.com/digiefel/MeasurementBrowser/pull/8))
 - [x] Add the public documentation book and runnable examples.
   ([`912a3c9`](https://github.com/digiefel/MeasurementBrowser/commit/912a3c90b42f057e7c0096b00d7aa290768d858a))
-- [ ] Implement the first-class hierarchical collection model in
-  [collection-model.md](collection-model.md), including cache reopen and collection-level metadata.
+- [x] Make collections first-class hierarchical values with stable occurrence IDs, compact internal
+  keys, cache reopen, collection metadata, and one record/index model shared by the engine and GUI.
 - [ ] Clean-up and rename/file organization pass of DataBrowserAPI. // e.g. what's interface.jl?? 
 - [ ] Remove built-in profiling and consolidate/document proper debugging and profiling.
 - [ ] Run every example entirely through the documented public APIs and remove any remaining public
