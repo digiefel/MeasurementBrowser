@@ -6,7 +6,7 @@ architecture in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 ## Reading order
 
 1. [../vision.md](../vision.md) — product and architecture north star.
-2. [roadmap.md](roadmap.md) — ordered product stages.
+2. [roadmap.md](roadmap.md) — version targets, current progress, and longer-term goals.
 3. [project-persistence.md](project-persistence.md) — project files, immutable configuration,
    source configuration, and export boundaries.
 4. [diagnostics.md](diagnostics.md) — lightweight workspace health and explicit diagnostic runs.
@@ -21,7 +21,7 @@ architecture in [../ARCHITECTURE.md](../ARCHITECTURE.md).
 | `../api.md` | Public registration, source, item, processing, and plot callback contracts. |
 | `../data-model.md` | Public identity, metadata, collection, and pipeline semantics. |
 | `../vision.md` | Product direction, shared vocabulary, and package family. |
-| `roadmap.md` | Ordering and completion criteria. |
+| `roadmap.md` | Version focus, feature targets, and current progress. |
 | `project-persistence.md` | Project files, immutable configuration, source configuration, and archives. |
 | `diagnostics.md` | Performance-window scope and diagnostic capture. |
 | `plotting-api-design.md` | Figure composition and workflow persistence. |
