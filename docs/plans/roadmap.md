@@ -1,103 +1,309 @@
 # DataBrowser Roadmap
 
-The ordered plan to take the codebase from a single monolithic package — GUI and engine
-entangled — to the `DataBrowser` family in [../vision.md](../vision.md): a scriptable,
-agent-ready scientific toolkit. Stages run roughly in order; each lists what it delivers and when it
-is done. Near-term stages are concrete; later ones are directional and get detailed as they approach.
+This roadmap / changelog follows releases of the main `DataBrowser` package.
+Checked items already exist on `main`; completed work links to the pull request or commit that
+introduced it.
 
-## Stage 1 — Public foundation
+## 0.1.0 — Public API foundation
 
-The functional package family is in place: `DataBrowserAPI · Sources · Cache · Core · Plots · GUI`,
-the Profiling and Annotations leaves, and the `DataBrowser` umbrella. Core loads headlessly without
-the GUI or Makie stack, Cache is below Core, and Plots extends the GUI host.
+Establish the package and data-engine foundation on which the interactive application can grow. The
+focus is a headless workspace engine, clear package boundaries, public project APIs for ordinary
+callbacks and concrete item types, and examples that exercise those APIs without reaching into
+workspace internals.
 
-The public data foundation has two paths described in [../api.md](../api.md): ordinary-data
-registration pipelines and concrete type-based sources/items. Both paths share one workspace engine,
-identity model, metadata pipeline, and cache.
+- [x] Replace the old measurement model with source-owned items, workspaces, and hierarchy.
+  ([#2](https://github.com/digiefel/MeasurementBrowser/pull/2))
+- [x] Consolidate parameters and computed statistics into one metadata pipeline.
+  ([#3](https://github.com/digiefel/MeasurementBrowser/pull/3))
+- [x] Rebuild the workspace around event-driven publication, a live work graph, and buffered cache
+  writes. ([#4](https://github.com/digiefel/MeasurementBrowser/pull/4))
+- [x] Watch directory sources continuously and expose cheap workspace/cache status to the GUI.
+  ([#5](https://github.com/digiefel/MeasurementBrowser/pull/5))
+- [x] Split the monolith into the `DataBrowser` package family.
+  ([#6](https://github.com/digiefel/MeasurementBrowser/pull/6))
+- [x] Make `DataBrowserGUI` the lightweight GUI host and `DataBrowserPlots` its default Makie
+  extension. ([#7](https://github.com/digiefel/MeasurementBrowser/pull/7))
+- [x] Move the cache below Core and make tabular cache storage use the Tables.jl interface.
+  ([#8](https://github.com/digiefel/MeasurementBrowser/pull/8))
+- [x] Add the public documentation book and runnable examples.
+  ([`912a3c9`](https://github.com/digiefel/MeasurementBrowser/commit/912a3c90b42f057e7c0096b00d7aa290768d858a))
+- [ ] Implement the first-class hierarchical collection model in
+  [collection-model.md](collection-model.md), including cache reopen and collection-level metadata.
+- [ ] Clean-up and rename/file organization pass of DataBrowserAPI. // e.g. what's interface.jl?? 
+- [ ] Remove built-in profiling and consolidate/document proper debugging and profiling.
+- [ ] Run every example entirely through the documented public APIs and remove any remaining public
+  callback dependency on cache, index, scheduler, or browser values.
 
-- *Done when:* the four projects under [`examples/`](../../examples/README.md) execute through the
-  documented public API; custom item types remain intact through processing and visualization;
-  registration replacement works under Revise; and no public callback receives internal index,
-  cache, scheduler, or browser values.
+## 0.2.0 — Tags
 
-## Stage 2 — Generic plotter and the window registry
+Make tags a dependable, machine-interpretable way to classify items and collections. Start by
+checking the current `tags.txt` loading path and the state of existing files, then complete the API
+and GUI around arbitrary tags. The existing `bad` behavior becomes one ordinary use of the same tag
+system.
+Every change keeps `tags.txt` human-readable and recoverable independently of the application.
 
-Make the app useful on new data before anyone writes a custom visualizer. Keep lightweight
-visualizers for Core-supported data shapes in `DataBrowserGUI`, then build the Makie-backed defaults
-in `DataBrowserPlots` (1-D signals, multiple traces, 2-D arrays, images, collections, scalar metadata,
-nested structures, enhanced table plots, Makie figures) as a default GUI extension. Stand up the GUI
-**window registry** — the public surface external packages add their own windows through.
+- [x] Implement plain-text tag definitions, item/collection assignments, inherited lookup, and the
+  current `bad` bridge. ([#2](https://github.com/digiefel/MeasurementBrowser/pull/2))
+- [ ] Provide API operations to create, edit, remove, assign, and unassign tags on items and
+  collections.
+- [ ] Provide GUI controls for the same operations, including multi-selection.
+- [ ] Apply tags consistently to colours, visibility, and the selected item set.
 
-Add a global pipeline-stage control for inspecting how the selected data changes through the project.
-It is a view control: moving it changes what the browser displays without rewinding or invalidating
-the workspace. The minimum path is **Source → Loaded → Items**. Optional positions appear when the
-project defines them: **Processed → Analyzed → Collection processed → Collection analyzed**. Missing
-positions are skipped, giving three to seven meaningful stops rather than exposing internal work
-states. The Items position also shows the results of `label`, `collection`, and `id`; those cheap
-descriptions are not separate stops.
+## 0.3.0 — Notes
 
-Moving backwards coalesces sibling items into their shared loaded value and source. Moving into
-collection positions groups selected items by collection. Analysis positions show the metadata added
-at that point alongside the unchanged data. Intermediate values use generic inspectors when a custom
-visualizer only supports the final form. Results come from the existing cache where available;
-`read` and `entries` become separately observable internal results, with bounded in-memory retention
-for values that are not persisted.
+Make notes a complete human-facing memory and context feature, separate from tags and plotting.
+Notes belong to items and collections, remain readable as plain text, and are edited primarily
+through the API and GUI.
 
-- *Done when:* common exploration works with no custom draw functions, DBPlots is registered through
-  the same public surface an external package would use, `DataBrowserGUI` can load without GLMakie,
-  and moving the pipeline-stage control gives responsive access to every meaningful result available
-  for the current selection without rerunning work that is still cached.
+- [x] Implement the current plain-text note sections and their read/write API.
+  ([#2](https://github.com/digiefel/MeasurementBrowser/pull/2))
+- [ ] Settle how notes attach to current items and collections.
+- [ ] Add API operations for reading, creating, editing, and removing notes.
+- [ ] Add GUI views for reading and editing notes in the context of the current item or collection.
+- [ ] Preserve notes across workspace reopen and source refresh.
 
-## Stage 3 — Command unification
+## 0.4.0 — Find, filter, and view items
 
-Move important GUI and REPL actions onto the shared commands declared in `DataBrowserAPI`. Add command
-discovery, help text, and structured inputs/outputs/errors, so every interface (and later an agent)
-drives the same operations.
-- *Done when:* a workspace can be driven end to end from the REPL through the same commands the GUI
-  issues, and the command set is introspectable.
+Turn the current hierarchy-only browser into several coordinated views over the same item set. Julia
+code gets concrete database queries; GUI filtering produces live selections without exposing query
+language. Clicking, Ctrl-clicking, filtering, grouping, and switching views all operate on the same
+selection model.
 
-## Stage 4 — Project persistence and cache discipline
+- [x] Query committed effective metadata through DuckDB.
+  ([#4](https://github.com/digiefel/MeasurementBrowser/pull/4))
+- [ ] Define one query model over metadata and tags, with concrete results for Julia callers and live
+  results for GUI views.
+- [ ] Add a visual filter builder to the GUI.
+- [ ] Add a flat item table with selectable metadata columns alongside the hierarchy view.
+- [ ] Support flattening, grouping, sorting, and filtering without copying item state into the GUI.
+- [ ] Show when computed statistics used by a filter are still being populated.
+- [ ] Persist useful item-view and filter state with the project.
 
-Make projects reopenable as *environment + data-source config + saved state*. Track provenance, cache
-entries, package versions, and command history well enough for trust and reproducibility; support both
-lightweight recovery and richer archival bundles. The source/cache/project ownership model is in
-[project-persistence.md](project-persistence.md).
-- *Done when:* closing and reopening a project restores its state and reuses its cache, and a project
-  can be shared and reopened elsewhere from its pins (or bundle).
+## 0.5.0 — Engine consolidation and scale
 
-## Stage 5 — Python package
+Pause feature expansion for a bounded architecture and performance pass. Measure current behavior,
+make explicit decisions about the work graph and layer boundaries, and remove recurring per-frame or
+per-row costs before the application API and plotting surface grow substantially.
 
-Ship `databrowser` on PyPI over JuliaCall: resolve the Julia family, open/attach a workspace, and
-expose Pythonic wrappers over the same commands, plus Python-side loaders and processors.
-- *Done when:* a Python user can open a project, load and inspect data, and drive the generic plotter
-  without writing Julia.
+- [ ] Evaluate the current work graph against cancellation, invalidation, priority, streaming, and
+  collection edge cases; finish with either a bounded tuning pass or an explicit redesign.
+- [ ] Clarify ownership between the workspace, index, project cache, database, and write buffers;
+  remove duplicated state and layer-skipping call paths.
+- [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining stable
+  logical item identities at the project boundary.
+- [ ] Audit source and item fingerprinting, document what each change token invalidates, and simplify
+  the model where the distinction no longer carries useful information.
+- [ ] Collapse workspace busy and idle decisions into one engine model and one watcher snapshot.
+- [ ] Rebuild item-panel rows only when selection, visibility, tags, or relevant item state changes.
+- [ ] Cache hierarchy preparation and visible-collection results between invalidations.
+- [ ] Profile the DuckDB flush path at millions of rows and remove the dominant avoidable cost.
+- [ ] Strengthen internal Julia module boundaries and explicit import hygiene inside the package
+  family.
 
-## Stage 6 — Analysis packages
+## 0.6.0 — Shared application API
 
-Define the extension-package interface and build one or two serious domain packages (XPS,
-ellipsometry) as downstream proof points — each depending on `DataBrowserAPI`, plus
-`DataBrowserGUI` for windows and `DataBrowserPlots` for Makie visualizers, pinned by a project's
-environment.
-- *Done when:* a domain package delivers a specialized workflow (loaders, visualizers, windows) with
-  no changes to the base packages, validating that the base gives enough for free.
+Give Julia code and the GUI the same application capabilities through ordinary public functions.
+The API covers operations on projects, workspaces, selections, queries, views, and background work;
+the GUI becomes one caller of those operations rather than a second implementation.
 
-## Stage 7 — Agent support
+- [ ] Define the public operations needed to drive a workspace from Julia without browser state.
+- [ ] Move GUI actions onto those operations and keep GUI-only state limited to rendering and local
+  interaction.
+- [ ] Make repeated project setup, workspace operations, and view changes idempotent where users
+  naturally rerun code during development.
+- [ ] Expose progress, failures, cancellation, and results in forms usable by both interactive and
+  programmatic callers.
+- [ ] Keep the REPL usable while workspaces and GUI windows remain open.
 
-Add an MCP layer over the same commands. Prioritize inspection, command discovery, data summaries,
-plot creation, exports, and reproducible execution — no GUI operation required.
-- *Done when:* an agent can discover and run the command set to open data, summarize it, produce a
-  plot, and export a result.
+## 0.7.0 — Figure composer
 
-## Stage 8 — Packaging
+Build the DBPlots figure composer before the interactive plot builder. Its first inputs are axes and
+figures created by project code. Users can arrange those existing components into larger figures and
+edit the composition through both Julia and the GUI.
 
-Produce a reliable bundled desktop app for non-technical users; evaluate PackageCompiler and app
-bundlers, and selective `juliac` use for smaller headless components (which the split already makes
-possible, since they depend only on Core or lower).
-- *Done when:* a non-technical user can install and launch the app without assembling a Julia
-  environment, and pick a preinstalled domain package.
+- [ ] Define composable DBPlots objects for axes, panels, and complete figures.
+- [ ] Accept project-created Makie axes and figures without taking ownership away from project code.
+- [ ] Add GUI operations for creating layouts, inserting components, moving them, resizing them, and
+  removing them.
+- [ ] Support linked axes and shared presentation settings across composed panels.
+- [ ] Keep composed figures live against their item selections where requested.
 
-## Stage 9 — Long-term protocol evaluation
+## 0.8.0 — Plot builder
 
-Once the command model is stable, evaluate an internal command-oriented protocol / ABI, a
-client-server split, a browser frontend, multiplayer collaboration, or external-language clients — per
-[../vision.md](../vision.md) §14. Directional; scoped only when the command model has settled.
+Add the fast path from selected data to an individual axis. The plot builder is a DBPlots visualizer
+with a focused toolbar: choose data, map columns or dimensions, select a plot form, and adjust its
+presentation. Every axis it creates can be inserted into the figure composer.
+
+- [ ] Build axes from the current item selection and from filtered item views.
+- [ ] Provide data mapping controls for common tabular X/Y plots.
+- [ ] Provide line and scatter plots with editable series, axes, labels, scales, and styling.
+- [ ] Represent builder state through the shared application API rather than private widget state.
+- [ ] Insert a built axis into an existing composed figure without recreating it by hand.
+
+## 0.9.0 — Python API
+
+Make DataBrowser usable as a Python package over JuliaCall. Python is a full application interface:
+it manages or attaches to the Julia environment, calls the shared application API, and presents data
+through natural Python containers.
+
+- [ ] Add an installable Python package in this repository with Julia and package bootstrapping.
+- [ ] Wrap projects, workspaces, items, selections, queries, tags, notes, and background operations
+  with Python-facing types and errors.
+- [ ] Convert tabular and array data naturally to pandas and NumPy without unnecessary copies where
+  the runtimes permit it.
+- [ ] Support Python readers, processors, and analyzers through explicit callback bridges.
+- [ ] Drive figure composition and the plot builder from Python.
+- [ ] Prototype the Python-native visualization path and settle the roles of Matplotlib, lightweight
+  ImPlot views, and Julia-owned DBPlots visualizers.
+
+## 0.10.0 — Figure annotations
+
+Add figure annotations as DBPlots-owned, editable objects inside composed figures. They describe a
+figure rather than an item: arrows, text, regions, fit labels, and other axis-relative additions.
+
+- [ ] Define figure-annotation objects and their coordinate systems.
+- [ ] Add, select, edit, move, style, and remove figure annotations through Julia and the GUI.
+- [ ] Attach annotations to axes, data coordinates, or layout coordinates as appropriate.
+- [ ] Integrate fit results and region selections without coupling them to item tags or notes.
+- [ ] Preserve figure annotations with composed-figure state.
+
+## 0.11.0 — Core visualizers
+
+Make common inspection fast without requiring Makie or project-specific plot code. Expand the base
+GUI with lightweight visualizers, using ImPlot where it provides the right interaction and keeping
+the table inspector as a first-class view.
+
+- [ ] Add a lightweight line/scatter visualizer for simple numeric tables and vectors.
+- [ ] Add concise scalar, metadata, and nested-value inspectors.
+- [ ] Let users open several independent visualizer windows over different live selections.
+- [ ] Register every built-in visualizer through the same GUI extension and window surfaces used by
+  other first-party features.
+
+## 0.12.0 — Array and image visualizers
+
+Add dedicated exploration for multidimensional data. These visualizers use the plot builder and
+figure composer where useful while retaining controls for dimensions, slicing, colour, and image
+presentation.
+
+- [ ] Add two-dimensional array and image visualizers.
+- [ ] Add heatmaps for gridded arrays and suitable tables.
+- [ ] Add dimension and slice controls for higher-dimensional arrays.
+- [ ] Add editable colour limits, scales, colormaps, and image display settings.
+- [ ] Offer every applicable visualizer for a value rather than assigning each value one exclusive
+  shape.
+
+## 0.13.0 — Comparison and summary visualizers
+
+Add visualizers for comparing many items and groups. This release builds on filtered item views and
+the plot builder so overlays and summaries remain attached to the selections that created them.
+
+- [ ] Add enhanced table plots and multi-trace overlays.
+- [ ] Group and style traces by metadata, tags, and collection.
+- [ ] Add parameter-sweep and pivoted-table views.
+- [ ] Add summaries and histograms across selections and groups.
+- [ ] Add fit views for common models, beginning with linear fits.
+
+## 0.14.0 — Pipeline inspection
+
+Let users inspect the values produced throughout a project pipeline. The workspace supplies the
+chosen value through its normal data-access path; inspectors and visualizers continue to consume the
+payload they are given rather than learning special pipeline logic.
+
+- [ ] Expose the results of `read`, `entries`, `process`, `analyze`, collection `process`, and
+  collection `analyze` through the shared application API.
+- [ ] Use the public API vocabulary for the GUI control and skip operations absent from a project.
+- [ ] Coalesce sibling items when moving to a source-level result and group items when moving to a
+  collection-level result.
+- [ ] Show metadata added by analysis operations beside the corresponding data.
+- [ ] Reuse cached results and retain uncached intermediate values within explicit memory bounds.
+- [ ] Add the global GUI control and make the current inspectors and visualizers respond to the
+  selected pipeline result without per-visualizer pipeline code.
+
+## 0.15.0 — Project configuration
+
+Consolidate the existing project-local state into `dbproject.toml`. Entry code remains responsible
+for starting the project: Julia or Python code loads or creates the config, defines the project, and
+opens the workspace. Reopening means rerunning the same entry code.
+
+- [x] Persist tree, item, filter, and plot-view state in the current `databrowser.toml`.
+  ([#2](https://github.com/digiefel/MeasurementBrowser/pull/2),
+  [#7](https://github.com/digiefel/MeasurementBrowser/pull/7))
+- [ ] Define the TOML schema for sources, cache settings, GUI views, and extension state.
+- [ ] Load or create the config from Julia and Python entry code.
+- [ ] Edit project settings through the API and GUI and write them back predictably.
+- [ ] Place `tags.txt` and the notes file beside `dbproject.toml`.
+- [ ] Restore useful GUI and visualizer state when the same entry code reopens the project.
+- [ ] Keep cache reuse and source changes correct across repeated openings.
+
+## 0.16.0 — Command-line interface
+
+Add a real shell interface over the shared application API. It runs project entry code, obtains the
+workspace that code creates, and performs the same data and project operations available from Julia,
+Python, and the GUI. Startup strategy is chosen from measured Julia startup and reuse behavior.
+
+- [ ] Define how a CLI invocation identifies and runs project entry code.
+- [ ] Add commands for inspecting projects and workspaces, querying and selecting items, running
+  processing, and exporting data or figures.
+- [ ] Provide structured output suitable for shell pipelines alongside readable interactive output.
+- [ ] Measure startup cost and implement the simplest process-reuse or precompilation strategy that
+  makes repeated commands practical.
+- [ ] Keep long-running workspace work observable and cancellable from the shell.
+
+## 0.17.0 — Integration and release preparation
+
+Exercise the complete application as one system, keep performance visible, and make installation and
+first use straightforward. This version is for repairing the seams found when the Julia API, GUI,
+Python API, CLI, project configuration, and visual tools are used together on real projects.
+
+- [ ] Install DataBrowser as an ordinary Julia package without hand-assembling its component
+  environment.
+- [ ] Run the documented examples and at least one substantial real project through the supported
+  interfaces.
+- [ ] Validate first-party add-on packages can provide types, processing, visualizers, windows, and
+  project scaffolding while project environments pin them normally.
+- [ ] Keep browse-while-building, warm reopen, item views, filtering, plotting, and figure editing
+  responsive at realistic scales.
+- [ ] Complete user documentation for installation, project setup, GUI use, Julia, Python, and the
+  CLI.
+- [ ] Resolve the cross-interface inconsistencies and reliability failures found by that use.
+
+## 1.0.0 — Complete DataBrowser application
+
+DataBrowser 1.0 is a cohesive scientific data application built around live Julia projects. A user
+can install the package, define a project in ordinary code, browse and organize its items, inspect
+the pipeline, query and filter metadata, process data, build and compose figures, and return to the
+same project state. The same application capabilities are available through Julia, the GUI, Python,
+and the command line.
+
+- [ ] Tags and notes are dependable project features with complete API and GUI use.
+- [ ] Queries and visual item views support concrete programmatic results and live GUI selections.
+- [ ] The workspace engine remains responsive and observable while sources and project code change.
+- [ ] The figure composer, plot builder, figure annotations, and generic visualizers cover common
+  interactive analysis without project-specific GUI code.
+- [ ] Pipeline results are inspectable through the API and GUI using the project's own operation
+  vocabulary.
+- [ ] Julia, GUI, Python, and CLI callers share the same application capabilities.
+- [ ] Entry code can create or reopen `dbproject.toml`, its project state, tags, notes, cache, and
+  saved views.
+- [ ] Installation, documentation, examples, diagnostics, and realistic performance checks support
+  normal use of the application.
+
+## Longer-term goals
+
+### Packaged application and shareable project bundles
+
+Provide a packaged application that can open a reproducible project bundle containing its Julia
+environment, entry code, configuration, data, tags, notes, and optional cache. The bundle becomes the
+shareable unit, gives the packaged application one clear entry point, and may instantiate its Julia
+environment through Pkg when opened.
+
+### GUI-authored workflows
+
+Represent a sequence of GUI actions as an editable, replayable equivalent of a script: open a
+project, find data, process it, create views, edit figures, and export results.
+
+### First-party analysis add-ons
+
+Build substantial XPS, ellipsometry, semiconductor, ferroelectric, and other analysis add-ons from
+the same extension surfaces. An add-on supplies reusable code and may provide project scaffolding
+while each project keeps its own configuration and data.
