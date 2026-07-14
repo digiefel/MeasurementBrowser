@@ -3,6 +3,7 @@ module DataBrowserCache
 
 import DataBrowserAPI
 using DataBrowserAPI:
+    AbstractCollection,
     AbstractDataItem,
     AbstractDataSourceItem,
     MetadataDict,
@@ -25,17 +26,18 @@ using Serialization
 using Dates
 
 import DataBrowserAPI.ItemIndex:
+    CollectionIndex,
+    CollectionRecord,
     RegisteredDataItem,
-    Hierarchy,
     ItemFailure,
     ItemRecord,
     MetadataValue,
     SourceScan,
-    all_items,
-    collection_path_tuple,
+    collection_path_keys,
     emit_progress,
     insert_item!,
-    metadata_dict
+    metadata_dict,
+    register_collection!
 
 include("build_metrics.jl")
 include("cache_buffer.jl")
@@ -53,6 +55,7 @@ export AbstractCacheDB,
     ITEM_ANALYSIS_RESULT,
     PROCESSING_RESULT,
     ProjectCacheSchemaError,
+    ProjectCacheDataError,
     ProjectCacheIdentity,
     ProjectCacheStatus,
     RESULT_FAILED,
@@ -79,13 +82,13 @@ export AbstractCacheDB,
     start_cache!,
     stop_cache!,
     store_collection_metadata!,
+    store_collection_index!,
     store_collection_process_result!,
     store_interpreted!,
     store_item_metadata!,
     store_processed!,
     store_result_failure!,
     store_source_item_failure!,
-    edit_source_collection_metadata!,
     edit_source_item_metadata!,
     wait_condition_deadline,
     write_meta_header!
