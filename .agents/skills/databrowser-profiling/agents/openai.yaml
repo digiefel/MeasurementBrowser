@@ -1,0 +1,4 @@
+interface:
+  display_name: "DataBrowser Profiling"
+  short_description: "Profile DataBrowser headless or with its GUI"
+  default_prompt: "Use $databrowser-profiling to profile DataBrowser on the real RuO2 v2 project."
