@@ -1,0 +1,3 @@
+device = "A"
+values = [5.0]
+channels = ["extra"]

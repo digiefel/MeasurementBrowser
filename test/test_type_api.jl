@@ -19,7 +19,7 @@ DataBrowserAPI.source_id(source::PhotoSource) = source.name
 DataBrowserAPI.source_label(source::PhotoSource) = source.name
 DataBrowserAPI.source_items(::PhotoSource; kwargs...) = [
     PhotoSourceItem("a.photo", 2.0, "typed camera", 1),
-    PhotoSourceItem("b.photo", 4.0, "typed camera", 1),
+    PhotoSourceItem("b.photo", 4.0, "typed camera", 2),
 ]
 DataBrowserAPI.source_item_id(item::PhotoSourceItem) = item.key
 DataBrowserAPI.source_item_label(item::PhotoSourceItem) = item.key
@@ -94,30 +94,27 @@ end
         cache=true,
         background_processing=true,
     )
-    plot_kind = RegisteredPlot{:Photo,Symbol("Image")}
     try
-        DataBrowserCore.Workspace.wait_workspace_idle!(workspace)
-        records = collect(values(workspace.index.items))
-        @test length(records) == 2
-        @test all(record -> record.kind == :Photo, records)
-        @test all(record -> !isempty(record.id), records)
-        @test all(record -> record.item_label in ("a.photo", "b.photo"), records)
-        @test all(record -> record.collection_key !== nothing, records)
-        @test all(record -> DataBrowserAPI.ItemIndex.collection_location(
-            workspace.index.collections, record.collection_key) == ["micrographs"], records)
-        @test Set(record.metadata[:exposure] for record in records) == Set([2.0, 4.0])
-        @test all(record -> record.metadata[:camera] == "typed camera", records)
-        @test all(record -> record.metadata[:gain] == 1, records)
+        MB.wait_workspace_idle!(workspace)
+        status = MB.workspace_status(workspace)
+        @test !status.busy && isempty(status.errors)
+        @test status.counts.cache.analyzed == 2
 
-        loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
+        ids = MB.query_items(workspace)
+        @test length(ids) == 2
+        MB.select_items!(workspace, ids)
+        loaded = MB.materialize_items(workspace)
         @test all(item -> item isa Photo, loaded)
         @test Set(item.exposure for item in loaded) == Set([2.0, 4.0])
         @test all(item -> item.camera == "typed camera", loaded)
-        @test all(item -> item.gain == 1, loaded)
+        @test Set(item.gain for item in loaded) == Set([1, 2])
+        @test Set(sum(item.pixels) for item in loaded) == Set([8.0, 32.0])
+        @test all(item -> MB.label(only(MB.collection(item))) == "micrographs", loaded)
 
-        figure = MB.setup_plot(workspace, plot_kind, records)
+        plot_kind = only(MB.registered_plot_kinds(project, :Photo))
+        figure = MB.setup_plot(workspace, plot_kind, loaded)
         @test figure isa Figure
-        @test MB.plot_data!(workspace, plot_kind, records, figure) === nothing
+        @test MB.plot_data!(workspace, plot_kind, loaded, figure) === nothing
         @test drawn_pixels[] == 8
     finally
         MB.close_workspace!(workspace)

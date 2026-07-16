@@ -1,0 +1,3 @@
+collection_path,scale
+runs/A,2
+runs/B,3
