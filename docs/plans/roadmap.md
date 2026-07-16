@@ -29,6 +29,43 @@ workspace internals.
   ([`912a3c9`](https://github.com/digiefel/MeasurementBrowser/commit/912a3c90b42f057e7c0096b00d7aa290768d858a))
 - [x] Make collections first-class hierarchical values with stable occurrence IDs, compact internal
   keys, cache reopen, collection metadata, and one record/index model shared by the engine and GUI.
+- [ ] Route registered and typed items through one post-interpretation identity/default
+  normalization path. `_registered_item` should adapt callback output into `RegisteredDataItem`, not
+  mint final item ids before the common path.
+- [ ] Remove the unused data-item fingerprint contract and storage. Delete
+  `fingerprint(::AbstractDataItem)`, `ItemRecord.item_fingerprint`, and the persisted item-fingerprint
+  column; retain source-item fingerprints as the change tokens compared across workspace openings.
+- [ ] Give source items, data items, and collections the same `id(value)` and `label(value)` public
+  interface. Replace `source_item_id`, `source_item_label`, and `item_label` cleanly, without
+  compatibility aliases; keep `source_id` and `source_label` for the workspace's data source.
+- [ ] Add a package-owned `source_item_key::Int64`, persist the source-item id-to-key mapping once,
+  and use the integer key for internal and database references just as `item_key` and
+  `collection_key` are used. Keep source-item ids as the stable public identity and measure the
+  resulting database and loaded-index memory change.
+- [ ] Resolve `label(value)` once from each live source item, data item, and collection during
+  interpretation, persist that display value on the corresponding record, and make
+  `label(record)` return it without materializing a payload or running project code in the UI.
+- [ ] Make typed materialization explicit and tested: reopening restores records, not arbitrary
+  user-defined instances; a valid cached processed payload is delivered without rerunning
+  `process`, an opt-in `construct(::Type{T}, data, metadata)` method rebuilds a concrete item from
+  record and payload with its rederived identity validated, and a missing typed item without one
+  is recreated through `source_items` → `read` → `entries`. Obtain a typed collection value from
+  `collection(item)` only after materializing its owning item.
+- [x] Replace `HierarchyNode` and the hierarchy-owned object graph with a package-owned
+  `CollectionRecord` plus collection-parent, child, and membership indexes owned by
+  `WorkspaceIndex`. Collection records expose a durable occurrence ID, compact internal key, and
+  resolved label. Treat the browser tree as one projection of that index, not as the data model.
+- [ ] Replace the monolithic typed `data_items` hook with the staged typed contract of
+  [typed-pipeline.md](typed-pipeline.md): explicit `read` and `entries` stages, item and collection
+  `process`/`analyze`, project-aware stage forms with context-free defaults, and the source as an
+  argument to `read` only. Give the stages distinct work/cache boundaries without a compatibility
+  shim.
+- [ ] Extract the registration dialect into `DataBrowserRecipes`, a package built purely on the
+  type API and re-exported by the `DataBrowser` umbrella. Move the recipe-holding `Project` there,
+  declare `AbstractProject` in `DataBrowserAPI`, make `register_item!` and
+  `register_collection_analysis!` adapter methods over the shared stage contract, and remove every
+  registration reference from Core, Cache, Sources, and the GUI packages. Ship `register_csv!` as
+  the first premade recipe.
 - [ ] Clean-up and rename/file organization pass of DataBrowserAPI. // e.g. what's interface.jl?? 
 - [ ] Remove built-in profiling and consolidate/document proper debugging and profiling.
 - [ ] Run every example entirely through the documented public APIs and remove any remaining public
@@ -91,8 +128,23 @@ per-row costs before the application API and plotting surface grow substantially
   remove duplicated state and layer-skipping call paths.
 - [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining stable
   logical item identities at the project boundary.
-- [ ] Audit source and item fingerprinting, document what each change token invalidates, and simplify
-  the model where the distinction no longer carries useful information.
+- [ ] Audit source fingerprinting and document exactly what each source-provided change token
+  invalidates across live updates and workspace reopen.
+- [ ] Remove the registration-only `item isa RegisteredDataItem` payload-cache gate. Choose disk
+  caching through `cacheable(stage, value)` dispatch on the stage's output value and the payload's
+  supported shape, while keeping cached payload delivery distinct from reconstructing a
+  user-defined typed item through `construct` for multiple dispatch.
+- [ ] Define and test persistence at every expensive pipeline boundary: source discovery, read,
+  entries, item processing and analysis, and collection processing and analysis. A valid persisted
+  stage must satisfy downstream work without rerunning earlier user code; supported core payload
+  shapes cache automatically, while custom typed values may opt into rehydration with a
+  `construct` method.
+- [ ] Provide the workspace-keyed cached constructor entry point
+  `(::Type{T})(ws, key...) where {T<:AbstractDataItem}` so concrete user items rehydrate from the
+  cache on demand — threaded, query- and selection-driven — and settle its key grammar.
+- [ ] Support expensive or non-repeatable sources such as simulations, compressed inputs, and
+  streams through source-owned durable handles/snapshots or persisted interpreted outputs. Memory
+  eviction must not rerun a simulation or consume a stream again when a valid durable result exists.
 - [ ] Collapse workspace busy and idle decisions into one engine model and one watcher snapshot.
 - [ ] Rebuild item-panel rows only when selection, visibility, tags, or relevant item state changes.
 - [ ] Cache hierarchy preparation and visible-collection results between invalidations.
@@ -186,6 +238,8 @@ figure composer where useful while retaining controls for dimensions, slicing, c
 presentation.
 
 - [ ] Add two-dimensional array and image visualizers.
+- [ ] Persist supported dense N-dimensional array payloads and verify warm delivery without rereading
+  or reinterpreting their source items.
 - [ ] Add heatmaps for gridded arrays and suitable tables.
 - [ ] Add dimension and slice controls for higher-dimensional arrays.
 - [ ] Add editable colour limits, scales, colormaps, and image display settings.
