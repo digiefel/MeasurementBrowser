@@ -713,6 +713,9 @@ value written in the last ≤2s may not yet appear. Memory-only workspaces retur
 query_items(workspace::Workspace, predicate::AbstractString)::Vector{String} =
     query_items(workspace.cache.db, predicate)
 
+"""Return the stable IDs of all items currently published in a workspace."""
+query_items(workspace::Workspace)::Vector{String} = sort!(collect(keys(workspace.index.items)))
+
 """Resize this workspace's DuckDB cache buffer-pool limit (MiB) live; suits a GUI control."""
 set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
     set_cache_memory_limit!(workspace.cache.db, mib)

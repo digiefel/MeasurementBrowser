@@ -57,10 +57,13 @@ using DataBrowserSources: DirectorySource, SourceFile, inspect_table
 using DataBrowserCore: items_for_file
 using DataBrowserCore.Workspace:
     close_workspace!,
+    materialize_items,
     open_workspace,
     query_items,
     read_item_data,
-    select_items!
+    select_items!,
+    wait_workspace_idle!,
+    workspace_status
 using DataBrowserGUI: open_browser
 
 export open_browser,
@@ -68,7 +71,10 @@ export open_browser,
     close_workspace!,
     select_items!,
     query_items,
+    materialize_items,
     read_item_data,
+    wait_workspace_idle!,
+    workspace_status,
     define_project,
     register_item!,
     register_collection_analysis!,
