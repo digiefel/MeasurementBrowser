@@ -41,16 +41,19 @@ function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
     cachedb = workspace.cache.db
     memory = !(cachedb isa CacheDB)
     if key.kind === SOURCE_INTERPRET
-        entity = key.entity::String
+        source_key = key.entity::Int64
         if memory
             return lock(cachedb.lock) do
-                haskey(cachedb.failures, (entity, entity)) && return :failed
-                entity in cachedb.source_items ? :ready : :absent
+                haskey(cachedb.failures, ("", source_key)) && return :failed
+                source_key in cachedb.source_items ? :ready : :absent
             end
         end
         failures = read(cachedb.failures)
-        haskey(failures, (entity, entity)) && return :failed
-        return haskey(read(cachedb.source_items), entity) ? :ready : :absent
+        haskey(failures, ("", source_key)) && return :failed
+        return haskey(
+            read(cachedb.source_items),
+            DataBrowserCache.source_item_id(cachedb, source_key),
+        ) ? :ready : :absent
     end
     kind = _work_key_cache_kind(key)
     if key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE)
@@ -73,8 +76,7 @@ end
 function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     cachedb = workspace.cache.db
     if key.kind === SOURCE_INTERPRET
-        entity = key.entity::String
-        clear_cached_source_state!(cachedb, entity)
+        clear_cached_source_state!(cachedb, key.entity::Int64)
         return nothing
     end
     cache_entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
@@ -240,22 +242,23 @@ end
 """Return the source fallback lock shared by items from one source item."""
 function source_fallback_lock(
     graph::WorkDependencyGraph,
-    source_item_id_value::String,
+    source_item_key_value::Int64,
 )::ReentrantLock
     return lock(graph.lock) do
-        get!(() -> ReentrantLock(), graph.source_locks, source_item_id_value)
+        get!(() -> ReentrantLock(), graph.source_locks, source_item_key_value)
     end
 end
 
 """Interpret one source item and return the requested logical item."""
 function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractDataItem
-    fallback_lock = source_fallback_lock(workspace.work, record.source_item_id)
+    fallback_lock = source_fallback_lock(workspace.work, record.source_item_key)
     return lock(fallback_lock) do
         cached = only(read_item_data(workspace.cache.db, [record]; stage=:interpreted))
         cached === nothing || return cached
 
+        source_ref = source_item_id(workspace, record.source_item_key)
         source_item = lock(workspace.work.lock) do
-            get(workspace.work.source_items, record.source_item_id, nothing)
+            get(workspace.work.source_items, record.source_item_key, nothing)
         end
         if source_item === nothing
             discovered = source_items(
@@ -263,17 +266,18 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
                 cancel_token=get_token(workspace.cancel_source),
             )
             position = findfirst(
-                item -> id(item) == record.source_item_id,
+                item -> id(item) == source_ref,
                 discovered,
             )
             position === nothing && error(
-                "Cannot load item '$(record.id)': source item '$(record.source_item_id)' " *
+                "Cannot load item '$(record.id)': source item '$source_ref' " *
                 "is no longer present in source '$(source_id(workspace.source))'",
             )
             source_item = discovered[position]
         end
         interpretation = interpret_source_item(
-            workspace.project, workspace.source, source_item, workspace.profiler)
+            workspace.project, workspace.source, source_item, workspace.profiler;
+            source_item_key=record.source_item_key)
         resolved_records = ItemRecord[
             get(workspace.index.items, candidate.id, candidate)
             for candidate in interpretation.records
@@ -286,7 +290,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
         )
         requested = findfirst(item -> item.id == record.id, interpretation.records)
         requested === nothing && error(
-            "Source item '$(record.source_item_id)' no longer produces item '$(record.id)'",
+            "Source item '$source_ref' no longer produces item '$(record.id)'",
         )
         return interpretation.interpreted_items[requested]
     end
@@ -319,18 +323,19 @@ function run_processing(
         workspace.cache.db, [record]; stage=:interpreted))
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
     process_started = time_ns()
+    source_ref = source_item_id(workspace, record.source_item_key)
     materialized_record = effective_record(collections, record)
     input = interpreted isa RegisteredDataItem ?
         registered_data_item(
             collections, materialized_record, item_data(interpreted)) : interpreted
     processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
         kind=record.kind,
-        source_id=record.source_item_id,
+        source_id=source_ref,
         item_id=record.id,
     ) begin
         process(workspace.project, workspace.source, input)
     end
-    record_scan_phase!(workspace.project, record.source_item_id, record.kind,
+    record_scan_phase!(workspace.project, source_ref, record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
     return (
         item=processed,
@@ -377,9 +382,10 @@ function run_item_analysis(
         "Cannot analyze item '$(record.id)': processed data is missing",
     )
     analyze_started = time_ns()
+    source_ref = source_item_id(workspace, record.source_item_key)
     computed = Profiling.@profile_span workspace.profiler :project :analyze Profiling.ProfileAttributes(
         kind=record.kind,
-        source_id=record.source_item_id,
+        source_id=source_ref,
         item_id=record.id,
     ) begin
         input = processed isa RegisteredDataItem ?
@@ -391,7 +397,7 @@ function run_item_analysis(
             input,
         ))
     end
-    record_scan_phase!(workspace.project, record.source_item_id, record.kind,
+    record_scan_phase!(workspace.project, source_ref, record.kind,
         :analyze, (time_ns() - analyze_started) / 1e9, Base.Threads.threadid())
     return computed
 end
@@ -502,7 +508,8 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
             source_item === nothing &&
                 error("Cannot interpret removed source item '$(key.entity)'")
             interpretation = interpret_source_item(
-                workspace.project, workspace.source, source_item, workspace.profiler)
+                workspace.project, workspace.source, source_item, workspace.profiler;
+                source_item_key=key.entity::Int64)
             (
                 source_item=source_item,
                 interpretation=interpretation,

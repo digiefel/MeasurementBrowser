@@ -52,6 +52,12 @@ Registered and typed items share one identity rule: project code supplies at mos
 (the registration `id` callback or `id(item)`), and interpretation mints the final item id once by
 namespacing that key under the source item and kind. Project code never produces a final item id.
 
+Alongside the stable public source-item id, the package mints one compact `source_item_key::Int64`
+per source item when a scan first sees it. Item records, the work graph, and the cache tables
+reference source items by this key — mirroring `item_key` and `collection_key` — while the
+id-to-key mapping is persisted once with the cached source items and the public id is resolved back
+at boundaries (status errors, GUI selection and display).
+
 A registration name such as `:cycles` identifies the registered pipeline. It is not a property of
 the data and does not replace the concrete type of a typed item.
 

@@ -57,12 +57,13 @@ function render_info_window(state::BrowserState)::Nothing
             kind_text = kind_label(workspace.project, m.kind)
             ig.BulletText("Type: $(kind_text)")
             ig.BulletText("Timestamp: $(m.source_item_timestamp)")
+            source_ref = Workspace.source_item_id(workspace, m.source_item_key)
             if m.source_item_path !== nothing
                 ig.BulletText("Source item:")
                 ig.SameLine()
-                ig.TextLinkOpenURL(m.source_item_id, m.source_item_path)
+                ig.TextLinkOpenURL(source_ref, m.source_item_path)
             else
-                ig.BulletText("Source item: $(m.source_item_id)")
+                ig.BulletText("Source item: $(source_ref)")
             end
             ig.Separator()
             if !isempty(delivered)

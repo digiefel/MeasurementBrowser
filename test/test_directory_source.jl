@@ -99,7 +99,7 @@ end
             @test all(isempty(collection_record.own_metadata)
                 for collection_record in values(collections.records))
             @test all(
-                record.metadata == Dict{Symbol,Any}(:filename => basename(record.source_item_id))
+                record.metadata == Dict{Symbol,Any}(:filename => basename(record.source_item_path))
                 for record in values(without_metadata.index.items)
             )
         finally

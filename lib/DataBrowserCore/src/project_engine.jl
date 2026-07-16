@@ -384,12 +384,15 @@ Interpret every logical data item produced by one source item.
 
 The source item is read only by `data_items`. Concrete typed items remain unchanged; registered data
 uses a private carrier. Processing and analysis belong to the workspace work graph.
+`source_item_key` is the workspace-minted surrogate stamped on every record; transient
+interpretations outside a workspace (such as `items_for_file`) leave it at 0.
 """
 function interpret_source_item(
     project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
-    profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
+    profiler::Union{Nothing,Profiling.ProfileSession}=nothing;
+    source_item_key::Int64=Int64(0),
 )::SourceItemInterpretation
     source_item_id_value = id(source_item)
     source_item_path_value = source_item_path(source_item)
@@ -425,7 +428,7 @@ function interpret_source_item(
         record_metadata = merge(copy(source_metadata), metadata_dict(metadata(handle)))
         item_label_value = label(handle)
         record = ItemRecord(;
-            source_item_id=source_item_id_value,
+            source_item_key,
             source_item_path=source_item_path_value,
             source_item_timestamp=source_item_timestamp(source_item),
             id=_mint_id(source_item_id_value, kind(handle), index, id(handle)),

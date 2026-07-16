@@ -109,7 +109,8 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
     key_2 = DataBrowserAPI.ItemIndex.resolve_collection_path!(
         collections, DataBrowserAPI.ItemIndex.collection_inputs(path_2))
     item_1 = DataBrowserAPI.ItemIndex.ItemRecord(;
-        source_item_id="file-1",
+        source_item_key=DataBrowserCache.source_item_key!(
+            workspace.cache.db, "file-1"; mint=true),
         source_item_path=joinpath(root_path, "item-1.csv"),
         id="item-1",
         label="Item 1",
@@ -117,7 +118,8 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         collection_key=key_1,
     )
     item_2 = DataBrowserAPI.ItemIndex.ItemRecord(;
-        source_item_id="file-2",
+        source_item_key=DataBrowserCache.source_item_key!(
+            workspace.cache.db, "file-2"; mint=true),
         source_item_path=joinpath(root_path, "item-2.csv"),
         id="item-2",
         label="Item 2",
@@ -191,7 +193,8 @@ end
         try
             collections = DataBrowserAPI.ItemIndex.CollectionIndex(root_path)
             root_item = DataBrowserAPI.ItemIndex.ItemRecord(;
-                source_item_id="root-file",
+                source_item_key=DataBrowserCache.source_item_key!(
+                    workspace.cache.db, "root-file"; mint=true),
                 source_item_path=joinpath(root_path, "root.csv"),
                 id="root-item",
                 label="Root Item",
@@ -217,7 +220,7 @@ end
 
             empty!(workspace.selection.collection_ids)
             empty!(workspace.selection.item_ids)
-            @test Browser.select_source_item!(state, root_item.source_item_id)
+            @test Browser.select_source_item!(state, "root-file")
             @test workspace.selection.collection_ids ==
                 [Browser.ROOT_COLLECTION_SELECTION_ID]
             @test workspace.selection.item_ids == [root_item.id]

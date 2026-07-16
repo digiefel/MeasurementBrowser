@@ -91,6 +91,9 @@ export AbstractCacheDB,
     store_result_failure!,
     store_source_item_failure!,
     edit_source_item_metadata!,
+    source_item_key!,
+    source_item_key,
+    source_item_id,
     wait_condition_deadline,
     write_meta_header!
 

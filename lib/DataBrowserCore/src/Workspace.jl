@@ -83,8 +83,10 @@ using DataBrowserCache:
     store_result_failure!,
     store_source_item_failure!,
     edit_source_item_metadata!,
+    source_item_key!,
     wait_condition_deadline,
     write_meta_header!
+import DataBrowserCache
 import DataBrowserCache: query_items, read_item_data, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
     CollectionIndex,
@@ -171,8 +173,8 @@ mutable struct WorkspaceIndex
     collection_metadata_keys::Vector{Symbol}
     source::Union{Nothing,SourceScan}
     analysis_errors::Dict{Union{String,Int64},String}
-    # Published item ids per source item, so per-publish lookups avoid scanning every item.
-    items_by_source::Dict{String,Vector{String}}
+    # Published item ids per source-item key, so per-publish lookups avoid scanning every item.
+    items_by_source::Dict{Int64,Vector{String}}
 end
 
 """
@@ -331,7 +333,7 @@ function Workspace(
             Symbol[],
             nothing,
             Dict{Union{String,Int64},String}(),
-            Dict{String,Vector{String}}(),
+            Dict{Int64,Vector{String}}(),
         ),
         WorkspaceSelection(),
         WorkspaceCache(identity, cache_db, disk_error, nothing, :load),

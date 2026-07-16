@@ -487,10 +487,16 @@ function set_collection_analysis!(
     return nothing
 end
 
-"""The internal metadata record for one logical item discovered inside one source item."""
+"""
+The internal metadata record for one logical item discovered inside one source item.
+
+`source_item_key` is the compact package-owned surrogate of the owning source item; the stable
+public source-item id is resolved through the workspace/cache mapping persisted once with the
+source items.
+"""
 struct ItemRecord
     id::String
-    source_item_id::String
+    source_item_key::Int64
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
     label::String
@@ -502,7 +508,7 @@ end
 """Construct an item record while normalizing its fields."""
 function ItemRecord(;
     id::AbstractString,
-    source_item_id::AbstractString,
+    source_item_key::Integer,
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
     label::AbstractString,
@@ -514,7 +520,7 @@ function ItemRecord(;
     isempty(record_id) && error("ItemRecord id cannot be empty")
     return ItemRecord(
         record_id,
-        String(source_item_id),
+        Int64(source_item_key),
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
         String(label),
@@ -528,7 +534,7 @@ end
 function ItemRecord(
     record::ItemRecord;
     id::AbstractString=record.id,
-    source_item_id::AbstractString=record.source_item_id,
+    source_item_key::Integer=record.source_item_key,
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
     label::AbstractString=record.label,
@@ -538,7 +544,7 @@ function ItemRecord(
 )::ItemRecord
     return ItemRecord(;
         id,
-        source_item_id,
+        source_item_key,
         source_item_path,
         source_item_timestamp,
         label,
