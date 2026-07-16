@@ -3,6 +3,12 @@
 Performance is the reason this app exists, so the engine ships cheap summary metrics, opt-in
 structured profiling, and a headless benchmark harness.
 
+For profiling the whole application on the real RuO2 project (compilation, startup, scan
+throughput, overhead, GUI cost), use the `databrowser-profiling` skill
+(`.agents/skills/databrowser-profiling/`). The harnesses below run synthetic workloads instead:
+use them when you need controlled item counts or metrics the skill does not cover (plot latency,
+warm reopen, scaling exponents).
+
 The `bench/` environment is separate from the package (`julia --project=bench`) so dev tools
 (BenchmarkTools, CairoMakie, …) do not become runtime dependencies. Instantiate once:
 

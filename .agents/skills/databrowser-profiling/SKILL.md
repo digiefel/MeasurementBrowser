@@ -1,146 +1,89 @@
 ---
 name: databrowser-profiling
-description: Profile and benchmark the DataBrowser application on its real RuO2 v2 project, either headlessly or while its native CImGui/GLMakie GUI runs. Use for DataBrowser throughput, cache-build, workspace, plot, responsiveness, memory, Julia CPU/allocation profiling, GLFW, or GUI performance investigations in this repository.
+description: Profile and benchmark the DataBrowser application on the real RuO2 v2 project, headless or with the native GUI. Use for DataBrowser startup, compilation, throughput, overhead, scan-timeline, or GUI performance investigations in this repository.
 ---
 
 # DataBrowser application profiling
 
-Use this skill for whole-application scenarios and the real RuO2 workload. Use `julia-bench` for
-isolated kernels, inference, and BenchmarkTools experiments after this workflow identifies a hot
-path. Do not reproduce its general microbenchmark guidance here.
+Use the script `scripts/timed_profile.jl` to measure DataBrowser's performance. It runs the real
+RuO2 project on the real measurement data, times every phase from precompilation to a live scan,
+and prints one summary at the end. A full run should take about two minutes. To see the effect of a
+code change, run it once before the change and once after, and compare the two summaries.
 
-Do not use DataBrowser's internal profiler or profiling UI. They are scheduled for removal. Use
-Julia's standard `Profile`, `Profile.Allocs`, timing, allocation, and memory tools so this workflow
-remains valid after that removal.
-
-## Start every investigation
-
-1. Read `AGENTS.md` and `bench/README.md`.
-2. Record the target checkout, commit, Julia version, thread count, and active package path. Never
-   assume the RuO2 v2 manifest points at the checkout under test.
-3. State the scenario: cold isolated cache, warm reopen, full background processing, or interactive
-   GUI work. Compare only identical scenarios.
-4. Ask: **“Do you want the native GUI profiling/analysis pass as well, or headless only?”**
-   Headless work may proceed while waiting. Do not open a native window without approval.
-
-Never call throughput linear merely because it is much faster or no longer quadratic. Report raw
-times and rates, fit total time against item count, and distinguish `O(N)`, mildly superlinear, and
-`O(N²)` behavior.
-
-## Real project
-
-Use:
-
-```text
-/Users/davide/Library/CloudStorage/OneDrive-LundUniversity/projects/Borg/202501_RuO2test/analysis/v2
-```
-
-The data root is `../../electricaldata`; `browser.jl` defines the project. Its manifest may point at
-`/Users/davide/code/Julia/DataBrowser`, so the bundled driver launches with the checkout under test
-as the Julia project and loads only the v2 definitions. Confirm its printed `DataBrowser source`
-before trusting any result.
-
-## Headless runs
-
-Use a fresh process. The driver reads the actual v2 project and electrical data, warms the callbacks
-once, and then measures a clean rebuild in an isolated temporary cache. It never deletes the normal
-project cache.
-
-The top-level `DataBrowser` package currently imports its GUI dependencies even in a headless run.
-On macOS, a sandboxed process can therefore stall while initializing system input services before
-the workspace opens. If `load-only` does not promptly print `DataBrowser source`, rerun the same
-headless command outside the sandbox with approval. This grants the process access to the required
-macOS services; it does not open a window or authorize GUI actions.
-
-CPU profile:
+Run it from the repo root:
 
 ```bash
-julia --project=. --threads=auto \
-  .agents/skills/databrowser-profiling/scripts/ruo2_v2_profile.jl headless --profile=cpu
+julia --project=bench --threads=auto .agents/skills/databrowser-profiling/scripts/timed_profile.jl headless
+julia --project=bench --threads=auto .agents/skills/databrowser-profiling/scripts/timed_profile.jl gui
 ```
 
-Allocation profile in a separate run:
+`headless` runs the engine without a window and works in any environment. `gui` additionally
+opens the real DataBrowser window, which only works in an unsandboxed process. To find out how
+much the GUI slows down the engine, run both modes with the same settings and compare their
+throughput numbers.
 
-```bash
-julia --project=. --threads=auto \
-  .agents/skills/databrowser-profiling/scripts/ruo2_v2_profile.jl headless --profile=allocs
-```
+There are four options:
 
-Use `--profile=none` for an uninstrumented baseline. Add `--background-processing` only when the
-scenario is intended to process and analyze the complete workspace. `--timeout=SECONDS`,
-`--sample-rate=RATE`, and `--output=PATH` control long runs and artifacts.
+- `--budget=SECONDS` sets how long the measured scan runs. Default 30.
+- `--warmup=SECONDS` sets how long the throwaway warmup scan runs before the measured one, so
+  that compilation happens during warmup instead of polluting the measurement. Default 20. Set
+  it to 0 if you specifically want to measure cold-start behavior.
+- `--no-fresh` skips deleting the DataBrowser compiled caches. The run starts faster, but the
+  precompile number then measures an empty rebuild and means nothing.
+- `--profile=cpu` or `--profile=allocs` additionally runs Julia's sampling profiler during the
+  measured scan and writes a flat report (`cpu_profile.txt` or `allocation_profile.txt`) next to
+  `timeline.csv`. Use this to find which functions the scan spends its time or allocations in.
+  Profile the two separately: allocation sampling changes runtime cost.
 
-The driver writes `run.csv` and either `cpu_profile.txt` or `allocation_profile.txt`. Inspect the
-flat report first, identify application frames with high self or total samples, then use
-`julia-bench` for focused measurement. Do not infer a cause from allocation totals alone.
+## How to read the summary
 
-For scale claims, run `bench/scaling.jl` at several sizes too. The real v2 run is the acceptance
-workload; the synthetic harness is controlled attribution, not a substitute.
+The summary has five sections. This is what each line tells you:
 
-## GUI runs
+**Startup.** How long each phase took, in order: `precompile` rebuilds the nine DataBrowser
+packages from scratch (the per-package times are printed above the summary by Pkg), `using
+DataBrowser` loads the package, `project include` runs the project file with all its `register!`
+calls, and `open_workspace` creates the workspace. In gui mode there is also `open_browser`,
+which times how long starting the render loop takes. It does not time how long until the window
+actually responds; the app has no hook for that yet.
 
-After explicit approval, launch the real native app outside the sandbox in a fresh interactive
-Julia process with a PTY:
+**Scan window.** The measured scan runs on an empty temporary cache, so it always does the full
+work. `runtime JIT in window` is compilation that happened during the measurement; with the
+default warmup it should be around a second, and if it is much larger the warmup was too short.
+The four milestone lines tell you when discovery, interpretation, processing, and analysis
+finished, or `not reached` if the budget ran out first. With a 30-second budget on the RuO2 data
+you will normally only see interpretation running; processing is lower priority by design and
+starts later.
 
-```bash
-julia -i --project=. --threads=auto \
-  .agents/skills/databrowser-profiling/scripts/ruo2_v2_profile.jl gui
-```
+**Throughput.** Items per second for interpretation and processing, given separately for the
+first and second half of the window. If the two halves differ a lot, look at `timeline.csv` to
+see whether the rate actually degrades or whether the scan just hit a stretch of heavier files.
 
-Request escalated execution because GLFW needs the macOS WindowServer. Keep the process session so
-commands can be sent to its REPL and it can be stopped cleanly. Process startup is not GUI
-validation: confirm with the user that the window is visible and responsive.
+**Pipeline callbacks vs capacity.** This answers how much time goes into the actual work versus
+the machinery around it. The engine records the time spent inside the project's own callbacks
+(detect, read, entries, process, analyze). The summary compares that total against the window
+length times the number of worker threads. In a saturated scan, the difference is the overhead
+of everything the app does around the callbacks: scheduling, caching, publishing.
 
-The driver defines two REPL helpers that profile all Julia tasks while the GUI remains live:
+**Timeline events.** Wall-clock timestamps of every phase of the run, so you can see where the
+two minutes went.
 
-```julia
-profile_gui_cpu(30)                 # writes gui_cpu_profile.txt
-profile_gui_allocs(15; rate=0.01)  # writes gui_allocation_profile.txt
-```
+The per-sample counts (every 0.25 s: sources found, interpreted, processed, analyzed, and so on)
+are written to `timeline.csv` in `bench/results/<timestamp>-ruo2-v2-timed-<mode>/`.
 
-These helpers only start Julia's profilers and wait for the requested sampling period. They do not
-drive, automate, or prescribe GUI actions. The user decides what to do in the application during a
-capture. Record that scenario in plain language and keep distinct scenarios in separate captures.
-Do not require any DataBrowser window, tab, button, or internal profiling API.
+## What the script uses
 
-For frame-loop questions, CPU-sample a long enough window to collect repeated frames. For latency
-of one known action, first identify the callable boundary from the sample profile, then benchmark or
-time that boundary directly outside the render loop where possible. Profile allocations separately
-because allocation sampling changes runtime cost.
+The project definitions are a copy of the RuO2 v2 project, checked in at
+`project/definitions.jl` together with its `data/`, `analysis/`, and `plots/` files. If the real
+project changes, copy the files over again. The measurement data itself is not copied: the
+script reads the real `electricaldata` directory (6321 files, about 65k items). Set
+`RUO2_DATA_ROOT` to use a different data root.
 
-Close the workspace and Julia process cleanly after collecting artifacts. Never claim visible GUI
-success from headless checks or from an invisible GLMakie screen.
+The script never touches your real caches. Workspace caches go to a temporary directory that is
+deleted afterwards, and a fresh run deletes only the `DataBrowser*` entries from the compiled
+cache, which Julia rebuilds in the precompile step.
 
-## GLFW and GLMakie failures
+## When this script is not the right tool
 
-Distinguish a package-precompile failure from an application crash. A stack ending in
-`_glfwGetMonitorPosCocoa` while compiling GLMakie means its precompile workload attempted monitor
-access without a usable WindowServer; it does not prove that DataBrowser's GUI crashes.
-
-For a GUI run, retry the launch outside the sandbox after approval. For a headless run, or if only
-GLMakie's precompile workload fails, bypass package-image generation and warm the real workload
-inside the process:
-
-```bash
-julia --compiled-modules=no --project=. --threads=auto \
-  .agents/skills/databrowser-profiling/scripts/ruo2_v2_profile.jl headless --profile=cpu
-```
-
-For an approved GUI fallback, use the same `--compiled-modules=no` flag with the interactive GUI
-command. Exclude startup and warm-up from measurements. If an unsandboxed visible launch still
-fails, preserve the exact stack, Julia/GLMakie/GLFW versions, and command before diagnosing a real
-GUI startup problem.
-
-## Report results
-
-Lead with:
-
-- exact checkout/commit and confirmed `pathof(DataBrowser)`;
-- scenario, cache mode, data root, threads, profiler, and whether the GUI was visibly tested;
-- raw total time, items/s, allocations or RSS, and interaction latency where relevant;
-- fitted scaling exponent with all raw points;
-- dominant Julia CPU or allocation frames, separated into application and dependency code;
-- limitations, including any GUI pass not approved or not visibly confirmed.
-
-Apply one targeted fix, rerun the identical headless scenario, and repeat an approved GUI capture
-when the defect is interactive.
+- To check that GUI-hot operations stay flat as item counts grow, run `bench/scaling.jl`. It
+  sweeps synthetic workspaces of increasing size and fits scaling exponents.
+- To benchmark one isolated function properly, use the `julia-bench` skill.
