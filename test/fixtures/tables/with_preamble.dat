@@ -1,0 +1,5 @@
+# instrument note
+sweep id: 3
+time_s,current_A,voltage_V
+0.0,1e-9,0.0
+1.0,2e-9,0.1

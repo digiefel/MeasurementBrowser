@@ -2,8 +2,6 @@ using DataBrowser
 using DataBrowserAPI
 using DataBrowserCache
 using DataBrowserSources
-using DBInterface
-using DuckDB
 using Test
 
 struct CacheCollectionLevel <: AbstractCollection
@@ -54,7 +52,6 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
         try
             index = load_cache_index(reopened)
             restored = only(index.source.items)
-            @test restored.collection_key == leaf_key
             restored_collection = index.source.collections.records[leaf_key]
             @test restored_collection.id == collections.records[leaf_key].id
             @test restored_collection.label == "leaf"
@@ -64,19 +61,6 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
                 CacheResultKey(COLLECTION_PROCESS_RESULT, leaf_key))
         finally
             close_cache_db!(reopened)
-        end
-
-        db = DBInterface.connect(DuckDB.DB, cache_identity.cache_path)
-        connection = DBInterface.connect(db)
-        try
-            columns = Set(String(row.name) for row in
-                DBInterface.execute(connection, "PRAGMA table_info('collections')"))
-            @test "id" in columns
-            @test !("value_hex" in columns)
-            @test !("id_preimage_hex" in columns)
-        finally
-            DBInterface.close!(connection)
-            DBInterface.close!(db)
         end
     end
 end

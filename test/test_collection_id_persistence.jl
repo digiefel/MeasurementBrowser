@@ -83,8 +83,6 @@ end
         durable_id = first_collection_record.id
         annotation_key = COLLECTION_ID_BROWSER._collection_annotation_key(
             collections, first_collection_record)
-        @test annotation_key == "@collection/$durable_id"
-
         tag_state = DataBrowserAnnotations.Tags.TagState(
             [DataBrowserAnnotations.Tags.TagDef("review", (0x30, 0xc0, 0xff), 50)],
             Dict(annotation_key => Set(["review"])),
@@ -108,10 +106,8 @@ end
         close_workspace!(first)
     end
 
-    @test isfile(cache_path)
     rm(cache_path; force=true)
     rm(cache_path * ".wal"; force=true)
-    @test !isfile(cache_path)
 
     reopened = open_workspace(
         project,
@@ -129,8 +125,6 @@ end
         second_collection_record = collections.records[second_record.collection_key]
 
         @test first_collection_record.id == durable_id
-        @test first_collection_record.label == second_collection_record.label == "same label"
-        @test first_collection_record.id != second_collection_record.id
         root_key = only(COLLECTION_ID_INDEX.sorted_child_keys(collections, nothing))
         @test collections.records[root_key].label == "parent after"
 

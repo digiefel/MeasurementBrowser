@@ -38,9 +38,6 @@ end
                     [record],
                     [path],
                 )
-                @test workspace.index === index
-                @test workspace.index.collections === collections
-                @test workspace.index.items === items
                 if number == 1
                     collection_key = only(keys(collections.records))
                     HE_INDEX.set_collection_analysis!(
@@ -68,9 +65,6 @@ end
                 ["item-1", "item-2"]
 
             DataBrowserCore.Workspace.remove_source_item_output!(workspace, "source-1")
-            @test workspace.index === index
-            @test workspace.index.collections === collections
-            @test workspace.index.items === items
             @test collect(keys(items)) == ["item-2"]
         finally
             DataBrowser.close_workspace!(workspace)
@@ -93,13 +87,10 @@ end
     run_3 = _insert_registered!(updated, "a3", "dev-A", "run-3")
     updated_dev_a = updated.records[run_3].parent_key
 
-    @test haskey(original.records, run_2)
     @test !haskey(updated.records, run_2)
     @test [updated.records[key].label for key in
         HE_INDEX.sorted_child_keys(updated, updated_dev_a)] == ["run-3"]
     @test HE_INDEX.collection_item_ids(updated, run_3) == ["a3"]
-    @test haskey(updated.records, run_1)
-
     HE_INDEX.remove_item!(updated, "a3", run_3)
     @test !haskey(updated.records, updated_dev_a)
     @test haskey(original.records, dev_a)

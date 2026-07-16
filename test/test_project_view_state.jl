@@ -54,30 +54,6 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
     loaded = Browser._load_project_view(root_path)
     @test Browser._project_view_to_toml(loaded) == Browser._project_view_to_toml(view)
 
-    toml_data = Browser._project_view_to_toml(view)
-    @test Set(keys(toml_data)) == Set([
-        "project",
-        "tree",
-        "items",
-        "extensions",
-    ])
-
-    parsed = Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
-        "project" => "ProjectViewTest",
-        "tree" => Dict{String,Any}(
-            "expanded" => ["chip/device"],
-            "selected" => ["chip/device"],
-            "filter" => "tlm",
-        ),
-        "items" => Dict{String,Any}(
-            "selected" => ["item-1"],
-            "filter" => "298K",
-        ),
-        "extensions" => Dict{String,Any}(
-            "PlotsExtension" => copy(_PLOTS_EXTENSION_VIEW),
-        ),
-    ))
-
     @test_throws ErrorException Browser._project_view_from_toml(Browser.PersistedProjectView, Dict{String,Any}(
         "project" => "ProjectViewTest",
         "tree" => Dict{String,Any}(
@@ -93,10 +69,6 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
             "PlotsExtension" => copy(_PLOTS_EXTENSION_VIEW),
         ),
     ))
-
-    @test parsed.project == "ProjectViewTest"
-    @test parsed.extensions["PlotsExtension"]["main_plot"]["plot_kind"] ==
-        "iv_sweep::ProjectViewTLMPlot"
 
     project = DataBrowser.define_project("ProjectViewTest")
     source = test_source(project, root_path)

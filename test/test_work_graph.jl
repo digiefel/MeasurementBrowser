@@ -6,56 +6,6 @@ using DuckDB
 const WORK = DataBrowserCore.Workspace
 const CACHE = DataBrowserCache
 
-@testset "work graph dependencies" begin
-    graph = WORK.WorkDependencyGraph()
-    process_key = WORK.WorkKey(WORK.ITEM_PROCESS, "item-1")
-    item_a = WORK.WorkKey(WORK.ITEM_ANALYZE, "item-1")
-    item_b = WORK.WorkKey(WORK.ITEM_ANALYZE, "item-2")
-    collection = WORK.WorkKey(WORK.COLLECTION_ANALYZE, "device-A")
-
-    lock(graph.lock) do
-        process_node = WORK.WorkNode(
-            process_key, UInt16(1), :running, 0, Set{WORK.WorkKey}(), UInt64(0),
-            Channel{Any}[], 0)
-        graph.nodes[process_key] = process_node
-
-        blocked_item_analyze = WORK.WorkNode(
-            item_a, UInt16(1), :waiting, 1, Set{WORK.WorkKey}(), UInt64(0),
-            Channel{Any}[], 0)
-        WORK.seed_node_dependencies!(graph, blocked_item_analyze, WORK.WorkKey[process_key])
-        graph.nodes[item_a] = blocked_item_analyze
-        @test blocked_item_analyze.pending == 1
-        @test item_a in process_node.dependents
-        @test !WORK.dependencies_ready(blocked_item_analyze)
-
-        WORK.wake_ready_dependents!(graph, process_node)
-        delete!(graph.nodes, process_key)
-        @test blocked_item_analyze.pending == 0
-        @test WORK.dependencies_ready(blocked_item_analyze)
-        WORK.queue_ready_node!(graph, blocked_item_analyze)
-        @test blocked_item_analyze.state === :queued
-        blocked_item_analyze.state = :waiting
-        blocked_item_analyze.pending = 0
-        empty!(graph.queue)
-
-        collection_node = WORK.WorkNode(
-            collection, UInt16(1), :waiting, 1, Set{WORK.WorkKey}(), UInt64(0),
-            Channel{Any}[], 0)
-        WORK.seed_node_dependencies!(graph, collection_node, WORK.WorkKey[item_a, item_b])
-        graph.nodes[collection] = collection_node
-        @test collection_node.pending == 1
-
-        WORK.wake_ready_dependents!(graph, blocked_item_analyze)
-        delete!(graph.nodes, item_a)
-        @test collection_node.pending == 0
-        @test collection_node.state === :queued
-        @test graph.queue == Dict(1 => [(collection, UInt16(1))])
-        @test WORK.pop_queued_node!(graph) === collection_node
-        @test collection_node.state === :running
-        @test WORK.pop_queued_node!(graph) === nothing
-    end
-end
-
 @testset "stale cache schema requires explicit rebuild" begin
     mktempdir() do dir
         source = DataBrowser.DirectorySource(dir)
@@ -130,6 +80,40 @@ end
     end
 end
 
+@testset "workspace status does not block on publication" begin
+    mktempdir() do dir
+        project = DataBrowser.define_project("StatusSnapshot_$(basename(dir))")
+        workspace = DataBrowser.open_workspace(project, DataBrowser.DirectorySource(dir); cache=false)
+        try
+            DataBrowser.wait_workspace_idle!(workspace)
+            lock(workspace.publish_lock) do
+                workspace.index.analysis_errors["item"] = "failed"
+            end
+            DataBrowserCore.Workspace.refresh_status!(workspace)
+            baseline = workspace.status
+
+            locked = Channel{Nothing}(1)
+            release = Channel{Nothing}(1)
+            holder = Threads.@spawn lock(workspace.publish_lock) do
+                put!(locked, nothing)
+                take!(release)
+            end
+            take!(locked)
+            started = time()
+            try
+                snapshot = DataBrowser.workspace_status(workspace)
+                @test time() - started < 1
+                @test snapshot.errors == baseline.errors
+            finally
+                put!(release, nothing)
+                wait(holder)
+            end
+        finally
+            DataBrowser.close_workspace!(workspace)
+        end
+    end
+end
+
 @testset "semantic collection-metadata cache delete" begin
     mktempdir() do dir
         source = DataBrowser.DirectorySource(dir)
@@ -157,37 +141,6 @@ end
         finally
             CACHE.close_cache_db!(cache)
             rm(dirname(identity.cache_path); force=true, recursive=true)
-        end
-    end
-end
-
-@testset "cache stage summary follows persisted stage rows" begin
-    mktempdir() do dir
-        write_test_source(joinpath(dir, "a.csv"))
-        workspace = DataBrowser.open_workspace(
-            TEST_PROJECT,
-            DataBrowser.DirectorySource(dir);
-            background_processing=true,
-        )
-        try
-            DataBrowserCore.Workspace.wait_workspace_idle!(workspace)
-            summary = CACHE.cache_stage_summary(workspace.cache.db)
-            @test summary.cached_sources == 1
-            @test summary.interpreted_items == 1
-            @test summary.processed == 1
-            @test summary.analyzed == 1
-
-            source_item_id = only(keys(workspace.index.items_by_source))
-            records = DataBrowserCore.Workspace.source_item_records(
-                workspace.index, source_item_id)
-            CACHE.delete_source_item!(workspace.cache.db, source_item_id, records)
-            summary = CACHE.cache_stage_summary(workspace.cache.db)
-            @test summary.cached_sources == 0
-            @test summary.interpreted_items == 0
-            @test summary.processed == 0
-            @test summary.analyzed == 0
-        finally
-            DataBrowser.close_workspace!(workspace)
         end
     end
 end

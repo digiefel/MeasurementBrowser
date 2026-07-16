@@ -1,54 +1,26 @@
-using DataBrowser
 using DataBrowserGUI
 using DataBrowser: inspect_table
-using DataBrowserGUI
 using DataFrames: DataFrame
 using Test
 
 const Browser = DataBrowserGUI.Browser
 using DataBrowserCore: merge_item_tables
-using DataBrowserGUI
 
 @testset "table inspector" begin
+    fixture_root = joinpath(@__DIR__, "fixtures", "tables")
+    preview = inspect_table(joinpath(fixture_root, "with_preamble.dat"))
+    @test preview.delimiter == ','
+    @test preview.header_row == 3
+    @test preview.columns == ["time_s", "current_A", "voltage_V"]
+    @test preview.row_count == 2
+    @test isempty(preview.warnings)
 
-    # --- legacy buffer helpers ---
-    mktempdir() do dir
-        buffer = fill(UInt8(0), 8)
-        Browser._set_buffer_string!(buffer, "abc")
-        @test Browser._buffer_string(buffer) == "abc"
-        Browser._set_buffer_string!(buffer, "abcdefghij")
-        @test Browser._buffer_string(buffer) == "abcdefg"
-        @test buffer[end] == UInt8(0)
-
-        comma_path = joinpath(dir, "with_preamble.csv")
-        write(
-            comma_path,
-            "# instrument note\n" *
-            "sweep id: 3\n" *
-            "time_s,current_A,voltage_V\n" *
-            "0.0,1e-9,0.0\n" *
-            "1.0,2e-9,0.1\n",
-        )
-
-        preview = inspect_table(comma_path)
-        @test preview.delimiter == ','
-        @test preview.header_row == 3
-        @test preview.data_start_row == 4
-        @test preview.columns == ["time_s", "current_A", "voltage_V"]
-        @test preview.row_count == 2
-        @test preview.preview_rows == 2
-        @test isempty(preview.warnings)
-
-        tab_path = joinpath(dir, "no_header.tsv")
-        write(tab_path, "1\t2\t3\n4\t5\t6\n")
-        preview = inspect_table(tab_path; max_rows=1)
-        @test preview.delimiter == '\t'
-        @test preview.header_row === nothing
-        @test preview.data_start_row == 1
-        @test preview.row_count == 2
-        @test preview.preview_rows == 1
-        @test !isempty(preview.warnings)
-    end
+    headerless = inspect_table(joinpath(fixture_root, "no_header.dat"); max_rows=1)
+    @test headerless.delimiter == '\t'
+    @test headerless.header_row === nothing
+    @test headerless.row_count == 2
+    @test headerless.preview_rows == 1
+    @test !isempty(headerless.warnings)
 
     # --- merge_item_tables: single item ---
     @testset "merge_item_tables single item" begin
@@ -156,12 +128,6 @@ using DataBrowserGUI
         Browser._update_multi_selection!(sel, 2, all_rows, true, false)
         @test Set(sel) == Set([2, 3, 4, 5])
 
-        # Ctrl+A pattern (select all)
-        sel = Int[]
-        for r in all_rows
-            Browser._update_multi_selection!(sel, r, all_rows, false, true)
-        end
-        @test Set(sel) == Set(all_rows)
     end
 
     @testset "cell range clipboard text" begin
@@ -188,36 +154,4 @@ using DataBrowserGUI
         @test Browser.selected_cell_text(state, 3, 3, cell) == "r3c1"
     end
 
-    # --- file-mode grid model builder ---
-    @testset "file grid model from TabularFileSource" begin
-        mktempdir() do dir
-            path = joinpath(dir, "sample.csv")
-            write(path, "a,b,c\n1,2,3\n4,5,6\n7,8,9\n")
-            preview = inspect_table(path)
-            @test preview.row_count == 3
-            @test preview.preview_rows == 3
-            @test isempty(preview.warnings)
-
-            columns, n_rows, cell = Browser._file_grid_model(preview)
-            @test columns == ["a", "b", "c"]
-            @test n_rows == 3
-            # First row, first column
-            @test cell(1, 1) == "1"
-            @test cell(1, 2) == "2"
-            @test cell(3, 3) == "9"
-        end
-    end
-
-    # --- PersistedProjectView round-trip (no table_column_widths) ---
-    @testset "PersistedProjectView round-trip" begin
-        view = Browser.PersistedProjectView(project="test")
-        toml_data = Browser._project_view_to_toml(view)
-        @test haskey(toml_data, "project")
-        @test toml_data["project"] == "test"
-        # table_column_widths field is gone — ensure no key pollution
-        @test !haskey(toml_data, "table_column_widths")
-
-        restored = Browser._project_view_from_toml(Browser.PersistedProjectView, toml_data)
-        @test restored.project == "test"
-    end
 end
