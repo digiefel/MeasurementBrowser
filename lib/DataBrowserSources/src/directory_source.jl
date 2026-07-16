@@ -3,8 +3,8 @@ using BetterFileWatching
 using CancellationTokens: CancellationToken, CancellationTokenSource, OperationCanceledException, cancel, get_token, is_cancellation_requested
 
 import DataBrowserAPI
-using DataBrowserAPI.ItemIndex: CollectionInput, RegisteredCollection
-import DataBrowserAPI.ItemIndex: collection_inputs
+using DataBrowserAPI.ItemIndex: RegisteredCollection
+import DataBrowserAPI.ItemIndex: registered_collection_path
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -317,13 +317,13 @@ function own_collection_metadata(
     return own
 end
 
-"""Normalize a directory registration path with source-owned metadata on each level."""
-function collection_inputs(
+"""Wrap a directory registration path with source-owned metadata on each level."""
+function registered_collection_path(
     source::DirectorySource,
     path::AbstractVector{<:AbstractString},
-)::Vector{CollectionInput}
+)::Vector{DataBrowserAPI.AbstractCollection}
     names = String.(path)
-    collections = lock(source.metadata_lock) do
+    return lock(source.metadata_lock) do
         DataBrowserAPI.AbstractCollection[
             RegisteredCollection(
                 name;
@@ -335,7 +335,6 @@ function collection_inputs(
             for (depth, name) in pairs(names)
         ]
     end
-    return collection_inputs(collections)
 end
 
 function source_items(

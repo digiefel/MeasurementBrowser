@@ -34,7 +34,7 @@ const MB = DataBrowser
             @test all(it -> it isa MB.AbstractDataItem, items)
             @test all(it -> MB.item_data(it) isa DataFrame, items)
             @test all(it -> MB.kind(it) === :table, items)
-            @test all(it -> MB.collection(it) == ["dev"], items)
+            @test all(it -> MB.label.(MB.collection(it)) == ["dev"], items)
             drew_rows[] = sum(nrow(MB.item_data(item)) for item in items)
             Axis(figure[1, 1])
             nothing
@@ -68,7 +68,7 @@ const MB = DataBrowser
     # The bridge runs the registered setup/draw callbacks via the engine's plot dispatch.
     items = items_for_file(project, joinpath(dir, "m.csv"))
     workspace = DataBrowserCore.Workspace.Workspace(project, test_source(project, dir))
-    @test MB.collection(only(items)) == ["dev"]
+    @test MB.label.(MB.collection(only(items))) == ["dev"]
 
     collection_meta = Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}(
         ("dev",) => Dict{Symbol,Any}(:wafer => "A"),

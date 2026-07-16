@@ -43,14 +43,20 @@ const REGISTRATION_SOURCES = DataBrowserSources
         :position => 1,
     )
     @test REGISTRATION_API.item_label.(items) == ["cycles.dat #1", "cycles.dat #2"]
-    @test [REGISTRATION_API.collection(item) for item in items] ==
+    @test [REGISTRATION_API.label.(REGISTRATION_API.collection(item)) for item in items] ==
         [["instrument tester"], ["instrument tester"]]
-    @test REGISTRATION_API.id(items[1]) != REGISTRATION_API.id(items[2])
+    # `data_items` adapts entries without minting identity; ids are minted at interpretation.
+    @test REGISTRATION_API.id(items[1]) == REGISTRATION_API.id(items[2]) == ""
+    interpretation = REGISTRATION_CORE.interpret_source_item(project, source, source_file)
+    @test length(interpretation.records) == 2
+    @test allunique(record.id for record in interpretation.records)
+    @test [REGISTRATION_API.id(item) for item in interpretation.interpreted_items] ==
+        [record.id for record in interpretation.records]
 
     effective = merge(REGISTRATION_API.metadata(items[1]), Dict(:scale => 10))
     input = REGISTRATION_API.ItemIndex.RegisteredDataItem(
         REGISTRATION_API.ItemIndex.ItemRecord(
-            items[1]; source_item=source_file, metadata=effective),
+            interpretation.records[1]; metadata=effective),
         REGISTRATION_API.item_data(items[1]),
     )
     processed = REGISTRATION_API.process(project, source, input)

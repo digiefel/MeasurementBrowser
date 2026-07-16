@@ -48,6 +48,10 @@ item expands into several logical items, DataBrowser uses their returned positio
 entry supplies an explicit id when its sibling order can change. Stable explicit ids keep selection,
 annotations, saved views, and cached results attached when siblings are inserted or reordered.
 
+Registered and typed items share one identity rule: project code supplies at most a sibling key
+(the registration `id` callback or `id(item)`), and interpretation mints the final item id once by
+namespacing that key under the source item and kind. Project code never produces a final item id.
+
 A registration name such as `:cycles` identifies the registered pipeline. It is not a property of
 the data and does not replace the concrete type of a typed item.
 
@@ -61,10 +65,11 @@ Registration callbacks describe it with strings:
 ```
 
 Registration readers can compute both while constructing a `DataItem`. Typed items implement
-`item_label` or `collection` only when the source-derived defaults are not appropriate. Their
-`collection(item)` method returns the complete vector of concrete `AbstractCollection` values;
-registered items instead retain the callback's `Vector{String}` when materialized. The registration
-adapter converts those strings only while constructing package-owned collection records.
+`item_label` or `collection` only when the source-derived defaults are not appropriate. Every item
+answers `collection(item)` with the complete vector of concrete `AbstractCollection` values: the
+registration adapter converts callback strings (or the source-directory default) into normalized
+segments while the source is in hand, attaching source-owned collection metadata such as the
+directory source's `metadata.txt` entries. Interpretation itself is dialect-blind.
 
 Collections have variable depth. The last path segment is the leaf containing the item; preceding
 segments are ordinary parent collections. Code does not assign fixed meaning to a particular depth.

@@ -102,6 +102,7 @@ using DataBrowserAPI.ItemIndex:
     effective_metadata,
     effective_record,
     metadata_dict,
+    registered_collection_path,
     registration_names,
     remove_item!,
     resolve_collection_path!,

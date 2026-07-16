@@ -90,7 +90,7 @@ end
         DirectorySource(dirname(fixture1)),
         DataBrowserSources.index_source_file(fixture1),
     )
-    @test DataBrowser.collection(only(interpretation.interpreted_items)) ==
+    @test DataBrowser.label.(DataBrowser.collection(only(interpretation.interpreted_items))) ==
         ["TASESNS1c1f", "A", "2TSNJunction", "11"]
 
     @testset "plot data api" begin

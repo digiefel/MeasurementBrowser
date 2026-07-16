@@ -56,6 +56,10 @@ function DataBrowser.data_items(
     ]
 end
 
+# Typed sibling keys are namespaced by the engine's single minting rule.
+const DURABLE_FIRST_ID = "source#DurableCollectionItem:durable-1"
+const DURABLE_SECOND_ID = "source#DurableCollectionItem:durable-2"
+
 @testset "collection IDs survive a clean cache rebuild" begin
     root_path = mktempdir()
     project = define_project("CollectionIdPersistence")
@@ -73,8 +77,8 @@ end
     try
         DataBrowserCore.Workspace.wait_workspace_idle!(first)
         collections = first.index.collections
-        first_record = first.index.items["durable-1"]
-        second_record = first.index.items["durable-2"]
+        first_record = first.index.items[DURABLE_FIRST_ID]
+        second_record = first.index.items[DURABLE_SECOND_ID]
         first_collection_record = collections.records[first_record.collection_key]
         second_collection_record = collections.records[second_record.collection_key]
 
@@ -123,8 +127,8 @@ end
     try
         DataBrowserCore.Workspace.wait_workspace_idle!(reopened)
         collections = reopened.index.collections
-        first_record = reopened.index.items["durable-1"]
-        second_record = reopened.index.items["durable-2"]
+        first_record = reopened.index.items[DURABLE_FIRST_ID]
+        second_record = reopened.index.items[DURABLE_SECOND_ID]
         first_collection_record = collections.records[first_record.collection_key]
         second_collection_record = collections.records[second_record.collection_key]
 
@@ -143,7 +147,7 @@ end
 
         @test state.expanded_collection_ids == [durable_id]
         @test only(selected_collections).id == durable_id
-        @test only(selected_items).id == "durable-1"
+        @test only(selected_items).id == DURABLE_FIRST_ID
         @test state.tag_state.assignments[annotation_key] == Set(["review"])
         @test !haskey(
             state.tag_state.assignments,

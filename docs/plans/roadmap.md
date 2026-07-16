@@ -29,7 +29,7 @@ workspace internals.
   ([`912a3c9`](https://github.com/digiefel/MeasurementBrowser/commit/912a3c90b42f057e7c0096b00d7aa290768d858a))
 - [x] Make collections first-class hierarchical values with stable occurrence IDs, compact internal
   keys, cache reopen, collection metadata, and one record/index model shared by the engine and GUI.
-- [ ] Route registered and typed items through one post-interpretation identity/default
+- [x] Route registered and typed items through one post-interpretation identity/default
   normalization path. `_registered_item` should adapt callback output into `RegisteredDataItem`, not
   mint final item ids before the common path.
 - [x] Remove the unused data-item fingerprint contract and storage. Delete

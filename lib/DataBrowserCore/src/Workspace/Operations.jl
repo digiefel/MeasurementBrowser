@@ -270,8 +270,7 @@ function reconcile_source_metadata_cache!(
         names = registration_names(workspace.index.collections, key)
         names === nothing && continue
         inputs = collection_inputs(
-            workspace.source,
-            names,
+            registered_collection_path(workspace.source, names),
         )
         resolve_collection_path!(
             workspace.index.collections,

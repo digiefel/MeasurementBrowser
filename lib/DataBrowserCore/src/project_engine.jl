@@ -13,6 +13,7 @@ using DataFrames: DataFrame
 import DataBrowserAPI:
     _analyze_collection,
     _analyze_item,
+    attach_record,
     collection_path_label,
     data_items,
     detect_kind,
@@ -44,6 +45,7 @@ import DataBrowserAPI.ItemIndex:
     RegisteredDataItem,
     collection_inputs,
     effective_record,
+    registered_collection_path,
     resolve_collection_path!,
     metadata_dict
 
@@ -159,14 +161,21 @@ function _detect_recipe(project::Project, file::SourceFile)::Union{Nothing,ItemR
     return nothing
 end
 
-"""Stable private identity for one value returned by a registration."""
+"""
+Mint one item's final id from its source item, kind, position, and optional sibling key.
+
+This is the single identity rule for every interpreted item: registered and typed items both
+supply at most a sibling key (`recipe.id` callback or `id(item)`), and the engine namespaces it
+under the source item and kind. An absent or empty key falls back to the item's returned position.
+"""
 function _mint_id(
     source_item_id::AbstractString,
     kind::Symbol,
     position::Integer,
     supplied_key=nothing,
 )::String
-    suffix = supplied_key === nothing ? string(position) : string(supplied_key)
+    suffix = supplied_key === nothing || supplied_key == "" ?
+        string(position) : string(supplied_key)
     return "$(source_item_id)#$(kind):$(suffix)"
 end
 
@@ -201,7 +210,8 @@ function _registration_collection_path(value)::Vector{String}
     return String[segment for segment in value]
 end
 
-function _typed_collection_path(item::AbstractDataItem)::Vector{AbstractCollection}
+"""Validate one item's `collection(item)` contract result and return its concrete segments."""
+function _collection_path(item::AbstractDataItem)::Vector{AbstractCollection}
     value = collection(item)
     value isa AbstractVector || throw(ArgumentError(
         "collection(::$(typeof(item))) must return a vector of AbstractCollection values; " *
@@ -213,11 +223,19 @@ function _typed_collection_path(item::AbstractDataItem)::Vector{AbstractCollecti
     return AbstractCollection[segment for segment in value]
 end
 
+"""
+Adapt one registration callback result into a `RegisteredDataItem`.
+
+This translates the registration dialect (entry tuples, callback-supplied keys, labels, and
+collection strings) into the item contract; it mints nothing. Collection strings — or the source
+directory default — become normalized collection segments here, while the source is in hand. The
+carrier's `id` holds only the callback-supplied sibling key (or `""`); final ids are minted once,
+in `interpret_source_item`, through the same path typed items take.
+"""
 function _registered_item(
     recipe::ItemRecipe,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
-    position::Integer,
     value,
     inherited_metadata::MetadataDict,
 )::RegisteredDataItem
@@ -229,10 +247,10 @@ function _registered_item(
     supplied_key = recipe.id === nothing ? nothing : recipe.id(data, local_metadata)
     label = recipe.label === nothing ? "" : String(recipe.label(data, local_metadata))
     return RegisteredDataItem(
-        _mint_id(source_item_id(source_item), recipe.kind, position, supplied_key),
+        supplied_key === nothing ? "" : string(supplied_key),
         label,
         recipe.kind,
-        collection_path,
+        registered_collection_path(source, collection_path),
         data,
         local_metadata,
     )
@@ -335,9 +353,8 @@ function data_items(
                 "got $(typeof(values))",
             )
             AbstractDataItem[
-                _registered_item(
-                    recipe, source, file, position, value, inherited_metadata)
-                for (position, value) in pairs(values)
+                _registered_item(recipe, source, file, value, inherited_metadata)
+                for value in values
             ]
         end
     finally
@@ -405,28 +422,21 @@ function interpret_source_item(
     interpreted_items = Vector{AbstractDataItem}(undef, item_count)
     source_metadata = metadata_dict(metadata(source_item))
     for (index, handle) in pairs(handles)
-        item_metadata = handle isa RegisteredDataItem ? handle.metadata : metadata_dict(metadata(handle))
-        record_metadata = merge(copy(source_metadata), item_metadata)
-        item_id = isempty(id(handle)) ?
-            _mint_id(source_item_id_value, kind(handle), index) : id(handle)
+        record_metadata = merge(copy(source_metadata), metadata_dict(metadata(handle)))
         label = item_label(handle)
-        normalized_collection = handle isa RegisteredDataItem ?
-            collection_inputs(source, collection(handle)) :
-            collection_inputs(_typed_collection_path(handle))
         record = ItemRecord(;
             source_item_id=source_item_id_value,
             source_item_path=source_item_path_value,
             source_item_timestamp=source_item_timestamp(source_item),
-            id=item_id,
+            id=_mint_id(source_item_id_value, kind(handle), index, id(handle)),
             item_label=isempty(label) ? source_item_label(source_item) : label,
             kind=kind(handle),
             collection_key=nothing,
             metadata=record_metadata,
         )
         records[index] = record
-        collection_paths[index] = normalized_collection
-        interpreted_items[index] = handle isa RegisteredDataItem ?
-            RegisteredDataItem(record, item_data(handle), collection(handle)) : handle
+        collection_paths[index] = collection_inputs(_collection_path(handle))
+        interpreted_items[index] = attach_record(handle, record)
     end
     finish_source_profile!(
         project, source_item_id_value, source_item_label_value, source_item_path_value,
@@ -438,8 +448,8 @@ end
 """
 Interpret one physical file into the data items produced by project code.
 
-Typed items retain their concrete collection values. Registered items retain the string path
-returned by their registration callback.
+Every item answers `collection(item)` with its concrete collection segments; registered items
+carry the normalized segments adapted from their registration callback's string path.
 """
 function items_for_file(
     project::Project,
@@ -465,13 +475,7 @@ function items_for_file(
         )
     ]
     return AbstractDataItem[
-        item isa RegisteredDataItem ?
-            RegisteredDataItem(
-                effective_record(collections, record),
-                item_data(item),
-                collection(item),
-            ) :
-            item
+        attach_record(item, effective_record(collections, record))
         for (record, item) in zip(records, interpretation.interpreted_items)
     ]
 end

@@ -10,6 +10,7 @@ import ..DataBrowserAPI:
     MetadataDict,
     MetadataValue,
     Project,
+    attach_record,
     cacheable,
     cacheable_data,
     collection,
@@ -119,13 +120,18 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
     return inputs
 end
 
-"""Normalize a registration string path into package-owned collection inputs."""
-collection_inputs(
+"""
+Wrap a registration string path in package-owned collection values.
+
+Sources may specialize this to attach source-owned metadata to each level (the directory source
+attaches its `metadata.txt` entries). Applied when adapting registration callback output, so
+registered items satisfy the generic `collection(item)` contract.
+"""
+registered_collection_path(
     ::AbstractDataSource,
     names::AbstractVector{<:AbstractString},
-)::Vector{CollectionInput} = collection_inputs(
-    AbstractCollection[RegisteredCollection(name) for name in names],
-)
+)::Vector{AbstractCollection} =
+    AbstractCollection[RegisteredCollection(name) for name in names]
 
 """
 One package-owned indexed collection occurrence.
@@ -548,23 +554,25 @@ end
 """
 Private carrier for ordinary data produced by `register_item!`.
 
-Its collection path stays a `Vector{String}` at registration-facing boundaries. Interpretation
-adapts those names separately when constructing package-owned collection records.
+Adaptation converts the registration callback's collection strings into normalized
+`AbstractCollection` segments, so the carrier answers the generic item contract directly. Before
+interpretation normalizes the item, `id` holds only the callback-supplied sibling key (or `""`);
+the carrier delivered by interpretation is rebuilt on its record and carries the final minted id.
 """
 struct RegisteredDataItem{D} <: AbstractDataItem
     id::String
     label::String
     registration::Symbol
-    collection::Vector{String}
+    collection::Vector{AbstractCollection}
     data::D
     metadata::MetadataDict
 end
 
-"""Reconstruct registered data from a record, payload, and its registration string path."""
+"""Reconstruct registered data from a record, payload, and its normalized collection segments."""
 RegisteredDataItem(
     record::ItemRecord,
     data,
-    path::Vector{String}=String[],
+    path::Vector{AbstractCollection}=AbstractCollection[],
 )::RegisteredDataItem = RegisteredDataItem(
     record.id,
     record.item_label,
@@ -572,6 +580,17 @@ RegisteredDataItem(
     path,
     data,
     record.metadata,
+)
+
+"""Reconstruct registered data from a record, payload, and its registration string path."""
+RegisteredDataItem(
+    record::ItemRecord,
+    data,
+    names::Vector{String},
+)::RegisteredDataItem = RegisteredDataItem(
+    record,
+    data,
+    AbstractCollection[RegisteredCollection(name) for name in names],
 )
 
 """Copy registered data while replacing only its payload."""
@@ -584,35 +603,17 @@ RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = Registe
     item.metadata,
 )
 
-"""Derive an unresolved item record from any item; collection membership is assigned on publish."""
-function ItemRecord(
-    item::AbstractDataItem;
-    source_item::AbstractDataSourceItem,
-    id::AbstractString=id(item),
-    kind::Symbol=kind(item),
-    metadata=metadata(item),
-)::ItemRecord
-    item_title = item_label(item)
-    title = isempty(item_title) ? source_item_label(source_item) : String(item_title)
-    return ItemRecord(;
-        source_item_id=source_item_id(source_item),
-        source_item_path=source_item_path(source_item),
-        source_item_timestamp=source_item_timestamp(source_item),
-        id,
-        item_label=title,
-        kind,
-        collection_key=nothing,
-        metadata,
-    )
-end
-
 id(item::RegisteredDataItem)::String = item.id
 item_label(item::RegisteredDataItem)::String = item.label
 kind(item::RegisteredDataItem)::Symbol = item.registration
-collection(item::RegisteredDataItem)::Vector{String} = item.collection
+collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
 item_data(item::RegisteredDataItem) = item.data
 cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
+
+"""A registered carrier adopts its normalized record wholesale; its segments and payload remain."""
+attach_record(item::RegisteredDataItem, record::ItemRecord)::RegisteredDataItem =
+    RegisteredDataItem(record, item.data, item.collection)
 
 """Return one item record's inherited collection metadata plus its own entries layer."""
 function effective_metadata(index::CollectionIndex, record::ItemRecord)::MetadataDict
