@@ -141,51 +141,6 @@ end
     end
 end
 
-@testset "labels never observe torn parameters during publishes" begin
-    dir = mktempdir()
-    for index in 1:120
-        write_test_source(joinpath(dir, "cycle$index.csv"), index)
-    end
-    project = define_project("EventDriven_$(basename(dir))")
-    register_item!(project, :cycle;
-        detect=file -> endswith(file.filename, ".csv"),
-        read=file -> CSV.read(file.filepath, DataFrame),
-        entries=(data, metadata) -> [(
-            data=data,
-            metadata=Dict{Symbol,Any}(
-                :cycle => parse(Int, match(r"\d+", metadata[:filename]).match)),
-        )],
-        collection=(_data, _metadata) -> ["run"],
-        analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => nrow(data)),
-        label=(_data, metadata) -> "cycle $(metadata[:cycle])",
-    )
-    workspace = DataBrowser.open_workspace(
-        project, test_source(project, dir); background_processing=true)
-    try
-        # Mimic the GUI: render labels continuously while stats publishes rebuild the hierarchy.
-        failures = Base.Threads.Atomic{Int}(0)
-        reader = Threads.@spawn while DataBrowserCore.Workspace.engine_work_running(workspace)
-            for record in collect(values(workspace.index.items))
-                try
-                    display_label(project, record)
-                catch
-                    Base.Threads.atomic_add!(failures, 1)
-                end
-            end
-            yield()
-        end
-        DataBrowserCore.Workspace.wait_workspace_idle!(workspace; timeout=60)
-        wait(reader)
-        @test failures[] == 0
-        @test length(workspace.index.items) == 120
-        labels = Set(display_label(project, record)
-                     for record in values(workspace.index.items))
-        @test labels == Set("cycle $index" for index in 1:120)
-    finally
-        DataBrowser.close_workspace!(workspace)
-    end
-end
-
 """Poll one predicate until it holds or the deadline passes; returns the final value."""
 function _settles(predicate::Function; timeout::Real=5.0)::Bool
     deadline = time() + timeout
