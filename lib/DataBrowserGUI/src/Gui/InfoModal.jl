@@ -31,11 +31,13 @@ function render_info_window(state::BrowserState)::Nothing
             sel_name = join(selected_path, "/")
             ig.Text("Location: $sel_name")
             ig.Separator()
-            collection_metadata = merge(collection_node.metadata, collection_node.analysis)
-            if !isempty(collection_metadata)
+            collection_metadata_values = collection_metadata(
+                workspace.index.collections, collection_node.key)
+            merge!(collection_metadata_values, collection_node.analysis)
+            if !isempty(collection_metadata_values)
                 ig.Text("Collection metadata")
-                for k in sort!(collect(keys(collection_metadata)); by=String)
-                    ig.BulletText("$(k): $(collection_metadata[k])")
+                for k in sort!(collect(keys(collection_metadata_values)); by=String)
+                    ig.BulletText("$(k): $(collection_metadata_values[k])")
                 end
             else
                 ig.TextDisabled("No collection metadata found")
@@ -51,7 +53,8 @@ function render_info_window(state::BrowserState)::Nothing
             m = selected_items[1]
             # The delivered metadata dict (inherited ⊕ entries ⊕ computed layers), exactly what
             # project callbacks and views receive.
-            delivered = Workspace.delivered_metadata(workspace, m)
+            delivered = Workspace.delivered_metadata(
+                workspace, m, workspace.index.collections)
             ig.Text("Title: $(m.item_label)")
             ig.Separator()
             kind_text = kind_label(workspace.project, m.kind)
