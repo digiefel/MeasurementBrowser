@@ -24,10 +24,10 @@ julia --project=bench bench/scaling.jl [n1,n2,...]
 Default sizes: `500,1000,2000,4000`. Pass a comma-separated list while iterating — the largest
 size builds an O(N²) scan and a wide sweep takes minutes.
 
-Times three GUI-hot operations that must **not** grow with item count, via BenchmarkTools on settled
-workspaces: `status_refresh`, `items_panel`, `metadata_publish`. Fits time ~ N^exponent in log-log
-space. Exponent ~0 is flat, ~1 is linear, ~2 is quadratic. The sweep must cross the cache buffer
-row ceiling (~1000 items); below it metadata reads look artificially flat.
+Times GUI-hot operations that must **not** grow with item count, plus cold scan-build time normalized
+per item. The `scan_build_per_item` exponent is the throughput guard: exponent ~0 means stable
+throughput, while exponent ~1 means total scan time is quadratic. The sweep must cross the cache
+buffer row ceiling (~1000 items); below it metadata reads look artificially flat.
 
 **Persistent output:** `bench/results/<yyyymmdd-HHMMSS>-scaling/scaling.csv` — one row per operation
 with `exponent`, `r2`, and `ms_n<size>` columns for each sweep point.

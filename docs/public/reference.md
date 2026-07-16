@@ -65,7 +65,9 @@ analyze = (processed_data::ProcessedData, metadata::Dict) -> additional_metadata
 item_data(item::MyItem)::MyData
 metadata(item::MyItem)::Dict
 item_label(item::MyItem)::String
-collection(item::MyItem)::Vector{String}
+collection(item::MyItem)::Vector{<:AbstractCollection}
+label(collection::AbstractCollection)::String
+metadata(collection::AbstractCollection)::Dict
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict

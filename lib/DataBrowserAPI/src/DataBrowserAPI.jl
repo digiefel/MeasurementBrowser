@@ -9,12 +9,14 @@ collection hierarchy, and source scans) live here. Plot registration and renderi
 module DataBrowserAPI
 
 using Dates
+using SHA
 import Tables
 
 include("project_types.jl")
 include("metadata_types.jl")
 include("source_contract.jl")
 include("item_contract.jl")
+include("collection_id.jl")
 include("interface.jl")
 include("construction.jl")
 include("ItemIndex.jl")

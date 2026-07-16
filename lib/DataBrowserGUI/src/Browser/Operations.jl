@@ -3,7 +3,7 @@ using DataBrowserAPI:
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
-using DataBrowserAPI.ItemIndex: collection_path_key, all_items
+using DataBrowserAPI.ItemIndex: collection_path_keys
 using DataBrowserCache: ProjectCacheSchemaError
 import DataBrowserCore.Workspace
 using DataBrowserCore.Workspace:
@@ -93,26 +93,32 @@ function select_source_item!(
     id = String(source_item_id)
     items = [
         item
-        for item in all_items(workspace.index.hierarchy)
+        for item in values(workspace.index.items)
         if item.source_item_id == id
     ]
     isempty(items) && return false
 
-    collection_paths =
-        unique([collection_path_key(item.collection) for item in items])
-    expanded_paths = copy(state.expanded_collection_paths)
-    for collection_path in collection_paths
-        parts = split(collection_path, '/')
-        for depth in 1:(length(parts) - 1)
-            parent_path = join(parts[1:depth], '/')
-            parent_path in expanded_paths || push!(expanded_paths, parent_path)
+    collections = workspace.index.collections
+    collection_ids = unique(String[
+        item.collection_key === nothing ?
+            ROOT_COLLECTION_SELECTION_ID :
+            collections.records[item.collection_key].id
+        for item in items
+    ])
+    expanded_ids = copy(state.expanded_collection_ids)
+    for item in items
+        item.collection_key === nothing && continue
+        path = collection_path_keys(collections, item.collection_key)
+        for key in path[1:end-1]
+            parent_id = collections.records[key].id
+            parent_id in expanded_ids || push!(expanded_ids, parent_id)
         end
     end
 
-    state.expanded_collection_paths = expanded_paths
-    workspace.selection.collection_paths = collection_paths
+    state.expanded_collection_ids = expanded_ids
+    workspace.selection.collection_ids = collection_ids
     workspace.selection.item_ids = [item.id for item in items]
-    state.scroll_to_collection_path = first(collection_paths)
+    state.scroll_to_collection_id = isempty(collection_ids) ? nothing : first(collection_ids)
     state.scroll_to_item_id = first(items).id
     return true
 end

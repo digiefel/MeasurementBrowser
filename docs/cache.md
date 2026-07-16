@@ -21,8 +21,10 @@ persisted results already exist. The work dependency graph decides what remains 
 `WorkspaceIndex` owns the records, hierarchy, parameters, statistics, and failures shown by the
 application.
 
-Cached item records carry the entries layer of their metadata only. Source-owned collection metadata
-is read from the open source and applied to restored records exactly as in a memory-only workspace.
+Cached item records carry the entries layer of their metadata. Collection nodes separately persist
+the package-owned label, metadata, and registration-name projections needed to reconstruct the
+hierarchy and inherited collection metadata after reopen. Concrete project collection values do not
+enter the cache.
 
 ## Vocabulary
 
@@ -239,17 +241,20 @@ The fixed DuckDB stores are:
 - `meta` — schema version, project and source identity;
 - `source_items` — source-item ID, fingerprint, path, and timestamp;
 - `items` — data-less logical-item records, their source ownership, and each item's integer `item_key`
-  surrogate;
+  surrogate plus the private key of its leaf collection;
+- `collections` — one row per collection record, with its compact integer key, parent key, durable
+  occurrence ID, resolved label and metadata, and registration name when applicable; arbitrary
+  user-defined collection values and canonical ID inputs are not stored;
 - `source_item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
   `ItemRecord.metadata`;
-- `source_collection_metadata` — source `collection_metadata` per path, keyed by collection key;
 - `analyzed_item_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
   layers), keyed by `item_key`; this is the query surface;
 - `analyzed_collection_metadata` — collection `analyze` output per collection, keyed by collection key;
 - `wide_columns` — the registry naming each wide table's columns and their logical type;
 - `item_failures` — source interpretation and logical-item failures published with the index;
-- `result_states` — independent processing, item-analysis, collection-process, and collection-analysis
-  outcomes keyed by registration identity or concrete item type;
+- `result_states` — independent item-processing and item-analysis outcomes keyed by item identity;
+- `collection_result_states` — collection-process and collection-analysis outcomes keyed by the
+  private integer collection-record key;
 - `item_data` — pointers to cacheable processed payloads, keyed by `(item_key, stage)`;
 - `dataframe_schemas` — the ordered user-column names belonging to each payload shape;
 - per-shape payload tables — native rows of processed tabular payloads.
@@ -258,8 +263,8 @@ Queued and running work is not persisted. It belongs to the work dependency grap
 
 ### Wide metadata tables
 
-`source_item_metadata`, `source_collection_metadata`, `analyzed_item_metadata`, and
-`analyzed_collection_metadata` are wide, dynamically-widened
+`source_item_metadata`, `analyzed_item_metadata`, and `analyzed_collection_metadata` are wide,
+dynamically-widened
 typed tables: one row per entity, one bare column per metadata name (`max_current DOUBLE`,
 `polarity VARCHAR`). A new name is registered on first write — the flush adds the column with
 `ALTER TABLE ADD COLUMN` and a `wide_columns` row in the same transaction. The first type registered
@@ -275,12 +280,21 @@ tables and the payload store. `open_cache_db` loads the committed `item_key`s fr
 resets them. Payloads are keyed by `(item_key, stage)`, where the stage is either the item's own
 `process` output or the collection `process` rewrite.
 
+Collection records use a separate package-owned integer key. The index assigns it after resolving
+the complete path by deterministic collection ID. That ID combines the parent ID, concrete
+collection type, and a canonical encoding of `id(collection)`; it never uses process-dependent
+`Base.hash`. The cache persists the key, parent edge, final ID, resolved label and metadata, and
+optional registration name. It stores neither user-defined collection values nor canonical ID
+inputs. The compact key may change after a clean rebuild, while saved selection and annotation state
+reconnect through the deterministic ID.
+
 ### Persisted result state
 
 Successful empty analysis produces no metadata rows, so absence of metadata cannot mean "not
-computed." `result_states` therefore records processing, item-analysis, collection-process, and
-collection-analysis outcomes (success — including empty — or failure), each as
-`(pipeline_identity, entity, status, message)`. Source-backed typed-item success remains memory-only.
+computed." `result_states` records item processing and analysis, while
+`collection_result_states` records collection processing and analysis using integer collection
+keys. Both store success — including empty — or failure. Source-backed typed-item success remains
+memory-only.
 
 `result_states` carries no per-result input fingerprint: a result's validity is derived from its
 position downstream of unchanged sources, not from a stored claim. At reopen the cache index
@@ -320,14 +334,13 @@ still has a pointer and schema, so it reconstructs as an empty value with the co
 types.
 
 Freshness is derived from source data, not from stored per-result claims. When the cache index is
-loaded, `result_states` restores which steps already finished; the work graph holds only live jobs
-and gap-fills any missing step. `reconcile_source_metadata_cache!` then diffs
-`source_collection_metadata` and `source_item_metadata` (cache `read`, including buffer overlay)
-against the open source and invalidates stale work. During streaming interpretation the same call is
-scoped to the batch's touched collections (`collections=`) and skips the whole-index item pass —
-interpret workers already wrote those item rows — so publication stays O(batch) instead of
-re-diffing the whole index each time. At runtime delivery consults live nodes, then `result_states`,
-then enqueues work; payloads are read only after a row is current.
+loaded, the result-state tables restore which steps already finished; the work graph holds only live
+jobs and gap-fills any missing step. `DirectorySource` refreshes package-owned collection values
+from the current `metadata.txt` contents after loading the cached hierarchy. The workspace compares
+old and new effective metadata, invalidates only affected item and collection work, and leaves source
+files themselves cached. The same reconciliation runs for live metadata-file changes. At runtime
+delivery consults live nodes, then cached result state, then enqueues work; payloads are read only
+after a row is current.
 
 ## Source changes
 

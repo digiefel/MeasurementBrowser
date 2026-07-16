@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 14
+const PROJECT_CACHE_SCHEMA_VERSION = 17
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -37,6 +37,15 @@ end
 Base.showerror(io::IO, err::ProjectCacheSchemaError)::Nothing =
     print(io, "Invalid project cache $(err.path): $(err.message)")
 
+"""Error raised when generated collection values can no longer be reconstructed safely."""
+struct ProjectCacheDataError <: Exception
+    path::String
+    message::String
+end
+
+Base.showerror(io::IO, err::ProjectCacheDataError)::Nothing =
+    print(io, "Invalid project cache $(err.path): $(err.message)")
+
 """The project, source, and DuckDB file belonging to one cache."""
 struct ProjectCacheIdentity
     project_name::String
@@ -59,7 +68,7 @@ end
 
 struct CacheResultKey
     kind::CacheResultKind
-    entity::String
+    entity::Union{String,Int64}
 end
 
 Base.:(==)(left::CacheResultKey, right::CacheResultKey)::Bool =
@@ -85,6 +94,25 @@ CachedResultState(row)::CachedResultState = CachedResultState(
     _null_to_nothing(row.message),
 )
 
+"""One persisted collection result-state row, keyed by the private collection-record key."""
+struct CachedCollectionResultState
+    kind::Int8
+    entity::Int64
+    status::Int8
+    source_item_id::String
+    message::Union{Nothing,String}
+end
+
+CachedCollectionResultState(row)::CachedCollectionResultState = CachedCollectionResultState(
+    Int8(row.kind),
+    Int64(row.entity),
+    Int8(row.status),
+    String(row.source_item_id),
+    _null_to_nothing(row.message),
+)
+
+const AnyCachedResultState = Union{CachedResultState,CachedCollectionResultState}
+
 """All data-less content needed to restore and compare a project cache."""
 struct ProjectCacheIndex
     identity::ProjectCacheIdentity
@@ -93,7 +121,7 @@ struct ProjectCacheIndex
     # The computed layers (analyze output + collection-process overwrite) per item, restored for
     # items whose governing result is valid: delivered effective minus the entries layer.
     item_metadata::Dict{String,MetadataDict}
-    result_states::Dict{CacheResultKey,CachedResultState}
+    result_states::Dict{CacheResultKey,AnyCachedResultState}
 end
 
 """Summary of the cache/source comparison shown by workspace status."""
@@ -129,7 +157,7 @@ mutable struct CacheStageLedger
     source_items::Set{String}
     items::Set{String}
     failures::Set{Tuple{String,String}}
-    result_states::Dict{Tuple{Int8,String},CachedResultState}
+    result_states::Dict{CacheResultKey,AnyCachedResultState}
     lock::ReentrantLock
 end
 
@@ -138,18 +166,21 @@ CacheStageLedger()::CacheStageLedger = CacheStageLedger(
     Set{String}(),
     Set{String}(),
     Set{Tuple{String,String}}(),
-    Dict{Tuple{Int8,String},CachedResultState}(),
+    Dict{CacheResultKey,AnyCachedResultState}(),
     ReentrantLock(),
 )
 
-function CacheStageLedger(source_items, items, failures, states)::CacheStageLedger
+function CacheStageLedger(source_items, items, failures, states...)::CacheStageLedger
+    result_states = Dict{CacheResultKey,AnyCachedResultState}()
+    for store in states, state in values(store)
+        result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+    end
     return CacheStageLedger(
-        _cache_stage_summary(source_items, items, failures, states),
+        _cache_stage_summary(source_items, items, failures, states...),
         Set{String}(String(id) for id in keys(source_items)),
         Set{String}(String(id) for id in keys(items)),
         Set{Tuple{String,String}}((String(first(key)), String(last(key))) for key in keys(failures)),
-        Dict{Tuple{Int8,String},CachedResultState}(
-            (Int8(first(key)), String(last(key))) => state for (key, state) in states),
+        result_states,
         ReentrantLock(),
     )
 end
@@ -183,7 +214,7 @@ end
 
 function _stage_result_delta(
     summary::CacheStageSummary,
-    state::CachedResultState,
+    state::AnyCachedResultState,
     sign::Int,
 )::CacheStageSummary
     kind = CacheResultKind(state.kind)
@@ -261,8 +292,8 @@ end
 
 function _stage_ledger_result!(
     ledger::CacheStageLedger,
-    key::Tuple{Int8,String},
-    state::Union{Nothing,CachedResultState},
+    key::CacheResultKey,
+    state::Union{Nothing,AnyCachedResultState},
 )::Nothing
     lock(ledger.lock) do
         previous = get(ledger.result_states, key, nothing)
@@ -276,6 +307,16 @@ function _stage_ledger_result!(
         end
     end
     return nothing
+end
+
+function _stage_ledger_result!(
+    ledger::CacheStageLedger,
+    key::Tuple{Int8,T},
+    state::Union{Nothing,AnyCachedResultState},
+)::Nothing where {T<:Union{AbstractString,Integer}}
+    entity = key[2] isa AbstractString ? String(key[2]) : Int64(key[2])
+    return _stage_ledger_result!(
+        ledger, CacheResultKey(CacheResultKind(key[1]), entity), state)
 end
 
 function _reset_stage_ledger!(ledger::CacheStageLedger)::Nothing
@@ -305,13 +346,32 @@ SourceItemRow(row)::SourceItemRow = SourceItemRow(
     _null_to_nothing(row.timestamp),
 )
 
+"""One persisted package-owned collection record; no live user collection value is serialized."""
+struct CollectionRow
+    collection_key::Int64
+    parent_key::Union{Nothing,Int64}
+    id::String
+    label::String
+    metadata_hex::String
+    registration_name::Union{Nothing,String}
+end
+
+CollectionRow(row)::CollectionRow = CollectionRow(
+    Int64(row.collection_key),
+    _null_to_nothing(row.parent_key),
+    String(row.id),
+    String(row.label),
+    String(row.metadata_hex),
+    _null_to_nothing(row.registration_name),
+)
+
 struct ItemRow
     id::String
     item_key::Int64
     source_item_id::String
     item_label::String
     kind::String
-    collection::Vector{String}
+    collection_key::Union{Nothing,Int64}
     item_fingerprint_hex::Union{Nothing,String}
 end
 
@@ -321,7 +381,7 @@ ItemRow(row)::ItemRow = ItemRow(
     String(row.source_item_id),
     String(row.item_label),
     String(row.kind),
-    Vector{String}(row.collection),
+    _null_to_nothing(row.collection_key),
     _null_to_nothing(row.item_fingerprint_hex),
 )
 
@@ -367,13 +427,14 @@ mutable struct CacheDB <: AbstractCacheDB
     db::DuckDB.DB
     metrics::BuildMetrics
     source_items::RowStore{String,SourceItemRow}
+    collections::RowStore{Int64,CollectionRow}
     items::RowStore{String,ItemRow}
     source_item_metadata::WideRowStore{Int64}
-    source_collection_metadata::WideRowStore{String}
     analyzed_item_metadata::WideRowStore{Int64}
-    analyzed_collection_metadata::WideRowStore{String}
+    analyzed_collection_metadata::WideRowStore{Int64}
     failures::RowStore{Tuple{String,String},FailureRow}
     result_states::RowStore{Tuple{Int8,String},CachedResultState}
+    collection_result_states::RowStore{Tuple{Int8,Int64},CachedCollectionResultState}
     payload::TabularFamilyStore
     interpreted::MemoryStore{String,AbstractDataItem}
     processed_memory::MemoryStore{String,AbstractDataItem}
@@ -381,6 +442,7 @@ mutable struct CacheDB <: AbstractCacheDB
     # One integer surrogate per item id, shared with the payload store; minted at interpretation.
     item_keys::Dict{String,Int64}
     next_item_key::Int64
+    persisted_collection_keys::Set{Int64}
     key_lock::ReentrantLock
     stage_ledger::CacheStageLedger
     # The signature of the analyzed_item_metadata columns backing the query view; the view is
@@ -400,6 +462,7 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     items::Set{String}
     failures::Dict{Tuple{String,String},String}
     result_states::Dict{Tuple{Int8,String},CachedResultState}
+    collection_result_states::Dict{Tuple{Int8,Int64},CachedCollectionResultState}
     stage_ledger::CacheStageLedger
     lock::ReentrantLock
     profiler::Profiling.ProfileSession
@@ -458,11 +521,15 @@ function open_cache_db(
             DBInterface.close!(connection)
         end
         source_items = RowStore{String,SourceItemRow}(db, "source_items", ("id",); profiler)
+        collections = RowStore{Int64,CollectionRow}(
+            db, "collections", ("collection_key",); profiler)
         items = RowStore{String,ItemRow}(db, "items", ("id",); profiler)
         failures = RowStore{Tuple{String,String},FailureRow}(
             db, "item_failures", ("item_id", "source_item_id"); profiler)
         result_states = RowStore{Tuple{Int8,String},CachedResultState}(
             db, "result_states", ("kind", "entity"); profiler)
+        collection_result_states = RowStore{Tuple{Int8,Int64},CachedCollectionResultState}(
+            db, "collection_result_states", ("kind", "entity"); profiler)
         payload = TabularFamilyStore(db; profiler, row_limit=CACHE_BUFFER_ROW_LIMIT)
         item_keys, next_item_key = _load_item_keys(db)
         stage_ledger = CacheStageLedger(
@@ -470,25 +537,28 @@ function open_cache_db(
             read(items),
             read(failures),
             read(result_states),
+            read(collection_result_states),
         )
         return CacheDB(
             identity,
             db,
             metrics,
             source_items,
+            collections,
             items,
             WideRowStore{Int64}(db, "source_item_metadata", "item_key"; profiler),
-            WideRowStore{String}(db, "source_collection_metadata", "collection_key"; profiler),
             WideRowStore{Int64}(db, "analyzed_item_metadata", "item_key"; profiler),
-            WideRowStore{String}(db, "analyzed_collection_metadata", "collection_key"; profiler),
+            WideRowStore{Int64}(db, "analyzed_collection_metadata", "collection_key"; profiler),
             failures,
             result_states,
+            collection_result_states,
             payload,
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             item_keys,
             next_item_key,
+            Set{Int64}(keys(read(collections))),
             ReentrantLock(),
             stage_ledger,
             Symbol[],
@@ -553,6 +623,7 @@ function open_memory_cache_db(
         Set{String}(),
         Dict{Tuple{String,String},String}(),
         Dict{Tuple{Int8,String},CachedResultState}(),
+        Dict{Tuple{Int8,Int64},CachedCollectionResultState}(),
         CacheStageLedger(),
         ReentrantLock(),
         profiler,
@@ -582,9 +653,13 @@ function ensure_schema!(connection)::Nothing
             value TEXT)
     """)
     DBInterface.execute(connection, create_table_sql(SourceItemRow, "source_items", (:id,)))
+    DBInterface.execute(connection,
+        create_table_sql(CollectionRow, "collections", (:collection_key,)))
     DBInterface.execute(connection, create_table_sql(ItemRow, "items", (:id,)))
     DBInterface.execute(connection, create_table_sql(FailureRow, "item_failures", (:item_id, :source_item_id)))
     DBInterface.execute(connection, create_table_sql(CachedResultState, "result_states", (:kind, :entity)))
+    DBInterface.execute(connection, create_table_sql(
+        CachedCollectionResultState, "collection_result_states", (:kind, :entity)))
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS wide_columns(
             table_name TEXT,
@@ -596,13 +671,10 @@ function ensure_schema!(connection)::Nothing
         CREATE TABLE IF NOT EXISTS source_item_metadata(item_key BIGINT PRIMARY KEY)
     """)
     DBInterface.execute(connection, """
-        CREATE TABLE IF NOT EXISTS source_collection_metadata(collection_key TEXT PRIMARY KEY)
-    """)
-    DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS analyzed_item_metadata(item_key BIGINT PRIMARY KEY)
     """)
     DBInterface.execute(connection, """
-        CREATE TABLE IF NOT EXISTS analyzed_collection_metadata(collection_key TEXT PRIMARY KEY)
+        CREATE TABLE IF NOT EXISTS analyzed_collection_metadata(collection_key BIGINT PRIMARY KEY)
     """)
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS item_data(
@@ -650,7 +722,7 @@ function store_interpreted_records!(
         key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_id, record.item_label,
-                String(record.kind), record.collection, _serialize_hex(record.item_fingerprint)))
+                String(record.kind), nothing, _serialize_hex(record.item_fingerprint)))
         _stage_ledger_item!(cache.stage_ledger, record.id, true)
         append!(dropped, edit!(cache.source_item_metadata, key, record.metadata))
     end
@@ -661,6 +733,46 @@ function store_interpreted_records!(
     )
     return _conflict_messages(unique(dropped))
 end
+
+"""
+Persist the package-owned collection records used by newly published items and attach each item
+row to its leaf. Arbitrary user-defined `AbstractCollection` values never enter the cache.
+"""
+function store_collection_index!(
+    cache::CacheDB,
+    collections::CollectionIndex,
+    records::Vector{ItemRecord},
+)::Nothing
+    for record in records
+        for collection_key in collection_path_keys(collections, record.collection_key)
+            collection_record = collections.records[collection_key]
+            lock(cache.key_lock) do
+                row = CollectionRow(
+                    collection_record.key,
+                    collection_record.parent_key,
+                    collection_record.id,
+                    collection_record.label,
+                    _serialize_hex(collection_record.own_metadata),
+                    collection_record.registration_name,
+                )
+                if !(collection_record.key in cache.persisted_collection_keys)
+                    append!(cache.collections, collection_record.key, row)
+                    push!(cache.persisted_collection_keys, collection_record.key)
+                else
+                    edit!(cache.collections, collection_record.key, row)
+                end
+            end
+        end
+        key = item_key!(cache, record.id)
+        edit!(cache.items, record.id,
+            ItemRow(record.id, key, record.source_item_id, record.item_label,
+                String(record.kind), record.collection_key,
+                _serialize_hex(record.item_fingerprint)))
+    end
+    return nothing
+end
+
+store_collection_index!(::MemoryCacheDB, ::CollectionIndex, ::Vector{ItemRecord})::Nothing = nothing
 
 """Store one source item's interpreted data in the memory-only interpreted buffer."""
 function store_interpreted_data!(
@@ -805,6 +917,17 @@ function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
     return nothing
 end
 
+function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
+        entity::Integer, source_item_id::AbstractString,
+        message::AbstractString)::Nothing
+    entity_value = Int64(entity)
+    state = CachedCollectionResultState(Int8(kind), entity_value, Int8(RESULT_FAILED),
+        String(source_item_id), String(message))
+    edit!(cache.collection_result_states, (Int8(kind), entity_value), state)
+    _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
+    return nothing
+end
+
 """Persist one failed source interpretation."""
 function store_source_item_failure!(
     cache::CacheDB,
@@ -850,13 +973,13 @@ end
 
 """Persist one collection's analyze output. Returns type-conflict messages for dropped keys."""
 function store_collection_metadata!(
-    cache::CacheDB, collection_key::AbstractString, analysis::AbstractDict,
+    cache::CacheDB, collection_key::Integer, analysis::AbstractDict,
 )::Vector{String}
-    entity = String(collection_key)
+    entity = Int64(collection_key)
     dropped = edit!(cache.analyzed_collection_metadata, entity, metadata_dict(analysis))
-    state = CachedResultState(
+    state = CachedCollectionResultState(
         Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
-    edit!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
+    edit!(cache.collection_result_states, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
     _stage_ledger_result!(
         cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
     return _conflict_messages(dropped)
@@ -864,12 +987,12 @@ end
 
 """Persist one collection-process result state (payloads and member metadata land separately)."""
 function store_collection_process_result!(
-    cache::CacheDB, collection_key::AbstractString,
+    cache::CacheDB, collection_key::Integer,
 )::Nothing
-    entity = String(collection_key)
-    state = CachedResultState(
+    entity = Int64(collection_key)
+    state = CachedCollectionResultState(
         Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
-    edit!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
+    edit!(cache.collection_result_states, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
     _stage_ledger_result!(
         cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
     return nothing
@@ -890,6 +1013,27 @@ function store_result_failure!(
             Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
         cache.result_states[(Int8(kind), entity_value)] = state
         _stage_ledger_failure!(cache.stage_ledger, (entity_value, source_id), true)
+        _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
+    end
+    return nothing
+end
+
+function store_result_failure!(
+    cache::MemoryCacheDB,
+    kind::CacheResultKind,
+    entity::Integer,
+    source_item_id::AbstractString,
+    message::AbstractString,
+)::Nothing
+    entity_value = Int64(entity)
+    source_id = String(source_item_id)
+    lock(cache.lock) do
+        cache.failures[(string(entity_value), source_id)] = String(message)
+        state = CachedCollectionResultState(
+            Int8(kind), entity_value, Int8(RESULT_FAILED), source_id, String(message))
+        cache.collection_result_states[(Int8(kind), entity_value)] = state
+        _stage_ledger_failure!(
+            cache.stage_ledger, (string(entity_value), source_id), true)
         _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
     end
     return nothing
@@ -924,33 +1068,27 @@ function store_item_metadata!(cache::MemoryCacheDB, record::ItemRecord, ::Abstra
     return String[]
 end
 
-function store_collection_metadata!(cache::MemoryCacheDB, collection_key::AbstractString, ::AbstractDict)::Vector{String}
-    entity = String(collection_key)
+function store_collection_metadata!(cache::MemoryCacheDB, collection_key::Integer, ::AbstractDict)::Vector{String}
+    entity = Int64(collection_key)
     lock(cache.lock) do
-        state = CachedResultState(
+        state = CachedCollectionResultState(
             Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), "", nothing)
-        cache.result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = state
+        cache.collection_result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = state
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
     end
     return String[]
 end
 
-function store_collection_process_result!(cache::MemoryCacheDB, collection_key::AbstractString)::Nothing
-    entity = String(collection_key)
+function store_collection_process_result!(cache::MemoryCacheDB, collection_key::Integer)::Nothing
+    entity = Int64(collection_key)
     lock(cache.lock) do
-        state = CachedResultState(
+        state = CachedCollectionResultState(
             Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), "", nothing)
-        cache.result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = state
+        cache.collection_result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = state
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
     end
-    return nothing
-end
-
-"""Write one source collection-metadata row."""
-function edit_source_collection_metadata!(cache::CacheDB, key::AbstractString, metadata::AbstractDict)::Nothing
-    edit!(cache.source_collection_metadata, String(key), metadata_dict(metadata))
     return nothing
 end
 
@@ -960,7 +1098,6 @@ function edit_source_item_metadata!(cache::CacheDB, key::Int64, metadata::Abstra
     return nothing
 end
 
-edit_source_collection_metadata!(::MemoryCacheDB, ::AbstractString, ::AbstractDict)::Nothing = nothing
 edit_source_item_metadata!(::MemoryCacheDB, ::Int64, ::AbstractDict)::Nothing = nothing
 
 """Delete every cached result owned by one published source item, keyed by item surrogate."""
@@ -1029,17 +1166,33 @@ function delete_source_item!(
     return nothing
 end
 
+"""Delete collection records that the live index pruned after item removal or replacement."""
+function delete_collection_records!(
+    cache::CacheDB,
+    collection_keys::Vector{Int64},
+)::Nothing
+    lock(cache.key_lock) do
+        for collection_key in unique(collection_keys)
+            delete!(cache.collections, collection_key)
+            delete!(cache.persisted_collection_keys, collection_key)
+        end
+    end
+    return nothing
+end
+
+delete_collection_records!(::MemoryCacheDB, ::Vector{Int64})::Nothing = nothing
+
 """Delete cached analysis for collections whose published metadata is invalid."""
 function delete_collection_metadata!(
     cache::CacheDB,
-    collection_keys::Vector{String},
+    collection_keys::Vector{Int64},
 )::Nothing
     for collection_key in unique(collection_keys)
         delete!(cache.analyzed_collection_metadata, collection_key)
-        delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
+        delete!(cache.collection_result_states, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key), nothing)
-        delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), collection_key))
+        delete!(cache.collection_result_states, (Int8(COLLECTION_PROCESS_RESULT), collection_key))
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), collection_key), nothing)
     end
@@ -1048,18 +1201,19 @@ end
 
 function delete_collection_metadata!(
     cache::MemoryCacheDB,
-    collection_keys::Vector{String},
+    collection_keys::Vector{Int64},
 )::Nothing
     for collection_key in unique(collection_keys)
-        key = String(collection_key)
         lock(cache.lock) do
-            delete!(cache.result_states, (Int8(COLLECTION_ANALYSIS_RESULT), key))
-            delete!(cache.result_states, (Int8(COLLECTION_PROCESS_RESULT), key))
+            delete!(cache.collection_result_states,
+                (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
+            delete!(cache.collection_result_states,
+                (Int8(COLLECTION_PROCESS_RESULT), collection_key))
         end
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), key), nothing)
+            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key), nothing)
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), key), nothing)
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), collection_key), nothing)
     end
     return nothing
 end
@@ -1069,9 +1223,10 @@ function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{
     items = 0
     rows = 0
     for buffer in
-        (cache.source_items, cache.items, cache.source_item_metadata,
-         cache.source_collection_metadata, cache.analyzed_item_metadata,
-         cache.analyzed_collection_metadata, cache.failures, cache.result_states, cache.payload)
+        (cache.source_items, cache.collections, cache.items, cache.source_item_metadata,
+         cache.analyzed_item_metadata,
+         cache.analyzed_collection_metadata, cache.failures, cache.result_states,
+         cache.collection_result_states, cache.payload)
         lock(buffer.flush_condition) do
             items += length(buffer.queued) + length(buffer.writing)
             rows += buffer.queued_rows + buffer.writing_rows
@@ -1136,16 +1291,40 @@ function clear_cached_result_state!(
     return nothing
 end
 
-function _cache_stage_summary(source_items, items, failures, states)::CacheStageSummary
+function clear_cached_result_state!(
+    cache::CacheDB,
+    kind::CacheResultKind,
+    entity::Integer,
+)::Nothing
+    key = (Int8(kind), Int64(entity))
+    delete!(cache.collection_result_states, key)
+    _stage_ledger_result!(cache.stage_ledger, key, nothing)
+    return nothing
+end
+
+function clear_cached_result_state!(
+    cache::MemoryCacheDB,
+    kind::CacheResultKind,
+    entity::Integer,
+)::Nothing
+    key = (Int8(kind), Int64(entity))
+    lock(cache.lock) do
+        delete!(cache.collection_result_states, key)
+    end
+    _stage_ledger_result!(cache.stage_ledger, key, nothing)
+    return nothing
+end
+
+function _cache_stage_summary(source_items, items, failures, state_stores...)::CacheStageSummary
     ready(kind::CacheResultKind)::Int = count(
         state -> CacheResultKind(state.kind) === kind &&
             CacheResultStatus(state.status) === RESULT_READY,
-        values(states),
+        Iterators.flatten(values(store) for store in state_stores),
     )
     failed(kind::CacheResultKind)::Int = count(
         state -> CacheResultKind(state.kind) === kind &&
             CacheResultStatus(state.status) === RESULT_FAILED,
-        values(states),
+        Iterators.flatten(values(store) for store in state_stores),
     )
     failed_interpret = count(key -> first(key) == last(key), keys(failures))
     return CacheStageSummary(
@@ -1228,10 +1407,11 @@ end
 function close_cache_db!(cachedb::CacheDB)::Nothing
     failure::Union{Nothing,Exception} = nothing
     for buffer in
-        (cachedb.source_items, cachedb.items, cachedb.source_item_metadata,
-         cachedb.source_collection_metadata, cachedb.analyzed_item_metadata,
+        (cachedb.source_items, cachedb.collections, cachedb.items, cachedb.source_item_metadata,
+         cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
-         cachedb.result_states, cachedb.payload, cachedb.interpreted,
+         cachedb.result_states, cachedb.collection_result_states, cachedb.payload,
+         cachedb.interpreted,
          cachedb.processed_memory, cachedb.collection_processed_memory)
         try
             close!(buffer)
@@ -1295,23 +1475,25 @@ function ProjectCacheIndex(
         source,
         Dict(id => join(messages, "\n") for (id, messages) in errors),
         Dict{String,MetadataDict}(),
-        Dict{CacheResultKey,CachedResultState}(),
+        Dict{CacheResultKey,AnyCachedResultState}(),
     )
 end
 
 """Delete every index and item-data row and reset the item-key map, leaving a schema-valid cache."""
 function clear_cache_index!(cachedb::CacheDB)::Nothing
     for buffer in
-        (cachedb.source_items, cachedb.items, cachedb.source_item_metadata,
-         cachedb.source_collection_metadata, cachedb.analyzed_item_metadata,
+        (cachedb.source_items, cachedb.collections, cachedb.items, cachedb.source_item_metadata,
+         cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
-         cachedb.result_states, cachedb.payload, cachedb.interpreted,
+         cachedb.result_states, cachedb.collection_result_states, cachedb.payload,
+         cachedb.interpreted,
          cachedb.processed_memory, cachedb.collection_processed_memory)
         clear!(buffer)
     end
     lock(cachedb.key_lock) do
         empty!(cachedb.item_keys)
         cachedb.next_item_key = Int64(1)
+        empty!(cachedb.persisted_collection_keys)
     end
     _reset_stage_ledger!(cachedb.stage_ledger)
     connection = DBInterface.connect(cachedb.db)
@@ -1334,6 +1516,7 @@ function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
         empty!(cachedb.items)
         empty!(cachedb.failures)
         empty!(cachedb.result_states)
+        empty!(cachedb.collection_result_states)
     end
     _reset_stage_ledger!(cachedb.stage_ledger)
     return nothing
@@ -1428,17 +1611,66 @@ end
 
 _load_source_item_fingerprints(::MemoryCacheDB)::Dict{String,Any} = Dict{String,Any}()
 
+"""Rebuild the flat collection index from package-owned persisted records."""
+function _load_collection_index(
+    rows::Dict{Int64,CollectionRow},
+    source_id::String,
+    collection_analysis::Dict{Int64,MetadataDict},
+)::CollectionIndex
+    collections = CollectionIndex(source_id)
+    loaded = Set{Int64}()
+    visiting = Set{Int64}()
+
+    function load_record(key::Int64)::Nothing
+        key in loaded && return nothing
+        key in visiting && error("Persisted collection hierarchy contains a parent cycle at key $key")
+        row = get(rows, key, nothing)
+        row === nothing && error("Persisted collection hierarchy is missing collection key $key")
+        push!(visiting, key)
+        row.parent_key === nothing || load_record(row.parent_key)
+        own_metadata = _deserialize_hex(row.metadata_hex)
+        own_metadata isa AbstractDict || error(
+            "Persisted collection key $key metadata decoded as $(typeof(own_metadata)), not a dictionary")
+        register_collection!(collections, CollectionRecord(
+            row.collection_key,
+            row.id,
+            row.parent_key,
+            row.label,
+            metadata_dict(own_metadata),
+            row.registration_name,
+            get(collection_analysis, key, MetadataDict()),
+        ))
+        delete!(visiting, key)
+        push!(loaded, key)
+        return nothing
+    end
+
+    for key in keys(rows)
+        load_record(key)
+    end
+    return collections
+end
+
 """Reconstruct the full `SourceScan` stored in one DuckDB cache (entries-layer metadata only)."""
 function _load_source_scan(
     cache::CacheDB,
     item_metadata_by_key::Dict{Int64,MetadataDict},
-    collection_analysis::Dict{String,MetadataDict},
+    collection_analysis::Dict{Int64,MetadataDict},
 )::SourceScan
     identity = cache.identity
     _load_meta(cache)
     source_rows = read(cache.source_items)
     item_rows = read(cache.items)
     failure_rows = read(cache.failures)
+    collections = try
+        _load_collection_index(
+            read(cache.collections), identity.source_id, collection_analysis)
+    catch error
+        throw(ProjectCacheDataError(
+            identity.cache_path,
+            "cached collection records are incompatible: $(sprint(showerror, error))",
+        ))
+    end
 
     all_source_ids = String[String(id) for id in keys(source_rows)]
     locations = Dict{String,Tuple{Union{Nothing,String},Union{Nothing,DateTime}}}()
@@ -1453,6 +1685,12 @@ function _load_source_scan(
     records = ItemRecord[]
     for row in values(item_rows)
         path, timestamp = get(locations, row.source_item_id, (nothing, nothing))
+        if row.collection_key !== nothing && !haskey(collections.records, row.collection_key)
+            throw(ProjectCacheDataError(
+                identity.cache_path,
+                "item '$(row.id)' refers to missing collection key $(row.collection_key)",
+            ))
+        end
         push!(records, ItemRecord(;
             id=row.id,
             source_item_id=row.source_item_id,
@@ -1460,31 +1698,24 @@ function _load_source_scan(
             source_item_timestamp=timestamp,
             item_label=row.item_label,
             kind=Symbol(row.kind),
-            collection=row.collection,
+            collection_key=row.collection_key,
             metadata=get(item_metadata_by_key, row.item_key, MetadataDict()),
             item_fingerprint=_deserialize_hex(row.item_fingerprint_hex),
         ))
+        append_item!(collections, row.id, row.collection_key)
     end
 
     sort!(records; by=record -> (record.source_item_id, record.id))
     # Scan-wide summaries are derived, not stored: a source item with no items was skipped or failed.
     source_ids_with_items = Set(record.source_item_id for record in records)
     skipped_count = count(id -> !(id in source_ids_with_items), all_source_ids)
-    hierarchy = Hierarchy(identity.source_id, false, skipped_count)
-    for record in records
-        insert_item!(hierarchy, record)
-    end
-    for (entity, dict) in collection_analysis
-        node = get(hierarchy.index, collection_path_tuple(entity), nothing)
-        node === nothing && continue
-        merge!(node.analysis, dict)
-    end
-    sort!(hierarchy)
+    collections.skipped_count = skipped_count
 
     return SourceScan(
         identity.source_id,
         identity.source_label,
-        hierarchy,
+        collections,
+        records,
         failures,
     )
 end
@@ -1518,8 +1749,11 @@ function load_cache_index(
         end
         base = ProjectCacheIndex(
             identity, _load_source_scan(cachedb, entries_by_key, collection_analysis))
-        result_states = Dict{CacheResultKey,CachedResultState}()
+        result_states = Dict{CacheResultKey,AnyCachedResultState}()
         for state in values(read(cachedb.result_states))
+            result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+        end
+        for state in values(read(cachedb.collection_result_states))
             result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
         end
         ProjectCacheIndex(
@@ -1535,8 +1769,8 @@ function load_cache_index(
         phase=:cache_load,
         total_source_items=1,
         processed_source_items=1,
-        loaded_items=length(all_items(index.source.hierarchy)),
-        skipped_source_items=index.source.hierarchy.skipped_count,
+        loaded_items=length(index.source.items),
+        skipped_source_items=index.source.collections.skipped_count,
         current_source_item=index.identity.cache_path,
     )
     return index

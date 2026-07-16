@@ -2,69 +2,50 @@ module ItemIndex
 
 using Dates
 
-import ..DataBrowserAPI
 import ..DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
+    AbstractCollection,
     MetadataDict,
     MetadataValue,
     Project,
+    cacheable,
+    cacheable_data,
     collection,
-    collection_metadata,
+    collection_record_id,
     collection_path_label,
     fingerprint,
-    has_collection_metadata,
     id,
     item_data,
     item_label,
     kind,
+    label,
     metadata,
     source_id,
     source_item_id,
     source_item_label,
     source_item_path,
     source_item_timestamp,
-    source_label,
-    cacheable,
-    cacheable_data
+    source_label
 
-"""
-Failure produced while interpreting or analyzing one source item.
-"""
+"""Failure produced while interpreting or analyzing one source item."""
 struct ItemFailure
     source_item_id::String
     id::String
     message::String
 end
 
-collection_path_label(::Project, collection::AbstractVector{<:AbstractString})::String =
-    join(collection, "_")
+collection_path_label(::Project, path::AbstractVector{<:AbstractCollection})::String =
+    join(label.(path), "_")
 
-collection_path_key(collection::AbstractVector{<:AbstractString})::String = join(collection, "/")
-
-"""
-Parse a stored slash-separated collection key into the tuple used by the hierarchy index.
-"""
-function collection_path_tuple(key::AbstractString)::Tuple{Vararg{String}}
-    stripped = strip(String(key))
-    isempty(stripped) && error("Collection path key cannot be empty")
-    segments = split(stripped, '/')
-    any(isempty, segments) && error("Invalid collection path key '$key'")
-    return Tuple(String.(segments))
-end
-
-"""
-Coerce one value into a [`MetadataValue`](@ref), normalizing common near-misses (any `Integer` to
-`Int64`, any `AbstractFloat` to `Float64`, `AbstractString` to `String`, and the corresponding
-vectors). Throws `ArgumentError` for anything else.
-"""
+"""Normalize one value into the supported metadata value union."""
 function metadata_value(value)::MetadataValue
     value isa MetadataValue && return value
-    value isa Integer && return Int64(value)            # Bool already matched above
+    value isa Integer && return Int64(value)
     value isa AbstractFloat && return Float64(value)
     value isa AbstractString && return String(value)
-    value isa AbstractVector{Bool} && return Vector{Bool}(value)   # before the Integer branch
+    value isa AbstractVector{Bool} && return Vector{Bool}(value)
     value isa AbstractVector{<:Integer} && return Int64.(value)
     value isa AbstractVector{<:AbstractFloat} && return Float64.(value)
     value isa AbstractVector{<:AbstractString} && return String.(value)
@@ -75,11 +56,7 @@ function metadata_value(value)::MetadataValue
     ))
 end
 
-"""
-Convert any `Symbol`-keyed dict into a validated [`MetadataDict`](@ref). A `MetadataDict` passes
-through unchanged; for anything else each value is checked via [`metadata_value`](@ref), with the
-offending key named on failure.
-"""
+"""Convert a symbol-keyed dictionary into a validated [`MetadataDict`](@ref)."""
 metadata_dict(dict::MetadataDict)::MetadataDict = dict
 function metadata_dict(dict::AbstractDict)::MetadataDict
     out = MetadataDict()
@@ -95,9 +72,420 @@ function metadata_dict(dict::AbstractDict)::MetadataDict
     return out
 end
 
+"""Package-owned collection value created by the registration string-path adapter."""
+struct RegisteredCollection <: AbstractCollection
+    name::String
+    metadata::MetadataDict
+end
+
+RegisteredCollection(name::AbstractString; metadata::AbstractDict=MetadataDict()) =
+    RegisteredCollection(String(name), metadata_dict(metadata))
+
+label(collection::RegisteredCollection)::String = collection.name
+metadata(collection::RegisteredCollection)::MetadataDict = collection.metadata
+id(collection::RegisteredCollection)::String = collection.name
+Base.:(==)(left::RegisteredCollection, right::RegisteredCollection)::Bool =
+    left.name == right.name
+Base.isequal(left::RegisteredCollection, right::RegisteredCollection)::Bool =
+    isequal(left.name, right.name)
+Base.hash(collection::RegisteredCollection, seed::UInt)::UInt = hash(collection.name, seed)
+
 """
-The internal metadata record for one logical item discovered inside one source item.
+One transient normalized collection level produced during interpretation.
+
+This contains only package-owned projections of a live `AbstractCollection`; it never retains the
+user value itself.
 """
+struct CollectionInput
+    id::String
+    label::String
+    own_metadata::MetadataDict
+    registration_name::Union{Nothing,String}
+end
+
+"""Resolve a live collection path into package-owned inputs without retaining user values."""
+function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{CollectionInput}
+    inputs = CollectionInput[]
+    parent_id = ""
+    for value in path
+        collection_id = collection_record_id(parent_id, value)
+        push!(inputs, CollectionInput(
+            collection_id,
+            String(label(value)),
+            metadata_dict(metadata(value)),
+            value isa RegisteredCollection ? value.name : nothing,
+        ))
+        parent_id = collection_id
+    end
+    return inputs
+end
+
+"""Normalize a registration string path into package-owned collection inputs."""
+collection_inputs(
+    ::AbstractDataSource,
+    names::AbstractVector{<:AbstractString},
+)::Vector{CollectionInput} = collection_inputs(
+    AbstractCollection[RegisteredCollection(name) for name in names],
+)
+
+"""
+One package-owned indexed collection occurrence.
+
+`id` is the final deterministic occurrence ID derived from the parent occurrence ID, the concrete
+collection type, and the value returned by `id(::AbstractCollection)`. `key` is a compact
+workspace/cache-local integer. `label` is display text. These are distinct contracts.
+"""
+struct CollectionRecord
+    key::Int64
+    id::String
+    parent_key::Union{Nothing,Int64}
+    label::String
+    own_metadata::MetadataDict
+    registration_name::Union{Nothing,String}
+    analysis::MetadataDict
+end
+
+label(collection_record::CollectionRecord)::String = collection_record.label
+
+"""
+Flat collection records plus their parent, child, and item-membership indexes.
+
+There is no root record and no tree object graph. `nothing` is the parent/membership key for items
+at the source root.
+"""
+mutable struct CollectionIndex
+    source_id::String
+    records::Dict{Int64,CollectionRecord}
+    key_by_id::Dict{String,Int64}
+    children_by_parent::Dict{Union{Nothing,Int64},Vector{Int64}}
+    item_ids_by_collection::Dict{Union{Nothing,Int64},Vector{String}}
+    next_key::Int64
+    skipped_count::Int
+end
+
+CollectionIndex(source_id::AbstractString, skipped_count::Integer=0) = CollectionIndex(
+    String(source_id),
+    Dict{Int64,CollectionRecord}(),
+    Dict{String,Int64}(),
+    Dict{Union{Nothing,Int64},Vector{Int64}}(),
+    Dict{Union{Nothing,Int64},Vector{String}}(),
+    Int64(1),
+    Int(skipped_count),
+)
+
+"""Copy a collection index deeply enough for independent mutation."""
+function Base.copy(index::CollectionIndex)::CollectionIndex
+    return CollectionIndex(
+        index.source_id,
+        copy(index.records),
+        copy(index.key_by_id),
+        Dict(key => copy(values) for (key, values) in index.children_by_parent),
+        Dict(key => copy(values) for (key, values) in index.item_ids_by_collection),
+        index.next_key,
+        index.skipped_count,
+    )
+end
+
+"""Register one persisted collection record, validating keys, parents, and IDs."""
+function register_collection!(index::CollectionIndex, collection_record::CollectionRecord)::Nothing
+    collection_record.key > 0 || error("Collection record keys must be positive")
+    collection_record.parent_key === nothing ||
+        haskey(index.records, collection_record.parent_key) || error(
+        "Collection '$(collection_record.label)' refers to missing parent key " *
+        "$(collection_record.parent_key)",
+    )
+    existing_key = get(index.key_by_id, collection_record.id, nothing)
+    if existing_key !== nothing
+        existing_collection_record = index.records[existing_key]
+        existing_collection_record.key == collection_record.key || error(
+            "Collection id $(collection_record.id) is assigned to keys " *
+            "$(existing_collection_record.key) and $(collection_record.key)",
+        )
+        return nothing
+    end
+    haskey(index.records, collection_record.key) && error(
+        "Collection key $(collection_record.key) is assigned to multiple collection IDs",
+    )
+    index.records[collection_record.key] = collection_record
+    index.key_by_id[collection_record.id] = collection_record.key
+    children = get!(() -> Int64[], index.children_by_parent, collection_record.parent_key)
+    collection_record.key in children || push!(children, collection_record.key)
+    index.next_key = max(index.next_key, collection_record.key + 1)
+    return nothing
+end
+
+_projection_changed(record::CollectionRecord, input::CollectionInput)::Bool =
+    record.label != input.label ||
+    record.own_metadata != input.own_metadata ||
+    record.registration_name != input.registration_name
+
+_projection_changed(left::CollectionInput, right::CollectionInput)::Bool =
+    left.label != right.label ||
+    left.own_metadata != right.own_metadata ||
+    left.registration_name != right.registration_name
+
+"""
+    validate_collection_paths(index, paths) -> Nothing
+
+Validate a batch of collection paths against the live index and against each other without mutating
+the index. This keeps batched publication atomic when two source items project one deterministic
+collection ID inconsistently.
+"""
+function validate_collection_paths(
+    index::CollectionIndex,
+    paths::Vector{Vector{CollectionInput}},
+)::Nothing
+    pending = Dict{String,Tuple{Union{Nothing,String},CollectionInput}}()
+    for inputs in paths
+        parent_id::Union{Nothing,String} = nothing
+        labels = String[]
+        for input in inputs
+            push!(labels, input.label)
+            key = get(index.key_by_id, input.id, nothing)
+            if key === nothing
+                previous = get(pending, input.id, nothing)
+                if previous === nothing
+                    pending[input.id] = (parent_id, input)
+                else
+                    previous_parent_id, previous_input = previous
+                    previous_parent_id == parent_id || error(
+                        "Collection '$(join(labels, " / "))' resolved below inconsistent parents",
+                    )
+                    _projection_changed(previous_input, input) && throw(ArgumentError(
+                        "Collection '$(join(labels, " / "))' produced inconsistent label, " *
+                        "metadata, or registration name for deterministic id $(input.id)",
+                    ))
+                end
+            else
+                existing = index.records[key]
+                existing_parent_id = existing.parent_key === nothing ? nothing :
+                    index.records[existing.parent_key].id
+                existing_parent_id == parent_id || error(
+                    "Collection '$(join(labels, " / "))' resolved below inconsistent parents",
+                )
+                _projection_changed(existing, input) && throw(ArgumentError(
+                    "Collection '$(join(labels, " / "))' produced inconsistent label, " *
+                    "metadata, or registration name for deterministic id $(existing.id)",
+                ))
+            end
+            parent_id = input.id
+        end
+    end
+    return nothing
+end
+
+"""Resolve one interpreted path into collection records and return its leaf key."""
+function resolve_collection_path!(
+    index::CollectionIndex,
+    inputs::Vector{CollectionInput},
+    ;
+    update_existing::Bool=false,
+)::Union{Nothing,Int64}
+    parent_key::Union{Nothing,Int64} = nothing
+    labels = String[]
+    for input in inputs
+        push!(labels, input.label)
+        key = get(index.key_by_id, input.id, nothing)
+        if key === nothing
+            key = index.next_key
+            register_collection!(index, CollectionRecord(
+                key,
+                input.id,
+                parent_key,
+                input.label,
+                copy(input.own_metadata),
+                input.registration_name,
+                MetadataDict(),
+            ))
+        else
+            existing = index.records[key]
+            existing.parent_key == parent_key || error(
+                "Collection '$(join(labels, " / "))' resolved below inconsistent parents",
+            )
+            projection_changed = _projection_changed(existing, input)
+            if projection_changed && !update_existing
+                throw(ArgumentError(
+                    "Collection '$(join(labels, " / "))' produced inconsistent label, " *
+                    "metadata, or registration name for deterministic id $(existing.id)",
+                ))
+            end
+            if projection_changed
+                index.records[key] = CollectionRecord(
+                    existing.key,
+                    existing.id,
+                    existing.parent_key,
+                    input.label,
+                    copy(input.own_metadata),
+                    input.registration_name,
+                    existing.analysis,
+                )
+            end
+        end
+        parent_key = key
+    end
+    return parent_key
+end
+
+"""
+    resolve_collection_paths!(index, paths) -> Vector{Union{Nothing,Int64}}
+
+Validate and resolve a batch of interpreted collection paths. Validation completes before the first
+record is inserted, so a conflicting projection cannot leave a partially published path behind.
+"""
+function resolve_collection_paths!(
+    index::CollectionIndex,
+    paths::Vector{Vector{CollectionInput}},
+)::Vector{Union{Nothing,Int64}}
+    length(paths) == 1 && return Union{Nothing,Int64}[
+        resolve_collection_path!(index, only(paths)),
+    ]
+    validate_collection_paths(index, paths)
+    return Union{Nothing,Int64}[
+        resolve_collection_path!(index, path)
+        for path in paths
+    ]
+end
+
+"""Return one record's ancestor-to-self collection keys."""
+function collection_path_keys(index::CollectionIndex, key::Int64)::Vector{Int64}
+    path = Int64[]
+    current::Union{Nothing,Int64} = key
+    while current !== nothing
+        push!(path, current)
+        current = index.records[current].parent_key
+    end
+    reverse!(path)
+    return path
+end
+
+collection_path_keys(::CollectionIndex, ::Nothing)::Vector{Int64} = Int64[]
+
+"""Return one collection's ancestor-to-self final occurrence IDs."""
+collection_id_path(index::CollectionIndex, key::Int64)::Vector{String} =
+    String[index.records[path_key].id for path_key in collection_path_keys(index, key)]
+collection_id_path(::CollectionIndex, ::Nothing)::Vector{String} = String[]
+
+"""Return display labels for one collection path."""
+collection_location(index::CollectionIndex, key::Int64)::Vector{String} =
+    String[index.records[path_key].label for path_key in collection_path_keys(index, key)]
+
+"""Return stored registration names, or `nothing` when the indexed path is typed."""
+function registration_names(
+    index::CollectionIndex,
+    key::Union{Nothing,Int64},
+)::Union{Nothing,Vector{String}}
+    key === nothing && return String[]
+    names = String[]
+    for path_key in collection_path_keys(index, key)
+        collection_record = index.records[path_key]
+        collection_record.registration_name === nothing && return nothing
+        push!(names, collection_record.registration_name)
+    end
+    return names
+end
+
+"""Return child keys sorted by their resolved display labels."""
+function sorted_child_keys(
+    index::CollectionIndex,
+    parent_key::Union{Nothing,Int64},
+)::Vector{Int64}
+    keys = copy(get(index.children_by_parent, parent_key, Int64[]))
+    names = String[index.records[key].label for key in keys]
+    roman = !isempty(names) && all(name -> roman_value(name) !== nothing, names)
+    sort!(keys; by=roman ?
+        key -> roman_value(index.records[key].label) :
+        key -> natural_key(index.records[key].label))
+    return keys
+end
+
+"""Append one already-validated item id to its direct collection membership in constant time."""
+function append_item!(index::CollectionIndex, item_id::AbstractString, key)::Nothing
+    ids = get!(() -> String[], index.item_ids_by_collection, key)
+    push!(ids, String(item_id))
+    return nothing
+end
+
+"""Attach one item id to its direct collection membership unless it is already present."""
+function insert_item!(index::CollectionIndex, item_id::AbstractString, key)::Nothing
+    ids = get!(() -> String[], index.item_ids_by_collection, key)
+    item_id in ids || push!(ids, String(item_id))
+    return nothing
+end
+
+"""Remove one item membership and prune empty collection records toward the root."""
+function remove_item!(index::CollectionIndex, item_id::AbstractString, key)::Nothing
+    ids = get(index.item_ids_by_collection, key, nothing)
+    ids === nothing || filter!(id -> id != item_id, ids)
+    ids !== nothing && isempty(ids) && delete!(index.item_ids_by_collection, key)
+    current = key
+    while current !== nothing
+        !isempty(get(index.item_ids_by_collection, current, String[])) && break
+        !isempty(get(index.children_by_parent, current, Int64[])) && break
+        collection_record = index.records[current]
+        siblings = get(index.children_by_parent, collection_record.parent_key, nothing)
+        siblings === nothing || filter!(child -> child != current, siblings)
+        siblings !== nothing && isempty(siblings) &&
+            delete!(index.children_by_parent, collection_record.parent_key)
+        delete!(index.key_by_id, collection_record.id)
+        delete!(index.records, current)
+        current = collection_record.parent_key
+    end
+    return nothing
+end
+
+"""Return direct member ids for one collection key."""
+collection_item_ids(index::CollectionIndex, key)::Vector{String} =
+    get(index.item_ids_by_collection, key, String[])
+
+"""Return whether one record has child collection records."""
+has_collection_children(index::CollectionIndex, key::Int64)::Bool =
+    !isempty(get(index.children_by_parent, key, Int64[]))
+
+"""Return metadata inherited from collection parents through the direct collection."""
+function collection_metadata(index::CollectionIndex, key)::MetadataDict
+    effective = MetadataDict()
+    key === nothing && return effective
+    for path_key in collection_path_keys(index, key)
+        merge!(effective, index.records[path_key].own_metadata)
+    end
+    return effective
+end
+
+"""Clear one collection record's analysis while preserving its resolved facts."""
+function clear_collection_analysis!(index::CollectionIndex, key::Int64)::Nothing
+    collection_record = index.records[key]
+    index.records[key] = CollectionRecord(
+        collection_record.key,
+        collection_record.id,
+        collection_record.parent_key,
+        collection_record.label,
+        collection_record.own_metadata,
+        collection_record.registration_name,
+        MetadataDict(),
+    )
+    return nothing
+end
+
+"""Replace one collection record's analysis result."""
+function set_collection_analysis!(
+    index::CollectionIndex,
+    key::Int64,
+    analysis::AbstractDict,
+)::Nothing
+    collection_record = index.records[key]
+    index.records[key] = CollectionRecord(
+        collection_record.key,
+        collection_record.id,
+        collection_record.parent_key,
+        collection_record.label,
+        collection_record.own_metadata,
+        collection_record.registration_name,
+        metadata_dict(analysis),
+    )
+    return nothing
+end
+
+"""The internal metadata record for one logical item discovered inside one source item."""
 struct ItemRecord
     id::String
     source_item_id::String
@@ -105,14 +493,12 @@ struct ItemRecord
     source_item_timestamp::Union{DateTime,Nothing}
     item_label::String
     kind::Symbol
-    collection::Vector{String}
+    collection_key::Union{Nothing,Int64}
     metadata::MetadataDict
     item_fingerprint::Any
 end
 
-"""
-Construct an item record while normalizing its string fields.
-"""
+"""Construct an item record while normalizing its fields."""
 function ItemRecord(;
     id::AbstractString,
     source_item_id::AbstractString,
@@ -120,7 +506,7 @@ function ItemRecord(;
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
     item_label::AbstractString,
     kind::Symbol,
-    collection::AbstractVector{<:AbstractString},
+    collection_key::Union{Nothing,Integer}=nothing,
     metadata::AbstractDict=MetadataDict(),
     item_fingerprint=nothing,
 )::ItemRecord
@@ -133,15 +519,13 @@ function ItemRecord(;
         source_item_timestamp,
         String(item_label),
         kind,
-        String[String(segment) for segment in collection],
+        collection_key === nothing ? nothing : Int64(collection_key),
         metadata_dict(metadata),
         item_fingerprint,
     )
 end
 
-"""
-Copy an item record while replacing selected fields.
-"""
+"""Copy an item record while replacing selected fields."""
 function ItemRecord(
     record::ItemRecord;
     id::AbstractString=record.id,
@@ -150,7 +534,7 @@ function ItemRecord(
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
     item_label::AbstractString=record.item_label,
     kind::Symbol=record.kind,
-    collection::AbstractVector{<:AbstractString}=copy(record.collection),
+    collection_key::Union{Nothing,Integer}=record.collection_key,
     metadata::AbstractDict=deepcopy(record.metadata),
     item_fingerprint=record.item_fingerprint,
 )::ItemRecord
@@ -161,7 +545,7 @@ function ItemRecord(
         source_item_timestamp,
         item_label,
         kind,
-        collection,
+        collection_key,
         metadata,
         item_fingerprint,
     )
@@ -170,7 +554,8 @@ end
 """
 Private carrier for ordinary data produced by `register_item!`.
 
-Project callbacks do not construct or depend on this type.
+Its collection path stays a `Vector{String}` at registration-facing boundaries. Interpretation
+adapts those names separately when constructing package-owned collection records.
 """
 struct RegisteredDataItem{D} <: AbstractDataItem
     id::String
@@ -181,12 +566,16 @@ struct RegisteredDataItem{D} <: AbstractDataItem
     metadata::MetadataDict
 end
 
-"""Reconstruct registered data from an internal record and persisted payload."""
-RegisteredDataItem(record::ItemRecord, data)::RegisteredDataItem = RegisteredDataItem(
+"""Reconstruct registered data from a record, payload, and its registration string path."""
+RegisteredDataItem(
+    record::ItemRecord,
+    data,
+    path::Vector{String}=String[],
+)::RegisteredDataItem = RegisteredDataItem(
     record.id,
     record.item_label,
     record.kind,
-    record.collection,
+    path,
     data,
     record.metadata,
 )
@@ -201,9 +590,7 @@ RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = Registe
     item.metadata,
 )
 
-"""
-Derive the internal `ItemRecord` from any item via the source and item contracts.
-"""
+"""Derive an unresolved item record from any item; collection membership is assigned on publish."""
 function ItemRecord(
     item::AbstractDataItem;
     source_item::AbstractDataSourceItem,
@@ -211,8 +598,8 @@ function ItemRecord(
     kind::Symbol=kind(item),
     metadata=metadata(item),
 )::ItemRecord
-    label = item_label(item)
-    title = isempty(label) ? source_item_label(source_item) : String(label)
+    item_title = item_label(item)
+    title = isempty(item_title) ? source_item_label(source_item) : String(item_title)
     return ItemRecord(;
         source_item_id=source_item_id(source_item),
         source_item_path=source_item_path(source_item),
@@ -220,7 +607,7 @@ function ItemRecord(
         id,
         item_label=title,
         kind,
-        collection=collection(item),
+        collection_key=nothing,
         metadata,
         item_fingerprint=fingerprint(item),
     )
@@ -233,104 +620,36 @@ collection(item::RegisteredDataItem)::Vector{String} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
 item_data(item::RegisteredDataItem) = item.data
 fingerprint(item::RegisteredDataItem) = nothing
-
-# The built-in item delegates to the payload trait: anything tabular is cacheable by default.
-# Type-API items opt in themselves.
 cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
 
-"""
-One node in the collection hierarchy.
-"""
-struct HierarchyNode
-    name::String
-    kind::Symbol
-    metadata::MetadataDict
-    children::Vector{HierarchyNode}
-    items::Vector{ItemRecord}
-    analysis::MetadataDict
+"""Return one item record's inherited collection metadata plus its own entries layer."""
+function effective_metadata(index::CollectionIndex, record::ItemRecord)::MetadataDict
+    effective = collection_metadata(index, record.collection_key)
+    merge!(effective, record.metadata)
+    return effective
 end
 
-HierarchyNode(name::String, kind::Symbol) =
-    HierarchyNode(
-        name,
-        kind,
-        MetadataDict(),
-        HierarchyNode[],
-        ItemRecord[],
-        MetadataDict(),
-    )
+"""Materialize a record with its inherited collection metadata."""
+effective_record(index::CollectionIndex, record::ItemRecord)::ItemRecord =
+    ItemRecord(record; metadata=effective_metadata(index, record))
 
-const _AllItemsCache = Base.RefValue{Union{Nothing,Vector{ItemRecord}}}
-_lazy_all_items()::_AllItemsCache = _AllItemsCache(nothing)
-
-"""
-The complete collection tree and its indexes for one source.
-
-`all_items` is a flat view over every record in the tree. It is materialized lazily and cached
-(`all_items_cache`) rather than rebuilt on every edit: the tree nodes own the records, and a
-progressive scan publishes thousands of single-item edits, so eagerly rebuilding an O(total)
-vector per publish is quadratic and floods the GC. Readers go through [`all_items`](@ref); the
-cache is left empty by edits and filled on first read.
-"""
-struct Hierarchy
-    root::HierarchyNode
-    all_items_cache::_AllItemsCache
-    source_id::String
-    index::Dict{Tuple{Vararg{String}},HierarchyNode}
-    has_collection_metadata::Bool
-    skipped_count::Int
-end
-
-"""Push every record under one node into `acc`, in tree order."""
-function _collect_items!(acc::Vector{ItemRecord}, node::HierarchyNode)::Nothing
-    append!(acc, node.items)
-    for child in node.children
-        _collect_items!(acc, child)
-    end
-    return nothing
-end
-
-"""
-Every record in the hierarchy as one flat vector, materialized on first read and cached.
-
-Published hierarchies never mutate their node `items` in place (edits clone touched nodes), so the
-cache stays valid for the life of the hierarchy object.
-"""
-function all_items(hierarchy::Hierarchy)::Vector{ItemRecord}
-    cached = hierarchy.all_items_cache[]
-    cached === nothing || return cached
-    items = ItemRecord[]
-    _collect_items!(items, hierarchy.root)
-    hierarchy.all_items_cache[] = items
-    return items
-end
-
-"""
-The authoritative result of one completed source scan.
-"""
+"""The authoritative cached result of one completed source scan."""
 struct SourceScan
     source_id::String
     source_label::String
-    hierarchy::Hierarchy
+    collections::CollectionIndex
+    items::Vector{ItemRecord}
     analysis_failures::Vector{ItemFailure}
 end
 
 """Construct a successful scan with no recorded analysis failures."""
-function SourceScan(
+SourceScan(
     source::AbstractDataSource,
-    hierarchy::Hierarchy,
-)::SourceScan
-    return SourceScan(
-        source_id(source),
-        source_label(source),
-        hierarchy,
-        ItemFailure[],
-    )
-end
+    collections::CollectionIndex,
+    items::Vector{ItemRecord},
+) = SourceScan(source_id(source), source_label(source), collections, items, ItemFailure[])
 
-"""
-Send one structured progress update when a callback is present.
-"""
+"""Send one structured progress update when a callback is present."""
 function emit_progress(
     on_progress::Union{Nothing,Function};
     phase::Symbol,
@@ -341,20 +660,18 @@ function emit_progress(
     current_source_item::String="",
 )::Nothing
     on_progress === nothing && return nothing
-    on_progress((
-        phase=phase,
-        total_source_items=total_source_items,
-        processed_source_items=processed_source_items,
-        loaded_items=loaded_items,
-        skipped_source_items=skipped_source_items,
-        current_source_item=current_source_item,
+    on_progress((;
+        phase,
+        total_source_items,
+        processed_source_items,
+        loaded_items,
+        skipped_source_items,
+        current_source_item,
     ))
     return nothing
 end
 
-"""
-Convert a Roman-numeral path segment to its integer value.
-"""
+"""Convert a Roman-numeral path segment to its integer value."""
 function roman_value(text::AbstractString)::Union{Nothing,Int}
     values = Dict('I' => 1, 'V' => 5, 'X' => 10, 'L' => 50)
     isempty(text) && return nothing
@@ -369,9 +686,7 @@ function roman_value(text::AbstractString)::Union{Nothing,Int}
     return total
 end
 
-"""
-Return a tuple that sorts text segments and embedded integers naturally.
-"""
+"""Return a tuple that sorts text segments and embedded integers naturally."""
 function natural_key(text::AbstractString)::Tuple
     parts = Any[]
     for result in eachmatch(r"\d+|\D+", String(text))
@@ -387,309 +702,5 @@ item_timestamp_key(item::ItemRecord)::DateTime =
     item.source_item_timestamp === nothing ?
     DateTime(Dates.year(typemax(Date))) :
     item.source_item_timestamp
-
-"""Sort one node's children using Roman-numeral or natural name order."""
-function sort_children!(node::HierarchyNode)::HierarchyNode
-    roman = !isempty(node.children) &&
-        all(child -> roman_value(child.name) !== nothing, node.children)
-    sort!(
-        node.children;
-        by=roman ?
-            child -> roman_value(child.name) :
-            child -> natural_key(child.name),
-    )
-    return node
-end
-
-"""Sort one node's own items by source-item time."""
-sort_items!(node::HierarchyNode)::HierarchyNode =
-    (sort!(node.items; by=item_timestamp_key); node)
-
-"""
-Sort one hierarchy node recursively using natural names and source-item time.
-"""
-function Base.sort!(node::HierarchyNode)::HierarchyNode
-    foreach(sort!, node.children)
-    sort_children!(node)
-    foreach(sort_items!, node.children)
-    return node
-end
-
-Base.sort!(hierarchy::Hierarchy)::Hierarchy = (
-    sort!(hierarchy.root);
-    hierarchy
-)
-
-"""
-Create an empty hierarchy ready for progressive scan results.
-"""
-function Hierarchy(
-    source_id::String,
-    has_collection_metadata::Bool,
-    skipped_count::Int=0,
-)::Hierarchy
-    return Hierarchy(
-        HierarchyNode("/", :root),
-        _lazy_all_items(),
-        source_id,
-        Dict{Tuple{Vararg{String}},HierarchyNode}(),
-        has_collection_metadata,
-        skipped_count,
-    )
-end
-
-"""
-Insert one item into an existing hierarchy.
-"""
-function insert_item!(
-    hierarchy::Hierarchy,
-    item::ItemRecord,
-)::ItemRecord
-    parent = hierarchy.root
-    for (depth, segment) in enumerate(item.collection)
-        path = Tuple(item.collection[1:depth])
-        child = get(hierarchy.index, path, nothing)
-        if child === nothing
-            kind = depth == length(item.collection) ? :leaf : :level
-            child = HierarchyNode(segment, kind)
-            push!(parent.children, child)
-            hierarchy.index[path] = child
-        end
-        parent = child
-    end
-    push!(parent.items, item)
-    hierarchy.all_items_cache[] = nothing
-    return item
-end
-
-function _effective_metadata(
-    source::AbstractDataSource,
-    collection_path::AbstractVector{<:AbstractString},
-    local_metadata::AbstractDict,
-)::MetadataDict
-    metadata = metadata_dict(collection_metadata(source, collection_path))
-    merge!(metadata, metadata_dict(local_metadata))
-    return metadata
-end
-
-"""
-Set one node's metadata from its parent's already-effective metadata plus the source's own
-collection metadata for the path. Parents must be refreshed before children (depth order).
-"""
-function refresh_node_metadata!(
-    hierarchy::Hierarchy,
-    source::AbstractDataSource,
-    path::Tuple{Vararg{String}},
-)::Nothing
-    node = get(hierarchy.index, path, nothing)
-    node === nothing && return nothing
-    inherited = length(path) == 1 ?
-        hierarchy.root.metadata :
-        hierarchy.index[path[1:end-1]].metadata
-    effective = copy(inherited)
-    merge!(effective, metadata_dict(collection_metadata(source, collect(path))))
-    empty!(node.metadata)
-    merge!(node.metadata, effective)
-    return nothing
-end
-
-"""Apply source collection metadata to hierarchy nodes."""
-function apply_collection_metadata!(
-    hierarchy::Hierarchy,
-    source::AbstractDataSource,
-)::Nothing
-    empty!(hierarchy.root.metadata)
-    for path in sort!(collect(keys(hierarchy.index)); by=length)
-        refresh_node_metadata!(hierarchy, source, path)
-    end
-    return nothing
-end
-
-"""Return one record's source-inherited and item-local metadata."""
-function effective_metadata(hierarchy::Hierarchy, record::ItemRecord)::MetadataDict
-    node = get(hierarchy.index, Tuple(record.collection), nothing)
-    effective = node === nothing ? MetadataDict() : copy(node.metadata)
-    merge!(effective, record.metadata)
-    return effective
-end
-
-"""Materialize a record with its inherited collection metadata."""
-function effective_record(hierarchy::Hierarchy, record::ItemRecord)::ItemRecord
-    return ItemRecord(record; metadata=effective_metadata(hierarchy, record))
-end
-
-"""
-Build a complete collection tree from a flat item list.
-"""
-function Hierarchy(
-    items::Vector{ItemRecord},
-    source::AbstractDataSource,
-    skipped_count::Int=0,
-)::Hierarchy
-    hierarchy = Hierarchy(
-        source_id(source),
-        has_collection_metadata(source),
-        skipped_count,
-    )
-    foreach(item -> insert_item!(hierarchy, item), items)
-    apply_collection_metadata!(hierarchy, source)
-    return sort!(hierarchy)
-end
-
-children(node::HierarchyNode)::Vector{HierarchyNode} = node.children
-
-# ------------------------------- Copy-on-write hierarchy edits -----------------------------------
-#
-# Publishing swaps `workspace.index.hierarchy` as one reference assignment so concurrent readers
-# always traverse a complete tree. A `HierarchyEdit` keeps that contract at incremental cost: it
-# clones only the nodes it mutates (plus their ancestor chain), shares every untouched subtree with
-# the original, and re-sorts/re-parameterizes only what changed, using the same per-node primitives
-# as the full build.
-
-const CollectionPath = Tuple{Vararg{String}}
-
-"""One in-progress copy-on-write edit of a hierarchy."""
-mutable struct HierarchyEdit
-    hierarchy::Hierarchy
-    cloned::Set{CollectionPath}
-    items_dirty::Set{CollectionPath}
-    children_dirty::Set{CollectionPath}
-    created::Vector{CollectionPath}
-    pruned::Bool
-end
-
-_clone_node(node::HierarchyNode)::HierarchyNode = HierarchyNode(
-    node.name,
-    node.kind,
-    copy(node.metadata),
-    copy(node.children),
-    copy(node.items),
-    copy(node.analysis),
-)
-
-"""
-Begin a copy-on-write edit; the original hierarchy and its nodes are never mutated.
-
-The edit clones only touched nodes and their ancestors; `all_items` is left lazy, so neither the
-original nor the result pays to rebuild the flat item view — it is derived from the tree on demand.
-"""
-function edit_hierarchy(hierarchy::Hierarchy)::HierarchyEdit
-    return HierarchyEdit(
-        Hierarchy(
-            _clone_node(hierarchy.root),
-            _lazy_all_items(),
-            hierarchy.source_id,
-            copy(hierarchy.index),
-            hierarchy.has_collection_metadata,
-            hierarchy.skipped_count,
-        ),
-        Set{CollectionPath}([()]),
-        Set{CollectionPath}(),
-        Set{CollectionPath}(),
-        CollectionPath[],
-        false,
-    )
-end
-
-"""Whether an edit created or pruned collection nodes (as opposed to only moving items)."""
-edit_changed_structure(edit::HierarchyEdit)::Bool = !isempty(edit.created) || edit.pruned
-
-_node_at(hierarchy::Hierarchy, path::CollectionPath)::Union{Nothing,HierarchyNode} =
-    path === () ? hierarchy.root : get(hierarchy.index, path, nothing)
-
-"""Return the node at `path` cloned for mutation, cloning uncloned ancestors as needed."""
-function editable_node!(edit::HierarchyEdit, path::CollectionPath)::HierarchyNode
-    hierarchy = edit.hierarchy
-    node = hierarchy.root
-    for depth in eachindex(path)
-        prefix = path[1:depth]
-        child = hierarchy.index[prefix]
-        if !(prefix in edit.cloned)
-            child = _clone_node(child)
-            position = findfirst(existing -> existing.name == child.name, node.children)
-            node.children[position] = child
-            hierarchy.index[prefix] = child
-            push!(edit.cloned, prefix)
-        else
-            child = hierarchy.index[prefix]
-        end
-        node = child
-    end
-    return node
-end
-
-"""Insert one record, creating (and metadata-marking) any missing collection nodes."""
-function insert_record!(edit::HierarchyEdit, record::ItemRecord)::Nothing
-    hierarchy = edit.hierarchy
-    leaf_path = Tuple(record.collection)
-    for depth in eachindex(leaf_path)
-        prefix = leaf_path[1:depth]
-        haskey(hierarchy.index, prefix) && continue
-        parent = editable_node!(edit, prefix[1:end-1])
-        kind = depth == length(leaf_path) ? :leaf : :level
-        child = HierarchyNode(String(leaf_path[depth]), kind)
-        push!(parent.children, child)
-        hierarchy.index[prefix] = child
-        push!(edit.cloned, prefix)
-        push!(edit.created, prefix)
-        push!(edit.children_dirty, prefix[1:end-1])
-    end
-    node = editable_node!(edit, leaf_path)
-    push!(node.items, record)
-    push!(edit.items_dirty, leaf_path)
-    return nothing
-end
-
-"""Remove records by id, pruning collection nodes the removal leaves empty."""
-function remove_records!(edit::HierarchyEdit, records::Vector{ItemRecord})::Nothing
-    isempty(records) && return nothing
-    hierarchy = edit.hierarchy
-    ids = Set(record.id for record in records)
-    for path in unique(Tuple(record.collection) for record in records)
-        node = editable_node!(edit, path)
-        filter!(item -> !(item.id in ids), node.items)
-        while path !== () && isempty(node.items) && isempty(node.children)
-            parent_path = path[1:end-1]
-            parent = editable_node!(edit, parent_path)
-            position = findfirst(child -> child.name == node.name, parent.children)
-            deleteat!(parent.children, position)
-            delete!(hierarchy.index, path)
-            delete!(edit.items_dirty, path)
-            delete!(edit.children_dirty, path)
-            edit.pruned = true
-            path, node = parent_path, parent
-        end
-    end
-    return nothing
-end
-
-"""Clear the analysis of one collection node if it still exists."""
-function clear_node_analysis!(edit::HierarchyEdit, path::CollectionPath)::Nothing
-    _node_at(edit.hierarchy, path) === nothing && return nothing
-    empty!(editable_node!(edit, path).analysis)
-    return nothing
-end
-
-"""
-Finish an edit: metadata-mark created nodes, re-sort what changed, and return the new hierarchy,
-ready to swap in with one reference assignment.
-"""
-function finish_edit!(edit::HierarchyEdit, source::AbstractDataSource)::Hierarchy
-    hierarchy = edit.hierarchy
-    for path in sort!(edit.created; by=length)
-        refresh_node_metadata!(hierarchy, source, path)
-    end
-    for path in edit.items_dirty
-        node = _node_at(hierarchy, path)
-        node === nothing || sort_items!(node)
-    end
-    for path in edit.children_dirty
-        node = _node_at(hierarchy, path)
-        node === nothing || sort_children!(node)
-    end
-    # The tree now reflects every insert and prune; the flat item view is derived from it lazily,
-    # so an incremental publish no longer rebuilds an O(total) vector.
-    return hierarchy
-end
 
 end

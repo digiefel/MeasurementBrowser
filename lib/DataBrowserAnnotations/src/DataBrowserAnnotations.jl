@@ -1,5 +1,5 @@
 """
-Tags, notes, coordinates, and layout persistence keyed on item and collection identity.
+Tags, notes, coordinates, and layout persistence keyed on item and collection IDs.
 """
 module DataBrowserAnnotations
 

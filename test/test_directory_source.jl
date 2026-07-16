@@ -1,6 +1,6 @@
 using DataBrowser
 using CancellationTokens: CancellationTokenSource, get_token
-using DataBrowserAPI: AbstractDataSource, has_collection_metadata, source_item_noun
+using DataBrowserAPI: AbstractDataSource, source_item_noun
 using Test
 
 const MBD = DataBrowser
@@ -52,25 +52,28 @@ end
         try
             # Hidden files and sidecars are never source items.
             @test workspace.cache.status.total_source_items == 2
-            hierarchy = workspace.index.hierarchy
-            @test hierarchy.has_collection_metadata
-            root_node = hierarchy.index[("test", "root")]
-            nested_node = hierarchy.index[("test", "nested")]
-            @test root_node.metadata[:wafer] == "A"
-            @test root_node.metadata[:area_um2] == 12.5
-            @test root_node.metadata[:zero] === 0
-            @test root_node.metadata[:one] === 1
-            @test root_node.metadata[:flag] === true
-            @test nested_node.metadata[:wafer] == "B"
-            @test nested_node.metadata[:area_um2] == 99
-            @test nested_node.metadata[:zero] === 0
-            @test nested_node.metadata[:one] === 1
-            @test nested_node.metadata[:flag] === false
+            collections = workspace.index.collections
+            root_collection = _registered_collection_record(collections, "test", "root")
+            nested_collection = _registered_collection_record(collections, "test", "nested")
+            root_metadata = DataBrowserAPI.ItemIndex.collection_metadata(
+                collections, root_collection.key)
+            nested_metadata = DataBrowserAPI.ItemIndex.collection_metadata(
+                collections, nested_collection.key)
+            @test root_metadata[:wafer] == "A"
+            @test root_metadata[:area_um2] == 12.5
+            @test root_metadata[:zero] === 0
+            @test root_metadata[:one] === 1
+            @test root_metadata[:flag] === true
+            @test nested_metadata[:wafer] == "B"
+            @test nested_metadata[:area_um2] == 99
+            @test nested_metadata[:zero] === 0
+            @test nested_metadata[:one] === 1
+            @test nested_metadata[:flag] === false
 
             metadata_by_label = Dict(
                 record.item_label =>
-                    DataBrowserAPI.ItemIndex.effective_metadata(hierarchy, record)
-                for record in DataBrowserAPI.ItemIndex.all_items(hierarchy)
+                    DataBrowserAPI.ItemIndex.effective_metadata(collections, record)
+                for record in values(workspace.index.items)
             )
             @test metadata_by_label["Table root"][:wafer] == "A"
             @test metadata_by_label["Table root"][:area_um2] == 7.0
@@ -84,7 +87,7 @@ end
         shallow = _open_settled(TEST_PROJECT, MBD.DirectorySource(dir; recursive=false))
         try
             @test shallow.cache.status.total_source_items == 1
-            @test only(DataBrowserAPI.ItemIndex.all_items(shallow.index.hierarchy)).item_label == "Table root"
+            @test only(collect(values(shallow.index.items))).item_label == "Table root"
         finally
             MBD.close_workspace!(shallow)
         end
@@ -92,12 +95,12 @@ end
         without_metadata = _open_settled(
             TEST_PROJECT, MBD.DirectorySource(dir; metadata_file=nothing))
         try
-            hierarchy = without_metadata.index.hierarchy
-            @test !hierarchy.has_collection_metadata
-            @test all(isempty(node.metadata) for node in values(hierarchy.index))
+            collections = without_metadata.index.collections
+            @test all(isempty(collection_record.own_metadata)
+                for collection_record in values(collections.records))
             @test all(
                 record.metadata == Dict{Symbol,Any}(:filename => basename(record.source_item_id))
-                for record in DataBrowserAPI.ItemIndex.all_items(hierarchy)
+                for record in values(without_metadata.index.items)
             )
         finally
             MBD.close_workspace!(without_metadata)
@@ -110,7 +113,7 @@ end
         try
             @test source_item_noun(custom) == "source files"
             @test source_item_noun(TestNounSource()) == "source items"
-            @test has_collection_metadata(custom)
+            @test custom.has_metadata
             cancel_token = get_token(CancellationTokenSource())
             @test all(
                 file -> file.filepath != custom_path,
@@ -146,7 +149,8 @@ end
             @test Base.timedwait(() -> isempty(workspace.source_error), 5) === :ok
             @test Base.timedwait(
                 () -> get(
-                    workspace.index.hierarchy.index[("test",)].metadata,
+                    _registered_collection_record(
+                        workspace.index.collections, "test").own_metadata,
                     :wafer,
                     nothing,
                 ) == "B",

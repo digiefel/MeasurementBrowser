@@ -21,7 +21,7 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
     rss_bytes = Profiling.process_rss_bytes()
     gc = Base.gc_num()
     gc_live_bytes = Int64(Base.gc_live_bytes())
-    hierarchy = workspace.index.hierarchy
+    collections = workspace.index.collections
     _completed, _total, active = work_counts(workspace)
     processing = (jobs=Int64(active), selected_queue=Int64(0), background_waiting=Int64(0))
     # Writes live in the cache buffers, not in the work graph.
@@ -33,7 +33,7 @@ function workspace_memory_snapshot(workspace::Workspace)::WorkspaceMemorySnapsho
         Int64(gc.total_allocd),
         max(Int64(0), rss_bytes - gc_live_bytes),
         Int64(length(workspace.index.items)),
-        Int64(length(hierarchy.index)),
+        Int64(length(collections.records)),
         Int64(length(workspace.index.item_metadata)),
         Int64(length(workspace.index.analysis_errors)),
         processing.jobs,

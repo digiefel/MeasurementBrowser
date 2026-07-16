@@ -3,66 +3,104 @@ using Test
 
 const HE_INDEX = DataBrowserAPI.ItemIndex
 
-function _edit_record(;
-    id::String,
-    source_item_id::String,
-    collection::Vector{String},
-)::HE_INDEX.ItemRecord
-    return HE_INDEX.ItemRecord(;
-        id,
-        source_item_id,
-        item_label=id,
-        kind=:iv,
-        collection,
-    )
+function _insert_registered!(index, item_id, names...)
+    path = collect(HE_INDEX.RegisteredCollection.(names))
+    key = HE_INDEX.resolve_collection_path!(index, HE_INDEX.collection_inputs(path))
+    HE_INDEX.insert_item!(index, item_id, key)
+    return key
 end
 
-@testset "copy-on-write hierarchy edits" begin
+@testset "workspace collection publication edits indexes in place" begin
     mktempdir() do dir
-        source = DataBrowser.DirectorySource(dir)
-        records = [
-            _edit_record(id="a1", source_item_id="file-a", collection=["dev-A", "run-2"]),
-            _edit_record(id="a2", source_item_id="file-a", collection=["dev-A", "run-10"]),
-            _edit_record(id="b1", source_item_id="file-b", collection=["dev-B", "run-1"]),
-        ]
-        original = HE_INDEX.Hierarchy(records, source)
-        merge!(original.index[("dev-B",)].analysis, Dict(:count => 1))
-        # Natural sort: run-2 before run-10.
-        @test [child.name for child in original.index[("dev-A",)].children] ==
-            ["run-2", "run-10"]
+        project = DataBrowser.define_project("InPlacePublish_$(basename(dir))")
+        workspace = DataBrowserCore.Workspace.Workspace(
+            project,
+            test_source(project, dir);
+            cache=false,
+        )
+        try
+            index = workspace.index
+            collections = index.collections
+            items = index.items
+            path = HE_INDEX.collection_inputs(AbstractCollection[
+                HE_INDEX.RegisteredCollection("batch"),
+            ])
+            for number in 1:2
+                record = HE_INDEX.ItemRecord(;
+                    source_item_id="source-$number",
+                    id="item-$number",
+                    item_label="Item $number",
+                    kind=:row,
+                )
+                DataBrowserCore.Workspace.publish_source_item_records!(
+                    workspace,
+                    record.source_item_id,
+                    [record],
+                    [path],
+                )
+                @test workspace.index === index
+                @test workspace.index.collections === collections
+                @test workspace.index.items === items
+                if number == 1
+                    collection_key = only(keys(collections.records))
+                    HE_INDEX.set_collection_analysis!(
+                        collections,
+                        collection_key,
+                        Dict(:score => 1.0),
+                    )
+                    DataBrowserCore.Workspace.refresh_collection_metadata_keys!(index)
+                    @test index.collection_metadata_keys == [:score]
+                end
+            end
+            @test length(items) == 2
+            @test isempty(index.collection_metadata_keys)
+            @test HE_INDEX.collection_item_ids(collections, only(keys(collections.records))) ==
+                ["item-1", "item-2"]
 
-        # Replace file-a's items: one removed collection, one new collection.
-        edit = HE_INDEX.edit_hierarchy(original)
-        HE_INDEX.remove_records!(
-            edit, [record for record in records if record.source_item_id == "file-a"])
-        replacement = _edit_record(
-            id="a3", source_item_id="file-a", collection=["dev-A", "run-3"])
-        HE_INDEX.insert_record!(edit, replacement)
-        HE_INDEX.clear_node_analysis!(edit, ("dev-A",))
-        updated = HE_INDEX.finish_edit!(edit, source)
+            existing = items["item-1"]
+            DataBrowserCore.Workspace.publish_source_item_records!(
+                workspace,
+                existing.source_item_id,
+                [existing],
+                [path],
+            )
+            @test HE_INDEX.collection_item_ids(collections, only(keys(collections.records))) ==
+                ["item-1", "item-2"]
 
-        # The original tree is untouched: full contract for concurrent readers.
-        @test length(DataBrowserAPI.ItemIndex.all_items(original)) == 3
-        @test haskey(original.index, ("dev-A", "run-2"))
-        @test [child.name for child in original.index[("dev-A",)].children] ==
-            ["run-2", "run-10"]
-
-        # The updated tree reflects the edit: empty nodes pruned, new node in sorted position.
-        @test length(DataBrowserAPI.ItemIndex.all_items(updated)) == 2
-        @test !haskey(updated.index, ("dev-A", "run-2"))
-        @test !haskey(updated.index, ("dev-A", "run-10"))
-        @test [child.name for child in updated.index[("dev-A",)].children] == ["run-3"]
-        @test updated.index[("dev-A", "run-3")].items[1].id == "a3"
-        # Untouched subtree nodes are shared, and their stats survive the edit.
-        @test updated.index[("dev-B", "run-1")] === original.index[("dev-B", "run-1")]
-        @test updated.index[("dev-B",)].analysis == Dict(:count => 1)
-
-        # Removing the last record of a device prunes the whole branch up to the root.
-        second = HE_INDEX.edit_hierarchy(updated)
-        HE_INDEX.remove_records!(second, [replacement])
-        pruned = HE_INDEX.finish_edit!(second, source)
-        @test !haskey(pruned.index, ("dev-A",))
-        @test [child.name for child in pruned.root.children] == ["dev-B"]
-        @test haskey(updated.index, ("dev-A", "run-3"))
+            DataBrowserCore.Workspace.remove_source_item_output!(workspace, "source-1")
+            @test workspace.index === index
+            @test workspace.index.collections === collections
+            @test workspace.index.items === items
+            @test collect(keys(items)) == ["item-2"]
+        finally
+            DataBrowser.close_workspace!(workspace)
+        end
     end
+end
+
+@testset "collection index edits" begin
+    original = HE_INDEX.CollectionIndex("source")
+    run_2 = _insert_registered!(original, "a1", "dev-A", "run-2")
+    run_10 = _insert_registered!(original, "a2", "dev-A", "run-10")
+    run_1 = _insert_registered!(original, "b1", "dev-B", "run-1")
+    dev_a = original.records[run_2].parent_key
+    @test [original.records[key].label for key in HE_INDEX.sorted_child_keys(original, dev_a)] ==
+        ["run-2", "run-10"]
+
+    updated = copy(original)
+    HE_INDEX.remove_item!(updated, "a1", run_2)
+    HE_INDEX.remove_item!(updated, "a2", run_10)
+    run_3 = _insert_registered!(updated, "a3", "dev-A", "run-3")
+    updated_dev_a = updated.records[run_3].parent_key
+
+    @test haskey(original.records, run_2)
+    @test !haskey(updated.records, run_2)
+    @test [updated.records[key].label for key in
+        HE_INDEX.sorted_child_keys(updated, updated_dev_a)] == ["run-3"]
+    @test HE_INDEX.collection_item_ids(updated, run_3) == ["a3"]
+    @test haskey(updated.records, run_1)
+
+    HE_INDEX.remove_item!(updated, "a3", run_3)
+    @test !haskey(updated.records, updated_dev_a)
+    @test haskey(original.records, dev_a)
 end

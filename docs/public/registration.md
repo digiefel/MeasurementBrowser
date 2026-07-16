@@ -97,10 +97,17 @@ collection = (data::ItemData, metadata::Dict) -> path::Vector{String}
 ```
 
 `collection` returns the successive groups containing an item, from broadest to most specific. It
-runs while the item is published and should be cheap.
+runs while the item is published and should be cheap. It must return a vector; use `String[]` for
+the root and `["Sample A"]` for a flat hierarchy.
 
 For example, `["Sample A", "Device 3"]` places an item under `Sample A → Device 3`. Directory-backed
 projects default to the source file's directory relative to the workspace root.
+
+Strings are the registration API's collection values. DataBrowser converts them into package-owned
+collection records while indexing, then restores the same string path on materialized registered
+items. Registered plot callbacks can therefore use `collection(item)` and receive the same
+`Vector{String}` shape returned by the registration callback. Package-owned collection adapter
+values do not cross the registration boundary.
 
 See [Metadata and collections](metadata-and-collections.md) for the full grouping model.
 

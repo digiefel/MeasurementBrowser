@@ -6,7 +6,10 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
     errors = if trylock(workspace.publish_lock)
         try
             lock(workspace.work.lock) do
-                sort!(Pair{String,String}[k => v for (k, v) in workspace.index.analysis_errors]; by=first)
+                sort!(
+                    Pair{String,String}[string(k) => v for (k, v) in workspace.index.analysis_errors];
+                    by=first,
+                )
             end
         finally
             unlock(workspace.publish_lock)

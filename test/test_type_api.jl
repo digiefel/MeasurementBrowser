@@ -26,12 +26,18 @@ DataBrowserAPI.source_item_label(item::PhotoSourceItem) = item.key
 DataBrowserAPI.metadata(item::PhotoSourceItem) =
     Dict(:camera => item.camera, :gain => item.gain)
 
+struct PhotoCollection <: MB.AbstractCollection
+    name::String
+end
+
+MB.label(collection::PhotoCollection) = collection.name
+
 struct Photo <: MB.AbstractDataItem
     exposure::Float64
     pixels::Matrix{Float64}
     camera::String
     gain::Int
-    collection::Vector{String}
+    collection::Vector{MB.AbstractCollection}
 end
 
 MB.collection(photo::Photo) = photo.collection
@@ -64,7 +70,7 @@ function DataBrowserAPI.data_items(
         fill(source_item.exposure, 2, 2),
         source_item.camera,
         source_item.gain,
-        ["micrographs"],
+        MB.AbstractCollection[PhotoCollection("micrographs")],
     )]
 end
 
@@ -91,12 +97,14 @@ end
     plot_kind = RegisteredPlot{:Photo,Symbol("Image")}
     try
         DataBrowserCore.Workspace.wait_workspace_idle!(workspace)
-        records = DataBrowserAPI.ItemIndex.all_items(workspace.index.hierarchy)
+        records = collect(values(workspace.index.items))
         @test length(records) == 2
         @test all(record -> record.kind == :Photo, records)
         @test all(record -> !isempty(record.id), records)
         @test all(record -> record.item_label in ("a.photo", "b.photo"), records)
-        @test all(record -> record.collection == ["micrographs"], records)
+        @test all(record -> record.collection_key !== nothing, records)
+        @test all(record -> DataBrowserAPI.ItemIndex.collection_location(
+            workspace.index.collections, record.collection_key) == ["micrographs"], records)
         @test Set(record.metadata[:exposure] for record in records) == Set([2.0, 4.0])
         @test all(record -> record.metadata[:camera] == "typed camera", records)
         @test all(record -> record.metadata[:gain] == 1, records)

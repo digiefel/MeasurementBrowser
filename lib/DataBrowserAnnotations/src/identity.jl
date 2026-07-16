@@ -1,6 +1,6 @@
 using DataBrowserAPI: AbstractDataItem, id
 
-"""Stable storage key for annotations — item `id` or slash-joined collection path."""
+"""Stable storage key for annotations — item id, registration path, or typed node identity."""
 const AnnotationKey = String
 
 """Annotation key for one item, from [`id`](@ref)."""

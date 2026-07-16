@@ -7,7 +7,7 @@ callback-driving methods that touch engine types (`ItemRecord`, `SourceFile`, `D
 """
 
 using DataBrowserAPI
-using DataBrowserAPI: AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, fingerprint, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
+using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, fingerprint, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import DataBrowserAPI:
@@ -36,10 +36,15 @@ import DataBrowserAPI:
     scan_profile_summary,
     scan_source_profile
 import DataBrowserAPI.ItemIndex:
+    CollectionIndex,
+    CollectionInput,
     ItemFailure,
     ItemRecord,
     MetadataDict,
     RegisteredDataItem,
+    collection_inputs,
+    effective_record,
+    resolve_collection_path!,
     metadata_dict
 
 function _with_data(item::RegisteredDataItem, data)::RegisteredDataItem
@@ -186,6 +191,28 @@ function _default_collection(
     return splitpath(relative_directory)
 end
 
+function _registration_collection_path(value)::Vector{String}
+    value isa AbstractVector || throw(ArgumentError(
+        "a register_item! collection callback must return a vector of strings; got $(typeof(value))",
+    ))
+    all(segment -> segment isa AbstractString, value) || throw(ArgumentError(
+        "a register_item! collection callback must return only strings; got $(repr(value))",
+    ))
+    return String[segment for segment in value]
+end
+
+function _typed_collection_path(item::AbstractDataItem)::Vector{AbstractCollection}
+    value = collection(item)
+    value isa AbstractVector || throw(ArgumentError(
+        "collection(::$(typeof(item))) must return a vector of AbstractCollection values; " *
+        "got $(typeof(value))",
+    ))
+    all(segment -> segment isa AbstractCollection, value) || throw(ArgumentError(
+        "collection(::$(typeof(item))) must return only AbstractCollection values; got $(repr(value))",
+    ))
+    return AbstractCollection[segment for segment in value]
+end
+
 function _registered_item(
     recipe::ItemRecipe,
     source::AbstractDataSource,
@@ -198,7 +225,7 @@ function _registered_item(
     local_metadata = merge(copy(inherited_metadata), entry_metadata)
     collection_value = recipe.collection === nothing ?
         _default_collection(source, source_item) : recipe.collection(data, local_metadata)
-    collection_path = String[String(segment) for segment in collection_value]
+    collection_path = _registration_collection_path(collection_value)
     supplied_key = recipe.id === nothing ? nothing : recipe.id(data, local_metadata)
     label = recipe.label === nothing ? "" : String(recipe.label(data, local_metadata))
     return RegisteredDataItem(
@@ -330,6 +357,7 @@ lightweight completion.
 """
 struct SourceItemInterpretation
     records::Vector{ItemRecord}
+    collection_paths::Vector{Vector{CollectionInput}}
     interpreted_items::Vector{AbstractDataItem}
     failures::Vector{ItemFailure}
 end
@@ -373,18 +401,18 @@ function interpret_source_item(
     source_kind = length(item_kinds) == 1 ? only(item_kinds) :
         isempty(item_kinds) ? :unmatched : :mixed
     records = Vector{ItemRecord}(undef, item_count)
+    collection_paths = Vector{Vector{CollectionInput}}(undef, item_count)
     interpreted_items = Vector{AbstractDataItem}(undef, item_count)
     source_metadata = metadata_dict(metadata(source_item))
     for (index, handle) in pairs(handles)
         item_metadata = handle isa RegisteredDataItem ? handle.metadata : metadata_dict(metadata(handle))
         record_metadata = merge(copy(source_metadata), item_metadata)
-        item_collection = collection(handle)
-        path = isempty(item_collection) ?
-            _default_collection(source, source_item) :
-            String[String(segment) for segment in item_collection]
         item_id = isempty(id(handle)) ?
             _mint_id(source_item_id_value, kind(handle), index) : id(handle)
         label = item_label(handle)
+        normalized_collection = handle isa RegisteredDataItem ?
+            collection_inputs(source, collection(handle)) :
+            collection_inputs(_typed_collection_path(handle))
         record = ItemRecord(;
             source_item_id=source_item_id_value,
             source_item_path=source_item_path_value,
@@ -392,27 +420,33 @@ function interpret_source_item(
             id=item_id,
             item_label=isempty(label) ? source_item_label(source_item) : label,
             kind=kind(handle),
-            collection=path,
+            collection_key=nothing,
             metadata=record_metadata,
             item_fingerprint=fingerprint(handle),
         )
         records[index] = record
+        collection_paths[index] = normalized_collection
         interpreted_items[index] = handle isa RegisteredDataItem ?
-            RegisteredDataItem(record, item_data(handle)) : handle
+            RegisteredDataItem(record, item_data(handle), collection(handle)) : handle
     end
     finish_source_profile!(
         project, source_item_id_value, source_item_label_value, source_item_path_value,
         source_kind, item_count,
         (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
-    return SourceItemInterpretation(records, interpreted_items, ItemFailure[])
+    return SourceItemInterpretation(records, collection_paths, interpreted_items, ItemFailure[])
 end
 
-"""Interpret one physical file through the high-level callback adapter."""
+"""
+Interpret one physical file into the data items produced by project code.
+
+Typed items retain their concrete collection values. Registered items retain the string path
+returned by their registration callback.
+"""
 function items_for_file(
     project::Project,
     filepath::AbstractString;
     meta::Union{Nothing,Dict{Tuple{Vararg{String}},Dict{Symbol,Any}}}=nothing,
-)::Vector{ItemRecord}
+)::Vector{AbstractDataItem}
     source = DirectorySource(dirname(filepath); metadata_file=nothing)
     if meta !== nothing
         source.collection_metadata_entries = meta
@@ -423,7 +457,24 @@ function items_for_file(
         source,
         index_source_file(filepath),
     )
-    return interpretation.records
+    collections = CollectionIndex(source_id(source))
+    records = ItemRecord[
+        ItemRecord(record; collection_key=resolve_collection_path!(collections, path))
+        for (record, path) in zip(
+            interpretation.records,
+            interpretation.collection_paths,
+        )
+    ]
+    return AbstractDataItem[
+        item isa RegisteredDataItem ?
+            RegisteredDataItem(
+                effective_record(collections, record),
+                item_data(item),
+                collection(item),
+            ) :
+            item
+        for (record, item) in zip(records, interpretation.interpreted_items)
+    ]
 end
 
 """
@@ -435,7 +486,6 @@ unchanged. The callback returns one output per input; the adapter validates ids 
 function _process_collection(
     project::Project,
     ::AbstractDataSource,
-    ::Vector{String},
     items::Vector{<:AbstractDataItem},
 )::Vector{<:AbstractDataItem}
     rewritten = AbstractDataItem[]
@@ -476,7 +526,6 @@ end
 function _analyze_collection(
     project::Project,
     ::AbstractDataSource,
-    ::Vector{String},
     items::Vector{<:AbstractDataItem},
 )::Dict{Symbol,Any}
     merged = Dict{Symbol,Any}()

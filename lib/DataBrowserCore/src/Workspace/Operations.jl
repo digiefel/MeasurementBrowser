@@ -200,122 +200,95 @@ function source_item_records(index::WorkspaceIndex, source_item_id_value::String
 end
 
 """Return collection keys touched by records and their ancestors."""
-function affected_collection_keys(records::Vector{ItemRecord})::Vector{String}
-    keys = String[]
+function affected_collection_keys(
+    collections::CollectionIndex,
+    records::Vector{ItemRecord},
+)::Vector{Int64}
+    keys = Int64[]
     for record in records
-        for depth in eachindex(record.collection)
-            push!(keys, collection_path_key(record.collection[1:depth]))
+        for key in collection_path_keys(collections, record.collection_key)
+            push!(keys, key)
         end
     end
     return unique(keys)
 end
 
-"""Refresh the collection-metadata key list from the current hierarchy."""
+"""Refresh the collection-metadata key list from the current records."""
 function refresh_collection_metadata_keys!(index::WorkspaceIndex)::Nothing
     metadata_keys = Set{Symbol}()
-    for node in values(index.hierarchy.index)
-        union!(metadata_keys, keys(node.metadata))
+    for collection_record in values(index.collections.records)
+        union!(metadata_keys, keys(collection_record.own_metadata))
+        union!(metadata_keys, keys(collection_record.analysis))
     end
     index.collection_metadata_keys = sort!(collect(metadata_keys); by=String)
     return nothing
 end
 
-"""Rebuild hierarchy indexes from the currently published records."""
+"""
+    include_collection_metadata_keys!(index, collection_keys) -> Nothing
+
+Add metadata keys from newly registered collection records without rescanning the complete
+collection index.
+"""
+function include_collection_metadata_keys!(index::WorkspaceIndex, collection_keys)::Nothing
+    changed = false
+    for collection_key in collection_keys
+        collection_record = get(index.collections.records, collection_key, nothing)
+        collection_record === nothing && continue
+        for metadata_key in keys(collection_record.own_metadata)
+            metadata_key in index.collection_metadata_keys && continue
+            push!(index.collection_metadata_keys, metadata_key)
+            changed = true
+        end
+        for metadata_key in keys(collection_record.analysis)
+            metadata_key in index.collection_metadata_keys && continue
+            push!(index.collection_metadata_keys, metadata_key)
+            changed = true
+        end
+    end
+    changed && sort!(index.collection_metadata_keys; by=String)
+    return nothing
+end
+
+"""Refresh derived collection metadata after indexed records change."""
 function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
-    records = sort!(collect(values(workspace.index.items)); by=record -> (record.source_item_id, record.id))
-    workspace.index.hierarchy = Hierarchy(records, workspace.source)
     refresh_collection_metadata_keys!(workspace.index)
     return nothing
 end
 
-"""
-Diff cached source metadata against the open source; update changed cache rows.
-
-Returns items whose work should be invalidated. Cache `read` is the baseline (disk plus buffer
-overlay). Rows absent from the baseline are persisted without invalidation.
-
-Reconciles the whole index by default. Pass `collections` (a set of collection path keys) to diff
-only those collections and skip the whole-index item pass: the streaming publish path uses this,
-because interpret workers already persist each item's metadata and the caller invalidates the
-touched collections' work itself. Diffing every collection and item on every publish is what makes
-an otherwise linear scan quadratic.
-"""
+"""Rebuild effective collection metadata from the collection values currently in the index."""
 function reconcile_source_metadata_cache!(
     workspace::Workspace;
-    collections::Union{Nothing,Vector{String}}=nothing,
+    collections::Union{Nothing,Vector{Int64}}=nothing,
     refresh_hierarchy::Bool=false,
 )::Vector{ItemRecord}
-    old_hierarchy = nothing
-    if refresh_hierarchy
-        old_hierarchy = workspace.index.hierarchy
-        records = sort!(
-            collect(values(workspace.index.items));
-            by=record -> (record.source_item_id, record.id),
+    refresh_hierarchy || return ItemRecord[]
+    old_collections = copy(workspace.index.collections)
+    current_keys = collect(keys(workspace.index.collections.records))
+    for key in current_keys
+        haskey(workspace.index.collections.records, key) || continue
+        names = registration_names(workspace.index.collections, key)
+        names === nothing && continue
+        inputs = collection_inputs(
+            workspace.source,
+            names,
         )
-        new_hierarchy = Hierarchy(records, workspace.source, old_hierarchy.skipped_count)
-        old_node_analysis = Dict(path => copy(node.analysis) for (path, node) in old_hierarchy.index)
-        for (path, analysis) in old_node_analysis
-            node = get(new_hierarchy.index, path, nothing)
-            node === nothing || merge!(node.analysis, analysis)
-        end
-        workspace.index.hierarchy = new_hierarchy
-        refresh_collection_metadata_keys!(workspace.index)
+        resolve_collection_path!(
+            workspace.index.collections,
+            inputs;
+            update_existing=true,
+        )
     end
-
-    cachedb = workspace.cache.db
-    if cachedb isa CacheDB
-        stale = ItemRecord[]
-        baseline_collections = read(cachedb.source_collection_metadata)
-        collection_paths = collections === nothing ?
-            [collect(path) for path in keys(workspace.index.hierarchy.index)] :
-            [collect(collection_path_tuple(key)) for key in unique(collections)]
-        for path in collection_paths
-            key = collection_path_key(path)
-            current = metadata_dict(collection_metadata(workspace.source, path))
-            old = get(baseline_collections, key, nothing)
-            if old === nothing
-                isempty(current) && continue
-                edit_source_collection_metadata!(cachedb, key, current)
-            elseif !isequal(old, current)
-                append!(stale, ItemRecord[
-                    record for record in all_items(workspace.index.hierarchy)
-                    if length(path) <= length(record.collection) &&
-                       record.collection[1:length(path)] == path
-                ])
-                edit_source_collection_metadata!(cachedb, key, current)
-            end
-        end
-
-        # Item metadata is reconciled only on a whole-index pass; the scoped publish path relies on
-        # interpret workers having persisted each item's row already.
-        if collections === nothing
-            key_to_id = Dict(row.item_key => row.id for row in values(read(cachedb.items)))
-            id_to_key = Dict(id => key for (key, id) in key_to_id)
-            baseline_items = read(cachedb.source_item_metadata)
-            for record in values(workspace.index.items)
-                item_key = get(id_to_key, record.id, nothing)
-                item_key === nothing && continue
-                current = record.metadata
-                old = get(baseline_items, item_key, nothing)
-                if old === nothing
-                    isempty(current) && continue
-                    edit_source_item_metadata!(cachedb, item_key, current)
-                elseif !isequal(old, current)
-                    push!(stale, record)
-                    edit_source_item_metadata!(cachedb, item_key, current)
-                end
-            end
-        end
-        return unique(stale)
-    end
-
-    old_hierarchy === nothing && return ItemRecord[]
+    refresh_collection_metadata_keys!(workspace.index)
     records = collect(values(workspace.index.items))
-    return unique(ItemRecord[
+    changed = ItemRecord[
         record for record in records
-        if effective_metadata(old_hierarchy, record) !=
-           effective_metadata(workspace.index.hierarchy, record)
-    ])
+        if effective_metadata(old_collections, record) !=
+           effective_metadata(workspace.index.collections, record)
+    ]
+    isempty(records) || store_collection_index!(
+        workspace.cache.db, workspace.index.collections, records)
+    return changed
 end
 
 """
@@ -345,15 +318,14 @@ a live scan interprets the tree without eagerly processing or analyzing every it
 function enqueue_dependent_subtree!(
     workspace::Workspace,
     records::Vector{ItemRecord};
-    collection_keys::Vector{String}=affected_collection_keys(records),
+    collection_keys::Vector{Int64}=
+        affected_collection_keys(workspace.index.collections, records),
     priority::Int=2,
 )::Nothing
     background = workspace.background_processing
     for collection_key in unique(collection_keys)
-        path = collection_path_tuple(collection_key)
-        hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
-        hierarchy_node === nothing && continue
-        empty!(hierarchy_node.analysis)
+        haskey(workspace.index.collections.records, collection_key) || continue
+        clear_collection_analysis!(workspace.index.collections, collection_key)
     end
     lock(workspace.work.lock) do
         for record in records
@@ -389,7 +361,9 @@ function refresh_workspace_source!(workspace::Workspace)::Nothing
     workspace.index.source = SourceScan(
         source_id(workspace.source),
         source_label(workspace.source),
-        workspace.index.hierarchy,
+        copy(workspace.index.collections),
+        sort!(collect(values(workspace.index.items)); by=record ->
+            (record.source_item_id, record.id)),
         ItemFailure[],
     )
     return nothing
@@ -399,26 +373,42 @@ end
 function remove_source_item_output!(
     workspace::Workspace,
     source_item_id_value::String,
-)::Tuple{Vector{ItemRecord},Vector{String}}
+)::Tuple{Vector{ItemRecord},Vector{Int64}}
     old_records = source_item_records(workspace.index, source_item_id_value)
-    invalidated = affected_collection_keys(old_records)
+    invalidated = affected_collection_keys(workspace.index.collections, old_records)
+    items = workspace.index.items
+    collections = workspace.index.collections
     for record in old_records
-        delete!(workspace.index.items, record.id)
+        remove_item!(collections, record.id, record.collection_key)
+        delete!(items, record.id)
         delete!(workspace.index.item_metadata, record.id)
         delete!(workspace.index.analysis_errors, record.id)
     end
     delete!(workspace.index.analysis_errors, source_item_id_value)
     delete!(workspace.index.items_by_source, source_item_id_value)
-    filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
-    isempty(old_records) && return old_records, invalidated
-    edit = edit_hierarchy(workspace.index.hierarchy)
-    remove_records!(edit, old_records)
-    for key in invalidated
-        clear_node_analysis!(edit, collection_path_tuple(key))
+    analysis_cleared = false
+    for collection_key in invalidated
+        haskey(collections.records, collection_key) || continue
+        analysis_cleared |= !isempty(collections.records[collection_key].analysis)
+        clear_collection_analysis!(collections, collection_key)
     end
-    workspace.index.hierarchy = finish_edit!(edit, workspace.source)
-    edit_changed_structure(edit) && refresh_collection_metadata_keys!(workspace.index)
+    (analysis_cleared || any(key -> !haskey(collections.records, key), invalidated)) &&
+        refresh_collection_metadata_keys!(workspace.index)
+    filter!(id -> haskey(items, id), workspace.selection.item_ids)
     return old_records, invalidated
+end
+
+"""Delete persisted collection rows no longer present in the published collection index."""
+function delete_pruned_collection_records!(
+    workspace::Workspace,
+    collection_keys::Vector{Int64},
+)::Nothing
+    pruned = Int64[
+        key for key in unique(collection_keys)
+        if !haskey(workspace.index.collections.records, key)
+    ]
+    delete_collection_records!(workspace.cache.db, pruned)
+    return nothing
 end
 
 """Publish one source item's current records after validating duplicate IDs."""
@@ -426,7 +416,11 @@ function publish_source_item_records!(
     workspace::Workspace,
     source_item_id_value::String,
     records::Vector{ItemRecord},
-)::Tuple{Vector{ItemRecord},Vector{String}}
+    collection_paths::Vector{Vector{CollectionInput}},
+)::Tuple{Vector{ItemRecord},Vector{Int64}}
+    length(records) == length(collection_paths) || error(
+        "Cannot publish source item '$source_item_id_value': records and collection paths differ in length",
+    )
     old_records = source_item_records(workspace.index, source_item_id_value)
     old_ids = Set(record.id for record in old_records)
     replacement_ids = Set{String}()
@@ -445,35 +439,63 @@ function publish_source_item_records!(
         )
     end
 
-    old_keys = affected_collection_keys(old_records)
-    new_keys = affected_collection_keys(records)
-    for record in old_records
-        delete!(workspace.index.items, record.id)
-        delete!(workspace.index.item_metadata, record.id)
-        delete!(workspace.index.analysis_errors, record.id)
+    collections = workspace.index.collections
+    next_collection_key = collections.next_key
+    collection_keys = resolve_collection_paths!(collections, collection_paths)
+    resolved = ItemRecord[
+        ItemRecord(record; collection_key)
+        for (record, collection_key) in zip(records, collection_keys)
+    ]
+    old_keys = affected_collection_keys(workspace.index.collections, old_records)
+    items = workspace.index.items
+    if isempty(old_records)
+        for record in resolved
+            append_item!(collections, record.id, record.collection_key)
+        end
+    else
+        old_memberships = Set((record.id, record.collection_key) for record in old_records)
+        retained = Set((record.id, record.collection_key) for record in resolved)
+        for record in resolved
+            (record.id, record.collection_key) in old_memberships ||
+                append_item!(collections, record.id, record.collection_key)
+        end
+        for record in old_records
+            (record.id, record.collection_key) in retained ||
+                remove_item!(collections, record.id, record.collection_key)
+            delete!(items, record.id)
+            delete!(workspace.index.item_metadata, record.id)
+            delete!(workspace.index.analysis_errors, record.id)
+        end
     end
     delete!(workspace.index.analysis_errors, source_item_id_value)
-    for record in records
-        workspace.index.items[record.id] = record
+    for record in resolved
+        items[record.id] = record
         delete!(workspace.index.item_metadata, record.id)
     end
-    if isempty(records)
+    if isempty(resolved)
         delete!(workspace.index.items_by_source, source_item_id_value)
     else
         workspace.index.items_by_source[source_item_id_value] =
-            String[record.id for record in records]
+            String[record.id for record in resolved]
     end
-    filter!(id -> haskey(workspace.index.items, id), workspace.selection.item_ids)
+    filter!(id -> haskey(items, id), workspace.selection.item_ids)
+    new_keys = affected_collection_keys(collections, resolved)
     invalidated = unique([old_keys; new_keys])
-    edit = edit_hierarchy(workspace.index.hierarchy)
-    remove_records!(edit, old_records)
-    foreach(record -> insert_record!(edit, record), records)
-    for key in invalidated
-        clear_node_analysis!(edit, collection_path_tuple(key))
+    analysis_cleared = false
+    for collection_key in invalidated
+        haskey(collections.records, collection_key) || continue
+        analysis_cleared |= !isempty(collections.records[collection_key].analysis)
+        clear_collection_analysis!(collections, collection_key)
     end
-    workspace.index.hierarchy = finish_edit!(edit, workspace.source)
-    edit_changed_structure(edit) && refresh_collection_metadata_keys!(workspace.index)
-    return old_records, invalidated
+    if analysis_cleared || any(key -> !haskey(collections.records, key), old_keys)
+        refresh_collection_metadata_keys!(workspace.index)
+    elseif next_collection_key < collections.next_key
+        include_collection_metadata_keys!(
+            workspace.index,
+            next_collection_key:(collections.next_key - 1),
+        )
+    end
+    return resolved, invalidated
 end
 
 """
@@ -491,6 +513,7 @@ function ingest_source_changes!(
         old_records, invalidated = remove_source_item_output!(workspace, removed)
         delete_source_item!(workspace.cache.db, removed, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
+        delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         lock(workspace.work.lock) do
             delete!(workspace.work.source_items, removed)
@@ -572,10 +595,28 @@ function scan_source!(
             rebuild && Profiling.@profile_span workspace.profiler :source :cache_clear Profiling.ProfileAttributes() begin
                 clear_cache_index!(cachedb)
             end
-            cached = !rebuild && cache_built(cachedb) ?
-                Profiling.@profile_span(workspace.profiler, :source, :cache_load,
-                    Profiling.ProfileAttributes(), load_cache_index(cachedb)) :
+            cached = if !rebuild && cache_built(cachedb)
+                try
+                    Profiling.@profile_span(
+                        workspace.profiler,
+                        :source,
+                        :cache_load,
+                        Profiling.ProfileAttributes(),
+                        load_cache_index(cachedb),
+                    )
+                catch error
+                    error isa ProjectCacheDataError || rethrow()
+                    @warn(
+                        "Generated collection cache is incompatible; rebuilding it",
+                        cache=workspace.cache.identity.cache_path,
+                        error,
+                    )
+                    clear_cache_index!(cachedb)
+                    nothing
+                end
+            else
                 nothing
+            end
             publish_cache_state!(
                 workspace, scan_id, cached === nothing ? :missing : :ready, cached)
 
@@ -638,7 +679,7 @@ function scan_source!(
                 publish_source_changes!(
                     workspace,
                     scan_id,
-                    SourceChanges(upserts, removals; metadata_changed=false),
+                    SourceChanges(upserts, removals; metadata_changed=true),
                     status,
                 )
             end
@@ -740,30 +781,32 @@ function export_internal_profile!(
     return Profiling.export!(workspace.profiler, path)
 end
 
-"""Replace the workspace item index with one complete hierarchy."""
+"""Replace the workspace item index with one complete collection record index."""
 function replace_item_index!(
     workspace::Workspace,
-    hierarchy::Hierarchy,
+    collections::CollectionIndex,
+    records::Vector{ItemRecord},
 )::Nothing
     items = Dict{String,ItemRecord}()
-    sizehint!(items, length(all_items(hierarchy)))
+    sizehint!(items, length(records))
     items_by_source = Dict{String,Vector{String}}()
     metadata_keys = Set{Symbol}()
-    for item in all_items(hierarchy)
+    for item in records
         haskey(items, item.id) && error("Duplicate item id generated during scan: $(item.id)")
         items[item.id] = item
         push!(get!(() -> String[], items_by_source, item.source_item_id), item.id)
     end
-    for node in values(hierarchy.index)
-        union!(metadata_keys, keys(node.metadata))
+    for collection_record in values(collections.records)
+        union!(metadata_keys, keys(collection_record.own_metadata))
+        union!(metadata_keys, keys(collection_record.analysis))
     end
     item_metadata = Dict{String,Dict{Symbol,Any}}()
-    for item in all_items(hierarchy)
+    for item in records
         previous = get(workspace.index.item_metadata, item.id, nothing)
         previous === nothing || (item_metadata[item.id] = previous)
     end
     workspace.index = WorkspaceIndex(
-        hierarchy,
+        collections,
         items,
         item_metadata,
         sort!(collect(metadata_keys); by=String),
@@ -778,9 +821,11 @@ end
 function cache_index_ready(
     index::ProjectCacheIndex,
     kind::CacheResultKind,
-    entity::AbstractString,
+    entity::Union{String,Int64},
 )::Bool
-    state = get(index.result_states, CacheResultKey(kind, String(entity)), nothing)
+    key_entity = kind in (COLLECTION_PROCESS_RESULT, COLLECTION_ANALYSIS_RESULT) ?
+        entity::Int64 : entity::String
+    state = get(index.result_states, CacheResultKey(kind, key_entity), nothing)
     state !== nothing && CacheResultStatus(state.status) === RESULT_READY
 end
 
@@ -793,48 +838,41 @@ function apply_cache_index!(
         error("Loaded cache belongs to $(index.identity.source_id), not $(source_id(workspace.source))")
     workspace.cache.identity = index.identity
 
-    # The cache owns item-local records only. Rebuild the hierarchy with the open source's current
-    # metadata so cached and memory-only startup produce the same effective inputs.
-    hierarchy = Hierarchy(
-        all_items(index.source.hierarchy),
-        workspace.source,
-        index.source.hierarchy.skipped_count,
-    )
-    replace_item_index!(workspace, hierarchy)
+    collections = copy(index.source.collections)
+    replace_item_index!(workspace, collections, copy(index.source.items))
     # The cache restores the computed metadata layer; source-table diff before seed skips stale work.
     workspace.index.item_metadata = Dict{String,Dict{Symbol,Any}}(
         id => copy(dict) for (id, dict) in index.item_metadata)
-    for (path, cached_node) in index.source.hierarchy.index
-        node = get(hierarchy.index, path, nothing)
-        node === nothing && continue
-        merge!(node.analysis, cached_node.analysis)
-    end
     workspace.index.source = SourceScan(
         index.source.source_id,
         index.source.source_label,
-        hierarchy,
+        collections,
+        copy(index.source.items),
         index.source.analysis_failures,
     )
 
-    workspace.index.analysis_errors = copy(index.analysis_errors)
-    stale = reconcile_source_metadata_cache!(workspace)
-    isempty(stale) || invalidate_records_work!(workspace, stale)
+    workspace.index.analysis_errors = Dict{Union{String,Int64},String}(index.analysis_errors)
     for state in values(index.result_states)
         CacheResultStatus(state.status) === RESULT_FAILED || continue
         workspace.index.analysis_errors[state.entity] =
             something(state.message, "cached work failed")
     end
     if workspace.background_processing
-        for record in all_items(workspace.index.hierarchy)
+        for record in values(workspace.index.items)
             cache_index_ready(index, PROCESSING_RESULT, record.id) ||
                 enqueue_processing!(workspace, record)
             cache_index_ready(index, ITEM_ANALYSIS_RESULT, record.id) ||
                 enqueue_item_analysis!(workspace, record)
         end
-        for (path, hierarchy_node) in workspace.index.hierarchy.index
-            isempty(hierarchy_node.items) && continue
-            collection_key = collection_path_key(collect(String, path))
-            member_kinds = unique(record.kind for record in hierarchy_node.items)
+        for collection_key_value in keys(workspace.index.collections.records)
+            member_ids = collection_item_ids(workspace.index.collections, collection_key_value)
+            isempty(member_ids) && continue
+            members = ItemRecord[
+                workspace.index.items[id] for id in member_ids
+                if haskey(workspace.index.items, id)
+            ]
+            collection_key = collection_key_value
+            member_kinds = unique(record.kind for record in members)
             if any(k -> _has_collection_process(workspace.project, k), member_kinds) &&
                     !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key)
                 enqueue_collection_work!(workspace, [collection_key]; supersede=false)
@@ -878,13 +916,16 @@ function enqueue_collection_work!(
     revision(key) = supersede ?
         bump_revision!(workspace.work, key) : current_revision(workspace.work, key)
     for collection_key in unique(collection_keys)
-        path = collection_path_tuple(collection_key)
-        hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
-        hierarchy_node === nothing && continue
-        isempty(hierarchy_node.items) && continue
-        member_kinds = unique(record.kind for record in hierarchy_node.items)
+        haskey(workspace.index.collections.records, collection_key) || continue
+        members = ItemRecord[
+            workspace.index.items[id]
+            for id in collection_item_ids(workspace.index.collections, collection_key)
+            if haskey(workspace.index.items, id)
+        ]
+        isempty(members) && continue
+        member_kinds = unique(record.kind for record in members)
         member_analyze = WorkKey[
-            WorkKey(ITEM_ANALYZE, record.id) for record in hierarchy_node.items]
+            WorkKey(ITEM_ANALYZE, record.id) for record in members]
         has_process = any(k -> _has_collection_process(workspace.project, k), member_kinds)
         has_analyze = any(k -> _has_collection_analysis(workspace.project, k), member_kinds)
         process_key = WorkKey(COLLECTION_PROCESS, collection_key)
@@ -932,16 +973,26 @@ function publish_work_success!(
 )::Nothing
     key = node.key
     if key.kind === SOURCE_INTERPRET
-        records = result.records::Vector{ItemRecord}
-        old_records, invalidated = Profiling.@profile_span workspace.profiler :source :publish_records Profiling.ProfileAttributes(
+        interpretation = result.interpretation::SourceItemInterpretation
+        records = interpretation.records
+        resolved, invalidated = Profiling.@profile_span workspace.profiler :source :publish_records Profiling.ProfileAttributes(
             source_id=key.entity,
             batch_size=length(records),
         ) begin
-            publish_source_item_records!(workspace, key.entity, records)
+            publish_source_item_records!(
+                workspace, key.entity, records, interpretation.collection_paths)
         end
+        conflicts = store_interpreted!(
+            workspace.cache.db,
+            result.source_item,
+            resolved,
+            interpretation.interpreted_items,
+        )
+        store_collection_index!(workspace.cache.db, workspace.index.collections, resolved)
         delete_collection_metadata!(workspace.cache.db, invalidated)
-        enqueue_dependent_subtree!(workspace, records; collection_keys=invalidated)
-        publish_metadata_conflicts!(workspace, key.entity, key.kind, result.conflicts)
+        delete_pruned_collection_records!(workspace, invalidated)
+        enqueue_dependent_subtree!(workspace, resolved; collection_keys=invalidated)
+        publish_metadata_conflicts!(workspace, key.entity, key.kind, conflicts)
         reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
@@ -954,19 +1005,25 @@ function publish_work_success!(
     elseif key.kind === ITEM_ANALYZE
         record = workspace.index.items[key.entity]
         publish_item_metadata_layer!(workspace, record, metadata_dict(result))
-        enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
+        enqueue_collection_work!(
+            workspace,
+            affected_collection_keys(workspace.index.collections, [record]);
+            supersede=false,
+        )
     elseif key.kind === COLLECTION_PROCESS
         # Rewritten member payloads were persisted worker-side before publication.
         nothing
     else
-        path = collection_path_tuple(key.entity)
-        hierarchy_node = get(workspace.index.hierarchy.index, path, nothing)
-        hierarchy_node === nothing && return nothing
+        collection_key = key.entity::Int64
+        haskey(workspace.index.collections.records, collection_key) || return nothing
         analysis = metadata_dict(result)
-        empty!(hierarchy_node.analysis)
-        merge!(hierarchy_node.analysis, analysis)
-        dropped = store_collection_metadata!(workspace.cache.db, key.entity, analysis)
-        publish_metadata_conflicts!(workspace, key.entity, key.kind, dropped)
+        set_collection_analysis!(workspace.index.collections, collection_key, analysis)
+        dropped = store_collection_metadata!(
+            workspace.cache.db,
+            collection_key,
+            analysis,
+        )
+        publish_metadata_conflicts!(workspace, collection_key, key.kind, dropped)
     end
     return nothing
 end
@@ -982,23 +1039,26 @@ function publish_item_metadata_layer!(
 )::Nothing
     workspace.index.item_metadata[record.id] = Dict{Symbol,Any}(computed)
     dropped = store_item_metadata!(
-        workspace.cache.db, record, delivered_metadata(workspace, record))
+        workspace.cache.db,
+        record,
+        delivered_metadata(workspace, record, workspace.index.collections),
+    )
     publish_metadata_conflicts!(workspace, record.id, ITEM_ANALYZE, dropped)
     return nothing
 end
 
 function publish_metadata_conflicts!(
     workspace::Workspace,
-    entity::AbstractString,
+    entity::Union{String,Int64},
     stage,
     conflicts::Vector{String},
 )::Nothing
     isempty(conflicts) && return nothing
     message = join(conflicts, "; ")
-    workspace.index.analysis_errors[String(entity)] = message
+    workspace.index.analysis_errors[entity] = message
     @warn(
         "Workspace metadata conflict",
-        entity=String(entity),
+        entity,
         stage=stage,
         message=message,
     )
@@ -1028,6 +1088,7 @@ function publish_work_failure!(
         old_records, invalidated = remove_source_item_output!(workspace, key.entity)
         delete_source_item!(workspace.cache.db, key.entity, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
+        delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
         store_source_item_failure!(workspace.cache.db, key.entity, message)
@@ -1039,10 +1100,12 @@ function publish_work_failure!(
         )
     else
         source_item_id_value = record === nothing ? "" : record.source_item_id
+        cache_entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
+            key.entity::Int64 : key.entity::String
         store_result_failure!(
             workspace.cache.db,
             _work_key_cache_kind(key),
-            key.entity,
+            cache_entity,
             source_item_id_value,
             message,
         )
@@ -1054,7 +1117,11 @@ function publish_work_failure!(
             exception=(failure.ex, failure.processed_bt),
         )
         key.kind === ITEM_ANALYZE && record !== nothing &&
-            enqueue_collection_work!(workspace, affected_collection_keys([record]); supersede=false)
+            enqueue_collection_work!(
+                workspace,
+                affected_collection_keys(workspace.index.collections, [record]);
+                supersede=false,
+            )
     end
     waiters = finish_work_node!(workspace, node)
     for waiter in waiters
@@ -1130,10 +1197,11 @@ function publish_cache_state!(
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return
         if index === nothing
-            replace_item_index!(workspace, Hierarchy(
-                source_id(workspace.source),
-                has_collection_metadata(workspace.source),
-            ))
+            replace_item_index!(
+                workspace,
+                CollectionIndex(source_id(workspace.source)),
+                ItemRecord[],
+            )
             empty!(workspace.index.analysis_errors)
         else
             apply_cache_index!(workspace, index)

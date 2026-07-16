@@ -3,7 +3,7 @@ import CImGui as ig
 
 import DataBrowserCore.Workspace
 import DataBrowserProfiling as Profiling
-using DataBrowserAPI: KindProfileRow, Project, SourceProfileRow
+using DataBrowserAPI: KindProfileRow, Project, SourceProfileRow, label
 using DataBrowserSources
 using DataBrowserCore: InspectorTable
 
@@ -137,13 +137,13 @@ Base.@kwdef mutable struct BrowserState
     performance::PerformanceState = PerformanceState()
     project_preference::String = "auto"
     saved_project_view::PersistedProjectView = PersistedProjectView()
-    expanded_collection_paths::Vector{String} = String[]
+    expanded_collection_ids::Vector{String} = String[]
     tree_filter::String = ""
     item_filter::String = ""
     tree_filter_widget::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}} = nothing
     item_filter_widget::Union{Nothing,Ptr{ig.lib.ImGuiTextFilter}} = nothing
     reset_project_filters::Bool = false
-    scroll_to_collection_path::Union{Nothing,String} = nothing
+    scroll_to_collection_id::Union{Nothing,String} = nothing
     scroll_to_item_id::Union{Nothing,String} = nothing
     show_bad::Bool = true
     tag_state::Union{Nothing,DataBrowserAnnotations.Tags.TagState} = nothing

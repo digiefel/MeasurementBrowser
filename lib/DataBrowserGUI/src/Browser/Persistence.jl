@@ -125,8 +125,8 @@ function _project_view_from_browser(
     return PersistedProjectView(
         project=project_name(workspace.project),
         tree=PersistedTreeView(
-            expanded=copy(state.expanded_collection_paths),
-            selected=copy(workspace.selection.collection_paths),
+            expanded=copy(state.expanded_collection_ids),
+            selected=copy(workspace.selection.collection_ids),
             filter=state.tree_filter,
         ),
         items=PersistedItemsView(
@@ -155,8 +155,8 @@ function _apply_project_view!(
     view::PersistedProjectView,
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
-    state.expanded_collection_paths = copy(view.tree.expanded)
-    workspace.selection.collection_paths = copy(view.tree.selected)
+    state.expanded_collection_ids = copy(view.tree.expanded)
+    workspace.selection.collection_ids = copy(view.tree.selected)
     workspace.selection.item_ids = copy(view.items.selected)
     state.tree_filter = view.tree.filter
     state.item_filter = view.items.filter

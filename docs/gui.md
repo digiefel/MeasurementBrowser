@@ -53,6 +53,10 @@ Directory sources are watched continuously.
 | Table Plot (DBPlots) | Independent X/Y plot over the workspace selection's merged table; toggled from the Plot menu. |
 | Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
 
+Items without a collection path appear under the hierarchy's `Root` row. That row participates in
+the same multi-selection, filtering, saved-view, and source-item reveal behavior as collection
+leaves.
+
 ## Scan profiling
 
 The Performance window's always-on scan profile keeps one bounded row per source item. It shows
@@ -83,9 +87,9 @@ Tool-window state is transient and does not change `databrowser.toml`.
 
 ### Selection flow (tree → plot)
 
-1. A tree or future spatial-browser interaction writes collection paths and item keys to
-   `workspace.selection`.
-2. Each frame resolves those stable ids against `workspace.index` and applies tag visibility.
+1. A tree or future spatial-browser interaction writes deterministic collection IDs and
+   item ids to `workspace.selection`.
+2. Each frame resolves those stable IDs against `workspace.index` and applies tag visibility.
 3. Plot windows with `Live` enabled use that visible selection and redraw when it changes.
 
 A new panel changes selection only through the workspace. It does not maintain its own selected

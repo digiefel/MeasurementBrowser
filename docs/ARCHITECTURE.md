@@ -145,11 +145,12 @@ manage its cache, jobs, or browser state.
 Directory-backed collection metadata and annotations are lean text files (see [storage](storage.md)
 for formats):
 
-- `metadata.txt` — `DirectorySource` source-root collection metadata with path-fragment matching.
+- `metadata.txt` — `DirectorySource` source-root collection metadata with path-fragment matching,
+  projected through the package-owned collection values created by the registration adapter.
 - `tags.txt` — tag catalog and per-path assignments.
 
-`metadata.txt` belongs to `DirectorySource`; sources without that file simply have no collection
-metadata. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
+`metadata.txt` belongs to `DirectorySource`; sources without that file simply create registered
+collections with empty metadata. Annotation files currently live next to the cache, keyed by `source_id`, so a non-filesystem
 source still has somewhere to persist user-authored notes/tags/layout. The DuckDB cache itself is
 generated and lives outside the source.
 

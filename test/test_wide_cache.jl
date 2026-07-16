@@ -23,7 +23,7 @@ end
 @testset "wide cache round-trips typed values" begin
     _with_wide_cache("WideRoundTrip") do cache
         store = cache.analyzed_collection_metadata
-        WIDE.edit!(store, "c1", WIDE_INDEX.MetadataDict(
+        WIDE.edit!(store, Int64(1), WIDE_INDEX.MetadataDict(
             :polarity => :positive,
             :day => Date(2026, 7, 5),
             :moment => DateTime(2026, 7, 5, 12, 0, 0),
@@ -32,7 +32,7 @@ end
             :area => 3.5,
             :ok => true,
         ))
-        loaded = read(store)["c1"]
+        loaded = read(store)[Int64(1)]
         @test loaded[:polarity] === :positive
         @test loaded[:day] == Date(2026, 7, 5)
         @test loaded[:day] isa Date
@@ -48,8 +48,8 @@ end
 @testset "wide cache drops missing keys on reload" begin
     _with_wide_cache("WideMissing") do cache
         store = cache.analyzed_collection_metadata
-        WIDE.edit!(store, "c1", WIDE_INDEX.MetadataDict(:present => 1, :absent => missing))
-        loaded = read(store)["c1"]
+        WIDE.edit!(store, Int64(1), WIDE_INDEX.MetadataDict(:present => 1, :absent => missing))
+        loaded = read(store)[Int64(1)]
         @test loaded[:present] == 1
         @test !haskey(loaded, :absent)
     end
@@ -59,21 +59,21 @@ end
     _with_wide_cache("WideConflict") do cache
         store = cache.analyzed_collection_metadata
         # Kind A registers :polarity as Float64.
-        dropped_a = WIDE.edit!(store, "a", WIDE_INDEX.MetadataDict(:polarity => 1.0, :extra => 2))
+        dropped_a = WIDE.edit!(store, Int64(1), WIDE_INDEX.MetadataDict(:polarity => 1.0, :extra => 2))
         @test isempty(dropped_a)
         # Kind B writes :polarity as a Symbol: the conflicting value drops, others survive.
         dropped_b = WIDE.edit!(
-            store, "b", WIDE_INDEX.MetadataDict(:polarity => :up, :other => 9))
+            store, Int64(2), WIDE_INDEX.MetadataDict(:polarity => :up, :other => 9))
         @test dropped_b == [(:polarity, WIDE.VT_FLOAT, WIDE.VT_SYMBOL)]
         # The surfaced message names the key and both types.
         messages = WIDE.store_collection_metadata!(
-            cache, "c", WIDE_INDEX.MetadataDict(:polarity => :up))
+            cache, Int64(3), WIDE_INDEX.MetadataDict(:polarity => :up))
         @test messages == ["metadata :polarity expected Float64, got Symbol; value dropped"]
-        loaded_b = read(store)["b"]
+        loaded_b = read(store)[Int64(2)]
         @test !haskey(loaded_b, :polarity)
         @test loaded_b[:other] == 9
         # A's original Float64 value is untouched.
-        @test read(store)["a"][:polarity] == 1.0
+        @test read(store)[Int64(1)][:polarity] == 1.0
     end
 end
 
@@ -186,7 +186,7 @@ end
             make_project(), DataBrowser.DirectorySource(dir); background_processing=false)
         try
             wait_workspace_idle!(reopened)
-            records = WIDE_INDEX.all_items(reopened.index.hierarchy)
+            records = collect(values(reopened.index.items))
             items = DataBrowserCore.Workspace.materialize_items(reopened, records)
             data_by_label = Dict(
                 record.item_label => DataBrowser.item_data(item)
@@ -222,12 +222,12 @@ end
             yield()
         end
         for index in 1:40
-            WIDE.edit!(store, "c$index", WIDE_INDEX.MetadataDict(
+            WIDE.edit!(store, Int64(index), WIDE_INDEX.MetadataDict(
                 Symbol("col$index") => index))
         end
         stop[] = true
         wait(reader)
         loaded = read(store)
-        @test loaded["c40"][Symbol("col40")] == 40
+        @test loaded[Int64(40)][Symbol("col40")] == 40
     end
 end

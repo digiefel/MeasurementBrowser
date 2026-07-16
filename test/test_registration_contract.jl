@@ -43,7 +43,8 @@ const REGISTRATION_SOURCES = DataBrowserSources
         :position => 1,
     )
     @test REGISTRATION_API.item_label.(items) == ["cycles.dat #1", "cycles.dat #2"]
-    @test REGISTRATION_API.collection.(items) == [["instrument tester"], ["instrument tester"]]
+    @test [REGISTRATION_API.collection(item) for item in items] ==
+        [["instrument tester"], ["instrument tester"]]
     @test REGISTRATION_API.id(items[1]) != REGISTRATION_API.id(items[2])
 
     effective = merge(REGISTRATION_API.metadata(items[1]), Dict(:scale => 10))
@@ -56,6 +57,21 @@ const REGISTRATION_SOURCES = DataBrowserSources
     @test REGISTRATION_API.item_data(processed) == 20
     @test REGISTRATION_API._analyze_item(project, source, processed) ==
         Dict(:squared => 400)
+end
+
+@testset "registration collection callback requires a string vector" begin
+    directory = mktempdir()
+    filepath = joinpath(directory, "item.dat")
+    write(filepath, "data")
+    source = REGISTRATION_SOURCES.DirectorySource(directory; metadata_file=nothing)
+    source_file = REGISTRATION_SOURCES.index_source_file(filepath)
+    project = REGISTRATION_API.define_project("Invalid collection")
+    REGISTRATION_API.register_item!(
+        project;
+        read=_ -> :data,
+        collection=(_data, _metadata) -> "flat",
+    )
+    @test_throws ArgumentError REGISTRATION_API.data_items(project, source, source_file)
 end
 
 @testset "unnamed registration is optional and replaceable" begin
