@@ -189,7 +189,7 @@ end
             records = collect(values(reopened.index.items))
             items = DataBrowserCore.Workspace.materialize_items(reopened, records)
             data_by_label = Dict(
-                record.item_label => DataBrowser.item_data(item)
+                record.label => DataBrowser.item_data(item)
                 for (record, item) in zip(records, items)
             )
             full = data_by_label["full"]

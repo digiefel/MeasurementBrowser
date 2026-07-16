@@ -91,7 +91,7 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     for i in 1:length(selected_records)
         mat_item = materialized[i]
         record = get(workspace.index.items, selected_records[i].id, nothing)
-        label = record !== nothing ? record.item_label : string(mat_item)
+        label = record !== nothing ? record.label : string(mat_item)
         data = try
             item_data(mat_item)
         catch err

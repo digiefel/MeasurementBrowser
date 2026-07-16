@@ -29,7 +29,7 @@ end
                 record = HE_INDEX.ItemRecord(;
                     source_item_id="source-$number",
                     id="item-$number",
-                    item_label="Item $number",
+                    label="Item $number",
                     kind=:row,
                 )
                 DataBrowserCore.Workspace.publish_source_item_records!(

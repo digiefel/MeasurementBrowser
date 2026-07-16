@@ -24,7 +24,7 @@ namespacing this key under the source item and kind; an empty value uses the ret
 id(::AbstractDataItem) = ""
 
 """Human-readable label for an item. An empty value uses a source-derived label."""
-item_label(::AbstractDataItem)::String = ""
+label(::AbstractDataItem)::String = ""
 
 """Internal item category. Custom item types default to their type name."""
 kind(item::AbstractDataItem)::Symbol = Symbol(nameof(typeof(item)))

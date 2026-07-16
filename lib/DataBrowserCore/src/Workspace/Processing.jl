@@ -263,7 +263,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
                 cancel_token=get_token(workspace.cancel_source),
             )
             position = findfirst(
-                item -> source_item_id(item) == record.source_item_id,
+                item -> id(item) == record.source_item_id,
                 discovered,
             )
             position === nothing && error(

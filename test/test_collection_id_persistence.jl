@@ -28,8 +28,8 @@ DataBrowser.source_id(source::DurableCollectionSource) = source.root_path
 DataBrowser.source_label(::DurableCollectionSource) = "durable collection source"
 DataBrowser.source_items(::DurableCollectionSource; kwargs...) =
     [DurableCollectionSourceItem("source")]
-DataBrowser.source_item_id(item::DurableCollectionSourceItem) = item.id
-DataBrowser.source_item_label(item::DurableCollectionSourceItem) = item.id
+DataBrowser.id(item::DurableCollectionSourceItem) = item.id
+DataBrowser.label(item::DurableCollectionSourceItem) = item.id
 DataBrowser.fingerprint(::DurableCollectionSourceItem) = "stable source"
 
 DataBrowser.id(collection::DurableCollection) = collection.key

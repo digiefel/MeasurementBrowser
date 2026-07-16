@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 17
+const PROJECT_CACHE_SCHEMA_VERSION = 18
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -369,7 +369,7 @@ struct ItemRow
     id::String
     item_key::Int64
     source_item_id::String
-    item_label::String
+    label::String
     kind::String
     collection_key::Union{Nothing,Int64}
 end
@@ -378,7 +378,7 @@ ItemRow(row)::ItemRow = ItemRow(
     String(row.id),
     Int64(row.item_key),
     String(row.source_item_id),
-    String(row.item_label),
+    String(row.label),
     String(row.kind),
     _null_to_nothing(row.collection_key),
 )
@@ -710,16 +710,17 @@ function store_interpreted_records!(
     effective::Vector{<:AbstractDataItem},
 )::Vector{String}
     started = time_ns()
-    id = source_item_id(source_item)
+    source_item_id_value = id(source_item)
     hex = _serialize_hex(fingerprint(source_item))
-    append!(cache.source_items, id, SourceItemRow(
-        id, hex, source_item_path(source_item), source_item_timestamp(source_item)))
-    _stage_ledger_source!(cache.stage_ledger, id, true)
+    append!(cache.source_items, source_item_id_value, SourceItemRow(
+        source_item_id_value, hex, source_item_path(source_item),
+        source_item_timestamp(source_item)))
+    _stage_ledger_source!(cache.stage_ledger, source_item_id_value, true)
     dropped = WideConflict[]
     for (record, _) in zip(records, effective)
         key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
-            ItemRow(record.id, key, record.source_item_id, record.item_label,
+            ItemRow(record.id, key, record.source_item_id, record.label,
                 String(record.kind), nothing))
         _stage_ledger_item!(cache.stage_ledger, record.id, true)
         append!(dropped, edit!(cache.source_item_metadata, key, record.metadata))
@@ -763,7 +764,7 @@ function store_collection_index!(
         end
         key = item_key!(cache, record.id)
         edit!(cache.items, record.id,
-            ItemRow(record.id, key, record.source_item_id, record.item_label,
+            ItemRow(record.id, key, record.source_item_id, record.label,
                 String(record.kind), record.collection_key))
     end
     return nothing
@@ -807,12 +808,12 @@ function store_interpreted_records!(
     ::Vector{<:AbstractDataItem},
 )::Vector{String}
     lock(cache.lock) do
-        push!(cache.source_items, source_item_id(source_item))
+        push!(cache.source_items, id(source_item))
         for record in records
             push!(cache.items, record.id)
         end
     end
-    _stage_ledger_source!(cache.stage_ledger, source_item_id(source_item), true)
+    _stage_ledger_source!(cache.stage_ledger, id(source_item), true)
     for record in records
         _stage_ledger_item!(cache.stage_ledger, record.id, true)
     end
@@ -1693,7 +1694,7 @@ function _load_source_scan(
             source_item_id=row.source_item_id,
             source_item_path=path,
             source_item_timestamp=timestamp,
-            item_label=row.item_label,
+            label=row.label,
             kind=Symbol(row.kind),
             collection_key=row.collection_key,
             metadata=get(item_metadata_by_key, row.item_key, MetadataDict()),
@@ -1734,14 +1735,14 @@ function load_cache_index(
         # collection-process added, restored per item id.
         item_metadata = Dict{String,MetadataDict}()
         for (key, analyzed) in analyzed_by_key
-            id = get(key_to_id, key, nothing)
-            id === nothing && continue
+            item_id = get(key_to_id, key, nothing)
+            item_id === nothing && continue
             entries = get(entries_by_key, key, MetadataDict())
             computed = MetadataDict()
             for (name, value) in analyzed
                 get(entries, name, nothing) == value || (computed[name] = value)
             end
-            isempty(computed) || (item_metadata[id] = computed)
+            isempty(computed) || (item_metadata[item_id] = computed)
         end
         base = ProjectCacheIndex(
             identity, _load_source_scan(cachedb, entries_by_key, collection_analysis))

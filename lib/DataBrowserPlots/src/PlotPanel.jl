@@ -171,7 +171,7 @@ function draw_plot_view!(
         view.error = "Plot failed: $summary. See the console for full details."
         item_context = join(
             [
-                "$(record.item_label) ($(record.kind))\n" *
+                "$(record.label) ($(record.kind))\n" *
                 "  $(record.source_item_id)"
                 for record in records
             ],
@@ -239,7 +239,7 @@ function render_plot_toolbar!(
                 PlotViewState(
                     id="plot_$(plots.next_window_id)",
                     title=length(records) == 1 ?
-                          only(records).item_label :
+                          only(records).label :
                           "$(length(records)) items",
                     live=false,
                     item_ids=[record.id for record in records],

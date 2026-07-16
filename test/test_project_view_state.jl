@@ -112,7 +112,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         source_item_id="file-1",
         source_item_path=joinpath(root_path, "item-1.csv"),
         id="item-1",
-        item_label="Item 1",
+        label="Item 1",
         kind=:iv_sweep,
         collection_key=key_1,
     )
@@ -120,7 +120,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         source_item_id="file-2",
         source_item_path=joinpath(root_path, "item-2.csv"),
         id="item-2",
-        item_label="Item 2",
+        label="Item 2",
         kind=:iv_sweep,
         collection_key=key_2,
     )
@@ -194,7 +194,7 @@ end
                 source_item_id="root-file",
                 source_item_path=joinpath(root_path, "root.csv"),
                 id="root-item",
-                item_label="Root Item",
+                label="Root Item",
                 kind=:table,
                 collection_key=nothing,
             )

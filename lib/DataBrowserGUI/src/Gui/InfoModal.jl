@@ -52,7 +52,7 @@ function render_info_window(state::BrowserState)::Nothing
             # The delivered metadata dict (inherited ⊕ entries ⊕ computed layers), exactly what
             # project callbacks and views receive.
             delivered = Workspace.delivered_metadata(workspace, m)
-            ig.Text("Title: $(m.item_label)")
+            ig.Text("Title: $(m.label)")
             ig.Separator()
             kind_text = kind_label(workspace.project, m.kind)
             ig.BulletText("Type: $(kind_text)")

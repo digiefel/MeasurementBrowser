@@ -7,7 +7,7 @@ callback-driving methods that touch engine types (`ItemRecord`, `SourceFile`, `D
 """
 
 using DataBrowserAPI
-using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
+using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, source_id, source_item_path, source_item_timestamp
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import DataBrowserAPI:
@@ -25,8 +25,8 @@ import DataBrowserAPI:
     collection,
     id,
     item_data,
-    item_label,
     kind,
+    label,
     metadata,
     process,
     _process_collection,
@@ -273,7 +273,7 @@ function kind_label(::Project, kind::Symbol)::String
 end
 
 function display_label(project::Project, item::ItemRecord)::String
-    return item.item_label
+    return item.label
 end
 
 function _processed_item(
@@ -391,13 +391,13 @@ function interpret_source_item(
     source_item::AbstractDataSourceItem,
     profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
 )::SourceItemInterpretation
-    source_item_id_value = source_item_id(source_item)
+    source_item_id_value = id(source_item)
     source_item_path_value = source_item_path(source_item)
     source_item_label_value = if source_item_path_value !== nothing &&
                                  isabspath(source_id(source))
         relpath(source_item_path_value, source_id(source))
     else
-        source_item_label(source_item)
+        label(source_item)
     end
     source_started = time_ns()
     handles = try
@@ -423,13 +423,13 @@ function interpret_source_item(
     source_metadata = metadata_dict(metadata(source_item))
     for (index, handle) in pairs(handles)
         record_metadata = merge(copy(source_metadata), metadata_dict(metadata(handle)))
-        label = item_label(handle)
+        item_label_value = label(handle)
         record = ItemRecord(;
             source_item_id=source_item_id_value,
             source_item_path=source_item_path_value,
             source_item_timestamp=source_item_timestamp(source_item),
             id=_mint_id(source_item_id_value, kind(handle), index, id(handle)),
-            item_label=isempty(label) ? source_item_label(source_item) : label,
+            label=isempty(item_label_value) ? label(source_item) : item_label_value,
             kind=kind(handle),
             collection_key=nothing,
             metadata=record_metadata,

@@ -90,7 +90,7 @@ function _sync_table_plot_table!(
         pairs = Tuple{Any,Any}[]
         for i in 1:length(selected_records)
             record = get(workspace.index.items, selected_records[i].id, nothing)
-            label = record !== nothing ? record.item_label : string(materialized[i])
+            label = record !== nothing ? record.label : string(materialized[i])
             data = try
                 item_data(materialized[i])
             catch err

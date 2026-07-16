@@ -4,13 +4,12 @@ import DataBrowser:
     collection,
     data_items,
     fingerprint,
+    id,
     item_data,
-    item_label,
+    label,
     metadata,
     process,
     source_id,
-    source_item_id,
-    source_item_label,
     source_item_path,
     source_items,
     source_label
@@ -37,8 +36,8 @@ function source_items(source::MicrographDirectory)::Vector{MicrographFile}
     return [MicrographFile(path, stat(path).mtime) for path in paths]
 end
 
-source_item_id(file::MicrographFile)::String = abspath(file.path)
-source_item_label(file::MicrographFile)::String = basename(file.path)
+id(file::MicrographFile)::String = abspath(file.path)
+label(file::MicrographFile)::String = basename(file.path)
 source_item_path(file::MicrographFile)::String = file.path
 fingerprint(file::MicrographFile)::Float64 = file.modified
 
@@ -48,7 +47,7 @@ struct Micrograph <: AbstractDataItem
     exposure_ms::Float64
 end
 
-item_label(image::Micrograph)::String = image.name
+label(image::Micrograph)::String = image.name
 collection(::Micrograph)::Vector{String} = ["Micrographs"]
 metadata(image::Micrograph)::Dict{Symbol,Any} = Dict{Symbol,Any}(
     :exposure_ms => image.exposure_ms,

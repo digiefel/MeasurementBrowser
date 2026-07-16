@@ -32,7 +32,7 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
             id="item-1",
             source_item_id=filepath,
             source_item_path=filepath,
-            item_label="item",
+            label="item",
             kind=:test,
             collection_key=leaf_key,
         )

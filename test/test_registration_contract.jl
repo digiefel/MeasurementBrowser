@@ -42,7 +42,7 @@ const REGISTRATION_SOURCES = DataBrowserSources
         :instrument => "tester",
         :position => 1,
     )
-    @test REGISTRATION_API.item_label.(items) == ["cycles.dat #1", "cycles.dat #2"]
+    @test REGISTRATION_API.label.(items) == ["cycles.dat #1", "cycles.dat #2"]
     @test [REGISTRATION_API.label.(REGISTRATION_API.collection(item)) for item in items] ==
         [["instrument tester"], ["instrument tester"]]
     # `data_items` adapts entries without minting identity; ids are minted at interpretation.

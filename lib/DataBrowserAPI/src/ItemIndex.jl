@@ -18,13 +18,10 @@ import ..DataBrowserAPI:
     collection_path_label,
     id,
     item_data,
-    item_label,
     kind,
     label,
     metadata,
     source_id,
-    source_item_id,
-    source_item_label,
     source_item_path,
     source_item_timestamp,
     source_label
@@ -496,7 +493,7 @@ struct ItemRecord
     source_item_id::String
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
-    item_label::String
+    label::String
     kind::Symbol
     collection_key::Union{Nothing,Int64}
     metadata::MetadataDict
@@ -508,7 +505,7 @@ function ItemRecord(;
     source_item_id::AbstractString,
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
-    item_label::AbstractString,
+    label::AbstractString,
     kind::Symbol,
     collection_key::Union{Nothing,Integer}=nothing,
     metadata::AbstractDict=MetadataDict(),
@@ -520,7 +517,7 @@ function ItemRecord(;
         String(source_item_id),
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
-        String(item_label),
+        String(label),
         kind,
         collection_key === nothing ? nothing : Int64(collection_key),
         metadata_dict(metadata),
@@ -534,7 +531,7 @@ function ItemRecord(
     source_item_id::AbstractString=record.source_item_id,
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
-    item_label::AbstractString=record.item_label,
+    label::AbstractString=record.label,
     kind::Symbol=record.kind,
     collection_key::Union{Nothing,Integer}=record.collection_key,
     metadata::AbstractDict=deepcopy(record.metadata),
@@ -544,12 +541,15 @@ function ItemRecord(
         source_item_id,
         source_item_path,
         source_item_timestamp,
-        item_label,
+        label,
         kind,
         collection_key,
         metadata,
     )
 end
+
+id(record::ItemRecord)::String = record.id
+label(record::ItemRecord)::String = record.label
 
 """
 Private carrier for ordinary data produced by `register_item!`.
@@ -575,7 +575,7 @@ RegisteredDataItem(
     path::Vector{AbstractCollection}=AbstractCollection[],
 )::RegisteredDataItem = RegisteredDataItem(
     record.id,
-    record.item_label,
+    record.label,
     record.kind,
     path,
     data,
@@ -604,7 +604,7 @@ RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = Registe
 )
 
 id(item::RegisteredDataItem)::String = item.id
-item_label(item::RegisteredDataItem)::String = item.label
+label(item::RegisteredDataItem)::String = item.label
 kind(item::RegisteredDataItem)::Symbol = item.registration
 collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata

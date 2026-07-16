@@ -35,7 +35,7 @@ workspace internals.
 - [x] Remove the unused data-item fingerprint contract and storage. Delete
   `fingerprint(::AbstractDataItem)`, `ItemRecord.item_fingerprint`, and the persisted item-fingerprint
   column; retain source-item fingerprints as the change tokens compared across workspace openings.
-- [ ] Give source items, data items, and collections the same `id(value)` and `label(value)` public
+- [x] Give source items, data items, and collections the same `id(value)` and `label(value)` public
   interface. Replace `source_item_id`, `source_item_label`, and `item_label` cleanly, without
   compatibility aliases; keep `source_id` and `source_label` for the workspace's data source.
 - [ ] Add a package-owned `source_item_key::Int64`, persist the source-item id-to-key mapping once,

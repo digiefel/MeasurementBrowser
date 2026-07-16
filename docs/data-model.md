@@ -65,7 +65,7 @@ Registration callbacks describe it with strings:
 ```
 
 Registration readers can compute both while constructing a `DataItem`. Typed items implement
-`item_label` or `collection` only when the source-derived defaults are not appropriate. Every item
+`label` or `collection` only when the source-derived defaults are not appropriate. Every item
 answers `collection(item)` with the complete vector of concrete `AbstractCollection` values: the
 registration adapter converts callback strings (or the source-directory default) into normalized
 segments while the source is in hand, attaching source-owned collection metadata such as the

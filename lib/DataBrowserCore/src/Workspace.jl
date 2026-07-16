@@ -140,7 +140,6 @@ import DataBrowserAPI:
     scan_profile_summary,
     source_id,
     source_items,
-    source_item_id,
     source_item_noun,
     source_label,
     source_open_options,

@@ -521,7 +521,7 @@ function ingest_source_changes!(
     end
     isempty(changes.upserts) || lock(workspace.work.lock) do
         for source_item in changes.upserts
-            source_item_id_value = source_item_id(source_item)
+            source_item_id_value = id(source_item)
             old_records = source_item_records(workspace.index, source_item_id_value)
             delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
             key = WorkKey(SOURCE_INTERPRET, source_item_id_value)
@@ -641,7 +641,7 @@ function scan_source!(
             for item in discovered
                 is_cancellation_requested(scan_token) &&
                 throw(OperationCanceledException(scan_token))
-                id_value = source_item_id(item)
+                id_value = id(item)
                 push!(seen, id_value)
                 current_fingerprint = fingerprint(item)
                 current[id_value] = current_fingerprint
