@@ -47,7 +47,6 @@ Projects implement only the behavior they need:
 | `id` | one concrete item | stable sibling key | returned position |
 | `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
-| `fingerprint` | one concrete item | an item-specific invalidation value | none |
 | `cacheable` | one concrete item | whether its data can be persisted | determined by its data |
 
 The complete signatures are:
@@ -60,7 +59,6 @@ collection(item::MyItem)::Vector{<:AbstractCollection}
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-fingerprint(item::MyItem)::Any
 cacheable(item::MyItem)::Bool
 ```
 

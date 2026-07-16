@@ -15,7 +15,6 @@ import ..DataBrowserAPI:
     collection,
     collection_record_id,
     collection_path_label,
-    fingerprint,
     id,
     item_data,
     item_label,
@@ -495,7 +494,6 @@ struct ItemRecord
     kind::Symbol
     collection_key::Union{Nothing,Int64}
     metadata::MetadataDict
-    item_fingerprint::Any
 end
 
 """Construct an item record while normalizing its fields."""
@@ -508,7 +506,6 @@ function ItemRecord(;
     kind::Symbol,
     collection_key::Union{Nothing,Integer}=nothing,
     metadata::AbstractDict=MetadataDict(),
-    item_fingerprint=nothing,
 )::ItemRecord
     record_id = String(id)
     isempty(record_id) && error("ItemRecord id cannot be empty")
@@ -521,7 +518,6 @@ function ItemRecord(;
         kind,
         collection_key === nothing ? nothing : Int64(collection_key),
         metadata_dict(metadata),
-        item_fingerprint,
     )
 end
 
@@ -536,7 +532,6 @@ function ItemRecord(
     kind::Symbol=record.kind,
     collection_key::Union{Nothing,Integer}=record.collection_key,
     metadata::AbstractDict=deepcopy(record.metadata),
-    item_fingerprint=record.item_fingerprint,
 )::ItemRecord
     return ItemRecord(;
         id,
@@ -547,7 +542,6 @@ function ItemRecord(
         kind,
         collection_key,
         metadata,
-        item_fingerprint,
     )
 end
 
@@ -609,7 +603,6 @@ function ItemRecord(
         kind,
         collection_key=nothing,
         metadata,
-        item_fingerprint=fingerprint(item),
     )
 end
 
@@ -619,7 +612,6 @@ kind(item::RegisteredDataItem)::Symbol = item.registration
 collection(item::RegisteredDataItem)::Vector{String} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
 item_data(item::RegisteredDataItem) = item.data
-fingerprint(item::RegisteredDataItem) = nothing
 cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
 
 """Return one item record's inherited collection metadata plus its own entries layer."""

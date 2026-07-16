@@ -71,7 +71,6 @@ metadata(collection::AbstractCollection)::Dict
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-fingerprint(item::MyItem)::Any
 cacheable(item::MyItem)::Bool
 ```
 

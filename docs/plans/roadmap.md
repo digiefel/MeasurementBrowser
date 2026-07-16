@@ -32,7 +32,7 @@ workspace internals.
 - [ ] Route registered and typed items through one post-interpretation identity/default
   normalization path. `_registered_item` should adapt callback output into `RegisteredDataItem`, not
   mint final item ids before the common path.
-- [ ] Remove the unused data-item fingerprint contract and storage. Delete
+- [x] Remove the unused data-item fingerprint contract and storage. Delete
   `fingerprint(::AbstractDataItem)`, `ItemRecord.item_fingerprint`, and the persisted item-fingerprint
   column; retain source-item fingerprints as the change tokens compared across workspace openings.
 - [ ] Give source items, data items, and collections the same `id(value)` and `label(value)` public

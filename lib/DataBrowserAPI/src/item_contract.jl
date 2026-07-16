@@ -51,8 +51,6 @@ storable column types at write time. A type can opt out (or a non-tabular type o
 """
 cacheable_data(data)::Bool = Tables.istable(data)
 
-fingerprint(::AbstractDataItem) = nothing
-
 # ---------------------------------------------------------------------------
 # Internal workspace hooks
 # ---------------------------------------------------------------------------

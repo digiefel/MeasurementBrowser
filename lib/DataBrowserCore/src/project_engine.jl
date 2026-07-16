@@ -7,7 +7,7 @@ callback-driving methods that touch engine types (`ItemRecord`, `SourceFile`, `D
 """
 
 using DataBrowserAPI
-using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, fingerprint, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
+using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, source_id, source_item_id, source_item_label, source_item_path, source_item_timestamp
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import DataBrowserAPI:
@@ -422,7 +422,6 @@ function interpret_source_item(
             kind=kind(handle),
             collection_key=nothing,
             metadata=record_metadata,
-            item_fingerprint=fingerprint(handle),
         )
         records[index] = record
         collection_paths[index] = normalized_collection

@@ -372,7 +372,6 @@ struct ItemRow
     item_label::String
     kind::String
     collection_key::Union{Nothing,Int64}
-    item_fingerprint_hex::Union{Nothing,String}
 end
 
 ItemRow(row)::ItemRow = ItemRow(
@@ -382,7 +381,6 @@ ItemRow(row)::ItemRow = ItemRow(
     String(row.item_label),
     String(row.kind),
     _null_to_nothing(row.collection_key),
-    _null_to_nothing(row.item_fingerprint_hex),
 )
 
 struct FailureRow
@@ -722,7 +720,7 @@ function store_interpreted_records!(
         key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_id, record.item_label,
-                String(record.kind), nothing, _serialize_hex(record.item_fingerprint)))
+                String(record.kind), nothing))
         _stage_ledger_item!(cache.stage_ledger, record.id, true)
         append!(dropped, edit!(cache.source_item_metadata, key, record.metadata))
     end
@@ -766,8 +764,7 @@ function store_collection_index!(
         key = item_key!(cache, record.id)
         edit!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_id, record.item_label,
-                String(record.kind), record.collection_key,
-                _serialize_hex(record.item_fingerprint)))
+                String(record.kind), record.collection_key))
     end
     return nothing
 end
@@ -1700,7 +1697,6 @@ function _load_source_scan(
             kind=Symbol(row.kind),
             collection_key=row.collection_key,
             metadata=get(item_metadata_by_key, row.item_key, MetadataDict()),
-            item_fingerprint=_deserialize_hex(row.item_fingerprint_hex),
         ))
         append_item!(collections, row.id, row.collection_key)
     end
