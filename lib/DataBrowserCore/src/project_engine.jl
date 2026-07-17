@@ -377,6 +377,9 @@ struct SourceItemInterpretation
     collection_paths::Vector{Vector{CollectionInput}}
     interpreted_items::Vector{AbstractDataItem}
     failures::Vector{ItemFailure}
+    # The source item's display label, resolved once here so the UI and cache never rerun
+    # project label code.
+    source_item_label::String
 end
 
 """
@@ -445,7 +448,9 @@ function interpret_source_item(
         project, source_item_id_value, source_item_label_value, source_item_path_value,
         source_kind, item_count,
         (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
-    return SourceItemInterpretation(records, collection_paths, interpreted_items, ItemFailure[])
+    return SourceItemInterpretation(
+        records, collection_paths, interpreted_items, ItemFailure[],
+        String(source_item_label_value))
 end
 
 """

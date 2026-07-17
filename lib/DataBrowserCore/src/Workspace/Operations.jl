@@ -998,6 +998,7 @@ function publish_work_success!(
         conflicts = store_interpreted!(
             workspace.cache.db,
             result.source_item,
+            interpretation.source_item_label,
             resolved,
             interpretation.interpreted_items,
         )

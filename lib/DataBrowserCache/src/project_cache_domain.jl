@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 19
+const PROJECT_CACHE_SCHEMA_VERSION = 20
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -337,6 +337,7 @@ end
 struct SourceItemRow
     id::String
     source_item_key::Int64
+    label::String
     fingerprint_hex::Union{Nothing,String}
     path::Union{Nothing,String}
     timestamp::Union{Nothing,DateTime}
@@ -345,10 +346,14 @@ end
 SourceItemRow(row)::SourceItemRow = SourceItemRow(
     String(row.id),
     Int64(row.source_item_key),
+    String(row.label),
     _null_to_nothing(row.fingerprint_hex),
     _null_to_nothing(row.path),
     _null_to_nothing(row.timestamp),
 )
+
+"""Display label of one cached source item, resolved once at interpretation."""
+label(row::SourceItemRow)::String = row.label
 
 """One persisted package-owned collection record; no live user collection value is serialized."""
 struct CollectionRow
@@ -783,6 +788,7 @@ rediscovering it as new. Returns type-conflict messages for keys dropped from th
 function store_interpreted_records!(
     cache::CacheDB,
     source_item::AbstractDataSourceItem,
+    source_item_label::AbstractString,
     records::Vector{ItemRecord},
     effective::Vector{<:AbstractDataItem},
 )::Vector{String}
@@ -791,8 +797,8 @@ function store_interpreted_records!(
     source_key = source_item_key!(cache, source_item_id_value; mint=true)
     hex = _serialize_hex(fingerprint(source_item))
     append!(cache.source_items, source_item_id_value, SourceItemRow(
-        source_item_id_value, source_key, hex, source_item_path(source_item),
-        source_item_timestamp(source_item)))
+        source_item_id_value, source_key, String(source_item_label), hex,
+        source_item_path(source_item), source_item_timestamp(source_item)))
     _stage_ledger_source!(cache.stage_ledger, source_key, true)
     dropped = WideConflict[]
     for (record, _) in zip(records, effective)
@@ -873,8 +879,10 @@ Store one source item's interpreted result: records to disk-backed buffers, payl
 interpretation-time type-conflict messages.
 """
 function store_interpreted!(cache::AbstractCacheDB, source_item::AbstractDataSourceItem,
-        records::Vector{ItemRecord}, data::Vector{<:AbstractDataItem})::Vector{String}
-    conflicts = store_interpreted_records!(cache, source_item, records, data)
+        source_item_label::AbstractString, records::Vector{ItemRecord},
+        data::Vector{<:AbstractDataItem})::Vector{String}
+    conflicts = store_interpreted_records!(
+        cache, source_item, source_item_label, records, data)
     store_interpreted_data!(cache, records, data)
     return conflicts
 end
@@ -882,6 +890,7 @@ end
 function store_interpreted_records!(
     cache::MemoryCacheDB,
     source_item::AbstractDataSourceItem,
+    ::AbstractString,
     records::Vector{ItemRecord},
     ::Vector{<:AbstractDataItem},
 )::Vector{String}

@@ -41,7 +41,8 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
         try
             write_meta_header!(cache)
             item = DataBrowserAPI.ItemIndex.RegisteredDataItem(record, nothing)
-            DataBrowserCache.store_interpreted_records!(cache, source_item, [record], [item])
+            DataBrowserCache.store_interpreted_records!(
+                cache, source_item, "item file", [record], [item])
             store_collection_index!(cache, collections, [record])
             store_collection_metadata!(cache, leaf_key, Dict(:mean => 2.5))
             store_collection_process_result!(cache, leaf_key)

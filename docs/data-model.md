@@ -70,6 +70,12 @@ Registration callbacks describe it with strings:
 ["Chip A9", "Device D1", "IV"]
 ```
 
+Labels are resolved once from the live values during interpretation — `label(item)`,
+`label(source_item)`, and `label(collection)` — and persisted on the corresponding records:
+`label(record)` on item, collection, and cached source-item records returns the stored display
+value without materializing a payload or running project code. A changed source item re-resolves
+its labels on the next scan; nothing re-runs label code in the UI.
+
 Registration readers can compute both while constructing a `DataItem`. Typed items implement
 `label` or `collection` only when the source-derived defaults are not appropriate. Every item
 answers `collection(item)` with the complete vector of concrete `AbstractCollection` values: the

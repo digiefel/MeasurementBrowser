@@ -240,7 +240,7 @@ The fixed DuckDB stores are:
 
 - `meta` — schema version, project and source identity;
 - `source_items` — source-item ID, its integer `source_item_key` surrogate (the id-to-key mapping is
-  persisted only here), fingerprint, path, and timestamp;
+  persisted only here), resolved display label, fingerprint, path, and timestamp;
 - `items` — data-less logical-item records, each item's integer `item_key` surrogate, the
   `source_item_key` of its owning source item, and the private key of its leaf collection;
 - `collections` — one row per collection record, with its compact integer key, parent key, durable

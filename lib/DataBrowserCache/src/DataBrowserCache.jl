@@ -2,6 +2,7 @@
 module DataBrowserCache
 
 import DataBrowserAPI
+import DataBrowserAPI: label
 using DataBrowserAPI:
     AbstractCollection,
     AbstractDataItem,

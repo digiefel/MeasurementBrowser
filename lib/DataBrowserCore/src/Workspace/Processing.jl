@@ -285,6 +285,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
         store_interpreted!(
             workspace.cache.db,
             source_item,
+            interpretation.source_item_label,
             resolved_records,
             interpretation.interpreted_items,
         )

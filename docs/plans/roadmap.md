@@ -42,7 +42,7 @@ workspace internals.
   and use the integer key for internal and database references just as `item_key` and
   `collection_key` are used. Keep source-item ids as the stable public identity and measure the
   resulting database and loaded-index memory change.
-- [ ] Resolve `label(value)` once from each live source item, data item, and collection during
+- [x] Resolve `label(value)` once from each live source item, data item, and collection during
   interpretation, persist that display value on the corresponding record, and make
   `label(record)` return it without materializing a payload or running project code in the UI.
 - [ ] Make typed materialization explicit and tested: reopening restores records, not arbitrary
