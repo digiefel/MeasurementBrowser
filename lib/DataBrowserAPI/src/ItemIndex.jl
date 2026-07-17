@@ -10,21 +10,18 @@ import ..DataBrowserAPI:
     MetadataDict,
     MetadataValue,
     Project,
+    attach_record,
     cacheable,
     cacheable_data,
     collection,
     collection_record_id,
     collection_path_label,
-    fingerprint,
     id,
     item_data,
-    item_label,
     kind,
     label,
     metadata,
     source_id,
-    source_item_id,
-    source_item_label,
     source_item_path,
     source_item_timestamp,
     source_label
@@ -120,13 +117,18 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
     return inputs
 end
 
-"""Normalize a registration string path into package-owned collection inputs."""
-collection_inputs(
+"""
+Wrap a registration string path in package-owned collection values.
+
+Sources may specialize this to attach source-owned metadata to each level (the directory source
+attaches its `metadata.txt` entries). Applied when adapting registration callback output, so
+registered items satisfy the generic `collection(item)` contract.
+"""
+registered_collection_path(
     ::AbstractDataSource,
     names::AbstractVector{<:AbstractString},
-)::Vector{CollectionInput} = collection_inputs(
-    AbstractCollection[RegisteredCollection(name) for name in names],
-)
+)::Vector{AbstractCollection} =
+    AbstractCollection[RegisteredCollection(name) for name in names]
 
 """
 One package-owned indexed collection occurrence.
@@ -485,43 +487,46 @@ function set_collection_analysis!(
     return nothing
 end
 
-"""The internal metadata record for one logical item discovered inside one source item."""
+"""
+The internal metadata record for one logical item discovered inside one source item.
+
+`source_item_key` is the compact package-owned surrogate of the owning source item; the stable
+public source-item id is resolved through the workspace/cache mapping persisted once with the
+source items.
+"""
 struct ItemRecord
     id::String
-    source_item_id::String
+    source_item_key::Int64
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
-    item_label::String
+    label::String
     kind::Symbol
     collection_key::Union{Nothing,Int64}
     metadata::MetadataDict
-    item_fingerprint::Any
 end
 
 """Construct an item record while normalizing its fields."""
 function ItemRecord(;
     id::AbstractString,
-    source_item_id::AbstractString,
+    source_item_key::Integer,
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
-    item_label::AbstractString,
+    label::AbstractString,
     kind::Symbol,
     collection_key::Union{Nothing,Integer}=nothing,
     metadata::AbstractDict=MetadataDict(),
-    item_fingerprint=nothing,
 )::ItemRecord
     record_id = String(id)
     isempty(record_id) && error("ItemRecord id cannot be empty")
     return ItemRecord(
         record_id,
-        String(source_item_id),
+        Int64(source_item_key),
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
-        String(item_label),
+        String(label),
         kind,
         collection_key === nothing ? nothing : Int64(collection_key),
         metadata_dict(metadata),
-        item_fingerprint,
     )
 end
 
@@ -529,55 +534,69 @@ end
 function ItemRecord(
     record::ItemRecord;
     id::AbstractString=record.id,
-    source_item_id::AbstractString=record.source_item_id,
+    source_item_key::Integer=record.source_item_key,
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
-    item_label::AbstractString=record.item_label,
+    label::AbstractString=record.label,
     kind::Symbol=record.kind,
     collection_key::Union{Nothing,Integer}=record.collection_key,
     metadata::AbstractDict=deepcopy(record.metadata),
-    item_fingerprint=record.item_fingerprint,
 )::ItemRecord
     return ItemRecord(;
         id,
-        source_item_id,
+        source_item_key,
         source_item_path,
         source_item_timestamp,
-        item_label,
+        label,
         kind,
         collection_key,
         metadata,
-        item_fingerprint,
     )
 end
+
+id(record::ItemRecord)::String = record.id
+label(record::ItemRecord)::String = record.label
 
 """
 Private carrier for ordinary data produced by `register_item!`.
 
-Its collection path stays a `Vector{String}` at registration-facing boundaries. Interpretation
-adapts those names separately when constructing package-owned collection records.
+Adaptation converts the registration callback's collection strings into normalized
+`AbstractCollection` segments, so the carrier answers the generic item contract directly. Before
+interpretation normalizes the item, `id` holds only the callback-supplied sibling key (or `""`);
+the carrier delivered by interpretation is rebuilt on its record and carries the final minted id.
 """
 struct RegisteredDataItem{D} <: AbstractDataItem
     id::String
     label::String
     registration::Symbol
-    collection::Vector{String}
+    collection::Vector{AbstractCollection}
     data::D
     metadata::MetadataDict
 end
+
+"""Reconstruct registered data from a record, payload, and its normalized collection segments."""
+RegisteredDataItem(
+    record::ItemRecord,
+    data,
+    path::Vector{AbstractCollection}=AbstractCollection[],
+)::RegisteredDataItem = RegisteredDataItem(
+    record.id,
+    record.label,
+    record.kind,
+    path,
+    data,
+    record.metadata,
+)
 
 """Reconstruct registered data from a record, payload, and its registration string path."""
 RegisteredDataItem(
     record::ItemRecord,
     data,
-    path::Vector{String}=String[],
+    names::Vector{String},
 )::RegisteredDataItem = RegisteredDataItem(
-    record.id,
-    record.item_label,
-    record.kind,
-    path,
+    record,
     data,
-    record.metadata,
+    AbstractCollection[RegisteredCollection(name) for name in names],
 )
 
 """Copy registered data while replacing only its payload."""
@@ -590,37 +609,17 @@ RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = Registe
     item.metadata,
 )
 
-"""Derive an unresolved item record from any item; collection membership is assigned on publish."""
-function ItemRecord(
-    item::AbstractDataItem;
-    source_item::AbstractDataSourceItem,
-    id::AbstractString=id(item),
-    kind::Symbol=kind(item),
-    metadata=metadata(item),
-)::ItemRecord
-    item_title = item_label(item)
-    title = isempty(item_title) ? source_item_label(source_item) : String(item_title)
-    return ItemRecord(;
-        source_item_id=source_item_id(source_item),
-        source_item_path=source_item_path(source_item),
-        source_item_timestamp=source_item_timestamp(source_item),
-        id,
-        item_label=title,
-        kind,
-        collection_key=nothing,
-        metadata,
-        item_fingerprint=fingerprint(item),
-    )
-end
-
 id(item::RegisteredDataItem)::String = item.id
-item_label(item::RegisteredDataItem)::String = item.label
+label(item::RegisteredDataItem)::String = item.label
 kind(item::RegisteredDataItem)::Symbol = item.registration
-collection(item::RegisteredDataItem)::Vector{String} = item.collection
+collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
 item_data(item::RegisteredDataItem) = item.data
-fingerprint(item::RegisteredDataItem) = nothing
 cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
+
+"""A registered carrier adopts its normalized record wholesale; its segments and payload remain."""
+attach_record(item::RegisteredDataItem, record::ItemRecord)::RegisteredDataItem =
+    RegisteredDataItem(record, item.data, item.collection)
 
 """Return one item record's inherited collection metadata plus its own entries layer."""
 function effective_metadata(index::CollectionIndex, record::ItemRecord)::MetadataDict

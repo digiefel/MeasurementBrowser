@@ -239,9 +239,10 @@ These are named operations, not a general connection callback. There is no `with
 The fixed DuckDB stores are:
 
 - `meta` — schema version, project and source identity;
-- `source_items` — source-item ID, fingerprint, path, and timestamp;
-- `items` — data-less logical-item records, their source ownership, and each item's integer `item_key`
-  surrogate plus the private key of its leaf collection;
+- `source_items` — source-item ID, its integer `source_item_key` surrogate (the id-to-key mapping is
+  persisted only here), resolved display label, fingerprint, path, and timestamp;
+- `items` — data-less logical-item records, each item's integer `item_key` surrogate, the
+  `source_item_key` of its owning source item, and the private key of its leaf collection;
 - `collections` — one row per collection record, with its compact integer key, parent key, durable
   occurrence ID, resolved label and metadata, and registration name when applicable; arbitrary
   user-defined collection values and canonical ID inputs are not stored;
@@ -251,7 +252,8 @@ The fixed DuckDB stores are:
   layers), keyed by `item_key`; this is the query surface;
 - `analyzed_collection_metadata` — collection `analyze` output per collection, keyed by collection key;
 - `wide_columns` — the registry naming each wide table's columns and their logical type;
-- `item_failures` — source interpretation and logical-item failures published with the index;
+- `item_failures` — source interpretation and logical-item failures published with the index,
+  referencing their source item by `source_item_key` (source-level failures carry an empty item id);
 - `result_states` — independent item-processing and item-analysis outcomes keyed by item identity;
 - `collection_result_states` — collection-process and collection-analysis outcomes keyed by the
   private integer collection-record key;
@@ -279,6 +281,13 @@ Each logical item has one integer `item_key`, minted at interpretation and share
 tables and the payload store. `open_cache_db` loads the committed `item_key`s from `items`; a rebuild
 resets them. Payloads are keyed by `(item_key, stage)`, where the stage is either the item's own
 `process` output or the collection `process` rewrite.
+
+Each source item likewise has one integer `source_item_key`, minted by the cache
+(`source_item_key!`) when a scan or watcher upsert first sees its id and persisted with the
+`source_items` row, so a source item keeps its key across sessions and re-appearances. Item records,
+failure rows, result states, the work graph, and the workspace index all reference source items by
+this key; the stable public id is resolved back through the mapping (`source_item_id(cache, key)`)
+at boundaries such as status errors and the GUI.
 
 Collection records use a separate package-owned integer key. The index assigns it after resolving
 the complete path by deterministic collection ID. That ID combines the parent ID, concrete
@@ -347,7 +356,7 @@ after a row is current.
 ProjectCache exposes one semantic cascade for removing a source item:
 
 ```julia
-delete_source_item!(cache, source_item_id, old_records)
+delete_source_item!(cache, source_item_key, old_records)
 ```
 
 It deletes each old record's item rows, wide-metadata rows, failures, result states, disk payloads,

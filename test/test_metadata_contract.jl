@@ -3,8 +3,8 @@ struct ContractSourceItem <: METADATA_CONTRACT_API.AbstractDataSourceItem
     key::String
 end
 
-METADATA_CONTRACT_API.source_item_id(item::ContractSourceItem) = item.key
-METADATA_CONTRACT_API.source_item_label(item::ContractSourceItem) = item.key
+METADATA_CONTRACT_API.id(item::ContractSourceItem) = item.key
+METADATA_CONTRACT_API.label(item::ContractSourceItem) = item.key
 
 struct MetadataContractDataItem <: METADATA_CONTRACT_API.AbstractDataItem
     metadata::Dict{Symbol,Any}

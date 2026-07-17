@@ -48,6 +48,16 @@ item expands into several logical items, DataBrowser uses their returned positio
 entry supplies an explicit id when its sibling order can change. Stable explicit ids keep selection,
 annotations, saved views, and cached results attached when siblings are inserted or reordered.
 
+Registered and typed items share one identity rule: project code supplies at most a sibling key
+(the registration `id` callback or `id(item)`), and interpretation mints the final item id once by
+namespacing that key under the source item and kind. Project code never produces a final item id.
+
+Alongside the stable public source-item id, the package mints one compact `source_item_key::Int64`
+per source item when a scan first sees it. Item records, the work graph, and the cache tables
+reference source items by this key — mirroring `item_key` and `collection_key` — while the
+id-to-key mapping is persisted once with the cached source items and the public id is resolved back
+at boundaries (status errors, GUI selection and display).
+
 A registration name such as `:cycles` identifies the registered pipeline. It is not a property of
 the data and does not replace the concrete type of a typed item.
 
@@ -60,11 +70,18 @@ Registration callbacks describe it with strings:
 ["Chip A9", "Device D1", "IV"]
 ```
 
+Labels are resolved once from the live values during interpretation — `label(item)`,
+`label(source_item)`, and `label(collection)` — and persisted on the corresponding records:
+`label(record)` on item, collection, and cached source-item records returns the stored display
+value without materializing a payload or running project code. A changed source item re-resolves
+its labels on the next scan; nothing re-runs label code in the UI.
+
 Registration readers can compute both while constructing a `DataItem`. Typed items implement
-`item_label` or `collection` only when the source-derived defaults are not appropriate. Their
-`collection(item)` method returns the complete vector of concrete `AbstractCollection` values;
-registered items instead retain the callback's `Vector{String}` when materialized. The registration
-adapter converts those strings only while constructing package-owned collection records.
+`label` or `collection` only when the source-derived defaults are not appropriate. Every item
+answers `collection(item)` with the complete vector of concrete `AbstractCollection` values: the
+registration adapter converts callback strings (or the source-directory default) into normalized
+segments while the source is in hand, attaching source-owned collection metadata such as the
+directory source's `metadata.txt` entries. Interpretation itself is dialect-blind.
 
 Collections have variable depth. The last path segment is the leaf containing the item; preceding
 segments are ordinary parent collections. Code does not assign fixed meaning to a particular depth.

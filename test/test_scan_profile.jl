@@ -214,7 +214,7 @@ end
         )
         try
             wait_workspace_idle!(workspace)
-            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.label)
             DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test [counter[] for counter in values(reads)] == [1, 1]
@@ -228,7 +228,7 @@ end
                     workspace.index.collections, "dev", "a").own_metadata[:scale] == 3,
                 5,
             ) === :ok
-            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.label)
             loaded = DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
 
@@ -256,7 +256,7 @@ end
                 ),
                 5,
             ) === :ok
-            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.label)
             DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test processes["a"][] == 3
@@ -273,7 +273,7 @@ end
                 ) == 4,
                 5,
             ) === :ok
-            records = sort(collect(values(workspace.index.items)); by=record -> record.item_label)
+            records = sort(collect(values(workspace.index.items)); by=record -> record.label)
             DataBrowserCore.Workspace.materialize_items(workspace, records)
             wait_workspace_idle!(workspace)
             @test processes["a"][] == 4

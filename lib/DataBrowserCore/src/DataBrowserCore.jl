@@ -13,8 +13,6 @@ using DataBrowserAPI:
     data_items,
     detect_kind,
     kind_label,
-    source_item_id,
-    source_item_label,
     source_item_path
 using DataBrowserAnnotations
 using DataBrowserSources

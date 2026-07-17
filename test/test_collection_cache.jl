@@ -28,21 +28,21 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
         ]
         leaf_key = DataBrowserAPI.ItemIndex.resolve_collection_path!(
             collections, DataBrowserAPI.ItemIndex.collection_inputs(path))
+        cache = open_cache_db(cache_identity; rebuild=true)
         record = DataBrowserAPI.ItemIndex.ItemRecord(;
             id="item-1",
-            source_item_id=filepath,
+            source_item_key=DataBrowserCache.source_item_key!(cache, filepath; mint=true),
             source_item_path=filepath,
-            item_label="item",
+            label="item",
             kind=:test,
             collection_key=leaf_key,
         )
         DataBrowserAPI.ItemIndex.insert_item!(collections, record.id, leaf_key)
-
-        cache = open_cache_db(cache_identity; rebuild=true)
         try
             write_meta_header!(cache)
             item = DataBrowserAPI.ItemIndex.RegisteredDataItem(record, nothing)
-            DataBrowserCache.store_interpreted_records!(cache, source_item, [record], [item])
+            DataBrowserCache.store_interpreted_records!(
+                cache, source_item, "item file", [record], [item])
             store_collection_index!(cache, collections, [record])
             store_collection_metadata!(cache, leaf_key, Dict(:mean => 2.5))
             store_collection_process_result!(cache, leaf_key)

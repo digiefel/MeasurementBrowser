@@ -71,7 +71,7 @@ end
             @test nested_metadata[:flag] === false
 
             metadata_by_label = Dict(
-                record.item_label =>
+                record.label =>
                     DataBrowserAPI.ItemIndex.effective_metadata(collections, record)
                 for record in values(workspace.index.items)
             )
@@ -87,7 +87,7 @@ end
         shallow = _open_settled(TEST_PROJECT, MBD.DirectorySource(dir; recursive=false))
         try
             @test shallow.cache.status.total_source_items == 1
-            @test only(collect(values(shallow.index.items))).item_label == "Table root"
+            @test only(collect(values(shallow.index.items))).label == "Table root"
         finally
             MBD.close_workspace!(shallow)
         end
@@ -99,7 +99,7 @@ end
             @test all(isempty(collection_record.own_metadata)
                 for collection_record in values(collections.records))
             @test all(
-                record.metadata == Dict{Symbol,Any}(:filename => basename(record.source_item_id))
+                record.metadata == Dict{Symbol,Any}(:filename => basename(record.source_item_path))
                 for record in values(without_metadata.index.items)
             )
         finally

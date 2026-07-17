@@ -193,11 +193,19 @@ Cache writes are now produced by the source scan itself, so cancelling cache wor
 cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
 
 """Return records currently published for one source item."""
-function source_item_records(index::WorkspaceIndex, source_item_id_value::String)::Vector{ItemRecord}
-    ids = get(index.items_by_source, source_item_id_value, nothing)
+function source_item_records(index::WorkspaceIndex, source_item_key_value::Int64)::Vector{ItemRecord}
+    ids = get(index.items_by_source, source_item_key_value, nothing)
     ids === nothing && return ItemRecord[]
     return ItemRecord[index.items[id] for id in ids if haskey(index.items, id)]
 end
+
+"""Resolve one source-item surrogate to the stable public source-item id."""
+source_item_id(workspace::Workspace, key::Integer)::String =
+    DataBrowserCache.source_item_id(workspace.cache.db, key)
+
+"""Resolve one public source-item id to its surrogate, or `nothing` when unknown."""
+source_item_key(workspace::Workspace, id_value::AbstractString)::Union{Nothing,Int64} =
+    DataBrowserCache.source_item_key(workspace.cache.db, id_value)
 
 """Return collection keys touched by records and their ancestors."""
 function affected_collection_keys(
@@ -270,8 +278,7 @@ function reconcile_source_metadata_cache!(
         names = registration_names(workspace.index.collections, key)
         names === nothing && continue
         inputs = collection_inputs(
-            workspace.source,
-            names,
+            registered_collection_path(workspace.source, names),
         )
         resolve_collection_path!(
             workspace.index.collections,
@@ -363,7 +370,7 @@ function refresh_workspace_source!(workspace::Workspace)::Nothing
         source_label(workspace.source),
         copy(workspace.index.collections),
         sort!(collect(values(workspace.index.items)); by=record ->
-            (record.source_item_id, record.id)),
+            (record.source_item_key, record.id)),
         ItemFailure[],
     )
     return nothing
@@ -372,9 +379,9 @@ end
 """Remove all published output owned by one source item and invalidate affected collections."""
 function remove_source_item_output!(
     workspace::Workspace,
-    source_item_id_value::String,
+    source_item_key_value::Int64,
 )::Tuple{Vector{ItemRecord},Vector{Int64}}
-    old_records = source_item_records(workspace.index, source_item_id_value)
+    old_records = source_item_records(workspace.index, source_item_key_value)
     invalidated = affected_collection_keys(workspace.index.collections, old_records)
     items = workspace.index.items
     collections = workspace.index.collections
@@ -384,8 +391,9 @@ function remove_source_item_output!(
         delete!(workspace.index.item_metadata, record.id)
         delete!(workspace.index.analysis_errors, record.id)
     end
-    delete!(workspace.index.analysis_errors, source_item_id_value)
-    delete!(workspace.index.items_by_source, source_item_id_value)
+    # Source-level analysis errors stay keyed by the public source-item id.
+    delete!(workspace.index.analysis_errors, source_item_id(workspace, source_item_key_value))
+    delete!(workspace.index.items_by_source, source_item_key_value)
     analysis_cleared = false
     for collection_key in invalidated
         haskey(collections.records, collection_key) || continue
@@ -414,27 +422,28 @@ end
 """Publish one source item's current records after validating duplicate IDs."""
 function publish_source_item_records!(
     workspace::Workspace,
-    source_item_id_value::String,
+    source_item_key_value::Int64,
     records::Vector{ItemRecord},
     collection_paths::Vector{Vector{CollectionInput}},
 )::Tuple{Vector{ItemRecord},Vector{Int64}}
+    source_ref = source_item_id(workspace, source_item_key_value)
     length(records) == length(collection_paths) || error(
-        "Cannot publish source item '$source_item_id_value': records and collection paths differ in length",
+        "Cannot publish source item '$source_ref': records and collection paths differ in length",
     )
-    old_records = source_item_records(workspace.index, source_item_id_value)
+    old_records = source_item_records(workspace.index, source_item_key_value)
     old_ids = Set(record.id for record in old_records)
     replacement_ids = Set{String}()
     for record in records
-        record.source_item_id == source_item_id_value || error(
-            "Cannot publish source item '$source_item_id_value': replacement contains " *
-            "record '$(record.id)' from source item '$(record.source_item_id)'",
+        record.source_item_key == source_item_key_value || error(
+            "Cannot publish source item '$source_ref': replacement contains " *
+            "record '$(record.id)' from source item key $(record.source_item_key)",
         )
         record.id in replacement_ids && error(
-            "Cannot publish source item '$source_item_id_value': duplicate item id '$(record.id)'",
+            "Cannot publish source item '$source_ref': duplicate item id '$(record.id)'",
         )
         push!(replacement_ids, record.id)
         haskey(workspace.index.items, record.id) && !(record.id in old_ids) && error(
-            "Cannot publish source item '$source_item_id_value': replacement item id " *
+            "Cannot publish source item '$source_ref': replacement item id " *
             "'$(record.id)' already belongs to another source item",
         )
     end
@@ -467,15 +476,15 @@ function publish_source_item_records!(
             delete!(workspace.index.analysis_errors, record.id)
         end
     end
-    delete!(workspace.index.analysis_errors, source_item_id_value)
+    delete!(workspace.index.analysis_errors, source_ref)
     for record in resolved
         items[record.id] = record
         delete!(workspace.index.item_metadata, record.id)
     end
     if isempty(resolved)
-        delete!(workspace.index.items_by_source, source_item_id_value)
+        delete!(workspace.index.items_by_source, source_item_key_value)
     else
-        workspace.index.items_by_source[source_item_id_value] =
+        workspace.index.items_by_source[source_item_key_value] =
             String[record.id for record in resolved]
     end
     filter!(id -> haskey(items, id), workspace.selection.item_ids)
@@ -510,23 +519,26 @@ function ingest_source_changes!(
 )::Bool
     changed = false
     for removed in changes.removals
-        old_records, invalidated = remove_source_item_output!(workspace, removed)
-        delete_source_item!(workspace.cache.db, removed, old_records)
+        removed_key = source_item_key(workspace, removed)
+        removed_key === nothing && continue
+        old_records, invalidated = remove_source_item_output!(workspace, removed_key)
+        delete_source_item!(workspace.cache.db, removed_key, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
         delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
         lock(workspace.work.lock) do
-            delete!(workspace.work.source_items, removed)
+            delete!(workspace.work.source_items, removed_key)
         end
         changed = true
     end
     isempty(changes.upserts) || lock(workspace.work.lock) do
         for source_item in changes.upserts
-            source_item_id_value = source_item_id(source_item)
-            old_records = source_item_records(workspace.index, source_item_id_value)
-            delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
-            key = WorkKey(SOURCE_INTERPRET, source_item_id_value)
-            workspace.work.source_items[source_item_id_value] = source_item
+            source_item_key_value =
+                source_item_key!(workspace.cache.db, id(source_item); mint=true)
+            old_records = source_item_records(workspace.index, source_item_key_value)
+            delete_source_item!(workspace.cache.db, source_item_key_value, old_records)
+            key = WorkKey(SOURCE_INTERPRET, source_item_key_value)
+            workspace.work.source_items[source_item_key_value] = source_item
             enqueue_work!(
                 workspace,
                 key,
@@ -642,7 +654,7 @@ function scan_source!(
             for item in discovered
                 is_cancellation_requested(scan_token) &&
                 throw(OperationCanceledException(scan_token))
-                id_value = source_item_id(item)
+                id_value = id(item)
                 push!(seen, id_value)
                 current_fingerprint = fingerprint(item)
                 current[id_value] = current_fingerprint
@@ -789,12 +801,12 @@ function replace_item_index!(
 )::Nothing
     items = Dict{String,ItemRecord}()
     sizehint!(items, length(records))
-    items_by_source = Dict{String,Vector{String}}()
+    items_by_source = Dict{Int64,Vector{String}}()
     metadata_keys = Set{Symbol}()
     for item in records
         haskey(items, item.id) && error("Duplicate item id generated during scan: $(item.id)")
         items[item.id] = item
-        push!(get!(() -> String[], items_by_source, item.source_item_id), item.id)
+        push!(get!(() -> String[], items_by_source, item.source_item_key), item.id)
     end
     for collection_record in values(collections.records)
         union!(metadata_keys, keys(collection_record.own_metadata))
@@ -975,16 +987,18 @@ function publish_work_success!(
     if key.kind === SOURCE_INTERPRET
         interpretation = result.interpretation::SourceItemInterpretation
         records = interpretation.records
+        source_ref = source_item_id(workspace, key.entity::Int64)
         resolved, invalidated = Profiling.@profile_span workspace.profiler :source :publish_records Profiling.ProfileAttributes(
-            source_id=key.entity,
+            source_id=source_ref,
             batch_size=length(records),
         ) begin
             publish_source_item_records!(
-                workspace, key.entity, records, interpretation.collection_paths)
+                workspace, key.entity::Int64, records, interpretation.collection_paths)
         end
         conflicts = store_interpreted!(
             workspace.cache.db,
             result.source_item,
+            interpretation.source_item_label,
             resolved,
             interpretation.interpreted_items,
         )
@@ -992,7 +1006,7 @@ function publish_work_success!(
         delete_collection_metadata!(workspace.cache.db, invalidated)
         delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, resolved; collection_keys=invalidated)
-        publish_metadata_conflicts!(workspace, key.entity, key.kind, conflicts)
+        publish_metadata_conflicts!(workspace, source_ref, key.kind, conflicts)
         reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
@@ -1085,28 +1099,30 @@ function publish_work_failure!(
     record = key.kind in (ITEM_PROCESS, ITEM_ANALYZE) ?
         get(workspace.index.items, key.entity, nothing) : nothing
     if key.kind === SOURCE_INTERPRET
-        old_records, invalidated = remove_source_item_output!(workspace, key.entity)
-        delete_source_item!(workspace.cache.db, key.entity, old_records)
+        source_key = key.entity::Int64
+        source_ref = source_item_id(workspace, source_key)
+        old_records, invalidated = remove_source_item_output!(workspace, source_key)
+        delete_source_item!(workspace.cache.db, source_key, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
         delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
-        workspace.index.analysis_errors[key.entity] = "interpret_source_item: " * message
-        store_source_item_failure!(workspace.cache.db, key.entity, message)
+        workspace.index.analysis_errors[source_ref] = "interpret_source_item: " * message
+        store_source_item_failure!(workspace.cache.db, source_key, message)
         @error(
             "Source interpretation failed",
-            source_item=key.entity,
+            source_item=source_ref,
             stage=key.kind,
             exception=(failure.ex, failure.processed_bt),
         )
     else
-        source_item_id_value = record === nothing ? "" : record.source_item_id
+        source_item_key_value = record === nothing ? Int64(0) : record.source_item_key
         cache_entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
             key.entity::Int64 : key.entity::String
         store_result_failure!(
             workspace.cache.db,
             _work_key_cache_kind(key),
             cache_entity,
-            source_item_id_value,
+            source_item_key_value,
             message,
         )
         workspace.index.analysis_errors[key.entity] = message

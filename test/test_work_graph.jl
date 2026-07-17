@@ -177,10 +177,10 @@ end
             @test summary.processed == 1
             @test summary.analyzed == 1
 
-            source_item_id = only(keys(workspace.index.items_by_source))
+            source_item_key = only(keys(workspace.index.items_by_source))
             records = DataBrowserCore.Workspace.source_item_records(
-                workspace.index, source_item_id)
-            CACHE.delete_source_item!(workspace.cache.db, source_item_id, records)
+                workspace.index, source_item_key)
+            CACHE.delete_source_item!(workspace.cache.db, source_item_key, records)
             summary = CACHE.cache_stage_summary(workspace.cache.db)
             @test summary.cached_sources == 0
             @test summary.interpreted_items == 0

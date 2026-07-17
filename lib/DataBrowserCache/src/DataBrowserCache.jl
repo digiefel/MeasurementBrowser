@@ -2,6 +2,7 @@
 module DataBrowserCache
 
 import DataBrowserAPI
+import DataBrowserAPI: label
 using DataBrowserAPI:
     AbstractCollection,
     AbstractDataItem,
@@ -9,10 +10,10 @@ using DataBrowserAPI:
     MetadataDict,
     cacheable,
     fingerprint,
+    id,
     item_data,
     metadata,
     source_id,
-    source_item_id,
     source_item_path,
     source_item_timestamp,
     source_label
@@ -91,6 +92,9 @@ export AbstractCacheDB,
     store_result_failure!,
     store_source_item_failure!,
     edit_source_item_metadata!,
+    source_item_key!,
+    source_item_key,
+    source_item_id,
     wait_condition_deadline,
     write_meta_header!
 

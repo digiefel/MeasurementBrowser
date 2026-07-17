@@ -11,7 +11,7 @@ import DataBrowserAPI: AbstractDataSourceItem
     COLLECTION_ANALYZE
 end
 
-"""One operation key: source/item work uses String IDs; collection work uses Int64 keys."""
+"""One operation key: item work uses String IDs; source and collection work uses Int64 keys."""
 struct WorkKey
     kind::WorkKind
     entity::Union{String,Int64}
@@ -35,8 +35,8 @@ mutable struct WorkDependencyGraph
     condition::Base.Threads.Condition
     nodes::Dict{WorkKey,WorkNode}
     queue::Dict{Int,Vector{Tuple{WorkKey,UInt16}}}
-    source_items::Dict{String,AbstractDataSourceItem}
-    source_locks::Dict{String,ReentrantLock}
+    source_items::Dict{Int64,AbstractDataSourceItem}
+    source_locks::Dict{Int64,ReentrantLock}
     workers::Vector{Task}
     total::Int
     completed::Int
@@ -53,8 +53,8 @@ function WorkDependencyGraph()::WorkDependencyGraph
         Base.Threads.Condition(work_lock),
         Dict{WorkKey,WorkNode}(),
         Dict{Int,Vector{Tuple{WorkKey,UInt16}}}(),
-        Dict{String,AbstractDataSourceItem}(),
-        Dict{String,ReentrantLock}(),
+        Dict{Int64,AbstractDataSourceItem}(),
+        Dict{Int64,ReentrantLock}(),
         Task[],
         0,
         0,

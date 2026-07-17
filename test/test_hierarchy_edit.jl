@@ -26,15 +26,17 @@ end
                 HE_INDEX.RegisteredCollection("batch"),
             ])
             for number in 1:2
+                source_key = DataBrowserCache.source_item_key!(
+                    workspace.cache.db, "source-$number"; mint=true)
                 record = HE_INDEX.ItemRecord(;
-                    source_item_id="source-$number",
+                    source_item_key=source_key,
                     id="item-$number",
-                    item_label="Item $number",
+                    label="Item $number",
                     kind=:row,
                 )
                 DataBrowserCore.Workspace.publish_source_item_records!(
                     workspace,
-                    record.source_item_id,
+                    record.source_item_key,
                     [record],
                     [path],
                 )
@@ -60,14 +62,15 @@ end
             existing = items["item-1"]
             DataBrowserCore.Workspace.publish_source_item_records!(
                 workspace,
-                existing.source_item_id,
+                existing.source_item_key,
                 [existing],
                 [path],
             )
             @test HE_INDEX.collection_item_ids(collections, only(keys(collections.records))) ==
                 ["item-1", "item-2"]
 
-            DataBrowserCore.Workspace.remove_source_item_output!(workspace, "source-1")
+            DataBrowserCore.Workspace.remove_source_item_output!(
+                workspace, existing.source_item_key)
             @test workspace.index === index
             @test workspace.index.collections === collections
             @test workspace.index.items === items

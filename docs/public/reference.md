@@ -64,14 +64,13 @@ analyze = (processed_data::ProcessedData, metadata::Dict) -> additional_metadata
 ```julia
 item_data(item::MyItem)::MyData
 metadata(item::MyItem)::Dict
-item_label(item::MyItem)::String
+label(item::MyItem)::String
 collection(item::MyItem)::Vector{<:AbstractCollection}
 label(collection::AbstractCollection)::String
 metadata(collection::AbstractCollection)::Dict
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-fingerprint(item::MyItem)::Any
 cacheable(item::MyItem)::Bool
 ```
 
@@ -92,8 +91,8 @@ source_open_options(source::MySource)::NamedTuple
 ## Source-item interface
 
 ```julia
-source_item_id(item::MySourceItem)::String
-source_item_label(item::MySourceItem)::String
+id(item::MySourceItem)::String
+label(item::MySourceItem)::String
 fingerprint(item::MySourceItem)::Any
 source_item_path(item::MySourceItem)::Union{Nothing,String}
 source_item_timestamp(item::MySourceItem)::Any

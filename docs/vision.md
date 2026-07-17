@@ -165,7 +165,9 @@ A note on the registration API: `define_project` / `register_*` is one convenien
 data pipeline with ordinary values and functions. Its reader is the only required callback; identity,
 labels, collection placement, metadata, processing, and analysis have useful defaults. The type API
 is the fundamental layer for packages that model sources and items directly with multiple dispatch.
-Both paths drive the same workspace and commands.
+The registration dialect ships as `DataBrowserRecipes`, an ordinary package built purely on that
+layer and re-exported by default; it also carries premade recipes (CSV first) so common files work
+without custom setup. Both paths drive the same workspace and commands.
 
 ### Scriptable shape (illustrative)
 
@@ -206,12 +208,15 @@ talks to; the engine packages implement it; the frontends call it.**
 
 ```
 DataBrowserAPI     the shared surface every interface calls and every extension implements:
-                   command declarations (open_workspace, scan, load, select, materialize, plot,
-                   export, query, register_*, …), the extension definitions (what a source / loader /
-                   visualizer / command is), and the Project value type. Payload-agnostic; tiny deps.
+                   command declarations (open_workspace, scan, load, select, construct, plot,
+                   export, query, …), the extension definitions (what a source / loader /
+                   visualizer / command is), the typed pipeline stage contract, and the
+                   `AbstractProject` contract. Payload-agnostic; tiny deps.
 DataBrowserProfiling  instrumentation / traces (leaf: traces don't reference item identity)
 DataBrowserAnnotations → API : tags / notes / spatial-layout model, attached to item identities
 DataBrowserSources → API : file discovery, loading, metadata extraction, data summaries
+DataBrowserRecipes → API, Sources : the callback dialect (define_project, register_*) implemented
+                   as a client of the typed stage contract, plus premade recipes (CSV first)
 DataBrowserCache   → API : persistence (DuckDB where it fits); keyed by PROJECT, not workspace
 DataBrowserCore    → API, Sources, Cache, Annotations : the workspace, the index, background work,
                    command execution, project save/load, provenance, REPL, and the runtime that
@@ -224,7 +229,7 @@ DataBrowserPlots   → API, Core, GUI (+ GLMakie) : a first-party/default GUI ex
                    embedding, high-level plot APIs, and enhanced default visualizers
 DataBrowserCLI     → API, Core : a command-line frontend over the same commands (may come later)
 DataBrowser        → GUI, default extensions : umbrella / install target; re-exports the API
-                   and wires defaults
+                   and the recipes dialect, and wires defaults
 ```
 
 The dependency graph is acyclic with `DataBrowserAPI` at the bottom and the GUI host/extensions at
@@ -244,12 +249,14 @@ phasing.
 
 ## 7. Registration and Callback Model
 
-The registration API defines named or default pipelines over ordinary Julia data. `read` performs
-the per-source-item interpretation once and returns either one data value, one `DataItem`, or
-several data items. `DataItem` construction supplies cheap sibling identity, labels, collection placement,
-and metadata at the same time data is split. Deferred `process` and `analyze` callbacks receive data
-and effective metadata. A registration name provides stable replacement and associates extension or
-collection operations. It is not stored as a property of the user's data.
+The registration API defines named or default pipelines over ordinary Julia data. It ships as
+`DataBrowserRecipes`, an ordinary package implemented purely as a client of the typed stage
+contract; the engine never learns it exists. `read` performs the per-source-item source read once
+and `entries` expands the result into one or several data items. Item construction supplies cheap
+sibling identity, labels, collection placement, and metadata at the same time data is split.
+Deferred `process` and `analyze` callbacks receive data and effective metadata. A registration
+name provides stable replacement and associates extension or collection operations. It is not a
+property of the user's data.
 
 The type API models `AbstractDataSource`, `AbstractDataSourceItem`, and `AbstractDataItem` values
 directly. Concrete item types survive materialization, processing, and visualization. Their behavior

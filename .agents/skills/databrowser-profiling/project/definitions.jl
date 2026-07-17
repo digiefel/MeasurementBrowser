@@ -8,7 +8,7 @@
 
 # using Revise  # not wanted in profiling runs
 using DataBrowser
-import DataBrowser: collection, id, item_data, item_label, kind, metadata
+import DataBrowser: collection, id, item_data, kind, metadata
 using CSV
 using DataFrames
 using Statistics: mean
