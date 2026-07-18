@@ -116,10 +116,21 @@ open_compile_seconds = (compile_ns() - compile_before_open) / 1e9
 mark!("open_workspace returned")
 
 browser_seconds = NaN
+first_frame_seconds = NaN
 browser = nothing
+t_browser = time()
 if MODE == "gui"
-    browser_seconds = @elapsed browser = Main.DataBrowser.open_browser(workspace; wait=false)
+    browser = Main.DataBrowser.open_browser(workspace; wait=false)
     mark!("open_browser returned")
+    browser_seconds = time() - t_browser
+    # Wait until the first non-blank frame is submitted (startup surface or full UI).
+    deadline = time() + 120.0
+    while isnan(browser.state.performance.first_frame_at) && time() < deadline
+        sleep(0.01)
+    end
+    first_frame_at = browser.state.performance.first_frame_at
+    first_frame_seconds = isnan(first_frame_at) ? NaN : (first_frame_at - t_browser)
+    mark!("first frame")
 end
 
 # --- 5. sample the scan for the budget window ------------------------------------------------
@@ -146,7 +157,7 @@ function sample_scan_window!(samples::Vector{Sample}, workspace, scan_t0::Float6
             c.cache.analyzed, c.cache.collection_processed, c.cache.collection_analyzed,
             status.busy))
         status.busy || break
-        sleep(0.25)
+        sleep(0.1)  # ~10 Hz
     end
     return nothing
 end
@@ -187,19 +198,31 @@ callback_seconds = sum(values(phase_totals))
 capacity_seconds = scan_window * max(length(worker_threads), 1)
 
 # --- 7. shutdown ------------------------------------------------------------------------------
+# Close the GUI first so it does not fight close_workspace! (its exit path also closes the workspace).
+close_browser_seconds = NaN
+if browser isa Main.DataBrowser.BrowserSession
+    close_browser_seconds = @elapsed Main.DataBrowser.close_browser!(browser)
+    mark!("browser closed")
+end
 close_seconds = @elapsed close_workspace!(workspace)
 first(DEPOT_PATH) == cache_root && popfirst!(DEPOT_PATH)
 rm(cache_root; force=true, recursive=true)
 mark!("closed")
 
 # --- report -----------------------------------------------------------------------------------
-if PROFILER in ("cpu", "wall")
-    open(joinpath(OUTDIR, "$(PROFILER)_profile.txt"), "w") do io
-        if PROFILER == "cpu"
+if PROFILER == "cpu"
+    try
+        @eval using ProfileSVG
+        Base.invokelatest(ProfileSVG.save, joinpath(OUTDIR, "cpu_flame.svg"))
+    catch err
+        @warn "cpu_flame.svg not written" exception = err
+        open(joinpath(OUTDIR, "cpu_profile.txt"), "w") do io
             Profile.print(io; format=:flat, sortedby=:count, mincount=2)
-        else
-            Profile.print(io; format=:tree, mincount=2)
         end
+    end
+elseif PROFILER == "wall"
+    open(joinpath(OUTDIR, "wall_profile.txt"), "w") do io
+        Profile.print(io; format=:tree, mincount=2)
     end
 elseif PROFILER == "allocs"
     open(joinpath(OUTDIR, "allocation_profile.txt"), "w") do io
@@ -222,24 +245,34 @@ function milestone(samples::Vector{Sample}, done::Function)::Float64
 end
 
 last_s = samples[end]
-discovery_done = milestone(samples, s -> s.sources_pending == 0 && s.sources_found > 0)
+# Full discovery = first sample that already knows the final source count for this run.
+discovery_done = milestone(samples, s -> s.sources_found == last_s.sources_found && last_s.sources_found > 0)
 interpret_done = milestone(samples,
-    s -> s.sources_pending == 0 && s.sources_found > 0 && s.cached_sources >= s.sources_found)
+    s -> last_s.sources_found > 0 && s.cached_sources >= last_s.sources_found)
 process_done = milestone(samples, s -> s.interpreted > 0 && s.processed >= s.interpreted)
 analyze_done = milestone(samples, s -> s.interpreted > 0 && s.analyzed >= s.interpreted)
 finished = !last_s.busy
 
-function half_rates(samples::Vector{Sample}, getter::Function)
-    mid = samples[max(1, length(samples) ÷ 2)]
-    r1 = getter(mid) / max(mid.t, eps())
-    r2 = (getter(samples[end]) - getter(mid)) / max(samples[end].t - mid.t, eps())
-    return r1, r2
+# Stage counts vs time (~10 Hz samples).
+try
+    using GLMakie
+    fig = Figure(size = (900, 500))
+    ax = Axis(fig[1, 1]; xlabel = "t (s)", ylabel = "count", title = "scan timeline")
+    ts = [s.t for s in samples]
+    lines!(ax, ts, [s.sources_found for s in samples]; label = "sources_found")
+    lines!(ax, ts, [s.cached_sources for s in samples]; label = "cached_sources")
+    lines!(ax, ts, [s.interpreted for s in samples]; label = "interpreted")
+    lines!(ax, ts, [s.processed for s in samples]; label = "processed")
+    lines!(ax, ts, [s.analyzed for s in samples]; label = "analyzed")
+    axislegend(ax; position = :lt)
+    save(joinpath(OUTDIR, "timeline.png"), fig)
+catch err
+    @warn "timeline.png not written" exception = err
 end
-interp_r1, interp_r2 = half_rates(samples, s -> s.interpreted)
-proc_r1, proc_r2 = half_rates(samples, s -> s.processed)
 
 commit = readchomp(`git -C $REPO_ROOT rev-parse --short HEAD`)
 fmt(x) = isnan(x) ? "not reached" : @sprintf("%.1f s", x)
+rate(n) = n / max(scan_window, eps())
 
 println()
 println("=== DataBrowser timed profile ($MODE, $commit, $(Threads.nthreads()) threads, " *
@@ -251,7 +284,10 @@ println("Startup")
 @printf("  using DataBrowser      %8.1f s   (%.1f s compile)\n", load_seconds, load_compile_seconds)
 @printf("  project include        %8.1f s\n", include_seconds)
 @printf("  open_workspace         %8.1f s   (%.1f s compile)\n", open_seconds, open_compile_seconds)
-MODE == "gui" && @printf("  open_browser           %8.1f s   (render task started; not first-frame)\n", browser_seconds)
+if MODE == "gui"
+    @printf("  open_browser           %8.1f s\n", browser_seconds)
+    @printf("  time to first frame    %8s\n", fmt(first_frame_seconds))
+end
 println()
 println("Scan window ($(round(scan_window; digits=1)) s sampled, $(finished ? "pipeline finished" : "budget hit"))")
 @printf("  runtime JIT in window  %8.1f s\n", scan_compile_seconds)
@@ -260,9 +296,9 @@ println("  interpretation done    ", fmt(interpret_done), "   ($(last_s.interpre
 println("  processing done        ", fmt(process_done), "   ($(last_s.processed) processed)")
 println("  analysis done          ", fmt(analyze_done), "   ($(last_s.analyzed) analyzed)")
 println()
-println("Throughput (items/s, first half → second half of window)")
-@printf("  interpretation         %8.1f → %.1f\n", interp_r1, interp_r2)
-@printf("  processing             %8.1f → %.1f\n", proc_r1, proc_r2)
+println("Throughput (items / scan-window second)")
+@printf("  interpretation         %8.1f\n", rate(last_s.interpreted))
+@printf("  processing             %8.1f\n", rate(last_s.processed))
 println()
 println("Pipeline callbacks vs capacity ($(length(worker_threads)) worker threads seen)")
 for phase in (:detect, :read, :entries, :process, :analyze)
@@ -272,7 +308,9 @@ end
     callback_seconds, capacity_seconds, 100 * callback_seconds / capacity_seconds,
     100 * (1 - callback_seconds / capacity_seconds))
 println()
-@printf("Shutdown: close_workspace! %.2f s\n", close_seconds)
+MODE == "gui" && !isnan(close_browser_seconds) &&
+    @printf("Shutdown: close_browser! %.2f s, close_workspace! %.2f s\n", close_browser_seconds, close_seconds)
+MODE != "gui" && @printf("Shutdown: close_workspace! %.2f s\n", close_seconds)
 println()
 println("Timeline events")
 for (event, t) in TIMELINE_EVENTS
