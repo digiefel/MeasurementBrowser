@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "e7ea117d0808b5578e74f7e6a24f0940279693a6"
+project_hash = "746e8dc6bcf207ed2bd3fca00492e0721686aceb"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -339,6 +339,12 @@ version = "2.6.1"
 git-tree-sha1 = "abe83f3a2f1b857aac70ef8b269080af17764bbe"
 uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 version = "1.16.0"
+
+[[deps.DataBrowser]]
+deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserGUI", "DataBrowserPlots", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+path = ".."
+uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
+version = "0.1.0-alpha.1"
 
 [[deps.DataBrowserAPI]]
 deps = ["CancellationTokens", "Dates", "SHA", "Tables"]
@@ -1442,6 +1448,12 @@ git-tree-sha1 = "e24dc23107d426a096d3eae6c165b921e74c18e4"
 uuid = "fdea26ae-647d-5447-a871-4b548cad5224"
 version = "3.7.2"
 
+[[deps.SavitzkyGolay]]
+deps = ["LinearAlgebra"]
+git-tree-sha1 = "7bbc5949a42f53f4fca1a0157c72f9d3f78050d1"
+uuid = "c4bf5708-b6a6-4fbe-bcd0-6850ed671584"
+version = "0.9.1"
+
 [[deps.Scratch]]
 deps = ["Dates"]
 git-tree-sha1 = "9b81b8393e50b7d4e6d0a9f14e192294d3b7c109"
@@ -1486,6 +1498,14 @@ deps = ["Dates", "FileIO", "ImageCore", "IndirectArrays", "OffsetArrays", "REPL"
 git-tree-sha1 = "0494aed9501e7fb65daba895fb7fd57cc38bc743"
 uuid = "45858cf5-a6b0-47a3-bbea-62219f50df47"
 version = "0.1.5"
+
+[[deps.SmoothData]]
+deps = ["LinearAlgebra", "SavitzkyGolay"]
+git-tree-sha1 = "dd661d4b754a1b514bda790c68fdc93741944b51"
+repo-rev = "main"
+repo-url = "https://github.com/dgfl-gh/SmoothData"
+uuid = "0112b07a-89eb-48f6-acf7-65d97704274c"
+version = "0.1.0"
 
 [[deps.Sockets]]
 uuid = "6462fe0b-24de-5631-8697-dd941f90decc"
