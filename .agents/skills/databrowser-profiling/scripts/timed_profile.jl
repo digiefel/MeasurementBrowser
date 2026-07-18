@@ -9,7 +9,7 @@ end
 option_string(name, default) = let m = findfirst(a -> startswith(a, "--$name="), ARGS)
     m === nothing ? default : split(ARGS[m], '='; limit=2)[2]
 end
-const BUDGET = option_seconds("budget", 30.0)
+const BUDGET = option_seconds("budget", 60.0)
 const CACHE_MODE = option_string("cache", "fresh")
 CACHE_MODE in ("fresh", "resume") || error("--cache must be fresh or resume")
 const FRESH_COMPILE = "--fresh-compile" in ARGS
@@ -81,7 +81,7 @@ pathof(DataBrowser) !== nothing && startswith(pathof(DataBrowser), REPO_ROOT) ||
 # --- 3. project definitions (include + register! calls) --------------------------------------
 include_seconds = @elapsed Base.include(Main, DEFINITIONS)
 isdefined(Main, :PROJECT) || error("$DEFINITIONS did not define PROJECT")
-project = Base.invokelatest(() -> getfield(Main, :PROJECT))
+project = getfield(Main, :PROJECT)
 mark!("project definitions loaded")
 
 using DataBrowserCore.Workspace: close_workspace!, open_workspace, workspace_status
@@ -138,7 +138,6 @@ function sample_scan_window!(samples::Vector{Sample}, workspace, scan_t0::Float6
             c.cache.cached_sources, c.cache.interpreted_items, c.cache.processed,
             c.cache.analyzed, c.cache.collection_processed, c.cache.collection_analyzed,
             status.busy))
-        status.busy || break
         sleep(0.1)  # ~10 Hz
     end
     return nothing
@@ -163,12 +162,11 @@ else
 end
 scan_window = time() - scan_t0
 scan_compile_seconds = (compile_ns() - compile_before_scan) / 1e9
-mark!("scan window closed")
+mark!("measurement period ended")
 
 # --- 6. pipeline callback seconds vs wall capacity (app overhead) ----------------------------
 phase_totals = Dict{Symbol,Float64}(
     :detect => 0.0, :read => 0.0, :entries => 0.0, :process => 0.0, :analyze => 0.0)
-worker_threads = Set{Int}()
 lock(project.profile_lock) do
     for entry in values(project.scan_profile)
         phase_totals[:detect] += entry.detect_seconds
@@ -176,11 +174,9 @@ lock(project.profile_lock) do
         phase_totals[:entries] += entry.entries_seconds
         phase_totals[:process] += entry.process_seconds
         phase_totals[:analyze] += entry.analyze_seconds
-        union!(worker_threads, entry.thread_ids)
     end
 end
 callback_seconds = sum(values(phase_totals))
-capacity_seconds = scan_window * max(length(worker_threads), 1)
 
 # --- 7. shutdown ------------------------------------------------------------------------------
 # Close the GUI first so it does not fight close_workspace! (its exit path also closes the workspace).
@@ -223,20 +219,7 @@ open(joinpath(OUTDIR, "timeline.csv"), "w") do io
     end
 end
 
-function milestone(samples::Vector{Sample}, done::Function)::Float64
-    i = findfirst(done, samples)
-    return i === nothing ? NaN : samples[i].t
-end
-
 last_s = samples[end]
-# Full discovery = first sample that already knows the final source count for this run.
-discovery_done = milestone(samples, s -> s.sources_found == last_s.sources_found && last_s.sources_found > 0)
-interpret_done = milestone(samples,
-    s -> last_s.sources_found > 0 && s.cached_sources >= last_s.sources_found)
-process_done = milestone(samples, s -> s.interpreted > 0 && s.processed >= s.interpreted)
-analyze_done = milestone(samples, s -> s.interpreted > 0 && s.analyzed >= s.interpreted)
-finished = !last_s.busy
-
 # Stage counts vs time (~10 Hz samples).
 try
     using CairoMakie
@@ -269,35 +252,44 @@ println("Startup")
 @printf("  precompile             %8.1f s%s\n", precompile_seconds,
     FRESH_COMPILE ? "" : "   (compiled package caches kept)")
 @printf("  using DataBrowser      %8.1f s   (%.1f s aggregate compile)\n", load_seconds, load_compile_seconds)
-@printf("  project include        %8.1f s\n", include_seconds)
+@printf("  project script load    %8.1f s   (helpers + define_project/register_* calls)\n", include_seconds)
 @printf("  open_workspace         %8.1f s   (%.1f s aggregate compile)\n", open_seconds, open_compile_seconds)
 if MODE == "gui"
     @printf("  open_browser           %8.1f s\n", browser_seconds)
     @printf("  time to first frame    %8s\n", fmt(first_frame_seconds))
 end
 println()
-println("Scan window ($(round(scan_window; digits=1)) s sampled, $(finished ? "pipeline finished" : "budget hit"))")
-@printf("  aggregate compilation  %8.1f s   (%.1f%% of thread capacity)\n",
-    scan_compile_seconds,
-    100 * scan_compile_seconds / max(scan_window * Threads.nthreads(), eps()))
-println("  discovery done         ", fmt(discovery_done), "   ($(last_s.sources_found) sources)")
-println("  interpretation done    ", fmt(interpret_done), "   ($(last_s.interpreted) items from $(last_s.cached_sources) sources)")
-println("  processing done        ", fmt(process_done), "   ($(last_s.processed) processed)")
-println("  analysis done          ", fmt(analyze_done), "   ($(last_s.analyzed) analyzed)")
+println("Measurement period: $(round(scan_window; digits=1)) s " *
+    (MODE == "gui" ? "after first frame" : "after open_workspace returned"))
+@printf("  runtime compilation during the measurement, summed across Julia threads  %8.1f s\n",
+    scan_compile_seconds)
 println()
-println("Throughput (items / scan-window second)")
-@printf("  interpretation         %8.1f   (%d → %d)\n",
+println("Progress and throughput during the measurement")
+@printf("  cached sources         %8.1f sources/s      (%d → %d)\n",
+    rate(last_s.cached_sources, first_s.cached_sources),
+    first_s.cached_sources, last_s.cached_sources)
+@printf("  interpreted items      %8.1f items/s        (%d → %d)\n",
     rate(last_s.interpreted, first_s.interpreted), first_s.interpreted, last_s.interpreted)
-@printf("  processing             %8.1f   (%d → %d)\n",
+@printf("  processed items        %8.1f items/s        (%d → %d)\n",
     rate(last_s.processed, first_s.processed), first_s.processed, last_s.processed)
+@printf("  analyzed items         %8.1f items/s        (%d → %d)\n",
+    rate(last_s.analyzed, first_s.analyzed), first_s.analyzed, last_s.analyzed)
+@printf("  processed collections  %8.1f collections/s  (%d → %d)\n",
+    rate(last_s.collection_processed, first_s.collection_processed),
+    first_s.collection_processed, last_s.collection_processed)
+@printf("  analyzed collections   %8.1f collections/s  (%d → %d)\n",
+    rate(last_s.collection_analyzed, first_s.collection_analyzed),
+    first_s.collection_analyzed, last_s.collection_analyzed)
 println()
-println("Pipeline callbacks vs capacity ($(length(worker_threads)) worker threads seen)")
-for phase in (:detect, :read, :entries, :process, :analyze)
-    @printf("  %-9s              %8.1f s\n", phase, phase_totals[phase])
+if callback_seconds == 0
+    println("Project callbacks: none ran during this profile")
+else
+    println("Summed elapsed time inside callbacks")
+    for phase in (:detect, :read, :entries, :process, :analyze)
+        @printf("  %-20s %8.1f s\n", "$(phase) callbacks", phase_totals[phase])
+    end
+    @printf("  total                   %8.1f s\n", callback_seconds)
 end
-@printf("  callbacks total        %8.1f s  of %.1f s worker capacity (%.0f%% callbacks, %.0f%% unattributed)\n",
-    callback_seconds, capacity_seconds, 100 * callback_seconds / capacity_seconds,
-    100 * (1 - callback_seconds / capacity_seconds))
 println()
 MODE == "gui" && !isnan(close_browser_seconds) &&
     @printf("Shutdown: close_browser! %.2f s, close_workspace! %.2f s\n", close_browser_seconds, close_seconds)

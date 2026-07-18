@@ -186,16 +186,16 @@ function run_profile_window(
         workspace = opened.workspace
         browser = opened.browser
         samples = Sample[]
-        scan_started_at = time()
-        sample_scan_window!(samples, workspace, scan_started_at, budget)
-        scan_seconds = time() - scan_started_at
+        measurement_started_at = time()
+        sample_scan_window!(samples, workspace, measurement_started_at, budget, false)
+        measurement_seconds = time() - measurement_started_at
         return (;
             workspace,
             browser,
             cache_path=opened.cache_path,
             open_seconds=opened.open_seconds,
             first_frame_seconds=opened.first_frame_seconds,
-            scan_seconds,
+            scan_seconds=measurement_seconds,
             samples,
         )
     catch
@@ -265,7 +265,6 @@ function callback_totals(profile_project)
         :process => 0.0,
         :analyze => 0.0,
     )
-    worker_threads = Set{Int}()
     lock(profile_project.profile_lock) do
         for entry in values(profile_project.scan_profile)
             phase_totals[:detect] += entry.detect_seconds
@@ -273,10 +272,9 @@ function callback_totals(profile_project)
             phase_totals[:entries] += entry.entries_seconds
             phase_totals[:process] += entry.process_seconds
             phase_totals[:analyze] += entry.analyze_seconds
-            union!(worker_threads, entry.thread_ids)
         end
     end
-    return (phases=phase_totals, worker_threads=worker_threads)
+    return phase_totals
 end
 
 function print_stage_row(
@@ -318,17 +316,11 @@ function print_run_summary(
     samples::Vector{Sample},
     sample_count::Int,
     phases::Dict{Symbol,Float64},
-    worker_threads::Set{Int},
     outdir::AbstractString,
     live::Bool=false,
 )::Nothing
     first_sample, last_sample = first(samples), last(samples)
     fmt(value) = isnan(value) ? "not reached" : @sprintf("%.2f s", value)
-    gui_seconds = mode === :gui && !isnan(first_frame_seconds) ? first_frame_seconds : 0.0
-    capture_other_seconds = max(
-        profile_seconds - open_seconds - scan_seconds - gui_seconds,
-        0.0,
-    )
     @printf(
         io,
         "DataBrowser %s profile: mode=%s profiler=%s budget=%.1f s threads=%d background_processing=%s\n",
@@ -340,25 +332,17 @@ function print_run_summary(
         background_processing,
     )
     @printf(io, "cache: %s (%s)\n", cache_mode, cache_path)
-    @printf(io, "capture elapsed: %.2f s\n", profile_seconds)
     if !live
         @printf(io, "  open_workspace: %.2f s\n", open_seconds)
         mode == :gui && println(io, "  time to first frame: ", fmt(first_frame_seconds))
     end
-    window_state = live ?
-        (last_sample.busy ? "fixed window; busy at end" : "fixed window; idle at end") :
-        (last_sample.busy ? "budget hit" : "pipeline finished")
-    @printf(io, "  scan window: %.2f s (%s)\n", scan_seconds, window_state)
-    @printf(io, "  profiler retrieval/other: %.2f s\n", capture_other_seconds)
-    compile_capacity = profile_seconds * Threads.nthreads()
+    @printf(io, "measurement period: %.2f s\n", scan_seconds)
     @printf(
         io,
-        "aggregate runtime compilation: %.2f s (%.1f%% of %d-thread capacity)\n",
+        "runtime compilation during the measurement, summed across Julia threads: %.2f s\n",
         compile_seconds,
-        100 * compile_seconds / max(compile_capacity, eps()),
-        Threads.nthreads(),
     )
-    println(io, "stage counts during scan window")
+    println(io, "progress during this profile")
     println(io, "  stage                     start      end    delta     rate/s")
     print_stage_row(io, "sources found", first_sample, last_sample, :sources_found, scan_seconds)
     print_stage_row(io, "sources pending", first_sample, last_sample, :sources_pending, scan_seconds)
@@ -372,39 +356,16 @@ function print_run_summary(
         io, "collection analyzed", first_sample, last_sample, :collection_analyzed, scan_seconds)
     @printf(io, "profile samples: %d\n", sample_count)
     callback_seconds = sum(values(phases))
-    capacity_seconds = profile_seconds * max(length(worker_threads), 1)
-    println(io, "callback attribution")
-    println(io, "  phase                    seconds  % capacity")
-    for phase in (:detect, :read, :entries, :process, :analyze)
-        @printf(
-            io,
-            "  %-22s %8.2f %11.1f\n",
-            phase,
-            phases[phase],
-            100 * phases[phase] / max(capacity_seconds, eps()),
-        )
+    if callback_seconds == 0
+        println(io, "project callbacks: none ran during this profile")
+    else
+        println(io, "  summed elapsed time inside callbacks")
+        println(io, "  callback                 seconds")
+        for phase in (:detect, :read, :entries, :process, :analyze)
+            @printf(io, "  %-22s %8.2f\n", "$(phase) callbacks", phases[phase])
+        end
+        @printf(io, "  %-22s %8.2f\n", "total", callback_seconds)
     end
-    @printf(
-        io,
-        "  %-22s %8.2f %11.1f\n",
-        "callbacks total",
-        callback_seconds,
-        100 * callback_seconds / max(capacity_seconds, eps()),
-    )
-    unattributed_seconds = capacity_seconds - callback_seconds
-    @printf(
-        io,
-        "  %-22s %8.2f %11.1f\n",
-        "unattributed",
-        unattributed_seconds,
-        100 * unattributed_seconds / max(capacity_seconds, eps()),
-    )
-    @printf(
-        io,
-        "  worker capacity: %.2f s (%d worker threads seen)\n",
-        capacity_seconds,
-        length(worker_threads),
-    )
     println(io, "artifacts: ", outdir)
     return nothing
 end
@@ -494,7 +455,7 @@ function live_session()::LiveSession
 end
 
 """Profile a fixed-duration window of the open live session and keep it running afterward."""
-function profile_live!(; budget::Real=15, profiler::Symbol=:cpu)
+function profile_live!(; budget::Real=60, profiler::Symbol=:cpu)
     session = live_session()
     validate_run_options(session.mode, profiler, session.cache_mode, budget)
     revise!()
@@ -566,8 +527,7 @@ function profile_live!(; budget::Real=15, profiler::Symbol=:cpu)
             compile_seconds,
             samples,
             sample_count=count,
-            phases=totals.phases,
-            worker_threads=totals.worker_threads,
+            phases=totals,
             outdir,
             live=true,
         )
@@ -630,7 +590,7 @@ function stop_live!()::Nothing
 end
 
 """
-    profile_scan!(; mode=:gui, budget=45, profiler=:cpu, cache_mode=:fresh,
+    profile_scan!(; mode=:gui, budget=60, profiler=:cpu, cache_mode=:fresh,
                     background_processing=false) -> NamedTuple
 
 Run a RuO2 scan in the persistent Revise session, write numeric/timeline/raw profile artifacts,
@@ -639,7 +599,7 @@ close all run-owned tasks, and preserve the dedicated profiling cache. `cache_mo
 """
 function profile_scan!(;
     mode::Symbol=:gui,
-    budget::Real=45,
+    budget::Real=60,
     profiler::Symbol=:cpu,
     cache_mode::Symbol=:fresh,
     background_processing::Bool=false,
@@ -735,8 +695,7 @@ function profile_scan!(;
                 compile_seconds,
                 samples,
                 sample_count=count,
-                phases=totals.phases,
-                worker_threads=totals.worker_threads,
+                phases=totals,
                 outdir,
             )
         end

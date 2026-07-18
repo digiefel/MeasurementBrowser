@@ -12,34 +12,90 @@ description: >-
 
 ## Goal
 
-Use one Revise-backed Julia session to move quickly from a measured stall to a named hot call path.
-Give the user the numbers on every pass. Use the same saved samples for the agent's pprof tables and
-the user's ProfileView or pprof GUI check.
+Keep one DataBrowser session open while using the app, profiling it, editing source with Revise,
+and checking whether the app actually becomes faster. Save each run as files the user can inspect
+directly.
 
-## Loop
+Keep the profiling machinery in this skill's benchmark scripts. Do not add benchmark-only state,
+timers, or callbacks to DataBrowser merely to make the harness easier to write.
 
+## Measurement contract
+
+User code is the code registered with the project API: file detection, reading, splitting a source
+into entries, processing, analysis, and collection callbacks. Everything DataBrowser does around
+those callbacks is application overhead, including repeated reads, scheduling, cache work,
+coordination, publishing results, and GUI updates.
+
+For a parallel measurement:
+
+```text
+useful work = elapsed time summed over all registered callback calls
+total capacity = measurement duration × number of pipeline workers
+overhead fraction = 1 - useful work / total capacity
 ```
-- [ ] Diff the copied RuO2 project against the user's current project
-- [ ] Start one Revise-backed bench session and call `start_live!` once
-- [ ] Let the user use the real GUI; capture repeated fixed windows with `profile_live!`
-- [ ] Human: refresh ProfileView or pprof web; agent: query the same `.pb.gz` with pprof CLI
-- [ ] Report the required numbers and artifact paths to the user
-- [ ] One hypothesis, one edit, one matching window; rebuild the cache only when needed
-- [ ] Call `stop_live!` when the iteration is finished
+
+Use the actual configured pipeline-worker count. Do not substitute the number of Julia threads that
+happened to run a callback. Report idle worker time as overhead: it means the pipeline did not keep
+that worker doing user work.
+
+The scripts currently measure these values directly:
+
+- `Pkg.precompile()` wall time in a fresh process;
+- `using DataBrowser` wall time;
+- loading the copied project script, which includes its helper files and `define_project`/
+  `register_*` calls;
+- total `open_workspace` wall time;
+- time from `open_browser` until the first rendered frame;
+- progress and throughput by sources, items, and collections during a fixed measurement period;
+- runtime compilation during that period;
+- elapsed time inside the registered detect/read/entries/process/analyze callbacks;
+- sampled call stacks for finding which functions ran during application overhead.
+
+The project-script time is not a pure measurement of the `register_*` calls because the script also
+loads and compiles its helper code. Say that plainly when reporting it.
+
+These exact internal `open_workspace` times are not available from the benchmark scripts today:
+
+- constructing the `Workspace` separately from the rest of `open_workspace`;
+- opening DuckDB separately;
+- exact source-scan start, finish, and publication timestamps;
+- the exact first completed-work publication timestamp.
+
+Do not replace those missing values with nearby counters. Julia's sampling profiler can show that,
+for example, many samples occurred inside cache opening, but it does not record the exact instant
+that cache opening began and ended. The 100 ms timeline can show the first sample where a public
+counter changed, with up to roughly 100 ms uncertainty; label it as an observed counter change, not
+as an exact engine milestone.
+
+DataBrowser already contains an optional `@profile_span` helper. Code such as:
+
+```julia
+Profiling.@profile_span workspace.profiler :source :discover attributes begin
+    source_items(workspace.source)
+end
 ```
 
-Run only one workspace profile at a time. The scripts use a PID-aware
-`$TMPDIR/databrowser-profiling.pid` lock to reject overlapping live runs and recover after a killed
-Julia process.
+records the beginning and end of that block when DataBrowser's internal recorder is enabled and
+runs the block directly when it is disabled. That recorder is owned by `Workspace`. Do not extend it
+for this skill. If exact internal startup milestones become a product diagnostic, treat that as a
+separate DataBrowser design change rather than hiding it in the benchmark harness.
 
-In a skill-evaluation loop, the runner is the only agent that executes this skill. Return its
-stdout and artifact paths unchanged for review. The reviewer must judge those outputs without
-reading this skill or its code.
+## Workflow
+
+1. Check that the copied RuO2 project still matches the real project.
+2. Start one Revise-backed Julia session and open the browser once.
+3. Use the app normally and profile the period that contains the behavior under investigation.
+4. Give the user direct links to the summary, timeline, and profile files.
+5. Use pprof to find the first meaningful DataBrowser call path and explain it in plain language.
+6. Edit one relevant piece of code, profile the same behavior again, and compare the files.
+7. Rebuild the cache from the open app when a fresh build is needed. Close the session when done.
+
+Run only one profiling workspace at a time. The scripts use
+`$TMPDIR/databrowser-profiling.pid` to prevent overlapping runs.
 
 ## Check the workload copy
 
-`project/definitions.jl` and its included files copy the user's RuO2 v2 project. Check them before
-measuring so the harness does not optimize a stale workload.
+`project/definitions.jl` and its included files copy the user's RuO2 v2 project:
 
 ```bash
 USER="/Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2"
@@ -51,93 +107,75 @@ diff -qr "$COPY/analysis" "$USER/analysis"
 diff -qr "$COPY/plots" "$USER/plots"
 ```
 
-Also compare the `register_*` kinds in `COPY/definitions.jl` with `USER/browser.jl`. If a difference
-could alter the workload, stop and ask whether to sync it or proceed with the known difference.
+Also compare the registered item and plot kinds in `COPY/definitions.jl` with `USER/browser.jl`.
+If a difference changes the workload, ask whether to update the copy before profiling.
 
 ## Start the persistent session
 
-The benchmark environment enables Revise 3.16 struct revision in `bench/LocalPreferences.toml`.
-Keep this block:
+Revise struct revision is enabled in `bench/LocalPreferences.toml`, so method and type edits
+normally do not require restarting Julia.
 
-```toml
-[Revise]
-revise_structs = true
-```
-
-Restart the existing **bench** jmux session once if it predates that preference; do not restart it
-during the iteration loop.
-
-Start the bench session with multiple threads and load the interactive harness. `jmux` launches Julia
-through its persistent tmux server, so set the thread environment on that server before restarting
-the Julia process:
+Start the bench session with the thread count used for the comparison:
 
 ```bash
 tmux -L jmux set-environment -g JULIA_NUM_THREADS auto
 
 jmux --restart --project /Users/davide/code/Julia/DataBrowser/bench \
-  'using Revise; Revise.includet("/Users/davide/code/Julia/DataBrowser/.agents/skills/databrowser-profiling/scripts/interactive_profile.jl")'
+  'using Revise; @includet "/Users/davide/code/Julia/DataBrowser/.agents/skills/databrowser-profiling/scripts/interactive_profile.jl"'
 ```
 
-`using DataBrowser` happens after Revise, so package source changes are tracked. There is no hidden
-or discarded warmup run: the first run and its runtime compilation are part of the reported result.
-`profile_live!` calls `Revise.revise(; throw=true)` before every window. There is no separate Revise
-assertion.
+Use the same Julia thread count for every run being compared.
 
-Keep the exact thread count matched across comparisons. The harness rejects a one-thread session
-instead of emitting misleading throughput or capacity numbers.
+## Cache state
 
-## Choose the cache state
-
-The copied workload is deliberately named `DataBrowserProfilingRuO2`, so it uses the ordinary,
-isolated cache at:
+The copied project is named `DataBrowserProfilingRuO2`, so it uses the normal isolated cache:
 
 ```text
 DEPOT_PATH[1]/databrowser/DataBrowserProfilingRuO2/cache.duckdb
 ```
 
-Do not redirect `DEPOT_PATH`. `cache_mode=:fresh` passes `rebuild=true`, so DataBrowser deletes only
-this project's generated `cache.duckdb` and `.wal` before opening. `cache_mode=:resume` uses
-`rebuild=false` and resumes whatever state the preceding run closed with. A short fresh run followed
-by a resume run is the direct partial-cache benchmark:
+- `cache_mode=:fresh` opens with `rebuild=true` and starts this cache again from zero.
+- `cache_mode=:resume` opens the cache already saved by an earlier run.
+
+The public `workspace_status` API supplies the cached-source and interpreted-item counts written to
+the summaries and timelines. For a partial-cache check, compare the final counts from the fresh run
+with the starting counts from the resume run. A resume must not go backwards. If the values differ,
+report the values instead of assuming that progress was preserved; work may have completed between
+the last sample and workspace shutdown.
+
+For a controlled fresh/resume pair:
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
   'DataBrowserInteractiveProfile.profile_scan!(mode=:headless, budget=10, profiler=:none, cache_mode=:fresh)'
 
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
-  'DataBrowserInteractiveProfile.profile_scan!(mode=:headless, budget=45, profiler=:cpu, cache_mode=:resume)'
+  'DataBrowserInteractiveProfile.profile_scan!(mode=:headless, budget=60, profiler=:cpu, cache_mode=:resume)'
 ```
 
-Closing the first workspace drains its cache writes. The resume run's initial stage counts are the
-truth about the resulting partial state; report them instead of assuming the ten-second seed stopped
-at an exact item boundary. A resume run mutates the cache further, so begin a new comparison pair
-with another `cache_mode=:fresh` run.
+The harness uses DataBrowser's real default `background_processing=false`.
 
-The real RuO2 `browser.jl` uses DataBrowser's default `background_processing=false`. The profiling
-harness matches it. Pass `background_processing=true` only when that alternative is the explicit
-question, and never compare it against a default run without calling out the difference.
+## Live profiling loop
 
-## Primary live workflow
-
-Open the real GUI workspace/browser once. Use `cache_mode=:resume` to continue the dedicated cache,
-or `:fresh` to rebuild it as the session opens:
+Open the real GUI workspace and browser once:
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
   'DataBrowserInteractiveProfile.start_live!(mode=:gui, cache_mode=:resume)'
 ```
 
-The user now uses the app normally. Capture a fixed-duration window while scanning, browsing, or
-waiting for an interaction. A live window always lasts for its requested budget, even if the
-workspace is idle at the beginning:
+Use the app, then profile the behavior of interest. Measure at least 60 seconds after the first
+frame. The command below records a fixed 60 seconds even if the app is idle for part of that time:
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
-  'DataBrowserInteractiveProfile.profile_live!(budget=15, profiler=:cpu)'
+  'DataBrowserInteractiveProfile.profile_live!(budget=60, profiler=:cpu)'
 ```
 
-Use `profiler=:wall` for blocking/idle questions. The human refreshes ProfileView or the pprof web
-view from the latest capture in the same session:
+Use `profiler=:wall` when the question is blocking or waiting rather than CPU work. Use
+`profiler=:none` when comparing throughput without profiler overhead.
+
+The user can refresh ProfileView or pprof from the same captured samples:
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
@@ -147,103 +185,91 @@ jmux --project /Users/davide/code/Julia/DataBrowser/bench \
   'DataBrowserInteractiveProfile.refresh_pprof!()'
 ```
 
-The agent does **not** inspect either GUI. It queries the emitted `.pb.gz` directly with the bundled
-pprof CLI; see [references/profile-tools.md](references/profile-tools.md). The human and agent are
-therefore reading different views of the same captured samples.
-
-Edit one source location, then call `profile_live!` again. It applies pending revisions before the
-window. Check the numeric stage deltas and throughput. If a clean rebuild is needed, the user can
-click **Rebuild Cache** in the open app, or the agent can call:
+After a source edit, the next `profile_live!` applies pending Revise changes before recording. To
+start the cache again while keeping the same Julia process and browser, click **Rebuild Cache** in
+the app or call:
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
   'DataBrowserInteractiveProfile.rebuild_live_cache!()'
 ```
 
-This keeps the same Julia process, workspace, and browser. At the end:
+Close everything owned by the profiling session when finished:
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
   'DataBrowserInteractiveProfile.stop_live!()'
 ```
 
-The live loop is the default for performance work. `profile_scan!` is secondary: use it for an
-independent fresh/resume measurement that includes `open_workspace`, then closes its workspace and
-browser. Prefer headless CPU profiling for engine-only hotspots; use GUI CPU profiling when GUI work
-itself is the question.
+## Files from each run
 
-## Always report these outputs
+Each results directory contains:
 
-Copy the numbers, not a qualitative paraphrase:
+- `summary.txt`: setup time, the profiled duration, progress counters, compilation, and project
+  callback time;
+- `timeline.csv` and `timeline.png`: cached sources and completed items over time;
+- `*_profile.jls`: the most complete saved Julia sample and frame data;
+- `*_profile.jlprof`: the saved profile opened by ProfileView;
+- `*_profile.pb.gz`: the same profile converted for pprof.
 
-- mode, profiler, budget, Julia thread count, `background_processing`, cache mode, and exact cache
-  path;
-- session `open_workspace` and time to first frame once, then each scan-window length, capture
-  overhead, and aggregate runtime compilation;
-- start → end counts and rates with their units: found/pending/cached **sources**, interpreted/
-  processed/analyzed **items**, and processed/analyzed **collections**; starting counts are mandatory
-  for resume runs;
-- callback seconds, worker capacity, and the explicitly **unattributed** remainder, which includes
-  idle/wait time, runtime work, and uninstrumented work;
-- total profile samples;
-- raw pprof top table with no filters;
-- each filter expression followed by its filtered table;
-- `summary.txt`, `timeline.csv`, `timeline.png`, portable raw `.jls`, ProfileView-native `.jlprof`,
-  and direct pprof `.pb.gz` paths—all derived from the same capture;
-- `WIDEST PROJECT BRANCH:` with that frame's cumulative samples, then `WIDEST SHOWN CHILD:` with
-  the child's own cumulative samples; never label a whole call chain with an ancestor's count;
-- `NEXT HYPOTHESIS:` followed by one concrete query or change justified by the counts and stack.
+The summary uses these terms:
 
-Do not hide the raw table. Filtering can improve navigation but cannot be used to make a result
-look better. The standard render-wrapper filter uses pprof `hide`, which removes wrapper frames from
-the view while preserving descendants. Use `ignore` only when intentionally removing entire
-matching samples, and report how that changes the total.
+- **measurement period**: the fixed wall-clock interval after the first frame in GUI runs;
+- **runtime compilation**: compilation performed during the measurement, summed across Julia
+  threads; it can exceed wall time when several threads compile concurrently;
+- **project callback time**: elapsed time summed across callback calls. `detect` chooses a recipe,
+  `read` loads a source, `entries` splits it into items, `process` transforms an item, and `analyze`
+  computes item results. Calls may overlap on different workers, so their sum can exceed wall time.
 
-Runtime compilation is part of the result. Report it as aggregate compilation time across Julia
-threads; do not discard or automatically repeat a run merely to make that number disappear.
+The pipeline-worker count is available as `length(workspace.work.workers)`, but the current callback
+table does not include collection callbacks. Therefore it cannot yet print the requested overhead
+percentage. Keep the real callback times, but state that the final percentage is unavailable rather
+than treating an incomplete useful-work total as complete.
 
-With the real default `background_processing=false`, zero processed/analyzed items is not evidence
-of a processing stall: those stages may not have been requested. Use source/interpretation progress
-or an explicit app interaction, and state which work was requested.
+Run the pprof commands in [references/profile-tools.md](references/profile-tools.md) and save their
+text beside these files. When replying, provide direct links to the summary, timeline image, pprof
+text, ProfileView file, and raw profile. Add a short plain-language explanation grounded in the
+DataBrowser operation the user recognizes—scanning files, reading measurements, building the item
+tree, drawing the GUI—not just Julia runtime function names.
 
-The raw `.jls` remains because native JLPROF discards some system-specific frame-category
-information. `.jlprof` is the ProfileView artifact and `.pb.gz` is the agent's direct pprof input.
-There is no `cpu_profile.txt`; a flat text dump loses the call-path structure needed here.
+Do not force every run into a fixed verbal template. Report what the files show clearly, state what
+the app was doing during the profile, and say when the samples did not capture the intended work.
 
-## Revise iteration
+Profiled and unprofiled throughput are not directly comparable. Compare runs with matching thread
+count, cache state, mode, profiler setting, and user action.
 
-After a source edit, issue the next jmux command in the same bench session. `profile_live!` invokes
-`Revise.revise(; throw=true)` before capturing and keeps the current workspace/browser open. Do not
-restart for method or struct edits while the benchmark environment's struct-revision preference
-remains enabled.
+## One-shot and fresh-process checks
 
-Use the profile to form one concrete hypothesis. Make one change, run the same budget/profile, and
-refresh the agent's CLI table and the human's GUI views. Once the profile signal improves, run the
-same workload with `profiler=:none` to compare useful work without sampling overhead.
+`profile_scan!` is the secondary one-shot check. It includes `open_workspace`, optionally opens the
+GUI, profiles the scan, writes the same files, and closes the workspace.
 
-Profiled and unprofiled item/s are not comparable. Compare unprofiled runs to unprofiled runs under
-matched threads, mode, budget, data, and cache state.
-
-## Fresh-process boundary
-
-The persistent loop is the default. Use `scripts/timed_profile.jl` in a fresh Julia process only
-when measuring package startup/precompile behavior or performing the final independent check:
+Use `scripts/timed_profile.jl` only when startup in a fresh Julia process is itself the question:
 
 ```bash
 julia --project=bench --threads=auto \
   .agents/skills/databrowser-profiling/scripts/timed_profile.jl gui \
-  --budget=45 --profile=cpu --cache=fresh
+  --budget=60 --profile=cpu --cache=fresh
 ```
 
-Use `--cache=resume` for the same dedicated resume path and `--fresh-compile` only when compiled
-package-cache startup is the question. Use `--background-processing` only for the explicit
-non-default experiment. The fresh-process harness emits the same raw `.jls` profile for the
-`.jlprof` and `.pb.gz` outputs. A promising result still ends with the user's real `browser.jl` and
-real cache; record the commit and `Threads.nthreads()` with that check.
+Use `--cache=resume` for a fresh-process reopen of the dedicated cache. Record the commit and Julia
+thread count with final comparisons.
 
-## Integrity
+## Scaling
 
-Do not claim improvement from throttled status updates, dropped work, weakened readiness, hidden
-samples, or a warm/partial cache presented as cold. Treat callback-capacity remainder as
-unattributed scheduling, GC, I/O, compilation, idle capacity, and unsampled work—not as application
-overhead. When a number, GUI view, or source path is unavailable, say exactly what is missing.
+Use `bench/scaling.jl` for the existing controlled N sweep. It uses one source per item, so S and N
+change together; it measures total scan/build time per item and the scaling of status refresh, item
+panel gathering, and metadata publication. It does not independently separate source-count scaling
+from item-count scaling.
+
+Use `bench/realistic_browse.jl` for a synthetic workload with different numbers of files and items
+per file. Its `scorecard.csv` reports source and item throughput, and its trace files break down
+cache, queue, processing, and publication work. A proper independent S/N scaling study requires a
+set of runs that varies file count while holding items per file fixed, then varies items per file
+while holding file count fixed. Do not describe a single scale-factor run as that study.
+
+## Validity
+
+Do not claim an improvement by doing less work, hiding samples, or comparing different cache states.
+Put the progress counts and timeline beside elapsed time. If the profile mostly contains waiting or
+Julia runtime frames, say that the chosen interval did not isolate useful application work and use
+the navigation steps in `references/profile-tools.md` before choosing code to change.
