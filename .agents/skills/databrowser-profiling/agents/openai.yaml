@@ -1,4 +1,4 @@
 interface:
   display_name: "DataBrowser Profiling"
-  short_description: "Harness-primary RuO2 GUI scan diagnose → attribute → patch → remeasure"
-  default_prompt: "Read and execute $databrowser-profiling. You are the Runner: Phase 1 fidelity check, then one timed_profile.jl gui hot-loop run at a time. Never parallel benchmarks. Escalate with “should I ask the user?” when unverifiable. Ultimate real browser.jl verification only after a promising change."
+  short_description: "timed_profile.jl harness for RuO2 cold-cache scan performance"
+  default_prompt: "Follow $databrowser-profiling: sync-check, one gui harness run, return full stdout and artifact paths."
