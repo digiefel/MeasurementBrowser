@@ -17,7 +17,6 @@ using DataBrowserAPI:
     source_item_timestamp,
     source_label
 import DataBrowserProfiling as Profiling
-using DataBrowserProfiling: @profile_span, ProfileAttributes
 
 using DuckDB
 using DBInterface

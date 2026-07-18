@@ -361,49 +361,12 @@ function _render_build_tab!(state::BrowserState, workspace::Workspace.Workspace)
     return nothing
 end
 
-# ---------------------------------------------------------------------------
-# Internal tab: Profile — structured capture, hotspots, events
-# ---------------------------------------------------------------------------
-
-"""Run one internal profiler UI action and retain an actionable error."""
-function _profile_action!(action::Function, profiler::Profiling.ProfileSession)::Nothing
-    try
-        action()
-        profiler.error = ""
-    catch error
-        profiler.error = sprint(showerror, error)
-        profiler.state = :error
-        @error "Internal profiler action failed" exception=(error, catch_backtrace())
-    end
-    return nothing
-end
-
-"""Choose one exact structured-event dimension or show all values."""
-function _profile_filter_combo!(
-    label::String,
-    current::Symbol,
-    values::Vector{Symbol},
-)::Symbol
-    preview = current === :all ? "All" : String(current)
-    ig.SetNextItemWidth(170.0f0)
-    if ig.BeginCombo(label, preview)
-        ig.Selectable("All", current === :all) && (current = :all)
-        for value in values
-            ig.Selectable(String(value), current === value) && (current = value)
-        end
-        ig.EndCombo()
-    end
-    return current
-end
-
-"""Render CPU hotspots from the latest internal capture or explicit plot profile."""
+"""Render CPU hotspots from an explicit plot sampling session."""
 function _render_hotspots_section(
     performance::PerformanceState,
     workspace,
 )::Nothing
-    internal = workspace isa Workspace.Workspace ? workspace.profiler.report : nothing
-    profile = internal isa Profiling.ProfileReport && internal.cpu !== nothing ?
-        internal.cpu : performance.plot_sampling_profile
+    profile = performance.plot_sampling_profile
 
     if profile === nothing
         ig.TextDisabled("No CPU profile captured yet.")
@@ -456,168 +419,6 @@ function _render_hotspots_section(
         end
         ig.EndTable()
     end
-    return nothing
-end
-
-"""Render capture controls, span summaries, hotspots, events, and process counters."""
-function _render_profile_tab!(
-    state::BrowserState,
-    workspace::Workspace.Workspace,
-)::Nothing
-    profiler = workspace.profiler
-    ig.Text("State: $(profiler.state)  Events: $(Profiling.event_count(profiler))  " *
-            "Dropped: $(profiler.dropped_events[])")
-
-    can_start = profiler.state in (:idle, :complete)
-    can_start || ig.BeginDisabled()
-    if ig.Button("Start capture")
-        _profile_action!(profiler) do
-            Workspace.start_internal_profile!(workspace)
-        end
-    end
-    can_start || ig.EndDisabled()
-    ig.SameLine()
-
-    can_stop = profiler.state in (:preparing, :recording)
-    can_stop || ig.BeginDisabled()
-    if ig.Button("Stop capture")
-        _profile_action!(profiler) do
-            Workspace.stop_internal_profile!(workspace)
-        end
-    end
-    can_stop || ig.EndDisabled()
-    ig.SameLine()
-
-    can_reset = profiler.state in (:complete, :error)
-    can_reset || ig.BeginDisabled()
-    if ig.Button("Reset")
-        _profile_action!(profiler) do
-            Workspace.reset_internal_profile!(workspace)
-        end
-    end
-    can_reset || ig.EndDisabled()
-    ig.SameLine()
-
-    can_export = profiler.report isa Profiling.ProfileReport
-    can_export || ig.BeginDisabled()
-    if ig.Button("Export Perfetto")
-        _profile_action!(profiler) do
-            path = save_file("databrowser-profile.json"; filterlist="json")
-            isempty(path) || Workspace.export_internal_profile!(workspace, path)
-        end
-    end
-    can_export || ig.EndDisabled()
-
-    isempty(profiler.error) || ig.TextWrapped("Profiler error: $(profiler.error)")
-    profiler.state === :preparing && ig.TextDisabled(
-        "Canceling current work before a clean profiled rebuild.",
-    )
-
-    report = profiler.report
-    if report isa Profiling.ProfileReport
-        ig.Spacing()
-        ig.Text(@sprintf(
-            "Duration %.2f s  Counters %d  CPU samples %d",
-            (report.stopped_ns - report.started_ns) / 1e9,
-            length(report.counters),
-            report.cpu === nothing ? 0 : report.cpu.total_samples,
-        ))
-        if _begin_perf_table("internal_summary", 10, 260.0f0)
-            for (name, width) in (
-                ("Operation", 160.0f0), ("n", 45.0f0), ("Total", 65.0f0),
-                ("p50", 58.0f0), ("p90", 58.0f0), ("p99", 58.0f0),
-                ("Max", 58.0f0), ("Wait", 65.0f0), ("Service", 65.0f0),
-                ("Batch p50/90/max", 120.0f0),
-            )
-                ig.TableSetupColumn(name, ig.ImGuiTableColumnFlags_WidthFixed, width)
-            end
-            ig.TableHeadersRow()
-            for row in report.summary
-                ig.TableNextRow()
-                for value in (
-                    "$(row.category)/$(row.operation)", string(row.count),
-                    @sprintf("%.1f", row.total_ms), @sprintf("%.2f", row.median_ms),
-                    @sprintf("%.2f", row.p90_ms), @sprintf("%.2f", row.p99_ms),
-                    @sprintf("%.2f", row.max_ms), @sprintf("%.1f", row.wait_ms),
-                    @sprintf("%.1f", row.service_ms),
-                    @sprintf("%.0f / %.0f / %.0f",
-                        row.median_batch, row.p90_batch, row.max_batch),
-                )
-                    ig.TableNextColumn(); _table_text(value)
-                end
-            end
-            ig.EndTable()
-        end
-    end
-
-    counter = Profiling.latest_counter(profiler)
-    if counter !== nothing
-        ig.Text(@sprintf(
-            "RSS %.1f MiB  GC %.1f ms / %d pauses (max %.1f ms)  Queue %d",
-            counter.rss_bytes / 1024^2,
-            counter.gc_total_ns / 1e6,
-            counter.gc_pause_count,
-            counter.gc_max_pause_ns / 1e6,
-            counter.queue_depth,
-        ))
-    end
-
-    ig.Spacing()
-    ig.Separator()
-    ig.TextUnformatted("CPU hotspots")
-    _render_hotspots_section(state.performance, workspace)
-
-    available = report isa Profiling.ProfileReport ?
-        report.events : Profiling.recent_events(profiler; limit=2_000)
-    categories = sort!(unique([event.category for event in available]))
-    operations = sort!(unique([event.operation for event in available]))
-    state.performance.profile_category_filter = _profile_filter_combo!(
-        "Category##profile_category",
-        state.performance.profile_category_filter,
-        categories,
-    )
-    ig.SameLine()
-    state.performance.profile_operation_filter = _profile_filter_combo!(
-        "Operation##profile_operation",
-        state.performance.profile_operation_filter,
-        operations,
-    )
-    category_filter = state.performance.profile_category_filter
-    operation_filter = state.performance.profile_operation_filter
-    shown = 0
-    for index in length(available):-1:1
-        event = available[index]
-        ((category_filter === :all || event.category === category_filter) &&
-         (operation_filter === :all || event.operation === operation_filter)) &&
-            (shown += 1)
-        shown >= 200 && break
-    end
-    if shown > 0 && _begin_perf_table("internal_events", 6, 220.0f0)
-        for name in ("Category", "Operation", "ms", "Thread", "Status", "Batch")
-            ig.TableSetupColumn(name)
-        end
-        ig.TableHeadersRow()
-        rendered = 0
-        for index in length(available):-1:1
-            event = available[index]
-            (category_filter === :all || event.category === category_filter) &&
-                (operation_filter === :all || event.operation === operation_filter) ||
-                continue
-            ig.TableNextRow()
-            for value in (
-                String(event.category), String(event.operation),
-                @sprintf("%.3f", event.duration_ns / 1e6),
-                string(event.start_thread), String(event.status),
-                string(event.attributes.batch_size),
-            )
-                ig.TableNextColumn(); _table_text(value)
-            end
-            rendered += 1
-            rendered >= 200 && break
-        end
-        ig.EndTable()
-    end
-
     return nothing
 end
 
@@ -705,25 +506,20 @@ end
 # ---------------------------------------------------------------------------
 
 """
-Render the Performance window with a tab bar. The window is dual-use:
+Render the Performance window with normal project and workspace diagnostics:
 
-User tabs (always shown) focus on where *project code* spends time:
+Project diagnostics focus on where project code spends time:
 - Project — per-kind recipe timings, slow source items, plot-recipe phases
 - Memory  — cross-platform process RSS/GC and workspace index footprint
 
-Internal tabs (shown only when the workspace was opened with `profile_internal=true`) focus on
-engine overhead, which should be ~0 in ideal operation:
-- Build   — live pipeline counters and sparklines
-- Profile — structured capture, span summary, CPU hotspots, event list
-- Frames  — frame rate, per-panel render timings, OpenGL strings
+Workspace diagnostics show live pipeline counters, callback timings, and rendering overhead.
 """
 function render_perf_window(state::BrowserState)::Nothing
     state.show_performance_window || return nothing
 
     if ig.Begin("Performance###perf_window")
         workspace = state.workspace
-        internal = workspace isa Workspace.Workspace && workspace.profiler.enabled
-        internal && _sample_build!(state.performance.live_plots, workspace)
+        workspace isa Workspace.Workspace && _sample_build!(state.performance.live_plots, workspace)
 
         if ig.BeginTabBar("##perf_tabs")
             if ig.BeginTabItem("Project")
@@ -738,22 +534,19 @@ function render_perf_window(state::BrowserState)::Nothing
                 ig.EndTabItem()
             end
 
-            if internal
-                if ig.BeginTabItem("Build")
-                    ig.Spacing()
-                    _render_build_tab!(state, workspace)
-                    ig.EndTabItem()
-                end
-                if ig.BeginTabItem("Profile")
-                    ig.Spacing()
-                    _render_profile_tab!(state, workspace)
-                    ig.EndTabItem()
-                end
-                if ig.BeginTabItem("Frames")
-                    ig.Spacing()
-                    _render_frames_tab(state)
-                    ig.EndTabItem()
-                end
+            if workspace isa Workspace.Workspace && ig.BeginTabItem("Workspace")
+                ig.Spacing()
+                _render_build_tab!(state, workspace)
+                ig.EndTabItem()
+            end
+
+            if ig.BeginTabItem("Callbacks")
+                ig.Spacing()
+                _render_frames_tab(state)
+                ig.Separator()
+                ig.TextUnformatted("Plot sampling")
+                _render_hotspots_section(state.performance, workspace)
+                ig.EndTabItem()
             end
 
             ig.EndTabBar()

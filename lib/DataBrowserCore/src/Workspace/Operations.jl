@@ -4,12 +4,6 @@ Start cache loading and source scanning for one new workspace.
 function open_workspace(
     project::Project,
     source::AbstractDataSource;
-    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
-    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
-    profile_output::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_PROFILE_OUTPUT"),
-    crash_trace::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
     cache::Bool=true,
     background_processing::Bool=false,
@@ -19,10 +13,6 @@ function open_workspace(
         Workspace(
             project,
             opened_source;
-            profile_internal,
-            profile_cpu,
-            profile_output,
-            crash_trace,
             rebuild,
             cache,
             background_processing,
@@ -58,13 +48,9 @@ function close_workspace!(workspace::Workspace)::Nothing
     end
     stop_work_workers!(workspace)
     try
-        Profiling.close!(workspace.profiler)
+        close_cache_db!(workspace.cache.db)
     finally
-        try
-            close_cache_db!(workspace.cache.db)
-        finally
-            close_source!(workspace.source)
-        end
+        close_source!(workspace.source)
     end
     return nothing
 end
@@ -588,41 +574,30 @@ function scan_source!(
     end
     task = Base.Threads.@spawn begin
         scan_token = get_token(cancel_source)
-        Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
-            source_id=source_id(workspace.source),
-        ) begin
-        try
-            rebuild && Profiling.@profile_span workspace.profiler :source :cache_clear Profiling.ProfileAttributes() begin
-                clear_cache_index!(cachedb)
-            end
-            cached = if !rebuild && cache_built(cachedb)
-                try
-                    Profiling.@profile_span(
-                        workspace.profiler,
-                        :source,
-                        :cache_load,
-                        Profiling.ProfileAttributes(),
-                        load_cache_index(cachedb),
-                    )
-                catch error
-                    error isa ProjectCacheDataError || rethrow()
-                    @warn(
-                        "Generated collection cache is incompatible; rebuilding it",
-                        cache=workspace.cache.identity.cache_path,
-                        error,
-                    )
-                    clear_cache_index!(cachedb)
+        Profiling.@time_dbg "scan_source" begin
+            try
+                rebuild && clear_cache_index!(cachedb)
+                cached = if !rebuild && cache_built(cachedb)
+                    try
+                        Profiling.@time_dbg load_cache_index(cachedb)
+                    catch error
+                        error isa ProjectCacheDataError || rethrow()
+                        @warn(
+                            "Generated collection cache is incompatible; rebuilding it",
+                            cache=workspace.cache.identity.cache_path,
+                            error,
+                        )
+                        clear_cache_index!(cachedb)
+                        nothing
+                    end
+                else
                     nothing
                 end
-            else
-                nothing
-            end
-            publish_cache_state!(
-                workspace, scan_id, cached === nothing ? :missing : :ready, cached)
+                publish_cache_state!(
+                    workspace, scan_id, cached === nothing ? :missing : :ready, cached)
 
-            write_meta_header!(cachedb)
-            discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
-                source_items(
+                write_meta_header!(cachedb)
+                discovered = Profiling.@time_dbg source_items(
                     workspace.source;
                     cancel_token=scan_token,
                     on_progress=count -> begin
@@ -630,71 +605,67 @@ function scan_source!(
                         workspace.status_dirty[] = true
                     end,
                 )
-            end
-            is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-            # The cache's `source_items` table is the sole home of previous-session fingerprints;
-            # a memory-only cache holds nothing, so every discovered item re-interprets.
-            previous = _load_source_item_fingerprints(cachedb)
-            current = Dict{String,Any}()
-            upserts = AbstractDataSourceItem[]
-            seen = Set{String}()
-            for item in discovered
                 is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-                id_value = source_item_id(item)
-                push!(seen, id_value)
-                current_fingerprint = fingerprint(item)
-                current[id_value] = current_fingerprint
-                # A `nothing` fingerprint means the source cannot prove the item is unchanged,
-                # so it is always re-read.
-                if !haskey(previous, id_value) || current_fingerprint === nothing ||
-                   !isequal(previous[id_value], current_fingerprint)
-                    push!(upserts, item)
+                    throw(OperationCanceledException(scan_token))
+                # The cache's `source_items` table is the sole home of previous-session
+                # fingerprints; a memory-only cache holds nothing, so every discovered item
+                # re-interprets.
+                previous = _load_source_item_fingerprints(cachedb)
+                current = Dict{String,Any}()
+                upserts = AbstractDataSourceItem[]
+                seen = Set{String}()
+                for item in discovered
+                    is_cancellation_requested(scan_token) &&
+                        throw(OperationCanceledException(scan_token))
+                    id_value = source_item_id(item)
+                    push!(seen, id_value)
+                    current_fingerprint = fingerprint(item)
+                    current[id_value] = current_fingerprint
+                    # A `nothing` fingerprint means the source cannot prove the item is unchanged,
+                    # so it is always re-read.
+                    if !haskey(previous, id_value) || current_fingerprint === nothing ||
+                       !isequal(previous[id_value], current_fingerprint)
+                        push!(upserts, item)
+                    end
                 end
-            end
-            is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-            removals = String[id for id in keys(previous) if !(id in seen)]
-            stale = count(
-                id_value -> haskey(previous, id_value) && !isequal(previous[id_value], current[id_value]),
-                keys(current),
-            )
-            new_items = count(id_value -> !haskey(previous, id_value), keys(current))
-            status = ProjectCacheStatus(
-                length(current),
-                length(previous),
-                length(current) - length(workspace.index.analysis_errors),
-                stale,
-                new_items,
-                length(removals),
-                length(workspace.index.analysis_errors),
-            )
-            Profiling.@profile_span workspace.profiler :source :publish_changes Profiling.ProfileAttributes(
-                items=length(upserts),
-                batch_size=length(removals),
-            ) begin
                 is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-                publish_source_changes!(
+                    throw(OperationCanceledException(scan_token))
+                removals = String[id for id in keys(previous) if !(id in seen)]
+                stale = count(
+                    id_value -> haskey(previous, id_value) &&
+                        !isequal(previous[id_value], current[id_value]),
+                    keys(current),
+                )
+                new_items = count(id_value -> !haskey(previous, id_value), keys(current))
+                status = ProjectCacheStatus(
+                    length(current),
+                    length(previous),
+                    length(current) - length(workspace.index.analysis_errors),
+                    stale,
+                    new_items,
+                    length(removals),
+                    length(workspace.index.analysis_errors),
+                )
+                is_cancellation_requested(scan_token) &&
+                    throw(OperationCanceledException(scan_token))
+                Profiling.@time_dbg publish_source_changes!(
                     workspace,
                     scan_id,
                     SourceChanges(upserts, removals; metadata_changed=true),
                     status,
                 )
-            end
-            publish_scan_end!(
-                workspace, scan_id;
-                cache_hit=isempty(upserts) && isempty(removals),
-            )
-        catch error
-            if error isa OperationCanceledException
-                publish_scan_end!(workspace, scan_id; canceled=true)
-            else
                 publish_scan_end!(
-                    workspace, scan_id; error, backtrace=catch_backtrace())
+                    workspace, scan_id;
+                    cache_hit=isempty(upserts) && isempty(removals),
+                )
+            catch error
+                if error isa OperationCanceledException
+                    publish_scan_end!(workspace, scan_id; canceled=true)
+                else
+                    publish_scan_end!(
+                        workspace, scan_id; error, backtrace=catch_backtrace())
+                end
             end
-        end
         end
     end
     track_task!(workspace, task)
@@ -719,70 +690,6 @@ query_items(workspace::Workspace)::Vector{String} = sort!(collect(keys(workspace
 """Resize this workspace's DuckDB cache buffer-pool limit (MiB) live; suits a GUI control."""
 set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
     set_cache_memory_limit!(workspace.cache.db, mib)
-
-"""Return one lock-consistent counter snapshot for the structured profiler."""
-function profile_counter_snapshot(workspace::Workspace)::NamedTuple
-    completed, total, jobs = work_counts(workspace)
-    depth = jobs + cache_pending_counts(workspace.cache.db).items
-    return (
-        # Scan-level progress counters are not populated; the schema keeps their columns.
-        scan_done=0,
-        scan_total=0,
-        processing_done=completed,
-        processing_total=total,
-        queue_depth=depth,
-    )
-end
-
-"""Begin recording immediately when idle, or prepare one clean rebuild after active work stops."""
-function start_internal_profile!(workspace::Workspace)::Nothing
-    profiler = workspace.profiler
-    Profiling.validate_start(profiler)
-    # Deciding busy, arming the restart, and canceling must be one atomic step against
-    # finish_publish!: a completion landing in between would either strand the profiler in
-    # :preparing forever or let the cancels kill the freshly restarted profiled rebuild.
-    lock(workspace.publish_lock) do
-        if engine_work_running(workspace)
-            profiler.state = :preparing
-            workspace.profile_restart_pending = true
-            cancel_scan!(workspace)
-            cancel_analysis!(workspace)
-            cancel_waiting_work!(workspace)
-        else
-            Profiling.start!(profiler, () -> profile_counter_snapshot(workspace))
-        end
-    end
-    return nothing
-end
-
-"""Stop an active internal profile without canceling application work."""
-function stop_internal_profile!(
-    workspace::Workspace,
-)::Union{Nothing,Profiling.ProfileReport}
-    profiler = workspace.profiler
-    # Aborting a pending restart must be atomic against finish_publish!: a completion landing
-    # between the state check and the clear would start a profiled rebuild this stop then clobbers.
-    aborted_preparation = lock(workspace.publish_lock) do
-        profiler.state === :preparing || return false
-        workspace.profile_restart_pending = false
-        profiler.state = :idle
-        return true
-    end
-    aborted_preparation && return nothing
-    return Profiling.stop!(profiler)
-end
-
-"""Clear one stopped internal profile report."""
-reset_internal_profile!(workspace::Workspace)::Nothing =
-    Profiling.reset!(workspace.profiler)
-
-"""Export one stopped internal profile as Chrome/Perfetto JSON."""
-function export_internal_profile!(
-    workspace::Workspace,
-    path::AbstractString,
-)::String
-    return Profiling.export!(workspace.profiler, path)
-end
 
 """Replace the workspace item index with one complete collection record index."""
 function replace_item_index!(
@@ -978,13 +885,8 @@ function publish_work_success!(
     if key.kind === SOURCE_INTERPRET
         interpretation = result.interpretation::SourceItemInterpretation
         records = interpretation.records
-        resolved, invalidated = Profiling.@profile_span workspace.profiler :source :publish_records Profiling.ProfileAttributes(
-            source_id=key.entity,
-            batch_size=length(records),
-        ) begin
-            publish_source_item_records!(
+        resolved, invalidated = Profiling.@time_dbg publish_source_item_records!(
                 workspace, key.entity, records, interpretation.collection_paths)
-        end
         conflicts = store_interpreted!(
             workspace.cache.db,
             result.source_item,
@@ -1159,16 +1061,6 @@ end
 
 """Advance idle-gated work and wake blocked waiters after one publication (publish lock held)."""
 function finish_publish!(workspace::Workspace)::Nothing
-    if workspace.profile_restart_pending && !engine_work_running(workspace)
-        reset_work_graph!(workspace)
-        workspace.profile_restart_pending = false
-        workspace.profiler.state = :idle
-        Profiling.start!(
-            workspace.profiler,
-            () -> profile_counter_snapshot(workspace),
-        )
-        scan_source!(workspace; rebuild=true)
-    end
     workspace.status_dirty[] = true
     notify(workspace.idle_condition; all=true)
     return nothing

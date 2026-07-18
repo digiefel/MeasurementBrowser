@@ -60,8 +60,6 @@ end
             workspace = open_workspace(
                 project,
                 fixture_dir;
-                profile_internal=false,
-                profile_cpu=false,
             )
             Workspace.wait_workspace_idle!(workspace; timeout=45)
             Workspace.refresh_status!(workspace)

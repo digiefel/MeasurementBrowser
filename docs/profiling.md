@@ -1,52 +1,37 @@
 # Profiling
 
-Profiling belongs to one open workspace. It separates cheap metrics, detailed traces, sampled CPU
-profiles, and crash forensics instead of making one mechanism serve incompatible costs.
+Normal workspace diagnostics keep lightweight build metrics, callback timing rows, workspace health,
+and plot-phase samples. They support the browser and do not retain engine event traces.
 
-## Normal Diagnostics
+## Explicit debug timings
 
-Project callback timings, scan summaries, plot timings, failures, process memory, rendering state,
-and aggregate cache-write metrics remain available normally. `BuildMetrics` stores only atomic totals
-and call counts used by status, the Performance window, and benchmarks. These diagnostics do not
-retain engine events or serialize files.
+Benchmarks and diagnostics can time selected engine calls with one explicit object:
 
-## Internal Capture
+```julia
+timings = DebugTimings(start_ns=time_ns())
 
-Open a workspace with `profile_internal=true` to reveal the Internal Performance tab and permit
-buffered tracing. `profile_cpu=true` adds Julia CPU sampling to each manual capture.
-`profile_output="trace.json"` exports Perfetto JSON when capture stops; later captures use numeric
-suffixes. The matching environment flags are `MB_PROFILE_INTERNAL`, `MB_PROFILE_CPU`, and
-`MB_PROFILE_OUTPUT`. Boolean environment values accept only `0` or `1`, and explicit keywords take
-precedence.
+with_debug_timings(timings) do
+    workspace = open_workspace(project, root)
+    wait_workspace_idle!(workspace)
+end
 
-A session moves through disabled, idle, preparing, recording, complete, and error states. Starting
-from idle records subsequent work immediately. Starting during a build cancels scanning and analysis,
-cancels queued processing while currently executing project callbacks finish, waits for complete
-idleness, and then starts one clean profiled rebuild. Stopping ends capture without canceling current
-application work.
+write_debug_timings(outdir, timings)
+```
 
-The structured trace records completed spans for source discovery and callbacks, interpretation,
-processing and statistics, queueing, cache reads and reconstruction, cache-buffer stores and flush
-transactions, collection analysis, and plot materialization/setup/drawing. Fixed attributes may
-include stage, kind, source/item identity, row/item/byte counts, batch size, cache size, and
-buffer backpressure-wait and flush-service time. Measurement values and metadata payload contents are never recorded.
+`@time_dbg` is debug-only. A call such as `Profiling.@time_dbg open_cache_db(identity)` uses
+`open_cache_db` as its label, executes the original call directly when debug timing is inactive, and stores
+results only in the active `DebugTimings` object. `write_debug_timings` writes `debug_timings.txt`
+and `debug_timings.csv` with call counts, inclusive total and average time, and process allocation
+changes.
 
-Process-wide RSS, GC totals and pauses, queue progress, and per-table cache-buffer counters (pending
-rows, flush counts, backpressure waits) are sampled every 100 ms on counter tracks. They are not attributed to overlapping spans. A capture retains at most 500,000
-events and reports any dropped events explicitly. When internal profiling is disabled or idle, span
-attributes are not evaluated.
+Timers are task-owned because engine work runs concurrently and tasks can migrate across Julia
+threads. Enter `with_debug_timings` before spawning the work to measure and collect after the
+workspace has reached its intended idle point. Row totals can exceed wall time when calls on several
+tasks overlap. Allocation changes come from Julia's process allocation counter, so concurrent rows can
+overlap; use a controlled single-worker pass or Julia allocation profiling for attributable allocations.
 
-CPU sampling uses Julia's standard profiler only during a manual capture. Starting fails if another
-Julia profiler is active. Stopping stores a reduced source-line hotspot table and clears the raw
-sampling buffers.
+## Sampling profiles
 
-## Crash Forensics
-
-`crash_trace="trace.jsonl"` or `MB_CRASH_TRACE` synchronously writes and flushes span start/end records
-from workspace construction until close. It is independent of buffered profiling, so a terminated
-process leaves an unmatched start for the active operation. Failure to open the requested file aborts
-workspace creation. Use it only for a reproducible crash because synchronous flushing is intentionally
-expensive.
-
-Start, stop, reset, and export functions remain module-qualified internals used by the GUI,
-benchmarks, and tests. They are not part of the project-facing API.
+Julia's `Profile` tools remain the attribution path for a hot aggregate timing label. The plot
+diagnostic keeps its bounded sampling helper, and benchmark/skill scripts continue to save
+ProfileView and pprof artifacts for CPU or wall-time investigations.

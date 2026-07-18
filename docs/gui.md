@@ -54,7 +54,7 @@ Directory sources are watched continuously.
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance and multi-select. |
 | Table Plot (DBPlots) | Independent X/Y plot over the workspace selection's merged table; toggled from the Plot menu. |
-| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
+| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and Julia sampling results. |
 
 Items without a collection path appear under the hierarchy's `Root` row. That row participates in
 the same multi-selection, filtering, saved-view, and source-item reveal behavior as collection
@@ -67,14 +67,10 @@ interpretation time, expanded item count, and the scheduler thread that performe
 Processing and statistics belong to the separate processing/summarizing activities and are not
 reported as source-read time.
 
-Internal engine controls are absent unless the workspace was opened with
-`profile_internal=true`. Its Internal tab starts and stops a bounded structured capture, groups span
-latencies, separates writer wait from service, shows process counters and recent filtered events, and
-exports Perfetto JSON. General live histories stay in the normal Live tab as CImGui sparklines
-fed from bounded ring buffers (CSV export, no Makie). Starting during active work drains it and
-starts one clean rebuild. With
-`profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
-raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
+Explicit benchmark diagnostics use `DebugTimings`, which writes a text and CSV summary after the
+measured work reaches its intended idle point. General live histories stay in the normal Live tab as
+CImGui sparklines fed from bounded ring buffers (CSV export, no Makie). The plot diagnostic retains
+its bounded Julia sampling profile and source-line hotspot table. See [profiling.md](profiling.md).
 
 ## Development tools
 

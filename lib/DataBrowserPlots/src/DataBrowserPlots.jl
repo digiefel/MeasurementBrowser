@@ -51,12 +51,7 @@ function setup_plot(
     items::Vector{<:AbstractDataItem},
 )::Figure where {Kind,Label}
     recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
-    return Profiling.@profile_span workspace.profiler :visualization :setup_plot Profiling.ProfileAttributes(
-        kind=Kind,
-        items=Int64(length(items)),
-    ) begin
-        recipe.setup(workspace, items)::Figure
-    end
+    return Profiling.@time_dbg "setup_plot" recipe.setup(workspace, items)::Figure
 end
 
 function plot_data!(
@@ -66,12 +61,7 @@ function plot_data!(
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
-    Profiling.@profile_span workspace.profiler :visualization :draw_plot Profiling.ProfileAttributes(
-        kind=Kind,
-        items=Int64(length(items)),
-    ) begin
-        recipe.draw(workspace, items, figure)
-    end
+    Profiling.@time_dbg "draw_plot" recipe.draw(workspace, items, figure)
     return nothing
 end
 

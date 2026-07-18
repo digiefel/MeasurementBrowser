@@ -118,23 +118,13 @@ function draw_plot_view!(
         figure = nothing
         items = nothing
         result = nothing
-        load_alloc = @allocated (items = Profiling.@profile_span workspace.profiler :plot :materialize Profiling.ProfileAttributes(
-            items=Int64(length(records)),
-        ) begin
-            Workspace.materialize_items(workspace, records)
-        end)
+        load_alloc = @allocated (
+            items = Profiling.@time_dbg Workspace.materialize_items(workspace, records))
         load_ns = time_ns()
-        setup_alloc = @allocated (result = Profiling.@profile_span workspace.profiler :plot :setup Profiling.ProfileAttributes(
-            items=Int64(length(records)),
-        ) begin
-            setup_plot(workspace, plot_kind, items)
-        end)
+        setup_alloc = @allocated (
+            result = Profiling.@time_dbg setup_plot(workspace, plot_kind, items))
         setup_ns = time_ns()
-        data_alloc = @allocated Profiling.@profile_span workspace.profiler :plot :draw Profiling.ProfileAttributes(
-            items=Int64(length(records)),
-        ) begin
-            plot_data!(workspace, plot_kind, items, result)
-        end
+        data_alloc = @allocated Profiling.@time_dbg plot_data!(workspace, plot_kind, items, result)
         data_ns = time_ns()
         figure = result
         figure === nothing && error("Plot renderer returned no figure.")

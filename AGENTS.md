@@ -16,7 +16,7 @@ julia --project -e 'using Pkg; Pkg.precompile()'
 # Scaling sweep — compare scaling.csv (slow)
 julia --project=bench bench/scaling.jl [n1,n2,...]
 
-# Realistic browse — compare scorecard.csv + profile.json (very slow)
+# Realistic browse — compare scorecard.csv + debug_timings.csv (very slow)
 julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
 
 # Generate public docs
@@ -93,7 +93,7 @@ registration order; the first match wins, so register specific filename patterns
 | Background work, loading item data | `lib/DataBrowserCore/src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Plot rendering, Makie integration | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
 | Browser shell, table inspector, extension registry | `lib/DataBrowserGUI/` | [gui.md](docs/gui.md) |
-| Profiling, benchmark traces | `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
+| Debug timings, sampling profiles | `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
 | Tags, notes, spatial layout | `lib/DataBrowserAnnotations/` | [annotations.md](docs/annotations.md) |
 
 `docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change
@@ -118,8 +118,9 @@ Use `bench/` for performance work (`julia --project=bench`). Results persist und
 - **scaling.jl** — times `status_refresh`, `items_panel`, and `metadata_publish` at increasing item
   counts; writes `scaling.csv` with power-law exponents. Pass smaller size lists while iterating.
 - **realistic_browse.jl** — synthetic RuO2-shaped workload: scan while plotting, cache saturation,
-  warm reopen. Writes `scorecard.csv`, `profile.json` (Perfetto trace, on by default), and
-  supporting CSVs. Use `scale=0.1` to iterate.
+  warm reopen. Writes `scorecard.csv`, `debug_timings.txt`, `debug_timings.csv`, and supporting
+  CSVs. Use `scale=0.1` to iterate.
 
-Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. Set `MB_PROFILE_INTERNAL=0`
-to skip the structured trace.
+Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. For scoped engine timings,
+create `DebugTimings`, wrap the measured operation in `with_debug_timings`, reach the intended idle
+point, and call `write_debug_timings` from the benchmark script.

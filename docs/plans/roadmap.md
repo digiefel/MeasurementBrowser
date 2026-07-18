@@ -30,7 +30,7 @@ workspace internals.
 - [x] Make collections first-class hierarchical values with stable occurrence IDs, compact internal
   keys, cache reopen, collection metadata, and one record/index model shared by the engine and GUI.
 - [ ] Clean-up and rename/file organization pass of DataBrowserAPI. // e.g. what's interface.jl?? 
-- [ ] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling.
+- [x] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling.
 - [ ] Run every example entirely through the documented public APIs and remove any remaining public
   callback dependency on cache, index, scheduler, or browser values.
 

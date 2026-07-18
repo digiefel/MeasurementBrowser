@@ -262,8 +262,6 @@ mutable struct Workspace{S<:AbstractDataSource}
     open_options::NamedTuple
     background_tasks::Vector{Task}
     metrics::BuildMetrics
-    profiler::Profiling.ProfileSession
-    profile_restart_pending::Bool
     publish_lock::ReentrantLock
     idle_condition::Base.Threads.Condition
     status::WorkspaceStatus
@@ -278,25 +276,20 @@ Create the empty state for one project-owned source.
 function Workspace(
     project::Project,
     source::S;
-    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
-    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
-    profile_output::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_PROFILE_OUTPUT"),
-    crash_trace::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
     cache::Bool=true,
     background_processing::Bool=false,
 )::Workspace{S} where {S<:AbstractDataSource}
     collections = CollectionIndex(source_id(source))
     identity = project_cache_identity(project_name(project), source)
-    profiler = Profiling.ProfileSession(
-        profile_internal, profile_cpu, profile_output, crash_trace)
     metrics = BuildMetrics()
     disk_error::Union{Nothing,Exception} = nothing
     cache_db::AbstractCacheDB = try
-        cache ? open_cache_db(identity, profiler, metrics; rebuild) :
-            open_memory_cache_db(identity, profiler, metrics)
+        if cache
+            Profiling.@time_dbg open_cache_db(identity, metrics; rebuild)
+        else
+            open_memory_cache_db(identity, metrics)
+        end
     catch error
         if cache && !rebuild && error isa ProjectCacheSchemaError
             disk_error = error
@@ -305,18 +298,13 @@ function Workspace(
                 cache=identity.cache_path,
                 error,
             )
-            open_memory_cache_db(identity, profiler, metrics)
+            open_memory_cache_db(identity, metrics)
         else
-            Profiling.close!(profiler)
             rethrow()
         end
     end
     publish_lock = ReentrantLock()
     open_options = (;
-        profile_internal,
-        profile_cpu,
-        profile_output,
-        crash_trace,
         cache,
         background_processing,
         source_open_options(source)...,
@@ -344,8 +332,6 @@ function Workspace(
         open_options,
         Task[],
         metrics,
-        profiler,
-        false,
         publish_lock,
         Base.Threads.Condition(publish_lock),
         WorkspaceStatus(),
@@ -390,12 +376,6 @@ function open_workspace(
     root_path::AbstractString;
     recursive::Bool=true,
     metadata_file::Union{Nothing,AbstractString}=DataBrowserSources.DEFAULT_DIRECTORY_METADATA_FILE,
-    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
-    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
-    profile_output::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_PROFILE_OUTPUT"),
-    crash_trace::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
     cache::Bool=true,
     background_processing::Bool=false,
@@ -403,10 +383,6 @@ function open_workspace(
     return open_workspace(
         project,
         DataBrowserSources.DirectorySource(root_path; recursive, metadata_file);
-        profile_internal,
-        profile_cpu,
-        profile_output,
-        crash_trace,
         rebuild,
         cache,
         background_processing,
