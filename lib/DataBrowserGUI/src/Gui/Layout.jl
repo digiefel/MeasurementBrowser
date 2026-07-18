@@ -431,11 +431,19 @@ function _setup_docking_layout!(state::BrowserState, dockspace_id::UInt32)::Noth
     return nothing
 end
 
-"""Return whether the native GLFW window requested shutdown."""
-function _window_close_requested()::Bool
+"""Return whether the native GLFW window or `close_browser!` requested shutdown."""
+function _window_close_requested(state::BrowserState)::Bool
+    state.exit_requested && return true
     window = ig.current_window()
     window === nothing && return false
     return GLFW.WindowShouldClose(window)
+end
+
+"""Record the first painted frame once, and wake any waiter."""
+function _mark_first_frame!(state::BrowserState)::Nothing
+    isnan(state.performance.first_frame_at) || return nothing
+    state.performance.first_frame_at = time()
+    return nothing
 end
 
 """Create the ImGui context with the docking/viewport configuration the browser needs."""
@@ -578,7 +586,7 @@ function _run_browser(
             _print_perf_summary(state)
         end,
     ) do
-        if _window_close_requested()
+        if _window_close_requested(state)
             _shutdown_background_jobs!(state)
             return :imgui_exit_loop
         end
@@ -610,9 +618,11 @@ function _run_browser(
                 end
             else
                 startup_presented[] = true
+                _mark_first_frame!(state)
             end
             return nothing
         end
+        _mark_first_frame!(state)
         _time!(state, :frame_ui) do
             dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
             if setup_layout[]
@@ -655,6 +665,10 @@ end
 Open the browser on an already-opened workspace (see `open_workspace`). By default, blocks
 until the window closes in non-interactive sessions (`julia script.jl`) and returns immediately
 in the REPL so it stays interactive.
+
+With `wait=false`, returns a [`BrowserSession`](@ref) (`task` + `state`). Use
+[`close_browser!`](@ref) to exit the loop cleanly. `state.performance.first_frame_at` is set to
+`time()` when the first non-blank frame is submitted (startup surface or full UI).
 """
 function open_browser(
     workspace::Workspace.Workspace;
@@ -673,5 +687,17 @@ function open_browser(
     end
     ctx = _init_browser_context!()
     _attach_workspace!(state, workspace)
-    return _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
+    result = _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
+    return wait ? result : BrowserSession(result::Task, state)
+end
+
+"""Ask a non-blocking browser session to exit and wait until the render task finishes."""
+function close_browser!(session::BrowserSession; timeout_s::Real=60.0)::Nothing
+    session.state.exit_requested = true
+    deadline = time() + Float64(timeout_s)
+    while !istaskdone(session.task) && time() < deadline
+        sleep(0.05)
+    end
+    istaskdone(session.task) || @warn "close_browser!: render task still running after $(timeout_s)s"
+    return nothing
 end
