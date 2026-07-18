@@ -484,6 +484,14 @@ function publish_source_item_records!(
     return resolved, invalidated
 end
 
+"""True when the stage ledger already tracks this source item (cached or failed interpret)."""
+function _cache_knows_source_item(cachedb::AbstractCacheDB, source_id::String)::Bool
+    ledger = cachedb.stage_ledger
+    return lock(ledger.lock) do
+        source_id in ledger.source_items || (source_id, source_id) in ledger.failures
+    end
+end
+
 """
 Submit one source-change batch to the work graph and remove deleted published output. Cache
 deletes are buffered mutations, so ordering against re-interpretation is kept by the buffers:
@@ -510,7 +518,12 @@ function ingest_source_changes!(
         for source_item in changes.upserts
             source_item_id_value = source_item_id(source_item)
             old_records = source_item_records(workspace.index, source_item_id_value)
-            delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
+            # Fresh upserts have no published output and no cache row — skip the no-op delete so
+            # discovery does not flood the write buffer with BUFFER_DELETE for every new file.
+            if !isempty(old_records) ||
+               _cache_knows_source_item(workspace.cache.db, source_item_id_value)
+                delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
+            end
             key = WorkKey(SOURCE_INTERPRET, source_item_id_value)
             workspace.work.source_items[source_item_id_value] = source_item
             enqueue_work!(
@@ -527,7 +540,11 @@ function ingest_source_changes!(
         isempty(stale) || invalidate_records_work!(workspace, stale)
         changed = changed || !isempty(stale)
     end
-    refresh_workspace_source!(workspace)
+    # Upsert-only batches only enqueue work; the published index is unchanged until interpretation
+    # lands or removals/metadata reconcile run. Rebuild SourceScan then, not on every discover batch.
+    if !isempty(changes.removals) || changes.metadata_changed
+        refresh_workspace_source!(workspace)
+    end
     status === nothing || (workspace.cache.status = status)
     return changed
 end
@@ -535,11 +552,15 @@ end
 """
 Start one source scan that progressively populates the workspace index and cache.
 
-The scan first surfaces any already-cached index for an instant first view, then streams freshly
-interpreted source items into the workspace and a bounded cache-write batch. The batch flushes by
-source-item count, cached row count, or age, so progressive saves remain frequent without paying for
-one DuckDB transaction per source item. `rebuild=true` first wipes the cache and ignores the prior
-scan, forcing a full re-interpretation.
+The scan first surfaces any already-cached index for an instant first view, then walks the source
+while only fingerprinting new or stale items into a queue — so `sources_found` advances at walk
+speed. After the walk, a publisher task drains that queue in small batches so `SOURCE_INTERPRET`
+starts immediately and overlaps the remaining enqueue (without serializing the walk behind
+`publish_lock` / ingest or contending with interpreters on the filesystem). Removals and
+source-metadata reconcile run in a final batch after the publisher drains. Interpreted results
+stream into the workspace and a bounded cache-write batch that flushes by source-item count, cached
+row count, or age. `rebuild=true` first wipes the cache and ignores the prior scan, forcing a full
+re-interpretation.
 """
 function scan_source!(
     workspace::Workspace;
@@ -597,24 +618,28 @@ function scan_source!(
                     workspace, scan_id, cached === nothing ? :missing : :ready, cached)
 
                 write_meta_header!(cachedb)
-                discovered = Profiling.@time_dbg source_items(
-                    workspace.source;
-                    cancel_token=scan_token,
-                    on_progress=count -> begin
-                        job.discovered[] = count
-                        workspace.status_dirty[] = true
-                    end,
-                )
-                is_cancellation_requested(scan_token) &&
-                    throw(OperationCanceledException(scan_token))
-                # The cache's `source_items` table is the sole home of previous-session
-                # fingerprints; a memory-only cache holds nothing, so every discovered item
-                # re-interprets.
+                # Fingerprints must be loaded before discovery so upserts can stream during the walk.
+                # The cache's `source_items` table is the sole home of previous-session fingerprints;
+                # a memory-only cache holds nothing, so every discovered item re-interprets.
                 previous = _load_source_item_fingerprints(cachedb)
                 current = Dict{String,Any}()
-                upserts = AbstractDataSourceItem[]
                 seen = Set{String}()
-                for item in discovered
+                pending_upserts = Ref{Vector{AbstractDataSourceItem}}(AbstractDataSourceItem[])
+                any_upserts = Ref(false)
+                streamed = Ref(false)
+                # Walk only fingerprints into an unbounded channel — do not publish yet. Starting
+                # SOURCE_INTERPRET during the walk contends on the same filesystem (and publish_lock)
+                # and made discovery unusably slow on large trees. After the walk, a publisher task
+                # drains batches so interpretation overlaps the remaining enqueue, not the walk.
+                upsert_batch = 32
+                upsert_channel = Channel{Vector{AbstractDataSourceItem}}(Inf)
+                flush_pending_upserts! = () -> begin
+                    isempty(pending_upserts[]) && return
+                    batch = pending_upserts[]
+                    pending_upserts[] = AbstractDataSourceItem[]
+                    put!(upsert_channel, batch)
+                end
+                consider_source_item! = item -> begin
                     is_cancellation_requested(scan_token) &&
                         throw(OperationCanceledException(scan_token))
                     id_value = source_item_id(item)
@@ -625,9 +650,43 @@ function scan_source!(
                     # so it is always re-read.
                     if !haskey(previous, id_value) || current_fingerprint === nothing ||
                        !isequal(previous[id_value], current_fingerprint)
-                        push!(upserts, item)
+                        push!(pending_upserts[], item)
+                        length(pending_upserts[]) >= upsert_batch && flush_pending_upserts!()
                     end
                 end
+                discovered = Profiling.@time_dbg source_items(
+                    workspace.source;
+                    cancel_token=scan_token,
+                    on_progress=count -> begin
+                        job.discovered[] = count
+                        workspace.status_dirty[] = true
+                    end,
+                    on_item=item -> begin
+                        streamed[] = true
+                        consider_source_item!(item)
+                    end,
+                )
+                is_cancellation_requested(scan_token) &&
+                    throw(OperationCanceledException(scan_token))
+                # Sources that ignore `on_item` still queue batches after discovery returns.
+                if !streamed[]
+                    for item in discovered
+                        consider_source_item!(item)
+                    end
+                end
+                flush_pending_upserts!()
+                publisher = Threads.@spawn begin
+                    for batch in upsert_channel
+                        any_upserts[] = true
+                        publish_source_changes!(
+                            workspace,
+                            scan_id,
+                            SourceChanges(batch, String[]; metadata_changed=false),
+                        )
+                    end
+                end
+                close(upsert_channel)
+                wait(publisher)
                 is_cancellation_requested(scan_token) &&
                     throw(OperationCanceledException(scan_token))
                 removals = String[id for id in keys(previous) if !(id in seen)]
@@ -648,15 +707,16 @@ function scan_source!(
                 )
                 is_cancellation_requested(scan_token) &&
                     throw(OperationCanceledException(scan_token))
+                # Final batch: removals + deferred metadata reconcile (not on every upsert batch).
                 Profiling.@time_dbg publish_source_changes!(
                     workspace,
                     scan_id,
-                    SourceChanges(upserts, removals; metadata_changed=true),
+                    SourceChanges(AbstractDataSourceItem[], removals; metadata_changed=true),
                     status,
                 )
                 publish_scan_end!(
                     workspace, scan_id;
-                    cache_hit=isempty(upserts) && isempty(removals),
+                    cache_hit=!any_upserts[] && isempty(removals),
                 )
             catch error
                 if error isa OperationCanceledException
@@ -1114,7 +1174,7 @@ function publish_source_changes!(
     workspace::Workspace,
     scan_id::Int,
     changes::SourceChanges,
-    status::ProjectCacheStatus,
+    status::Union{Nothing,ProjectCacheStatus}=nothing,
 )::Nothing
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return

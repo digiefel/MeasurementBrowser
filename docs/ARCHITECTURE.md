@@ -42,9 +42,13 @@ source item → interpret → logical data → process → analyze → collectio
 
 The engine is written against the **low-level source contract** ([api.md](api.md)): an
 `AbstractDataSource` owns lifecycle and discovery, an `AbstractDataSourceItem` is one discovered unit,
-and an `AbstractDataItem` is one logical browsable item. `scan_source!` calls `source_items(source)`,
-compares the discovered source-item ids and fingerprints with the cache fingerprint table, and submits
-one `SourceChanges` batch to the workspace work graph. Source watchers submit the same batch type;
+and an `AbstractDataItem` is one logical browsable item. `scan_source!` discovers source items
+(streaming via `on_item` when the source supports it), compares each fingerprint with the cache
+fingerprint table, and queues new or stale items during the walk without publishing yet — so
+directory discovery stays fast. After the walk, a publisher task submits `SourceChanges` batches so
+`SOURCE_INTERPRET` starts immediately and overlaps the remaining enqueue without holding the walk
+on `publish_lock` / ingest. Removals and source-metadata reconcile happen in a final batch when
+that publisher drains. Source watchers submit the same batch type;
 `DirectorySource` watches the directory tree recursively and reports file creates, edits, renames,
 deletes, and metadata changes through that path. Interpretation workers call
 `data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish

@@ -163,6 +163,7 @@ end
 function collect_source_files(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
+    on_item::Union{Nothing,Function}=nothing,
     cancel_token::CancellationToken,
 )::Vector{SourceFile}
     source_files = SourceFile[]
@@ -172,14 +173,14 @@ function collect_source_files(
         for (root, _, names) in walkdir(source.root_path)
             append_source_files!(
                 source_files, root, names, metadata_path;
-                on_progress, found, cancel_token,
+                on_progress, on_item, found, cancel_token,
             )
         end
     else
         names = readdir(source.root_path)
         append_source_files!(
             source_files, source.root_path, names, metadata_path;
-            on_progress, found, cancel_token,
+            on_progress, on_item, found, cancel_token,
         )
     end
     on_progress === nothing || on_progress(found[])
@@ -193,6 +194,7 @@ function append_source_files!(
     metadata_path::Union{Nothing,String}=nothing,
     ;
     on_progress::Union{Nothing,Function}=nothing,
+    on_item::Union{Nothing,Function}=nothing,
     found::Base.RefValue{Int}=Ref(0),
     cancel_token::CancellationToken,
 )::Nothing
@@ -203,8 +205,10 @@ function append_source_files!(
         path = joinpath(root, name)
         metadata_path !== nothing && normpath(path) == metadata_path && continue
         isfile(path) || continue
-        push!(source_files, index_source_file(path))
+        file = index_source_file(path)
+        push!(source_files, file)
         found[] += 1
+        on_item === nothing || on_item(file)
         on_progress !== nothing && found[] % 256 == 0 && on_progress(found[])
     end
     return nothing
@@ -341,9 +345,10 @@ end
 function source_items(
     source::DirectorySource;
     on_progress::Union{Nothing,Function}=nothing,
+    on_item::Union{Nothing,Function}=nothing,
     cancel_token::CancellationToken,
 )::Vector{SourceFile}
-    return collect_source_files(source; on_progress, cancel_token)
+    return collect_source_files(source; on_progress, on_item, cancel_token)
 end
 
 function open_source(source::DirectorySource)::DirectorySource
