@@ -1,4 +1,4 @@
 interface:
   display_name: "DataBrowser Profiling"
-  short_description: "timed_profile.jl harness for RuO2 cold-cache scan performance"
-  default_prompt: "Follow $databrowser-profiling: sync-check, one gui harness run, return full stdout and artifact paths."
+  short_description: "Live Revise profiling with ProfileView and pprof"
+  default_prompt: "Use $databrowser-profiling in one live Revise session: keep the GUI workspace open, capture one fixed window, query its .pb.gz with direct pprof CLI, and return the raw table, numeric stage deltas, artifacts, and next hypothesis."
