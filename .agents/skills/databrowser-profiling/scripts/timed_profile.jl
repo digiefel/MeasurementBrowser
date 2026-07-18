@@ -1,5 +1,5 @@
 #!/usr/bin/env julia
-# Single-run timed profile of DataBrowser on the real RuO2 v2 project. See SKILL.md.
+# Primary hot-loop harness: disposable cache (never touches databrowser/RuO2/cache.duckdb). See SKILL.md.
 
 const MODE = isempty(ARGS) ? "headless" : first(ARGS)
 MODE in ("headless", "gui") || error("Unknown mode '$MODE'; use headless or gui")
@@ -8,11 +8,13 @@ option_seconds(name, default) = let m = findfirst(a -> startswith(a, "--$name=")
 end
 const BUDGET = option_seconds("budget", 30.0)
 const WARMUP = option_seconds("warmup", 20.0)
-const FRESH = !("--no-fresh" in ARGS)
+const FRESH = "--fresh" in ARGS
+const BACKGROUND_PROCESSING = !("--no-background-processing" in ARGS)
 const PROFILER = let m = findfirst(a -> startswith(a, "--profile="), ARGS)
     m === nothing ? "none" : split(ARGS[m], '='; limit=2)[2]
 end
-PROFILER in ("none", "cpu", "allocs") || error("Unknown --profile '$PROFILER'; use cpu or allocs")
+PROFILER in ("none", "cpu", "wall", "allocs") ||
+    error("Unknown --profile '$PROFILER'; use cpu, wall, or allocs")
 
 const REPO_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", ".."))
 const DEFINITIONS = normpath(joinpath(@__DIR__, "..", "project", "definitions.jl"))
@@ -21,6 +23,13 @@ const DATA_ROOT = get(
     "RUO2_DATA_ROOT",
     "/Users/davide/Library/CloudStorage/OneDrive-LundUniversity/projects/Borg/202501_RuO2test/electricaldata",
 )
+const RUN_LOCK = joinpath(tempdir(), "databrowser-profiling.lock")
+try
+    mkdir(RUN_LOCK)
+catch
+    error("Another profiling run may be active; inspect processes before removing $RUN_LOCK")
+end
+atexit(() -> rm(RUN_LOCK; recursive=true, force=true))
 
 using Dates: format, now
 using Printf: @printf, @sprintf
@@ -75,8 +84,8 @@ if WARMUP > 0
     jit_before_warmup = compile_ns()
     warmup_seconds = @elapsed begin
         warm = open_workspace(
-            project, DATA_ROOT;
-            metadata_file="device_info.txt", cache=true, background_processing=true,
+            project, DATA_ROOT; metadata_file="device_info.txt", cache=true,
+            background_processing=BACKGROUND_PROCESSING,
         )
         deadline = time() + WARMUP
         while time() < deadline && workspace_status(warm).busy
@@ -100,8 +109,8 @@ pushfirst!(DEPOT_PATH, cache_root)
 
 compile_before_open = compile_ns()
 open_seconds = @elapsed workspace = open_workspace(
-    project, DATA_ROOT;
-    metadata_file="device_info.txt", cache=true, background_processing=true,
+    project, DATA_ROOT; metadata_file="device_info.txt", cache=true,
+    background_processing=BACKGROUND_PROCESSING,
 )
 open_compile_seconds = (compile_ns() - compile_before_open) / 1e9
 mark!("open_workspace returned")
@@ -147,6 +156,9 @@ scan_t0 = time()
 if PROFILER == "cpu"
     Profile.clear()
     Profile.@profile sample_scan_window!(samples, workspace, scan_t0)
+elseif PROFILER == "wall"
+    Profile.clear()
+    Profile.@profile_walltime sample_scan_window!(samples, workspace, scan_t0)
 elseif PROFILER == "allocs"
     Profile.Allocs.clear()
     Profile.Allocs.@profile sample_rate = 0.01 sample_scan_window!(samples, workspace, scan_t0)
@@ -181,9 +193,13 @@ rm(cache_root; force=true, recursive=true)
 mark!("closed")
 
 # --- report -----------------------------------------------------------------------------------
-if PROFILER == "cpu"
-    open(joinpath(OUTDIR, "cpu_profile.txt"), "w") do io
-        Profile.print(io; format=:flat, sortedby=:count, mincount=2)
+if PROFILER in ("cpu", "wall")
+    open(joinpath(OUTDIR, "$(PROFILER)_profile.txt"), "w") do io
+        if PROFILER == "cpu"
+            Profile.print(io; format=:flat, sortedby=:count, mincount=2)
+        else
+            Profile.print(io; format=:tree, mincount=2)
+        end
     end
 elseif PROFILER == "allocs"
     open(joinpath(OUTDIR, "allocation_profile.txt"), "w") do io
@@ -226,7 +242,8 @@ commit = readchomp(`git -C $REPO_ROOT rev-parse --short HEAD`)
 fmt(x) = isnan(x) ? "not reached" : @sprintf("%.1f s", x)
 
 println()
-println("=== DataBrowser timed profile ($MODE, $commit, $(Threads.nthreads()) threads, budget $(BUDGET) s, fresh=$FRESH) ===")
+println("=== DataBrowser timed profile ($MODE, $commit, $(Threads.nthreads()) threads, " *
+    "budget $(BUDGET) s, fresh=$FRESH, background=$BACKGROUND_PROCESSING) ===")
 println()
 println("Startup")
 @printf("  precompile             %8.1f s%s\n", precompile_seconds,
@@ -251,7 +268,7 @@ println("Pipeline callbacks vs capacity ($(length(worker_threads)) worker thread
 for phase in (:detect, :read, :entries, :process, :analyze)
     @printf("  %-9s              %8.1f s\n", phase, phase_totals[phase])
 end
-@printf("  callbacks total        %8.1f s  of %.1f s worker capacity (%.0f%% pipeline, %.0f%% app+idle)\n",
+@printf("  callbacks total        %8.1f s  of %.1f s worker capacity (%.0f%% callbacks, %.0f%% unattributed)\n",
     callback_seconds, capacity_seconds, 100 * callback_seconds / capacity_seconds,
     100 * (1 - callback_seconds / capacity_seconds))
 println()
