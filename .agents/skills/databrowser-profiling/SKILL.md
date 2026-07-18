@@ -1,86 +1,62 @@
 ---
 name: databrowser-profiling
-description: Agent-executed diagnose → attribute → patch → remeasure loop for DataBrowser RuO2 GUI cold-cache scan performance. Harness is the hot loop; user feel gates ultimate verification.
+description: >-
+  Time and profile DataBrowser cold-cache scan performance on the RuO2 v2
+  workload using scripts/timed_profile.jl (GUI or headless). Use when
+  investigating scan slowness, pre-scan stalls, GUI vs engine cost, throughput,
+  timeline plateaus, or open_workspace/open_browser performance in this repo.
 ---
 
 # DataBrowser profiling
 
-**Canonical path:** `.agents/skills/databrowser-profiling/` (`.claude/...` is the same inode — edit once).
+## Goal
 
-**What this skill is:** an agent playbook. The **Runner** executes it. The **parent** edits this file and the harness. The **user** is the authority on feel. Numbers drive the hot loop; feel gates ship.
+Shorten the time from “browser is up” until the scan is doing useful work, and
+raise how fast that work runs. The harness is the everyday measurement tool.
+The user’s real `browser.jl` session is the final check that a change actually
+helped.
 
-**Primary product question:** wall time from browser up until the scan is usefully done, and how fast useful work moves — including wasted time *before* scan work starts.
+## Workflow
 
-**What the harness actually measures (do not conflate):**
-
-| Block | Contents |
-|---|---|
-| **Startup** (reported separately) | precompile / `using` / project include / `open_workspace` / `open_browser` |
-| **Scan window** (hot-loop regression target) | milestones + throughput for `--budget` seconds *after* `open_workspace` returns |
-
-User-perceived “GUI opened then sat there” includes **both**. Optimize the scan window and pre-scan waste inside it; treat startup as its own hypothesis when those lines dominate.
-
-## Roles
-
-| Role | Does |
-|---|---|
-| Parent (skill author) | Writes this skill + tiny harness changes. Never confuses itself by “being the Runner.” |
-| Runner | Executes phases. One harness run at a time. |
-| Critic (optional) | Judges Runner productivity / whether a skill edit helped. **Must not** invoke the harness while the Runner might. |
-| User | Feel, ultimate GUI check, answers when escalated. |
-
-## Hard rules
-
-1. **Never run multiple benchmarks in parallel.** Lock: `$TMPDIR/databrowser-profiling.lock`. If present, wait or inspect processes — do not delete casually.
-2. **One harness run per hypothesis.** Patch → one remeasure. No stacked unmeasured changes.
-3. **Hot-loop cache is disposable** (harness temp depot). Never ask the user to delete `cache.duckdb` during iteration.
-4. **Ultimate verification** (real `browser.jl` + real cache + user feel) after **every promising change** — not the hot loop.
-5. If you cannot verify something: ask the parent **“should I ask the user?”** — do not invent, do not silently skip.
-6. Do not ask the user to stopwatch. Timings come from the harness (or profile artifacts).
-7. Prefer ordinary Julia profiling over heavy internal/Perfetto tooling. Add lightweight markers only if external tooling cannot answer. Perfetto is last resort.
-
-## Stop / escalate
-
-- **Continue hot loop** while there is a concrete next hypothesis tied to a harness signal.
-- **Ultimate verify** when a remeasure shows a clear win on the targeted milestone/throughput (matched budget/threads/mode) — then ask the user to confirm feel on the real project.
-- **Escalate to user** when feel and numbers disagree, data root/project drift is ambiguous, GUI cannot open, or ProfileView cannot display — via “should I ask the user?”
-- **Do not declare victory** on harness numbers alone.
-
----
-
-## Phase 1 — Checked-in project fidelity
-
-Harness loads `project/definitions.jl`, **not** the external `browser.jl`. Wrong project ⇒ wrong optimization.
-
-| | Path |
-|---|---|
-| Checked-in project | `.agents/skills/databrowser-profiling/project/` |
-| Real launch | `/Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2/browser.jl` |
-| Real data root | `/Users/davide/Library/CloudStorage/OneDrive-LundUniversity/projects/Borg/202501_RuO2test/electricaldata` (`RUO2_DATA_ROOT` overrides) |
-
-**Runner must run (or equivalent):**
-
-```bash
-REAL="/Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2"
-CHECK=".agents/skills/databrowser-profiling/project"
-
-test -d "$RUO2_DATA_ROOT" -o -d "/Users/davide/Library/CloudStorage/OneDrive-LundUniversity/projects/Borg/202501_RuO2test/electricaldata"
-diff -qr "$CHECK/data" "$REAL/data"
-diff -qr "$CHECK/analysis" "$REAL/analysis"
-diff -qr "$CHECK/plots" "$REAL/plots"
+```
+- [ ] Diff harness project copy vs user’s RuO2 analysis tree; confirm data root
+- [ ] One gui harness run (--budget=45)
+- [ ] Read stdout + timeline.png (+ cpu_flame.svg if you profiled)
+- [ ] If you need to know which functions are hot: one headless --profile=cpu run
+- [ ] One hypothesis → small patch → one matching gui remeasure
+- [ ] If the harness looks better: user verifies with real browser.jl
 ```
 
-Also spot-check that `definitions.jl` still wires the same `register_*` surface the real tree uses (`measurements.jl` / `browser.jl` includes). Count `register_item!` / `register_collection_analysis!` / kind names; record the delta.
+Run only one harness at a time. The script takes
+`$TMPDIR/databrowser-profiling.lock` and errors if another run holds it.
 
-**Pass:** data root exists; `data`/`analysis`/`plots` diffs are empty or only explained noise; registration surface matches.
+## Diff before measuring
 
-**Fail / unclear:** stop. Ask **“should I ask the user?”** — sync checked-in copy, proceed with documented delta, or ultimate-only.
+`timed_profile.jl` loads
+`.agents/skills/databrowser-profiling/project/definitions.jl` — a copy of the
+registration and plot code from the user’s RuO2 tree. The user’s day-to-day
+launcher is `…/analysis/v2/browser.jl`. If the copy is stale, you optimize the
+wrong code.
 
----
+```bash
+USER="/Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2"
+COPY=".agents/skills/databrowser-profiling/project"
+DATA="${RUO2_DATA_ROOT:-/Users/davide/Library/CloudStorage/OneDrive-LundUniversity/projects/Borg/202501_RuO2test/electricaldata}"
+test -d "$DATA"
+diff -qr "$COPY/data" "$USER/data"
+diff -qr "$COPY/analysis" "$USER/analysis"
+diff -qr "$COPY/plots" "$USER/plots"
+```
 
-## Phase 2 — Hot-loop baseline (harness, GUI)
+Also compare `register_*` kinds in `COPY/definitions.jl` to `USER/browser.jl`.
 
-**Always pass `gui` explicitly.** Script default if omitted is `headless` — that is a footgun, not the hot-loop default.
+If the diff is non-empty and you cannot tell whether it matters, stop and ask
+the user whether to sync the copy, proceed anyway, or skip the harness and only
+use the real app. Do not guess.
+
+## Run the harness
+
+From the DataBrowser repo root:
 
 ```bash
 julia --project=bench --threads=auto \
@@ -88,106 +64,127 @@ julia --project=bench --threads=auto \
   --budget=45
 ```
 
-| Flag | Role |
+What this does: load DataBrowser from this repo, include the project copy above,
+open a workspace on `$DATA` with a **throwaway** cache (never
+`~/.julia/databrowser/RuO2/cache.duckdb`), open the GUI, sample the scan for
+`--budget` seconds at ~10 Hz, write artifacts under `bench/results/`, then shut
+down the browser and workspace.
+
+| Arg | Effect |
 |---|---|
-| `gui` | Harness-owned `open_browser`. **Required** for the hot loop. |
-| `headless` | Engine-only. Attribution tool when isolating GUI/render. |
-| `--budget=S` | Scan sampling window after `open_workspace` (script default 30). Target **~30–60 s of actual scan work**. |
-| `--warmup=S` | In-process JIT throwaway (default 20). Not part of the measured scan window. |
-| `--fresh` | Wipe compiled `DataBrowser*` — **only** for precompile questions. |
-| `--profile=cpu\|wall\|allocs` | One magnifier on the scan window. Never compare profiled throughput to a clean baseline. |
+| `gui` | Opens the window. Use this for the normal loop. If you omit the mode, the script defaults to `headless`. |
+| `headless` | No window. Use for engine CPU profiles and gui-vs-engine comparisons. |
+| `--budget=S` | How long to sample the scan after `open_workspace` (default 30). Use 30–60 s of scan time. |
+| `--warmup=S` | Throwaway scan first so JIT is not counted in the sample window (default 20). |
+| `--fresh` | Wipe compiled `DataBrowser*` package caches before precompile. Only when the question is precompile time. |
+| `--profile=cpu` | Sample CPU during the scan window and write `cpu_flame.svg` (flame graph). Prefer **`headless --profile=cpu`**. |
+| `--profile=wall` / `--profile=allocs` | Wall-time tree or allocation profile instead. One of these flags per run — not combined. |
 
-**Budget rule:** if stdout says `budget hit`, or `analysis done` / `processing done` is `not reached` and you still need that stage for the hypothesis → **one** re-run with higher `--budget` (e.g. 60–90) **before** attributing. Do not attribute on an unfinished window.
+Do not compare item/s from a `--profile=*` run to an unprofiled run; sampling changes cost.
 
-**Cold cache:** harness `mktempdir()` on `DEPOT_PATH` — never touches `~/.julia/databrowser/RuO2/cache.duckdb`.
+If the summary says `budget hit` and you still need a later pipeline stage for
+your question, run **once** more with a larger `--budget` before concluding.
 
-**Read:** Startup block, Scan window milestones, throughput halves, callback vs capacity, `Timeline events`, `Artifacts:` dir (`timeline.csv`, optional `*_profile.txt`).
+## Read the outputs
 
-Expected wall clock for one run is long (precompile line + using + warmup + budget + GUI). Plan for that; do not start a second run.
+Stdout ends with `Artifacts: <dir>`.
 
----
+**Startup block**
 
-## Phase 3 — Attribute (one magnifier at a time)
+- `open_workspace` — workspace construct + cache open + scan kickoff.
+- `open_browser` — returned after the render task is started.
+- `time to first frame` — seconds from `open_browser` call until the first
+  non-blank frame is submitted (startup surface or full UI). **This is the GUI
+  startup number to minimize**, not `open_browser` alone.
 
-Use the baseline report first:
+**Scan window**
 
-1. Re-read milestones + `timeline.csv` — where does work start? which stage stalls? does `busy` clear?
-2. `--profile=cpu` → `cpu_profile.txt` (patchable frames). Prefer this over internal traces.
-3. `--profile=wall` if CPU sampling misses waits.
-4. `--profile=allocs` if allocation pressure is suspected.
-5. Same-commit `headless` vs `gui` when GUI/render might steal time.
-6. Interactive flame graph for the user (below) when a visual pass helps.
-7. Perfetto / `profile_internal` — **last resort** (`docs/profiling.md`). We are evaluating whether this surface can shrink.
+- `discovery done` — time in the sample window when `sources_found` first equals
+  the final source count for that run (the full file list is known).
+- `interpretation done` / `processing done` / `analysis done` — when that stage
+  has finished every item, or `not reached` if the budget ended first.
+- Throughput — items completed in the window divided by window length.
+- Callback vs capacity — time inside project callbacks vs (window × worker
+  threads). The remainder is everything else (engine, scheduling, cache, GUI,
+  idle). Treat a huge remainder as “need a flame graph,” not as a finished
+  diagnosis.
 
-Hypothesis resolution can be a milestone shift, a %, a flame frame, or a file/function — whatever answers *this* question.
+**`timeline.png` / `timeline.csv`**
 
-### Interactive flame graph (show the user)
+Line plots of `sources_found`, `cached_sources`, `interpreted`, `processed`,
+`analyzed` vs time (~10 Hz). Use this to see dead time (flat) and how fast each
+stage advances (slope). This is the main view of scan progress. It does not
+name functions — that is what `--profile=cpu` is for.
 
-Default agent artifact: `cpu_profile.txt`.
+**`cpu_flame.svg`**
 
-When the user should **click** a flame graph, lowest friction:
+Open in a browser. Wide stacks are where CPU time went. Produce this with
+`headless --profile=cpu` when the timeline shows a problem but you need a code
+location to patch.
 
-```julia
-using Pkg; Pkg.add("ProfileView")   # once in bench env if missing
-using ProfileView
-# disposable cache: pushfirst!(DEPOT_PATH, mktempdir()) before open_workspace
-@profview begin
-    ws = open_workspace(PROJECT, DATA_ROOT; metadata_file="device_info.txt", cache=true)
-    while workspace_status(ws).busy; sleep(0.25); end
-    close_workspace!(ws)
-end
+## When you cannot verify something
+
+If a path is missing, a diff is ambiguous, a flame graph will not open here, or
+the numbers and the user’s feel disagree — do **not** invent an answer. Ask
+whether you should escalate that specific question to the user. Wait for a yes
+before pinging them. Phrase the question so they can answer in one or two
+sentences (what you saw, what you need them to confirm).
+
+## Profile when the timeline is not enough
+
+The timeline tells you *when* work stalls. It never names *which function* is
+hot. When you need that:
+
+```bash
+julia --project=bench --threads=auto \
+  .agents/skills/databrowser-profiling/scripts/timed_profile.jl headless \
+  --budget=45 --profile=cpu
 ```
 
-- **Engine callback costs:** `headless` + ProfileView / `--profile=cpu` is enough.
-- **GUI/render hypothesis:** do **not** pretend a headless flame graph answers it — use `gui` harness + `--profile=wall`, and/or ask **“should I ask the user?”** to look at Performance tabs while a harness `gui` run is up.
+Open `cpu_flame.svg` from the artifacts dir.
 
-If ProfileView cannot open here, ask **“should I ask the user?”** — do not jump to Perfetto for a simple flame graph.
+If you think the **GUI** is slowing the scan (not just the engine), run the
+same budget once as `gui` and once as `headless` **without** `--profile`, and
+compare `timeline.png` slopes and throughput. Do not use a GUI CPU profile to
+judge scan workers — it is dominated by the render loop.
 
----
+## Patch → remeasure
 
-## Phase 4 — Patch → one remeasure
+1. State one hypothesis tied to a concrete signal (e.g. “~11 s after first frame
+   with sources known and `interpreted` still 0” or a named frame in the flame
+   graph).
+2. Make the smallest code change that tests that hypothesis.
+3. Run **one** `gui --budget=45` harness again (same threads; change budget only
+   if the hypothesis requires it, and say so).
+4. Compare the new `timeline.png` and summary to the previous run: shorter dead
+   time? steeper `interpreted` slope? earlier processing?
 
-1. One hypothesis tied to a Phase 3 signal.
-2. Small patch.
-3. One `gui` harness run, **same budget/threads** unless the hypothesis requires a change (document why).
-4. Compare matched milestones / throughput / callback share.
-5. Clear win → Phase 5. Else new hypothesis (back to 3). No stacked patches.
+Do not stack several unmeasured patches. A clear harness improvement is the
+gate to user verification — not the end of the story.
 
----
+## User verification (every promising harness win)
 
-## Phase 5 — Ultimate verification (every promising change)
+The harness uses a temp cache and the project copy. The user cares about the
+real app and the real cache path.
 
-Real project the user opens:
-
-1. Fresh Julia; DataBrowser from this repo.
-2. Delete real cache (allowed here):
+1. Fresh Julia process; DataBrowser from this repo.
+2. Delete the real cache (only here — not during harness iteration):
 
    ```julia
    rm(joinpath(first(DEPOT_PATH), "databrowser", "RuO2", "cache.duckdb"); force=true)
    ```
 
-3. `include` real `browser.jl`.
-4. **User confirms feel** (responsiveness, status → Fresh/Loaded, progress clears). Runner records commit + threads; user is the gate.
-5. Optional: user opens Performance → Project / Memory.
+3. `include`  
+   `/Users/davide/Documents/OneDrive/OneDrive - Lund University/projects/Borg/202501_RuO2test/analysis/v2/browser.jl`
+4. Ask the user whether the pause after the window appears feels shorter and
+   whether browsing while the scan runs feels better. Their answer is the gate.
+   Record git commit and `Threads.nthreads()` with their answer.
 
-`open_browser` return ≠ first frame. Do not infer FPS from scan milestones.
-
----
-
-## Feel vs numbers
-
-When they diverge: ask specific questions anchored to harness lines; check missing signals (GUI cost, JIT-in-window, unattributed %); run **one** targeted magnifier; do not trust either side blindly.
-
----
-
-## Later (not this loop)
-
-- Warm reopen / ~10% partial cache (same ultimate path, don’t delete cache).
-- `bench/scaling.jl`, `bench/realistic_browse.jl` — not the RuO2 GUI hot loop.
+Warm / partially filled cache is later: same steps, skip deleting `cache.duckdb`.
 
 ## Validity
 
-- Do not “win” by throttling, coalescing, dropping work, or weaker readiness.
-- Project callbacks are workload; optimize scheduling/caching/publishing around them.
-- Regressions need matched conditions + useful work reported with time.
-- Callback % ≠ theoretical minimum; unattributed includes engine, scheduling, JIT, GC, idle, GUI.
+Do not make the chip look “Fresh” by throttling updates, dropping work, or
+weakening readiness. Project callbacks are the workload; speed up the engine
+around them. Claim improvement only under matched conditions, and report useful
+work (timeline shape, items done) next to wall time.
