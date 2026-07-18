@@ -104,6 +104,8 @@ end
 """Counters and samples shown by the performance window."""
 Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
+    """Monotonic `time()` when the first non-blank frame was submitted, or `NaN` until then."""
+    first_frame_at::Float64 = NaN
     gl_info::Dict{Symbol,String} = Dict{Symbol,String}()
     node_count::Int = 0
     item_rows_visible::Int = 0
@@ -169,7 +171,15 @@ Base.@kwdef mutable struct BrowserState
     cache_rebuild_project::Union{Nothing,Project} = nothing
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
+    """Set by `close_browser!` so the render loop exits without a GLFW close click."""
+    exit_requested::Bool = false
     extensions::Vector{GuiExtension} = GuiExtension[]
+end
+
+"""Non-blocking `open_browser` handle: the render `task` plus its `BrowserState`."""
+struct BrowserSession
+    task::Task
+    state::BrowserState
 end
 
 """Call `shutdown!` on every extension instance."""

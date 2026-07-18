@@ -64,9 +64,11 @@ using DataBrowserCore.Workspace:
     select_items!,
     wait_workspace_idle!,
     workspace_status
-using DataBrowserGUI: open_browser
+using DataBrowserGUI: open_browser, close_browser!, BrowserSession
 
 export open_browser,
+    close_browser!,
+    BrowserSession,
     open_workspace,
     close_workspace!,
     select_items!,

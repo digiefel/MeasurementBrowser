@@ -3,7 +3,7 @@ module DataBrowserGUI
 
 include("Browser.jl")
 
-using .Browser: open_browser
-export open_browser, Browser
+using .Browser: open_browser, close_browser!, BrowserSession
+export open_browser, close_browser!, BrowserSession, Browser
 
 end

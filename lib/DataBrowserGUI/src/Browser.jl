@@ -16,6 +16,6 @@ include("Gui/DebugTools.jl")
 include("Gui/Layout.jl")
 include("Gui/PerformanceWindow.jl")
 
-export open_browser
+export open_browser, close_browser!, BrowserSession
 
 end
