@@ -118,7 +118,10 @@ include("plots/common.jl")    # shared plot formatting and unit conversion
 include("plots/summary_views.jl")
 include("plots/measurement_views.jl")
 
-const PROJECT = define_project("RuO2"; description="Ferroelectric RuO2test measurements")
+const PROJECT = define_project(
+    "DataBrowserProfilingRuO2";
+    description="Ferroelectric RuO2test profiling workload",
+)
 
 # PUND fatigue — one file expands to one PUND per fatigue cycle.
 register_item!(PROJECT, :pund_fatigue;
@@ -298,4 +301,3 @@ register_plot!(PROJECT, :wgfmu_sampling;
     setup = setup_wgfmu_sampling_plot,
     draw = draw_wgfmu_sampling_plot,
 )
-

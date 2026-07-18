@@ -1,15 +1,19 @@
 #!/usr/bin/env julia
-# Primary hot-loop harness: disposable cache (never touches databrowser/RuO2/cache.duckdb). See SKILL.md.
+# Fresh-process boundary for the dedicated DataBrowserProfilingRuO2 cache. See SKILL.md.
 
 const MODE = isempty(ARGS) ? "headless" : first(ARGS)
 MODE in ("headless", "gui") || error("Unknown mode '$MODE'; use headless or gui")
 option_seconds(name, default) = let m = findfirst(a -> startswith(a, "--$name="), ARGS)
     m === nothing ? default : parse(Float64, split(ARGS[m], '='; limit=2)[2])
 end
+option_string(name, default) = let m = findfirst(a -> startswith(a, "--$name="), ARGS)
+    m === nothing ? default : split(ARGS[m], '='; limit=2)[2]
+end
 const BUDGET = option_seconds("budget", 30.0)
-const WARMUP = option_seconds("warmup", 20.0)
-const FRESH = "--fresh" in ARGS
-const BACKGROUND_PROCESSING = !("--no-background-processing" in ARGS)
+const CACHE_MODE = option_string("cache", "fresh")
+CACHE_MODE in ("fresh", "resume") || error("--cache must be fresh or resume")
+const FRESH_COMPILE = "--fresh-compile" in ARGS
+const BACKGROUND_PROCESSING = "--background-processing" in ARGS
 const PROFILER = let m = findfirst(a -> startswith(a, "--profile="), ARGS)
     m === nothing ? "none" : split(ARGS[m], '='; limit=2)[2]
 end
@@ -23,17 +27,24 @@ const DATA_ROOT = get(
     "RUO2_DATA_ROOT",
     "/Users/davide/Library/CloudStorage/OneDrive-LundUniversity/projects/Borg/202501_RuO2test/electricaldata",
 )
-const RUN_LOCK = joinpath(tempdir(), "databrowser-profiling.lock")
-try
-    mkdir(RUN_LOCK)
-catch
-    error("Another profiling run may be active; inspect processes before removing $RUN_LOCK")
-end
-atexit(() -> rm(RUN_LOCK; recursive=true, force=true))
+const RUN_LOCK = joinpath(tempdir(), "databrowser-profiling.pid")
 
 using Dates: format, now
+using FileWatching: trymkpidlock
+using FileIO
+using FlameGraphs
+using PProf
 using Printf: @printf, @sprintf
 using Profile
+
+include("profile_artifacts.jl")
+using .ProfileArtifacts: save_profile
+
+const RUN_LOCK_HANDLE = let run_lock = trymkpidlock(RUN_LOCK; stale_age=1)
+    run_lock === false && error("Another profiling run is active: $RUN_LOCK")
+    run_lock
+end
+atexit(() -> close(RUN_LOCK_HANDLE))
 
 Base.cumulative_compile_timing(true)
 compile_ns() = first(Base.cumulative_compile_time_ns())
@@ -49,7 +60,7 @@ mark!(event::String) = push!(TIMELINE_EVENTS, (event, time() - T0))
 # --- 1. fresh precompile of the code under test --------------------------------------------------
 mark!("start")
 using Pkg
-if FRESH
+if FRESH_COMPILE
     compiled = joinpath(first(DEPOT_PATH), "compiled", "v$(VERSION.major).$(VERSION.minor)")
     for entry in filter(startswith("DataBrowser"), readdir(compiled))
         rm(joinpath(compiled, entry); recursive=true, force=true)
@@ -75,44 +86,15 @@ mark!("project definitions loaded")
 
 using DataBrowserCore.Workspace: close_workspace!, open_workspace, workspace_status
 
-# --- 4. warmup scan: compile every callback and app path, then discard the result -------------
-warmup_seconds = 0.0
-warmup_jit_seconds = 0.0
-if WARMUP > 0
-    warmup_root = mktempdir()
-    pushfirst!(DEPOT_PATH, warmup_root)
-    jit_before_warmup = compile_ns()
-    warmup_seconds = @elapsed begin
-        warm = open_workspace(
-            project, DATA_ROOT; metadata_file="device_info.txt", cache=true,
-            background_processing=BACKGROUND_PROCESSING,
-        )
-        deadline = time() + WARMUP
-        while time() < deadline && workspace_status(warm).busy
-            sleep(0.25)
-        end
-        close_workspace!(warm)
-    end
-    warmup_jit_seconds = (compile_ns() - jit_before_warmup) / 1e9
-    first(DEPOT_PATH) == warmup_root && popfirst!(DEPOT_PATH)
-    rm(warmup_root; force=true, recursive=true)
-    # The measured window must only aggregate its own callback timings.
-    lock(project.profile_lock) do
-        empty!(project.scan_profile)
-    end
-end
-mark!("warmup done")
-
-# --- 5. open_workspace with an isolated cache -----------------------------------------------
-cache_root = mktempdir()
-pushfirst!(DEPOT_PATH, cache_root)
-
+# --- 4. open_workspace -----------------------------------------------------------------------
 compile_before_open = compile_ns()
 open_seconds = @elapsed workspace = open_workspace(
     project, DATA_ROOT; metadata_file="device_info.txt", cache=true,
+    rebuild=CACHE_MODE == "fresh",
     background_processing=BACKGROUND_PROCESSING,
 )
 open_compile_seconds = (compile_ns() - compile_before_open) / 1e9
+cache_path = workspace.cache.identity.cache_path
 mark!("open_workspace returned")
 
 browser_seconds = NaN
@@ -164,12 +146,15 @@ end
 
 compile_before_scan = compile_ns()
 scan_t0 = time()
+profile_data = nothing
 if PROFILER == "cpu"
     Profile.clear()
     Profile.@profile sample_scan_window!(samples, workspace, scan_t0)
+    profile_data = Profile.retrieve()
 elseif PROFILER == "wall"
     Profile.clear()
     Profile.@profile_walltime sample_scan_window!(samples, workspace, scan_t0)
+    profile_data = Profile.retrieve()
 elseif PROFILER == "allocs"
     Profile.Allocs.clear()
     Profile.Allocs.@profile sample_rate = 0.01 sample_scan_window!(samples, workspace, scan_t0)
@@ -205,25 +190,24 @@ if browser isa Main.DataBrowser.BrowserSession
     mark!("browser closed")
 end
 close_seconds = @elapsed close_workspace!(workspace)
-first(DEPOT_PATH) == cache_root && popfirst!(DEPOT_PATH)
-rm(cache_root; force=true, recursive=true)
 mark!("closed")
 
 # --- report -----------------------------------------------------------------------------------
-if PROFILER == "cpu"
-    try
-        @eval using ProfileSVG
-        Base.invokelatest(ProfileSVG.save, joinpath(OUTDIR, "cpu_flame.svg"))
-    catch err
-        @warn "cpu_flame.svg not written" exception = err
-        open(joinpath(OUTDIR, "cpu_profile.txt"), "w") do io
-            Profile.print(io; format=:flat, sortedby=:count, mincount=2)
-        end
-    end
-elseif PROFILER == "wall"
-    open(joinpath(OUTDIR, "wall_profile.txt"), "w") do io
-        Profile.print(io; format=:tree, mincount=2)
-    end
+if profile_data !== nothing
+    data, lidict = profile_data
+    raw = joinpath(OUTDIR, "$(PROFILER)_profile.jls")
+    jlprof = joinpath(OUTDIR, "$(PROFILER)_profile.jlprof")
+    protobuf = joinpath(OUTDIR, "$(PROFILER)_profile.pb.gz")
+    save_profile(raw, data, lidict)
+    save(File{format"JLPROF"}(jlprof), data, lidict)
+    PProf.pprof(
+        data,
+        lidict;
+        web=false,
+        out=protobuf,
+        sampling_delay=ccall(:jl_profile_delay_nsec, UInt64, ()),
+        full_signatures=true,
+    )
 elseif PROFILER == "allocs"
     open(joinpath(OUTDIR, "allocation_profile.txt"), "w") do io
         Profile.Allocs.print(io; format=:flat, sortedby=:count, mincount=2)
@@ -255,50 +239,57 @@ finished = !last_s.busy
 
 # Stage counts vs time (~10 Hz samples).
 try
-    using GLMakie
-    fig = Figure(size = (900, 500))
-    ax = Axis(fig[1, 1]; xlabel = "t (s)", ylabel = "count", title = "scan timeline")
+    using CairoMakie
+    fig = CairoMakie.Figure(size = (900, 500))
+    ax = CairoMakie.Axis(
+        fig[1, 1]; xlabel = "t (s)", ylabel = "count", title = "scan timeline")
     ts = [s.t for s in samples]
-    lines!(ax, ts, [s.sources_found for s in samples]; label = "sources_found")
-    lines!(ax, ts, [s.cached_sources for s in samples]; label = "cached_sources")
-    lines!(ax, ts, [s.interpreted for s in samples]; label = "interpreted")
-    lines!(ax, ts, [s.processed for s in samples]; label = "processed")
-    lines!(ax, ts, [s.analyzed for s in samples]; label = "analyzed")
-    axislegend(ax; position = :lt)
-    save(joinpath(OUTDIR, "timeline.png"), fig)
+    CairoMakie.lines!(ax, ts, [s.sources_found for s in samples]; label = "sources_found")
+    CairoMakie.lines!(ax, ts, [s.cached_sources for s in samples]; label = "cached_sources")
+    CairoMakie.lines!(ax, ts, [s.interpreted for s in samples]; label = "interpreted")
+    CairoMakie.lines!(ax, ts, [s.processed for s in samples]; label = "processed")
+    CairoMakie.lines!(ax, ts, [s.analyzed for s in samples]; label = "analyzed")
+    CairoMakie.axislegend(ax; position = :lt)
+    CairoMakie.save(joinpath(OUTDIR, "timeline.png"), fig)
 catch err
     @warn "timeline.png not written" exception = err
 end
 
 commit = readchomp(`git -C $REPO_ROOT rev-parse --short HEAD`)
 fmt(x) = isnan(x) ? "not reached" : @sprintf("%.1f s", x)
-rate(n) = n / max(scan_window, eps())
+first_s = first(samples)
+rate(last, first) = (last - first) / max(scan_window, eps())
 
 println()
 println("=== DataBrowser timed profile ($MODE, $commit, $(Threads.nthreads()) threads, " *
-    "budget $(BUDGET) s, fresh=$FRESH, background=$BACKGROUND_PROCESSING) ===")
+    "budget $(BUDGET) s, cache=$CACHE_MODE, background=$BACKGROUND_PROCESSING) ===")
+println("Cache: $cache_path")
 println()
 println("Startup")
 @printf("  precompile             %8.1f s%s\n", precompile_seconds,
-    FRESH ? "" : "   (caches kept — not a fresh measurement)")
-@printf("  using DataBrowser      %8.1f s   (%.1f s compile)\n", load_seconds, load_compile_seconds)
+    FRESH_COMPILE ? "" : "   (compiled package caches kept)")
+@printf("  using DataBrowser      %8.1f s   (%.1f s aggregate compile)\n", load_seconds, load_compile_seconds)
 @printf("  project include        %8.1f s\n", include_seconds)
-@printf("  open_workspace         %8.1f s   (%.1f s compile)\n", open_seconds, open_compile_seconds)
+@printf("  open_workspace         %8.1f s   (%.1f s aggregate compile)\n", open_seconds, open_compile_seconds)
 if MODE == "gui"
     @printf("  open_browser           %8.1f s\n", browser_seconds)
     @printf("  time to first frame    %8s\n", fmt(first_frame_seconds))
 end
 println()
 println("Scan window ($(round(scan_window; digits=1)) s sampled, $(finished ? "pipeline finished" : "budget hit"))")
-@printf("  runtime JIT in window  %8.1f s\n", scan_compile_seconds)
+@printf("  aggregate compilation  %8.1f s   (%.1f%% of thread capacity)\n",
+    scan_compile_seconds,
+    100 * scan_compile_seconds / max(scan_window * Threads.nthreads(), eps()))
 println("  discovery done         ", fmt(discovery_done), "   ($(last_s.sources_found) sources)")
 println("  interpretation done    ", fmt(interpret_done), "   ($(last_s.interpreted) items from $(last_s.cached_sources) sources)")
 println("  processing done        ", fmt(process_done), "   ($(last_s.processed) processed)")
 println("  analysis done          ", fmt(analyze_done), "   ($(last_s.analyzed) analyzed)")
 println()
 println("Throughput (items / scan-window second)")
-@printf("  interpretation         %8.1f\n", rate(last_s.interpreted))
-@printf("  processing             %8.1f\n", rate(last_s.processed))
+@printf("  interpretation         %8.1f   (%d → %d)\n",
+    rate(last_s.interpreted, first_s.interpreted), first_s.interpreted, last_s.interpreted)
+@printf("  processing             %8.1f   (%d → %d)\n",
+    rate(last_s.processed, first_s.processed), first_s.processed, last_s.processed)
 println()
 println("Pipeline callbacks vs capacity ($(length(worker_threads)) worker threads seen)")
 for phase in (:detect, :read, :entries, :process, :analyze)
