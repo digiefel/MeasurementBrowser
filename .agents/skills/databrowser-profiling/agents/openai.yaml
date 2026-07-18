@@ -1,4 +1,4 @@
 interface:
   display_name: "DataBrowser Profiling"
-  short_description: "Live Revise profiling with ProfileView and pprof"
-  default_prompt: "Use $databrowser-profiling in one live Revise session. Keep the GUI workspace open, profile the requested behavior, save the pprof text views, and link the inspectable output files with a short plain-language explanation."
+  short_description: "Revise profiling with debug timings, ProfileView, and pprof"
+  default_prompt: "Use $databrowser-profiling in one Revise session. Profile the requested DataBrowser behavior, save the timing and pprof files, and link the inspectable outputs with a short plain-language explanation."

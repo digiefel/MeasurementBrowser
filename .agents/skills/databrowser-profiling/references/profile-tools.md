@@ -9,9 +9,8 @@ Each profile produces three representations of the same samples:
 Changing the pprof view or filter does not require another profile.
 
 Julia's profiler checks the running program many times during the measurement and saves the chain
-of functions running at each check. A function that appears in many checks probably occupied more
-of the measured period. This is useful for finding where time went, but it does not give the exact
-start and finish time of one cache open, scan, or publication.
+of functions running at each check. Use these samples to find where time went. Use
+`debug_timings.txt` from `profile_scan!` for the durations of marked DataBrowser calls.
 
 ## Save inspectable pprof reports
 

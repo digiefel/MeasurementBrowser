@@ -627,38 +627,42 @@ function profile_scan!(;
     compile_seconds = NaN
     profile_seconds = NaN
     cache_path = ""
+    debug_timings = DataBrowser.DebugTimings(start_ns=time_ns())
     try
         compile_before = first(Base.cumulative_compile_time_ns())
         profile_started_at = time()
-        result = nothing
-        if profiler == :cpu
-            Profile.clear()
-            Profile.@profile result = run_profile_window(
-                profile_project;
-                mode,
-                budget=Float64(budget),
-                cache_mode,
-                background_processing,
-            )
-            profile_data = Profile.retrieve()
-        elseif profiler == :wall
-            Profile.clear()
-            Profile.@profile_walltime result = run_profile_window(
-                profile_project;
-                mode,
-                budget=Float64(budget),
-                cache_mode,
-                background_processing,
-            )
-            profile_data = Profile.retrieve()
-        else
-            result = run_profile_window(
-                profile_project;
-                mode,
-                budget=Float64(budget),
-                cache_mode,
-                background_processing,
-            )
+        result = DataBrowser.with_debug_timings(debug_timings) do
+            profiled = nothing
+            if profiler == :cpu
+                Profile.clear()
+                Profile.@profile profiled = run_profile_window(
+                    profile_project;
+                    mode,
+                    budget=Float64(budget),
+                    cache_mode,
+                    background_processing,
+                )
+                profile_data = Profile.retrieve()
+            elseif profiler == :wall
+                Profile.clear()
+                Profile.@profile_walltime profiled = run_profile_window(
+                    profile_project;
+                    mode,
+                    budget=Float64(budget),
+                    cache_mode,
+                    background_processing,
+                )
+                profile_data = Profile.retrieve()
+            else
+                profiled = run_profile_window(
+                    profile_project;
+                    mode,
+                    budget=Float64(budget),
+                    cache_mode,
+                    background_processing,
+                )
+            end
+            return profiled
         end
         profile_seconds = time() - profile_started_at
         compile_seconds = (first(Base.cumulative_compile_time_ns()) - compile_before) / 1e9
@@ -670,11 +674,14 @@ function profile_scan!(;
         scan_seconds = result.scan_seconds
         samples = result.samples
         totals = callback_totals(profile_project)
+        workspace = result.workspace
+        browser = result.browser
         browser isa DataBrowser.BrowserSession && DataBrowser.close_browser!(browser)
         browser = nothing
-        workspace === nothing || close_workspace!(workspace)
+        close_workspace!(workspace)
         workspace = nothing
         write_timeline(outdir, samples)
+        DataBrowser.write_debug_timings(outdir, debug_timings)
         profile_outputs =
             profile_data === nothing ? nothing : save_profile_outputs(outdir, profiler, profile_data)
         count = profile_data === nothing ? 0 : profile_sample_count(first(profile_data))
@@ -703,6 +710,10 @@ function profile_scan!(;
         return (
             outdir,
             profile_outputs,
+            debug_timings=(
+                text=joinpath(outdir, "debug_timings.txt"),
+                csv=joinpath(outdir, "debug_timings.csv"),
+            ),
             cache_mode,
             cache_path,
             background_processing,

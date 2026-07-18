@@ -16,9 +16,6 @@ Keep one DataBrowser session open while using the app, profiling it, editing sou
 and checking whether the app actually becomes faster. Save each run as files the user can inspect
 directly.
 
-Keep the profiling machinery in this skill's benchmark scripts. Do not add benchmark-only state,
-timers, or callbacks to DataBrowser merely to make the harness easier to write.
-
 ## Measurement contract
 
 User code is the code registered with the project API: file detection, reading, splitting a source
@@ -34,9 +31,10 @@ total capacity = measurement duration × number of pipeline workers
 overhead fraction = 1 - useful work / total capacity
 ```
 
-Use the actual configured pipeline-worker count. Do not substitute the number of Julia threads that
-happened to run a callback. Report idle worker time as overhead: it means the pipeline did not keep
-that worker doing user work.
+Only report this percentage when a script has measured every registered callback kind and uses the
+configured pipeline-worker count. The current callback summary omits collection callbacks, so it
+does not yet provide a complete overhead percentage. Present the measured callback times and leave
+the percentage unavailable; do not reconstruct it manually from an incomplete table.
 
 The scripts currently measure these values directly:
 
@@ -45,6 +43,8 @@ The scripts currently measure these values directly:
 - loading the copied project script, which includes its helper files and `define_project`/
   `register_*` calls;
 - total `open_workspace` wall time;
+- marked DataBrowser calls such as cache opening, source discovery, source publication, item
+  publication, and cache writes in `debug_timings.txt` and `debug_timings.csv`;
 - time from `open_browser` until the first rendered frame;
 - progress and throughput by sources, items, and collections during a fixed measurement period;
 - runtime compilation during that period;
@@ -54,31 +54,13 @@ The scripts currently measure these values directly:
 The project-script time is not a pure measurement of the `register_*` calls because the script also
 loads and compiles its helper code. Say that plainly when reporting it.
 
-These exact internal `open_workspace` times are not available from the benchmark scripts today:
-
-- constructing the `Workspace` separately from the rest of `open_workspace`;
-- opening DuckDB separately;
-- exact source-scan start, finish, and publication timestamps;
-- the exact first completed-work publication timestamp.
-
-Do not replace those missing values with nearby counters. Julia's sampling profiler can show that,
-for example, many samples occurred inside cache opening, but it does not record the exact instant
-that cache opening began and ended. The 100 ms timeline can show the first sample where a public
-counter changed, with up to roughly 100 ms uncertainty; label it as an observed counter change, not
-as an exact engine milestone.
-
-DataBrowser already contains an optional `@profile_span` helper. Code such as:
-
-```julia
-Profiling.@profile_span workspace.profiler :source :discover attributes begin
-    source_items(workspace.source)
-end
-```
-
-records the beginning and end of that block when DataBrowser's internal recorder is enabled and
-runs the block directly when it is disabled. That recorder is owned by `Workspace`. Do not extend it
-for this skill. If exact internal startup milestones become a product diagnostic, treat that as a
-separate DataBrowser design change rather than hiding it in the benchmark harness.
+`profile_scan!` owns one explicit `DebugTimings` object around workspace opening and the measured
+scan. It closes the workspace before writing the files so calls still finishing at the boundary are
+included safely. Read `debug_timings.txt` for human-readable durations and `debug_timings.csv` for
+programmatic comparison. The rows are durations of marked function calls, not sampled estimates.
+Parent rows include marked child calls, and calls on different tasks can overlap, so row totals may
+exceed the measurement wall time. If a requested operation has no marked row, use the sampling
+profile to locate it or state that its duration was not recorded.
 
 ## Workflow
 
@@ -175,6 +157,9 @@ jmux --project /Users/davide/code/Julia/DataBrowser/bench \
 Use `profiler=:wall` when the question is blocking or waiting rather than CPU work. Use
 `profiler=:none` when comparing throughput without profiler overhead.
 
+`profile_live!` produces the fixed-window progress and sampling files. Use `profile_scan!` when the
+question requires the marked cache-open, scan, or publication durations in `debug_timings.txt`.
+
 The user can refresh ProfileView or pprof from the same captured samples:
 
 ```bash
@@ -203,7 +188,7 @@ jmux --project /Users/davide/code/Julia/DataBrowser/bench \
 
 ## Files from each run
 
-Each results directory contains:
+Each `profile_live!` results directory contains:
 
 - `summary.txt`: setup time, the profiled duration, progress counters, compilation, and project
   callback time;
@@ -211,6 +196,11 @@ Each results directory contains:
 - `*_profile.jls`: the most complete saved Julia sample and frame data;
 - `*_profile.jlprof`: the saved profile opened by ProfileView;
 - `*_profile.pb.gz`: the same profile converted for pprof.
+
+`profile_scan!` additionally writes:
+
+- `debug_timings.txt`: a readable table of marked DataBrowser calls;
+- `debug_timings.csv`: the same call counts and durations for comparisons.
 
 The summary uses these terms:
 
@@ -221,16 +211,12 @@ The summary uses these terms:
   `read` loads a source, `entries` splits it into items, `process` transforms an item, and `analyze`
   computes item results. Calls may overlap on different workers, so their sum can exceed wall time.
 
-The pipeline-worker count is available as `length(workspace.work.workers)`, but the current callback
-table does not include collection callbacks. Therefore it cannot yet print the requested overhead
-percentage. Keep the real callback times, but state that the final percentage is unavailable rather
-than treating an incomplete useful-work total as complete.
-
 Run the pprof commands in [references/profile-tools.md](references/profile-tools.md) and save their
 text beside these files. When replying, provide direct links to the summary, timeline image, pprof
-text, ProfileView file, and raw profile. Add a short plain-language explanation grounded in the
-DataBrowser operation the user recognizes—scanning files, reading measurements, building the item
-tree, drawing the GUI—not just Julia runtime function names.
+text, ProfileView file, raw profile, and any debug-timing files. Present the files instead of
+retyping their tables into chat. Add a short plain-language explanation grounded in the DataBrowser
+operation the user recognizes—scanning files, reading measurements, building the item tree, drawing
+the GUI—not just Julia runtime function names.
 
 Do not force every run into a fixed verbal template. Report what the files show clearly, state what
 the app was doing during the profile, and say when the samples did not capture the intended work.
@@ -241,7 +227,8 @@ count, cache state, mode, profiler setting, and user action.
 ## One-shot and fresh-process checks
 
 `profile_scan!` is the secondary one-shot check. It includes `open_workspace`, optionally opens the
-GUI, profiles the scan, writes the same files, and closes the workspace.
+GUI, profiles the scan, writes the sampling, timeline, and debug-timing files, and closes the
+workspace.
 
 Use `scripts/timed_profile.jl` only when startup in a fresh Julia process is itself the question:
 
@@ -262,10 +249,11 @@ panel gathering, and metadata publication. It does not independently separate so
 from item-count scaling.
 
 Use `bench/realistic_browse.jl` for a synthetic workload with different numbers of files and items
-per file. Its `scorecard.csv` reports source and item throughput, and its trace files break down
-cache, queue, processing, and publication work. A proper independent S/N scaling study requires a
-set of runs that varies file count while holding items per file fixed, then varies items per file
-while holding file count fixed. Do not describe a single scale-factor run as that study.
+per file. Its `scorecard.csv` reports source and item throughput, and its `debug_timings.txt` and
+`debug_timings.csv` report marked cache, scan, publication, and plotting calls. A proper independent
+S/N scaling study requires a set of runs that varies file count while holding items per file fixed,
+then varies items per file while holding file count fixed. Do not describe a single scale-factor run
+as that study.
 
 ## Validity
 
