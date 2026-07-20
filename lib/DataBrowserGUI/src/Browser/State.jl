@@ -2,7 +2,7 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-using DataBrowserAPI: KindProfileRow, Project, SourceProfileRow, label
+using DataBrowserAPI: Project
 using DataBrowserSources
 using DataBrowserCore: InspectorTable
 
@@ -70,37 +70,7 @@ Base.@kwdef mutable struct TableInspectorState
     error::String = ""
 end
 
-"""
-Ring-buffer state for the Performance window sparklines.
-
-Timing buffers hold rolling plot-redraw phase durations (load / setup / draw-data / total).
-Build buffers are sampled while the window is open; throughput is a finite difference of the
-completed-work counter between ticks.
-"""
-Base.@kwdef mutable struct LivePlotsState
-    capacity::Int = 600
-
-    load_buf::Vector{Float32} = Float32[]
-    setup_buf::Vector{Float32} = Float32[]
-    data_buf::Vector{Float32} = Float32[]
-    total_buf::Vector{Float32} = Float32[]
-    timings_seen::Int = -1
-    timings_export_error::String = ""
-
-    elapsed_buf::Vector{Float32} = Float32[]
-    throughput_buf::Vector{Float32} = Float32[]
-    active_buf::Vector{Float32} = Float32[]
-    pending_buf::Vector{Float32} = Float32[]
-    rss_buf::Vector{Float32} = Float32[]
-    build_export_error::String = ""
-
-    t0_ns::UInt64 = UInt64(0)
-    last_sample_ns::UInt64 = UInt64(0)
-    last_elapsed_s::Float64 = 0.0
-    last_completed::Int = 0
-end
-
-"""Counters and samples shown by the performance window."""
+"""Frame counters and engine-phase timings gathered during the render loop."""
 Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
     """Monotonic `time()` when the first non-blank frame was submitted, or `NaN` until then."""
@@ -109,19 +79,8 @@ Base.@kwdef mutable struct PerformanceState
     node_count::Int = 0
     item_rows_visible::Int = 0
     item_rows_rendered::Int = 0
-    memory_start_rss::Union{Nothing,Int64} = nothing
-    memory_peak_rss::Int64 = 0
     timings::Dict{Symbol,Vector{Float64}} = Dict{Symbol,Vector{Float64}}()
     allocations::Dict{Symbol,Vector{Int}} = Dict{Symbol,Vector{Int}}()
-    scan_profile_project::Union{Nothing,Project} = nothing
-    scan_profile_refresh_at::Float64 = 0.0
-    scan_kind_rows::Vector{KindProfileRow} = KindProfileRow[]
-    scan_source_rows::Vector{SourceProfileRow} = SourceProfileRow[]
-    scan_kind_grid::DataGridState = DataGridState()
-    scan_source_grid::DataGridState = DataGridState()
-    profile_category_filter::Symbol = :all
-    profile_operation_filter::Symbol = :all
-    live_plots::LivePlotsState = LivePlotsState()
 end
 
 """

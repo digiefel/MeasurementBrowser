@@ -1,5 +1,3 @@
-using Printf
-using Statistics: mean
 import GLFW
 import CImGui as ig
 import CImGui.CSyntax: @c
@@ -14,12 +12,10 @@ using NativeFileDialog: pick_folder
 const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
 using DataBrowserAPI:
-    KindProfileRow,
     DEFAULT_PROJECT,
     PROJECTS,
     project_description,
     project_name,
-    SourceProfileRow,
     source_label
 using DataBrowserAPI.ItemIndex: SourceScan
 using DataBrowserCache: ProjectCacheIdentity
@@ -76,64 +72,6 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
         _render_cache_controls!(state)
         ig.EndPopup()
     end
-    return nothing
-end
-
-const SCAN_KIND_PROFILE_COLUMNS = String[
-    "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries", "Process", "Analyze",
-]
-const SCAN_SOURCE_PROFILE_COLUMNS = String[
-    "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries", "Process", "Analyze",
-    "Threads",
-]
-"""Render the per-kind summary for the latest source scan."""
-function _render_scan_kind_table(
-    rows::Vector{KindProfileRow},
-    state::DataGridState,
-)::Nothing
-    function cell(row_index::Int, column::Int)::String
-        row = rows[row_index]
-        column == 1 && return String(row.kind)
-        column == 2 && return string(row.source_items)
-        column == 3 && return string(row.items)
-        seconds = column == 4 ? row.total_seconds :
-            column == 5 ? row.detect_seconds :
-            column == 6 ? row.read_seconds :
-            column == 7 ? row.entries_seconds :
-            column == 8 ? row.process_seconds : row.analyze_seconds
-        return @sprintf("%.1f ms", 1000 * seconds)
-    end
-    render_data_grid!(
-        "scan_kind_profile", state;
-        n_rows=length(rows), columns=SCAN_KIND_PROFILE_COLUMNS, cell,
-        selection_mode=:cells, height=180.0f0)
-    return nothing
-end
-
-"""Render source-item timings, sorted by total elapsed time."""
-function _render_scan_source_table(
-    rows::Vector{SourceProfileRow},
-    state::DataGridState,
-)::Nothing
-    function cell(row_index::Int, column::Int)::String
-        row = rows[row_index]
-        column == 1 && return row.source_item_label
-        column == 2 && return String(row.kind)
-        column == 3 && return string(row.items)
-        column == 10 && return join(row.thread_ids, ", ")
-        seconds = column == 4 ? row.total_seconds :
-            column == 5 ? row.detect_seconds :
-            column == 6 ? row.read_seconds :
-            column == 7 ? row.entries_seconds :
-            column == 8 ? row.process_seconds : row.analyze_seconds
-        return @sprintf("%.2f ms", 1000 * seconds)
-    end
-    cell_link(row::Int, column::Int)::Union{Nothing,String} =
-        column == 1 ? rows[row].source_item_path : nothing
-    render_data_grid!(
-        "scan_source_profile", state;
-        n_rows=length(rows), columns=SCAN_SOURCE_PROFILE_COLUMNS, cell, cell_link,
-        selection_mode=:cells, height=260.0f0)
     return nothing
 end
 

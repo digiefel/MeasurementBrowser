@@ -1,4 +1,3 @@
-using Printf
 using GLMakie: Axis, Figure, lines!, scatter!
 import GLMakie.Makie as Makie
 import CImGui as ig
