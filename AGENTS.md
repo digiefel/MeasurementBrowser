@@ -93,7 +93,7 @@ registration order; the first match wins, so register specific filename patterns
 | Background work, loading item data | `lib/DataBrowserCore/src/Workspace/` | [ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 | Plot rendering, Makie integration | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
 | Browser shell, table inspector, extension registry | `lib/DataBrowserGUI/` | [gui.md](docs/gui.md) |
-| Debug timings, sampling profiles | `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
+| Adding `@time_dbg` instrumentation, debug timings, sampling | `lib/DataBrowserAPI/src/debug_timing.jl`, `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
 | Tags, notes, spatial layout | `lib/DataBrowserAnnotations/` | [annotations.md](docs/annotations.md) |
 
 `docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change
@@ -121,6 +121,6 @@ Use `bench/` for performance work (`julia --project=bench`). Results persist und
   warm reopen. Writes `scorecard.csv`, `debug_timings.txt`, `debug_timings.csv`, and supporting
   CSVs. Use `scale=0.1` to iterate.
 
-Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. For scoped engine timings,
-create `DebugTimings`, wrap the measured operation in `with_debug_timings`, reach the intended idle
-point, and call `write_debug_timings` from the benchmark script.
+Compare runs via `scaling.csv` or `scorecard.csv` + `benchmark.log`. To time specific engine calls,
+add `@time_dbg` markers and read them with the instrumentation profiler — see
+[profiling.md](docs/profiling.md).
