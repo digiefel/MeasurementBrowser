@@ -8,7 +8,6 @@ BetterFileWatching = "c9fd44ac-77b5-486c-9482-9798bd063cc6"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
 CancellationTokens = "2e8d271d-f2e2-407b-a864-17eb2156783e"
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
-DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 
@@ -25,4 +24,3 @@ test = ["Test"]
 
 [sources]
 DataBrowserAPI = {path = "../DataBrowserAPI"}
-DataBrowserProfiling = {path = "../DataBrowserProfiling"}

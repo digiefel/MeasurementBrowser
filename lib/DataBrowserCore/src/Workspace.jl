@@ -1,7 +1,7 @@
 module Workspace
 
 using Printf
-import DataBrowserProfiling as Profiling
+using DataBrowserAPI: @time_dbg
 using DataBrowserSources
 using CancellationTokens:
     CancellationToken,
@@ -286,7 +286,7 @@ function Workspace(
     disk_error::Union{Nothing,Exception} = nothing
     cache_db::AbstractCacheDB = try
         if cache
-            Profiling.@time_dbg open_cache_db(identity, metrics; rebuild)
+            @time_dbg open_cache_db(identity, metrics; rebuild)
         else
             open_memory_cache_db(identity, metrics)
         end

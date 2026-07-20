@@ -7,7 +7,6 @@ using DataBrowserSources
 using DataBrowserCore
 using DataBrowserPlots
 using DataBrowserGUI
-using DataBrowserProfiling: DebugTimings, with_debug_timings, write_debug_timings
 
 using DataBrowserAPI:
     AbstractDataItem,
@@ -70,9 +69,6 @@ using DataBrowserGUI: open_browser, close_browser!, BrowserSession
 export open_browser,
     close_browser!,
     BrowserSession,
-    DebugTimings,
-    with_debug_timings,
-    write_debug_timings,
     open_workspace,
     close_workspace!,
     select_items!,

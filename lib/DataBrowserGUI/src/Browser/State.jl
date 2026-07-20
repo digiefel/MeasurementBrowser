@@ -2,7 +2,6 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-import DataBrowserProfiling as Profiling
 using DataBrowserAPI: KindProfileRow, Project, SourceProfileRow, label
 using DataBrowserSources
 using DataBrowserCore: InspectorTable
@@ -120,7 +119,6 @@ Base.@kwdef mutable struct PerformanceState
     scan_source_rows::Vector{SourceProfileRow} = SourceProfileRow[]
     scan_kind_grid::DataGridState = DataGridState()
     scan_source_grid::DataGridState = DataGridState()
-    plot_sampling_profile::Union{Nothing,Profiling.SamplingProfile} = nothing
     profile_category_filter::Symbol = :all
     profile_operation_filter::Symbol = :all
     live_plots::LivePlotsState = LivePlotsState()
@@ -151,7 +149,6 @@ Base.@kwdef mutable struct BrowserState
     tag_state::Union{Nothing,DataBrowserAnnotations.Tags.TagState} = nothing
     tag_state_error::String = ""
     show_project_window::Bool = false
-    show_performance_window::Bool = false
     show_imgui_metrics::Bool = false
     show_imgui_debug_log::Bool = false
     show_imgui_id_stack::Bool = false

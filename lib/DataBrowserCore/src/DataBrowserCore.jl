@@ -18,7 +18,7 @@ using DataBrowserAPI:
     source_item_path
 using DataBrowserAnnotations
 using DataBrowserSources
-import DataBrowserProfiling as Profiling
+using DataBrowserAPI: @time_dbg
 
 include("project_engine.jl")
 include("WorkGraph.jl")

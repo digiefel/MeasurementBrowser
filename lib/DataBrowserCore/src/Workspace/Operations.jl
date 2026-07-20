@@ -595,12 +595,12 @@ function scan_source!(
     end
     task = Base.Threads.@spawn begin
         scan_token = get_token(cancel_source)
-        Profiling.@time_dbg "scan_source" begin
+        @time_dbg "scan_source" begin
             try
                 rebuild && clear_cache_index!(cachedb)
                 cached = if !rebuild && cache_built(cachedb)
                     try
-                        Profiling.@time_dbg load_cache_index(cachedb)
+                        @time_dbg load_cache_index(cachedb)
                     catch error
                         error isa ProjectCacheDataError || rethrow()
                         @warn(
@@ -654,7 +654,7 @@ function scan_source!(
                         length(pending_upserts[]) >= upsert_batch && flush_pending_upserts!()
                     end
                 end
-                discovered = Profiling.@time_dbg source_items(
+                discovered = @time_dbg source_items(
                     workspace.source;
                     cancel_token=scan_token,
                     on_progress=count -> begin
@@ -708,7 +708,7 @@ function scan_source!(
                 is_cancellation_requested(scan_token) &&
                     throw(OperationCanceledException(scan_token))
                 # Final batch: removals + deferred metadata reconcile (not on every upsert batch).
-                Profiling.@time_dbg publish_source_changes!(
+                @time_dbg publish_source_changes!(
                     workspace,
                     scan_id,
                     SourceChanges(AbstractDataSourceItem[], removals; metadata_changed=true),
@@ -945,7 +945,7 @@ function publish_work_success!(
     if key.kind === SOURCE_INTERPRET
         interpretation = result.interpretation::SourceItemInterpretation
         records = interpretation.records
-        resolved, invalidated = Profiling.@time_dbg publish_source_item_records!(
+        resolved, invalidated = @time_dbg publish_source_item_records!(
                 workspace, key.entity, records, interpretation.collection_paths)
         conflicts = store_interpreted!(
             workspace.cache.db,

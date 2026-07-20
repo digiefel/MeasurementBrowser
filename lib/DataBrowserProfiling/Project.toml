@@ -4,7 +4,7 @@ version = "0.1.0"
 authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
 
 [deps]
-Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 
@@ -17,3 +17,6 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
 test = ["Test"]
+
+[sources]
+DataBrowserAPI = {path = "../DataBrowserAPI"}

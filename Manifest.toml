@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "62a06d1b10339e68be97ad5ac74d8e39ac5730b8"
+project_hash = "9e33e289d933f80a6d9ebf9712fd393787d240ff"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -335,7 +335,7 @@ uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 version = "1.16.0"
 
 [[deps.DataBrowser]]
-deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserGUI", "DataBrowserPlots", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserGUI", "DataBrowserPlots", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = "."
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
@@ -353,37 +353,31 @@ uuid = "f3b8c1a2-4d5e-6f70-8192-a3b4c5d6e7f8"
 version = "0.1.0"
 
 [[deps.DataBrowserCache]]
-deps = ["DBInterface", "DataBrowserAPI", "DataBrowserProfiling", "Dates", "DuckDB", "Serialization", "Tables"]
+deps = ["DBInterface", "DataBrowserAPI", "Dates", "DuckDB", "Serialization", "Tables"]
 path = "lib/DataBrowserCache"
 uuid = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 version = "0.1.0"
 
 [[deps.DataBrowserCore]]
-deps = ["CancellationTokens", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserProfiling", "DataBrowserSources", "DataFrames", "Dates", "Printf", "Serialization", "TOML", "Tables"]
+deps = ["CancellationTokens", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserSources", "DataFrames", "Dates", "Printf", "Serialization", "TOML", "Tables"]
 path = "lib/DataBrowserCore"
 uuid = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
 version = "0.1.0"
 
 [[deps.DataBrowserGUI]]
-deps = ["CImGui", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserProfiling", "DataBrowserSources", "GLFW", "ModernGL", "NativeFileDialog", "Printf", "Statistics", "TOML", "Tables"]
+deps = ["CImGui", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserSources", "GLFW", "ModernGL", "NativeFileDialog", "Printf", "Statistics", "TOML", "Tables"]
 path = "lib/DataBrowserGUI"
 uuid = "f3a4b5c6-d7e8-9f0a-1b2c-3d4e5f6a7b8c"
 version = "0.1.0"
 
 [[deps.DataBrowserPlots]]
-deps = ["CImGui", "DataBrowserAPI", "DataBrowserCore", "DataBrowserGUI", "DataBrowserProfiling", "DataFrames", "GLFW", "GLMakie", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Printf"]
+deps = ["CImGui", "DataBrowserAPI", "DataBrowserCore", "DataBrowserGUI", "DataFrames", "GLFW", "GLMakie", "InteractiveUtils", "ModernGL", "NativeFileDialog", "Printf"]
 path = "lib/DataBrowserPlots"
 uuid = "e2f3a4b5-c6d7-8e9f-0a1b-2c3d4e5f6a7b"
 version = "0.1.0"
 
-[[deps.DataBrowserProfiling]]
-deps = ["Printf", "Profile", "TimerOutputs"]
-path = "lib/DataBrowserProfiling"
-uuid = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
-version = "0.1.0"
-
 [[deps.DataBrowserSources]]
-deps = ["BetterFileWatching", "CSV", "CancellationTokens", "DataBrowserAPI", "DataBrowserProfiling", "DataFrames", "Dates"]
+deps = ["BetterFileWatching", "CSV", "CancellationTokens", "DataBrowserAPI", "DataFrames", "Dates"]
 path = "lib/DataBrowserSources"
 uuid = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
 version = "0.1.0"
@@ -495,11 +489,6 @@ deps = ["Artifacts", "JLLWrappers", "Libdl"]
 git-tree-sha1 = "c307cd83373868391f3ac30b41530bc5d5d05d08"
 uuid = "2e619515-83b5-522b-bb60-26c02a35a201"
 version = "2.8.1+0"
-
-[[deps.ExprTools]]
-git-tree-sha1 = "27415f162e6028e81c72b82ef756bf321213b6ec"
-uuid = "e2ba6199-217a-4e67-a87a-7c52f15ade04"
-version = "0.1.10"
 
 [[deps.FFMPEG_jll]]
 deps = ["Artifacts", "Bzip2_jll", "FreeType2_jll", "FriBidi_jll", "JLLWrappers", "LAME_jll", "Libdl", "Ogg_jll", "OpenSSL_jll", "Opus_jll", "PCRE2_jll", "Zlib_jll", "libaom_jll", "libass_jll", "libfdk_aac_jll", "libva_jll", "libvorbis_jll", "x264_jll", "x265_jll"]
@@ -1322,11 +1311,6 @@ deps = ["Unicode"]
 uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 version = "1.11.0"
 
-[[deps.Profile]]
-deps = ["StyledStrings"]
-uuid = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
-version = "1.11.0"
-
 [[deps.ProgressMeter]]
 deps = ["Distributed", "Printf"]
 git-tree-sha1 = "fbb92c6c56b34e1a2c4c36058f68f332bec840e7"
@@ -1681,18 +1665,6 @@ deps = ["CodecZstd", "ColorTypes", "DataStructures", "DocStringExtensions", "Fil
 git-tree-sha1 = "9ca5f1f2d42f80df4b8c9f6ab5a64f438bbd9976"
 uuid = "731e570b-9d59-4bfa-96dc-6df516fadf69"
 version = "0.11.9"
-
-[[deps.TimerOutputs]]
-deps = ["ExprTools", "Printf"]
-git-tree-sha1 = "3748bd928e68c7c346b52125cf41fff0de6937d0"
-uuid = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
-version = "0.5.29"
-
-    [deps.TimerOutputs.extensions]
-    FlameGraphsExt = "FlameGraphs"
-
-    [deps.TimerOutputs.weakdeps]
-    FlameGraphs = "08572546-2f56-4bcf-ba4e-bab62c3a3f89"
 
 [[deps.TranscodingStreams]]
 git-tree-sha1 = "0c45878dcfdcfa8480052b6ab162cdd138781742"

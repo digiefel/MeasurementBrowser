@@ -9,7 +9,7 @@ import DataBrowserAPI:
     Project
 import DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
-import DataBrowserProfiling as Profiling
+using DataBrowserAPI: @time_dbg
 import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
 
@@ -51,7 +51,7 @@ function setup_plot(
     items::Vector{<:AbstractDataItem},
 )::Figure where {Kind,Label}
     recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
-    return Profiling.@time_dbg "setup_plot" recipe.setup(workspace, items)::Figure
+    return @time_dbg "setup_plot" recipe.setup(workspace, items)::Figure
 end
 
 function plot_data!(
@@ -61,7 +61,7 @@ function plot_data!(
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
-    Profiling.@time_dbg "draw_plot" recipe.draw(workspace, items, figure)
+    @time_dbg "draw_plot" recipe.draw(workspace, items, figure)
     return nothing
 end
 
@@ -71,7 +71,6 @@ end
 
 export PlotsExtension,
     plots_extension,
-    request_plot_profile!,
     PlotState,
     PlotViewState,
     PersistedPlotView,

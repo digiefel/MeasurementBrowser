@@ -1,13 +1,175 @@
-"""Debug timing summaries and Julia sampling-profile helpers."""
+"""
+Dev-only DataBrowser instrumentation.
+
+Loading this package turns on `@time_dbg` timing (the macro itself lives in
+DataBrowserAPI and is dormant until enabled): on load we install the timing hooks
+into DataBrowserAPI and raise its active profiling level, then accumulate
+per-task `TimerOutput` segments into one shared master timer.
+
+The collector is task-safe by construction: each Julia task records into its own
+`TimerOutput`, and a completed segment is merged into the master under a lock when
+that task's outermost `@time_dbg` section exits. All master access goes through
+the lock, so a snapshot can never race a merge.
+
+Public entry points return native `TimerOutputs.TimerOutput` objects; display and
+analysis are delegated to TimerOutputs (show, flatten, merge, Tables.jl, ...):
+
+    snapshot_debug_timings()   # independent copy of accumulated timings so far
+    take_debug_timings!()      # like snapshot, but also resets the master
+    finish_debug_timings!()    # stop recording and return the final timings
+    reset_debug_timings!()     # clear the master and (re)enable recording
+
+The Julia sampling-profiler helpers and the process-RSS helper also live here but
+share no state with the collector above.
+"""
 module DataBrowserProfiling
 
 using Profile
-using Printf: @printf
 using TimerOutputs
+import DataBrowserAPI
+
+# ===========================================================================
+# Instrumentation collector
+# ===========================================================================
+
+const _TLS_KEY = gensym(:databrowser_time_dbg)
+const DEFAULT_LEVEL = 1
+
+# Per-task timing state. One task owns one TimerOutput segment and never shares
+# it, so it records without a lock. `depth` tracks nesting so we know when the
+# outermost section closes.
+mutable struct TaskTimingContext
+    timer::TimerOutput
+    depth::Int
+end
+
+# The single accumulated timer. Every access — merge on submit, snapshot, take,
+# reset — is serialized by MASTER_LOCK, making this the sole mutation point and
+# guaranteeing no reader races a merge.
+const MASTER = Base.RefValue{TimerOutput}(TimerOutput("DataBrowser debug timings"))
+const MASTER_LOCK = ReentrantLock()
+
+# Whether new outermost sections are admitted. Set on load; cleared by
+# finish_debug_timings!. Sections already in flight always finish normally.
+const RECORDING = Base.Threads.Atomic{Bool}(false)
+
+function _submit!(timer::TimerOutput)
+    lock(MASTER_LOCK) do
+        merge!(MASTER[], timer)
+    end
+    return nothing
+end
+
+# Hook implementations installed into DataBrowserAPI on load. `_begin` returns an
+# inert `nothing` token when not recording so the paired `_end` is a no-op.
+function _begin(label)
+    RECORDING[] || return nothing
+    tls = task_local_storage()
+    ctx = get(tls, _TLS_KEY, nothing)
+    if ctx === nothing
+        ctx = TaskTimingContext(TimerOutput(), 0)
+        tls[_TLS_KEY] = ctx
+    end
+    ctx = ctx::TaskTimingContext
+    ctx.depth += 1
+    section = begin_timed_section!(ctx.timer, label)
+    return (ctx, section)
+end
+
+function _end(token)
+    token === nothing && return nothing
+    ctx, section = token
+    end_timed_section!(ctx.timer, section)
+    ctx.depth -= 1
+    if ctx.depth == 0
+        _submit!(ctx.timer)
+        delete!(task_local_storage(), _TLS_KEY)
+    end
+    return nothing
+end
+
+# Install hook implementations into DataBrowserAPI and raise its profiling level.
+# Redefining these methods invalidates and recompiles the annotated call sites so
+# their timing branch goes live. Done at load time, never during precompilation.
+function _enable!()
+    beginimpl = _begin
+    endimpl = _end
+    Core.eval(DataBrowserAPI, quote
+        _time_dbg_begin(label) = $(beginimpl)(label)
+        _time_dbg_end(token) = $(endimpl)(token)
+        profile_level() = $(DEFAULT_LEVEL)
+    end)
+    RECORDING[] = true
+    return nothing
+end
+
+"""
+    snapshot_debug_timings() -> TimerOutput
+
+An independent copy of the debug timings accumulated so far. Sections still
+running (whose task-owned segment has not yet been submitted) are excluded; they
+appear in a later snapshot once they complete.
+"""
+function snapshot_debug_timings()
+    lock(MASTER_LOCK) do
+        snap = TimerOutput("DataBrowser debug timings")
+        merge!(snap, MASTER[])
+        return snap
+    end
+end
+
+"""
+    take_debug_timings!() -> TimerOutput
+
+Return the accumulated debug timings and reset the master to empty so a fresh
+interval begins. A completed outermost section belongs to whichever interval it
+reaches the master in.
+"""
+function take_debug_timings!()
+    lock(MASTER_LOCK) do
+        taken = MASTER[]
+        MASTER[] = TimerOutput("DataBrowser debug timings")
+        return taken
+    end
+end
+
+"""
+    finish_debug_timings!() -> TimerOutput
+
+Stop admitting new sections and return the final accumulated debug timings.
+Sections still in flight are no longer recorded. Intended to be called once at
+shutdown, after the GUI and workspace are closed.
+"""
+function finish_debug_timings!()
+    RECORDING[] = false
+    return take_debug_timings!()
+end
+
+"""
+    reset_debug_timings!() -> Nothing
+
+Discard all accumulated debug timings and (re)enable recording. Useful from the
+REPL or tests to isolate a fresh interval.
+"""
+function reset_debug_timings!()
+    lock(MASTER_LOCK) do
+        MASTER[] = TimerOutput("DataBrowser debug timings")
+    end
+    RECORDING[] = true
+    return nothing
+end
+
+function __init__()
+    _enable!()
+    return nothing
+end
+
+# ===========================================================================
+# Julia sampling profiler (dev-only; shares no state with the collector above)
+# ===========================================================================
 
 const SAMPLING_TOTAL_BUFFER_SIZE = 2_000_000
 const SAMPLING_DELAY_SECONDS = 0.01
-const DEBUG_TIMER_TLS_KEY = gensym(:databrowser_debug_timer)
 
 struct MachTaskBasicInfo
     virtual_size::UInt64
@@ -30,248 +192,12 @@ struct SamplingProfileRow
     line::Int
 end
 
-"""Saved Julia sampling result used by the plot diagnostic UI."""
+"""Saved Julia sampling result used by diagnostic tooling."""
 struct SamplingProfile
     total_samples::Int
     delay_seconds::Float64
     truncated::Bool
     rows::Vector{SamplingProfileRow}
-end
-
-"""One explicit debug-timing measurement owned by a benchmark or diagnostic caller."""
-mutable struct DebugTimings
-    start_ns::UInt64
-    stop_ns::UInt64
-    generation::UInt64
-    active::Base.Threads.Atomic{Bool}
-    timers::Vector{TimerOutput}
-    lock::ReentrantLock
-    merged::Union{Nothing,TimerOutput}
-end
-
-DebugTimings(; start_ns::UInt64=time_ns()) =
-    DebugTimings(
-        start_ns,
-        UInt64(0),
-        UInt64(1),
-        Base.Threads.Atomic{Bool}(false),
-        TimerOutput[],
-        ReentrantLock(),
-        nothing,
-    )
-
-const ACTIVE_DEBUG_TIMINGS =
-    Base.ScopedValues.ScopedValue{Union{Nothing,DebugTimings}}(nothing)
-const ACTIVE_LOCK = ReentrantLock()
-const ACTIVE_MEASUREMENT = Ref{Union{Nothing,DebugTimings}}(nothing)
-const DEBUG_TIMINGS_ACTIVE = Base.Threads.Atomic{Bool}(false)
-
-struct DebugTimingRow
-    label::String
-    calls::Int
-    total_elapsed_ns::Int64
-    average_elapsed_ns::Float64
-    process_allocation_delta_bytes::Int64
-    average_process_allocation_delta_bytes::Float64
-end
-
-struct TaskDebugTimer
-    timings::DebugTimings
-    generation::UInt64
-    timer::TimerOutput
-end
-
-"""Reset one explicit measurement before entering `with_debug_timings`."""
-function reset_debug_timings!(timings::DebugTimings; start_ns::UInt64=time_ns())::DebugTimings
-    lock(timings.lock) do
-        timings.start_ns = start_ns
-        timings.stop_ns = 0
-        timings.generation += 1
-        empty!(timings.timers)
-        timings.merged = nothing
-    end
-    return timings
-end
-
-function _task_timer(timings::DebugTimings)::TimerOutput
-    tls = task_local_storage()
-    cached = get(tls, DEBUG_TIMER_TLS_KEY, nothing)
-    if cached isa TaskDebugTimer && cached.timings === timings &&
-       cached.generation == timings.generation
-        return cached.timer
-    end
-    timer = TimerOutput()
-    tls[DEBUG_TIMER_TLS_KEY] = TaskDebugTimer(timings, timings.generation, timer)
-    lock(timings.lock) do
-        push!(timings.timers, timer)
-        timings.merged = nothing
-    end
-    return timer
-end
-
-"""Return the current task's timer, or `nothing` outside an explicit measurement."""
-function debug_timer()::Union{Nothing,TimerOutput}
-    cached = get(task_local_storage(), DEBUG_TIMER_TLS_KEY, nothing)
-    if cached isa TaskDebugTimer && cached.timings.active[] &&
-       cached.generation == cached.timings.generation
-        return cached.timer
-    end
-    DEBUG_TIMINGS_ACTIVE[] || return nothing
-    timings = ACTIVE_DEBUG_TIMINGS[]
-    timings === nothing && (timings = lock(ACTIVE_LOCK) do
-        ACTIVE_MEASUREMENT[]
-    end)
-    timings === nothing && return nothing
-    return _task_timer(timings::DebugTimings)
-end
-
-function _time_dbg_label(ex)
-    ex isa Expr && ex.head === :call || throw(ArgumentError(
-        "@time_dbg expects a call; use @time_dbg \"label\" begin ... end for a compound expression",
-    ))
-    callee = ex.args[1]
-    callee isa Symbol && return String(callee)
-    callee isa Expr && callee.head === :. || throw(ArgumentError(
-        "@time_dbg needs an explicit label for this callee",
-    ))
-    name = callee.args[end]
-    name isa QuoteNode && (name = name.value)
-    name isa Symbol || throw(ArgumentError("@time_dbg needs an explicit label for this callee"))
-    return String(name)
-end
-
-"""Time one debug-only call with a label derived from its callee."""
-macro time_dbg(args...)
-    label, ex = if length(args) == 1
-        (_time_dbg_label(args[1]), args[1])
-    elseif length(args) == 2 && args[1] isa String
-        (args[1], args[2])
-    else
-        throw(ArgumentError("use @time_dbg call(...) or @time_dbg \"label\" expression"))
-    end
-    timer = gensym(:debug_timer)
-    return quote
-        local $timer = $(GlobalRef(DataBrowserProfiling, :debug_timer))()
-        if $timer === nothing
-            $(esc(ex))
-        else
-            $(Expr(:macrocall,
-                GlobalRef(TimerOutputs, Symbol("@timeit")),
-                __source__,
-                timer,
-                label,
-                esc(ex),
-            ))
-        end
-    end
-end
-
-"""Run `work` while instrumented calls record into the explicit `timings` object."""
-function with_debug_timings(work::Function, timings::DebugTimings)
-    lock(ACTIVE_LOCK) do
-        ACTIVE_MEASUREMENT[] === nothing || error("A DebugTimings measurement is already active")
-        ACTIVE_MEASUREMENT[] = timings
-        timings.active[] = true
-        DEBUG_TIMINGS_ACTIVE[] = true
-    end
-    try
-        return Base.ScopedValues.with(ACTIVE_DEBUG_TIMINGS => timings) do
-            work()
-        end
-    finally
-        lock(ACTIVE_LOCK) do
-            DEBUG_TIMINGS_ACTIVE[] = false
-            timings.active[] = false
-            ACTIVE_MEASUREMENT[] = nothing
-        end
-        lock(timings.lock) do
-            timings.stop_ns = time_ns()
-        end
-    end
-end
-
-"""Merge task-owned timers after the caller has reached its intended quiescent point."""
-function collect_debug_timings!(timings::DebugTimings)::TimerOutput
-    lock(timings.lock) do
-        merged = TimerOutput("DataBrowser debug timings")
-        for timer in timings.timers
-            merge!(merged, timer)
-        end
-        timings.merged = merged
-        return merged
-    end
-end
-
-function _flatten_rows!(rows::Vector{DebugTimingRow}, timer::TimerOutput)::Nothing
-    for (label, child) in timer.inner_timers
-        calls = TimerOutputs.ncalls(child)
-        elapsed = TimerOutputs.time(child)
-        allocated = TimerOutputs.allocated(child)
-        push!(rows, DebugTimingRow(
-            label,
-            calls,
-            elapsed,
-            calls == 0 ? 0.0 : elapsed / calls,
-            allocated,
-            calls == 0 ? 0.0 : allocated / calls,
-        ))
-    end
-    return nothing
-end
-
-"""Return flattened, label-level rows for a completed measurement."""
-function debug_timing_rows(timings::DebugTimings)::Vector{DebugTimingRow}
-    merged = timings.merged === nothing ? collect_debug_timings!(timings) : timings.merged
-    flattened = TimerOutputs.flatten(merged)
-    rows = DebugTimingRow[]
-    _flatten_rows!(rows, flattened)
-    sort!(rows; by=row -> row.total_elapsed_ns, rev=true)
-    return rows
-end
-
-"""Write text and CSV debug timing summaries under `outdir`."""
-function write_debug_timings(outdir::AbstractString, timings::DebugTimings)::Nothing
-    timings.stop_ns >= timings.start_ns || error(
-        "Run with_debug_timings before writing its results",
-    )
-    mkpath(outdir)
-    rows = debug_timing_rows(timings)
-    open(joinpath(outdir, "debug_timings.txt"), "w") do io
-        elapsed = (timings.stop_ns - timings.start_ns) / 1e9
-        @printf(io, "Measurement wall time: %.6f s\n\n", elapsed)
-        println(io, "Times are inclusive: a marked parent call includes its marked child calls.")
-        println(io, "Calls on different tasks can overlap, so row totals can exceed wall time.")
-        println(io, "Allocation changes use Julia's process-wide counter and can overlap too.\n")
-        label_width = max(5, maximum(length(row.label) for row in rows; init=0))
-        println(io,
-            rpad("label", label_width), "  ",
-            lpad("calls", 8), "  ",
-            lpad("total seconds", 14), "  ",
-            lpad("average ms", 14), "  ",
-            lpad("allocation change (bytes)", 25),
-        )
-        for row in rows
-            @printf(
-                io,
-                "%s  %8d  %14.6f  %14.6f  %25d\n",
-                rpad(row.label, label_width),
-                row.calls,
-                row.total_elapsed_ns / 1e9,
-                row.average_elapsed_ns / 1e6,
-                row.process_allocation_delta_bytes,
-            )
-        end
-    end
-    open(joinpath(outdir, "debug_timings.csv"), "w") do io
-        println(io, "label,calls,total_elapsed_ns,average_elapsed_ns,process_allocation_delta_bytes,average_process_allocation_delta_bytes")
-        for row in debug_timing_rows(timings)
-            label = replace(row.label, '"' => "\"\"")
-            println(io, '"', label, "\",", row.calls, ',', row.total_elapsed_ns,
-                ',', row.average_elapsed_ns, ',', row.process_allocation_delta_bytes,
-                ',', row.average_process_allocation_delta_bytes)
-        end
-    end
-    return nothing
 end
 
 """Start Julia's bounded all-thread CPU sampling profiler."""
@@ -344,8 +270,9 @@ function process_rss_bytes()::Int64
     error("Current RSS sampling is unsupported on $(Sys.KERNEL)")
 end
 
-export DebugTimings, DebugTimingRow, @time_dbg, with_debug_timings, reset_debug_timings!,
-    collect_debug_timings!, debug_timing_rows, write_debug_timings,
-    SamplingProfile, SamplingProfileRow, start_sampling!, stop_sampling!, cancel_sampling!, process_rss_bytes
+export snapshot_debug_timings, take_debug_timings!, finish_debug_timings!,
+    reset_debug_timings!,
+    SamplingProfile, SamplingProfileRow, start_sampling!, stop_sampling!,
+    cancel_sampling!, process_rss_bytes
 
 end # module

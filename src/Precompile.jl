@@ -83,8 +83,6 @@ end
             )
             Browser.current_status(state)
             Browser._project_visible_selection(state)
-            Browser._update_live_timings!(state.performance.live_plots, state.performance.timings)
-            Browser._sample_build!(state.performance.live_plots, workspace)
         finally
             workspace === nothing || close_workspace!(workspace)
             popfirst!(DEPOT_PATH)

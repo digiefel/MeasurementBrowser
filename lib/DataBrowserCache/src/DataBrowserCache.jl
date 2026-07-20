@@ -16,7 +16,7 @@ using DataBrowserAPI:
     source_item_path,
     source_item_timestamp,
     source_label
-import DataBrowserProfiling as Profiling
+using DataBrowserAPI: @time_dbg
 
 using DuckDB
 using DBInterface
