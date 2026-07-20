@@ -36,6 +36,10 @@ configured pipeline-worker count. The current callback summary omits collection 
 does not yet provide a complete overhead percentage. Present the measured callback times and leave
 the percentage unavailable; do not reconstruct it manually from an incomplete table.
 
+User callbacks are one opaque unit. Never split them by kind in conclusions, never name what they
+do internally, and never propose changing them — they are arbitrary project code and out of scope
+by definition. The only question about them is how much of the machine they got.
+
 The scripts currently measure these values directly:
 
 - `Pkg.precompile()` wall time in a fresh process;
@@ -108,6 +112,12 @@ jmux --restart --project /Users/davide/code/Julia/DataBrowser/bench \
 
 Use the same Julia thread count for every run being compared.
 
+GUI runs need WindowServer access, which a sandboxed process does not have. Start the tmux server
+and the Julia session with the sandbox disabled (accept the permission prompt) whenever the run
+will open the GUI. If `glfwInit` hangs or errors, the server was started sandboxed: kill it and
+relaunch unsandboxed. Do not fall back to headless when the question is about GUI behavior — a
+headless substitute does not answer it.
+
 ## Cache state
 
 The copied project is named `DataBrowserProfilingRuO2`, so it uses the normal isolated cache:
@@ -132,7 +142,7 @@ jmux --project /Users/davide/code/Julia/DataBrowser/bench \
   'DataBrowserInteractiveProfile.profile_scan!(mode=:headless, budget=10, profiler=:none, cache_mode=:fresh)'
 
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
-  'DataBrowserInteractiveProfile.profile_scan!(mode=:headless, budget=60, profiler=:cpu, cache_mode=:resume)'
+  'DataBrowserInteractiveProfile.profile_scan!(mode=:headless, budget=60, profiler=:wall, cache_mode=:resume)'
 ```
 
 The harness uses DataBrowser's real default `background_processing=false`.
@@ -151,11 +161,11 @@ frame. The command below records a fixed 60 seconds even if the app is idle for 
 
 ```bash
 jmux --project /Users/davide/code/Julia/DataBrowser/bench \
-  'DataBrowserInteractiveProfile.profile_live!(budget=60, profiler=:cpu)'
+  'DataBrowserInteractiveProfile.profile_live!(budget=60, profiler=:wall)'
 ```
 
-Use `profiler=:wall` when the question is blocking or waiting rather than CPU work. Use
-`profiler=:none` when comparing throughput without profiler overhead.
+The sampling profiler is `:wall`, post-processed with the collapse script below.
+Use `profiler=:none` when comparing throughput without profiler overhead.
 
 `profile_live!` produces the fixed-window progress and sampling files. Use `profile_scan!` when the
 question requires the marked cache-open, scan, or publication durations in `debug_timings.txt`.
@@ -211,6 +221,30 @@ The summary uses these terms:
   `read` loads a source, `entries` splits it into items, `process` transforms an item, and `analyze`
   computes item results. Calls may overlap on different workers, so their sum can exceed wall time.
 
+## Collapse user code at the callback boundary
+
+Raw profiles descend into user callbacks and drown app frames in parked-task noise. After every
+profiled run, post-process before reading anything else:
+
+```bash
+julia --project=bench .agents/skills/databrowser-profiling/scripts/collapse_user_frames.jl \
+  <results-dir>
+```
+
+This writes `collapsed_*_profile.pb.gz` (user code folded into one frame per engine call site;
+app frames keep full detail) and `collapsed_*_summary.txt`. Read the summary first:
+
+- **Per-thread rows are the real occupancy picture.** Worker threads show user/app/waiting sample
+  counts; their user share should independently match the callback-timer overhead formula.
+- **Overall "task waiting" is a count of parked tasks, not idle threads.** A wall profile samples
+  every live task, so thousands of parked tasks dominate the totals while eight busy threads do
+  all the work. Never quote the waiting percentage as wasted capacity; waste comes from the
+  callback timers. Waiting rows on *worker* threads, however, are genuine idle capacity.
+- **App-side flat hotspots** name where application time goes. `_jl_mutex_wait` there means lock
+  contention — that is waste to chase, not background noise.
+
+Use the collapsed `.pb.gz` (not the raw one) for pprof navigation of app overhead.
+
 Run the pprof commands in [references/profile-tools.md](references/profile-tools.md) and save their
 text beside these files. When replying, provide direct links to the summary, timeline image, pprof
 text, ProfileView file, raw profile, and any debug-timing files. Present the files instead of
@@ -235,7 +269,7 @@ Use `scripts/timed_profile.jl` only when startup in a fresh Julia process is its
 ```bash
 julia --project=bench --threads=auto \
   .agents/skills/databrowser-profiling/scripts/timed_profile.jl gui \
-  --budget=60 --profile=cpu --cache=fresh
+  --budget=60 --profile=wall --cache=fresh
 ```
 
 Use `--cache=resume` for a fresh-process reopen of the dedicated cache. Record the commit and Julia

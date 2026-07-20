@@ -17,8 +17,9 @@ const BACKGROUND_PROCESSING = "--background-processing" in ARGS
 const PROFILER = let m = findfirst(a -> startswith(a, "--profile="), ARGS)
     m === nothing ? "none" : split(ARGS[m], '='; limit=2)[2]
 end
-PROFILER in ("none", "cpu", "wall", "allocs") ||
-    error("Unknown --profile '$PROFILER'; use cpu, wall, or allocs")
+# "cpu" is not offered: the Mach-based CPU sampler can wedge the process on macOS (see SKILL.md).
+PROFILER in ("none", "wall", "allocs") ||
+    error("Unknown --profile '$PROFILER'; use wall or allocs")
 
 const REPO_ROOT = normpath(joinpath(@__DIR__, "..", "..", "..", ".."))
 const DEFINITIONS = normpath(joinpath(@__DIR__, "..", "project", "definitions.jl"))
@@ -146,11 +147,7 @@ end
 compile_before_scan = compile_ns()
 scan_t0 = time()
 profile_data = nothing
-if PROFILER == "cpu"
-    Profile.clear()
-    Profile.@profile sample_scan_window!(samples, workspace, scan_t0)
-    profile_data = Profile.retrieve()
-elseif PROFILER == "wall"
+if PROFILER == "wall"
     Profile.clear()
     Profile.@profile_walltime sample_scan_window!(samples, workspace, scan_t0)
     profile_data = Profile.retrieve()

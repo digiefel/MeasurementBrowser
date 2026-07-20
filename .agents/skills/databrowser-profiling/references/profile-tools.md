@@ -20,10 +20,33 @@ PProf.jl includes the pprof executable. From the repository root, set the run di
 ```bash
 PPROF="$(julia --project=bench -e 'using PProf; PProf.pprof_jll.pprof() do path; print(path); end')"
 RUN="/absolute/path/to/results/run"
-PROFILE="$RUN/cpu_profile.pb.gz"
+PROFILE="$RUN/collapsed_wall_profile.pb.gz"
 
 "$PPROF" -top -nodecount=25 "$PROFILE" > "$RUN/pprof-top.txt"
 ```
+
+For the web UI, serve with `"$PPROF" -http=localhost:57599 -no_browser "$PROFILE"` in a
+long-lived background process — if the process stops, the page goes dead and every menu grays
+out. Link the user to pre-filtered views instead of the raw graph, which is dominated by runtime
+noise (`start_task`/`jl_apply` root every task; the fat red chain is parked tasks in the
+scheduler):
+
+- `http://localhost:57599/ui/?f=DataBrowser&i=poptask%7Cjl_swap_fiber%7Cjl_start_fiber%7Ckevent%7Ctask_done_hook`
+  — app code actually running (start here);
+- `http://localhost:57599/ui/flamegraph` — flame graph, needs no graphviz;
+- `?f=<regex>` keeps stacks that match; `&i=<regex>` drops samples whose stack matches — use it
+  for the parked-task chain. `&h=` only hides boxes while keeping their counts, so it never
+  shrinks the waiting share. The Refine menu needs a search-box regex or a selected node before
+  its entries activate.
+
+Parked tasks dominate every unfiltered view: a sleeping task is photographed at the frames where
+it went to sleep (`wait` → `poptask` → `jl_swap_fiber`), costing no CPU, and the engine parks its
+own tasks by design, so these stacks pass an app-code focus too. Never read swap-chain sample
+counts as switching overhead; real thread occupancy is the per-thread table in
+`collapsed_*_summary.txt`.
+
+The default `/ui/` graph view shells out to graphviz `dot`; if it prints "Could not execute
+dot", run `brew install graphviz` once — the running server picks it up without a restart.
 
 `pprof-top.txt` is the unfiltered reference. Julia profiles often sample threads while they are
 waiting. Common entries include:

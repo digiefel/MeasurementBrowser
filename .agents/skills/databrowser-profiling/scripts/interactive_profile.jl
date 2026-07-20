@@ -379,7 +379,9 @@ function validate_run_options(
     budget::Real,
 )::Nothing
     mode in (:gui, :headless) || error("mode must be :gui or :headless")
-    profiler in (:none, :cpu, :wall) || error("profiler must be :none, :cpu, or :wall")
+    # :cpu (Profile.@profile) is not offered: the Mach-based CPU sampler in the Julia runtime can
+    # suspend a thread mid-lock on macOS and wedge the whole process, and it does so intermittently.
+    profiler in (:none, :wall) || error("profiler must be :none or :wall")
     cache_mode in (:fresh, :resume) || error("cache_mode must be :fresh or :resume")
     budget > 0 || error("budget must be positive")
     Threads.nthreads() > 1 || error(
@@ -455,7 +457,7 @@ function live_session()::LiveSession
 end
 
 """Profile a fixed-duration window of the open live session and keep it running afterward."""
-function profile_live!(; budget::Real=60, profiler::Symbol=:cpu)
+function profile_live!(; budget::Real=60, profiler::Symbol=:wall)
     session = live_session()
     validate_run_options(session.mode, profiler, session.cache_mode, budget)
     revise!()
@@ -473,17 +475,7 @@ function profile_live!(; budget::Real=60, profiler::Symbol=:cpu)
     compile_before = first(Base.cumulative_compile_time_ns())
     profile_started_at = time()
     scan_started_at = time()
-    if profiler === :cpu
-        Profile.clear()
-        Profile.@profile sample_scan_window!(
-            samples,
-            session.workspace,
-            scan_started_at,
-            Float64(budget),
-            false,
-        )
-        profile_data = Profile.retrieve()
-    elseif profiler === :wall
+    if profiler === :wall
         Profile.clear()
         Profile.@profile_walltime sample_scan_window!(
             samples,
@@ -590,7 +582,7 @@ function stop_live!()::Nothing
 end
 
 """
-    profile_scan!(; mode=:gui, budget=60, profiler=:cpu, cache_mode=:fresh,
+    profile_scan!(; mode=:gui, budget=60, profiler=:wall, cache_mode=:fresh,
                     background_processing=false) -> NamedTuple
 
 Run a RuO2 scan in the persistent Revise session, write numeric/timeline/raw profile artifacts,
@@ -600,7 +592,7 @@ close all run-owned tasks, and preserve the dedicated profiling cache. `cache_mo
 function profile_scan!(;
     mode::Symbol=:gui,
     budget::Real=60,
-    profiler::Symbol=:cpu,
+    profiler::Symbol=:wall,
     cache_mode::Symbol=:fresh,
     background_processing::Bool=false,
 )
@@ -633,17 +625,7 @@ function profile_scan!(;
         profile_started_at = time()
         result = DataBrowser.with_debug_timings(debug_timings) do
             profiled = nothing
-            if profiler == :cpu
-                Profile.clear()
-                Profile.@profile profiled = run_profile_window(
-                    profile_project;
-                    mode,
-                    budget=Float64(budget),
-                    cache_mode,
-                    background_processing,
-                )
-                profile_data = Profile.retrieve()
-            elseif profiler == :wall
+            if profiler == :wall
                 Profile.clear()
                 Profile.@profile_walltime profiled = run_profile_window(
                     profile_project;
