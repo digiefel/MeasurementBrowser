@@ -119,6 +119,10 @@ function render_menu_bar(state::BrowserState)::Nothing
         end
         _render_table_inspector_menu!(state)
         if ig.BeginMenu("Debug")
+            if ig.MenuItem("Performance Window", C_NULL, state.show_performance_window)
+                state.show_performance_window = !state.show_performance_window
+            end
+            ig.Separator()
             render_debug_tools_menu!(state)
             ig.EndMenu()
         end
@@ -576,7 +580,9 @@ function _run_browser(
                 setup_layout[] = false
                 _setup_docking_layout!(state, dockspace_id)
             end
-            render_selection_window(state)
+            _time!(state, :selection_window) do
+                render_selection_window(state)
+            end
             _time!(state, :project_window) do
                 render_project_window(state)
             end
@@ -590,6 +596,9 @@ function _run_browser(
                 for ext in state.extensions
                     draw!(ext, state)
                 end
+            end
+            _time!(state, :perf_window) do
+                render_perf_window(state)
             end
             _time!(state, :debug_tools) do
                 render_debug_tools!(state)

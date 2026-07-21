@@ -108,6 +108,7 @@ Base.@kwdef mutable struct BrowserState
     tag_state::Union{Nothing,DataBrowserAnnotations.Tags.TagState} = nothing
     tag_state_error::String = ""
     show_project_window::Bool = false
+    show_performance_window::Bool = false
     show_imgui_metrics::Bool = false
     show_imgui_debug_log::Bool = false
     show_imgui_id_stack::Bool = false
