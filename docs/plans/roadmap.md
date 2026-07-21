@@ -89,6 +89,9 @@ per-row costs before the application API and plotting surface grow substantially
   collection edge cases; finish with either a bounded tuning pass or an explicit redesign.
 - [ ] Clarify ownership between the workspace, index, project cache, database, and write buffers;
   remove duplicated state and layer-skipping call paths.
+- [ ] Name item metadata layers after the pipeline stages (`metadata_entries`, `metadata_analyze`) on
+  `ItemRecord`, and remove the parallel `WorkspaceIndex.item_metadata` dict so each item’s interpret
+  and analyze layers live in one place.
 - [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining stable
   logical item identities at the project boundary.
 - [ ] Audit source and item fingerprinting, document what each change token invalidates, and simplify
