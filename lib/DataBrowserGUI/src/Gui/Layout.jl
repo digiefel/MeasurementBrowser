@@ -377,6 +377,9 @@ end
 function _mark_first_frame!(state::BrowserState)::Nothing
     isnan(state.performance.first_frame_at) || return nothing
     state.performance.first_frame_at = time()
+    # Discard warmup-frame timings so the section tree's avg/call and ncalls==frames
+    # reflect steady-state rendering, not first-frame compilation and setup.
+    TimerOutputs.reset_timer!(MAIN_TIMER)
     return nothing
 end
 
@@ -534,7 +537,7 @@ function _run_browser(
             _shutdown_extensions!(state)
             _shutdown_implot_context!(state)
             _save_project_view_if_changed!(state)
-            _print_perf_summary(state)
+            @debug sprint(show, MAIN_TIMER)
         end,
     ) do
         if _window_close_requested(state)

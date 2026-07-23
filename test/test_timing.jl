@@ -50,3 +50,21 @@ end
     end
     @test length(h.items_per_s) == B.PERF_HISTORY_CAP
 end
+
+@testset "timings-tab pure helpers" begin
+    B = DataBrowserGUI.Browser
+    TO = B.TimerOutputs
+
+    # Duration formatting picks a sensible unit per magnitude.
+    @test B._fmt_ns(500) == "500 ns"
+    @test occursin("µs", B._fmt_ns(1_500))
+    @test occursin("ms", B._fmt_ns(2_000_000))
+    @test occursin("s", B._fmt_ns(3_000_000_000))
+
+    # _children_time sums direct children (the self-time complement / % denominator).
+    to = TO.TimerOutput()
+    TO.@timeit to "a" sum(1:1000)
+    TO.@timeit to "b" sum(1:1000)
+    expected = TO.time(to.inner_timers["a"]) + TO.time(to.inner_timers["b"])
+    @test B._children_time(to) == expected
+end

@@ -1,16 +1,16 @@
 using Printf: @sprintf
-using Statistics: mean
 import CImGui as ig
 import DataBrowserCore.Workspace
+import TimerOutputs
 
 # ---------------------------------------------------------------------------
 # Performance window
 #
-# A lightweight, always-on diagnostic driven entirely by data the render loop
-# already collects: the per-panel `_time!` timings/allocations in
-# `state.performance`, and live workspace pipeline counters. It has no dependency
-# on the (dev-only) instrumentation profiler — for deep engine timing use
-# `@timed_dbg` + DataBrowserProfiling instead (see docs/profiling.md).
+# Always-on diagnostics driven entirely by data the render loop already
+# collects: the MAIN_TIMER section tree (recorded by `@timed`) and a handful of
+# live workspace throughput counters. It has no dependency on the (dev-only)
+# instrumentation profiler — for deep multi-task engine timing use `@timed_dbg`
+# + DataBrowserProfiling instead (see docs/profiling.md).
 # ---------------------------------------------------------------------------
 
 @inline function _table_text(s::AbstractString)::Nothing
@@ -94,8 +94,49 @@ function _begin_perf_table(id::String, n_cols::Int, height::Float32=0.0f0)::Bool
     return ig.BeginTable("##perf_$id", n_cols, flags, (0.0f0, height))
 end
 
-"""Render frame rate, per-panel callback timings, and OpenGL strings (app overhead)."""
-function _render_frames_tab(state::BrowserState)::Nothing
+# ---------------------------------------------------------------------------
+# Timings tab — the MAIN_TIMER section tree
+# ---------------------------------------------------------------------------
+
+"""Format a nanosecond duration compactly. Self-contained (avoids TimerOutputs' private formatters)."""
+function _fmt_ns(ns::Real)::String
+    ns >= 1e9 && return @sprintf("%.2f s", ns / 1e9)
+    ns >= 1e6 && return @sprintf("%.2f ms", ns / 1e6)
+    ns >= 1e3 && return @sprintf("%.1f µs", ns / 1e3)
+    return @sprintf("%.0f ns", ns)
+end
+
+"""Summed time (ns) across a node's direct children — self-time complement and % denominator."""
+_children_time(node)::Float64 = sum(TimerOutputs.time, values(node.inner_timers); init=0.0)
+
+"""Recursively render `node`'s children (sorted by time desc) as indented timing rows."""
+function _render_timer_rows(node, depth::Int)::Nothing
+    # A child's share is measured against its parent's own time; the root section has no
+    # self-time, so fall back to the sum over its direct children (TimerOutputs' tottime).
+    parent_time = TimerOutputs.time(node)
+    parent_time <= 0 && (parent_time = _children_time(node))
+    children = sort!(collect(values(node.inner_timers)); by=TimerOutputs.time, rev=true)
+    for child in children
+        t = TimerOutputs.time(child)
+        n = TimerOutputs.ncalls(child)
+        self = max(t - _children_time(child), 0.0)
+        avg = n > 0 ? t / n : 0.0
+        pct = parent_time > 0 ? 100 * t / parent_time : 0.0
+
+        ig.TableNextRow()
+        ig.TableNextColumn(); _table_text(repeat("  ", depth) * child.name)
+        ig.TableNextColumn(); _table_text(string(n))
+        ig.TableNextColumn(); _table_text(_fmt_ns(t))
+        ig.TableNextColumn(); _table_text(_fmt_ns(avg))
+        ig.TableNextColumn(); _table_text(_fmt_ns(self))
+        ig.TableNextColumn(); _table_text(@sprintf("%.1f%%", pct))
+        _render_timer_rows(child, depth + 1)
+    end
+    return nothing
+end
+
+"""Render frame stats, the MAIN_TIMER section tree, and the OpenGL strings."""
+function _render_timings_tab(state::BrowserState)::Nothing
     performance = state.performance
 
     raw_io = ig.GetIO()
@@ -107,46 +148,26 @@ function _render_frames_tab(state::BrowserState)::Nothing
     ig.Text("Items visible / rendered: $(performance.item_rows_visible) / $(performance.item_rows_rendered)")
     ig.Spacing()
 
-    timings = performance.timings
-    allocs  = performance.allocations
-    if isempty(timings)
-        ig.TextDisabled("No operation timings yet.")
-    else
-        ig.TextDisabled(
-            "Panel timings cover the Julia callback only; ImGui::Render() and OpenGL " *
-            "draw run afterward and are not included.",
-        )
-        ig.Spacing()
-        if _begin_perf_table("operations", 6, 260.0f0)
-            ig.TableSetupScrollFreeze(0, 1)
-            ig.TableSetupColumn("Operation", ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-            ig.TableSetupColumn("n",         ig.ImGuiTableColumnFlags_WidthFixed,  40.0f0)
-            ig.TableSetupColumn("Mean ms",   ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
-            ig.TableSetupColumn("Max ms",    ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
-            ig.TableSetupColumn("Last ms",   ig.ImGuiTableColumnFlags_WidthFixed,  72.0f0)
-            ig.TableSetupColumn("AllocLast", ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
-            ig.TableHeadersRow()
-
-            for key in sort!(collect(keys(timings)))
-                samples = timings[key]
-                isempty(samples) && continue
-                bytes = get(allocs, key, Int[])
-                last_alloc = isempty(bytes) ? 0 : bytes[end]
-
-                ig.TableNextRow()
-                ig.TableNextColumn(); _table_text(String(key))
-                ig.TableNextColumn(); _table_text(string(length(samples)))
-                ig.TableNextColumn(); _table_text(@sprintf("%.2f", mean(samples)))
-                ig.TableNextColumn(); _table_text(@sprintf("%.2f", maximum(samples)))
-                ig.TableNextColumn(); _table_text(@sprintf("%.2f", samples[end]))
-                ig.TableNextColumn(); _table_text(_fmt_bytes(last_alloc))
-            end
-            ig.EndTable()
-        end
+    if ig.Button("Reset")
+        TimerOutputs.reset_timer!(MAIN_TIMER)
     end
-    if ig.Button("Clear timings")
-        empty!(performance.timings)
-        empty!(performance.allocations)
+    ig.SameLine()
+    ig.TextDisabled("Cumulative since the first frame; ncalls counts frames.")
+    ig.Spacing()
+
+    if isempty(MAIN_TIMER.inner_timers)
+        ig.TextDisabled("No sections recorded yet.")
+    elseif _begin_perf_table("timings", 6, 320.0f0)
+        ig.TableSetupScrollFreeze(0, 1)
+        ig.TableSetupColumn("Section",  ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
+        ig.TableSetupColumn("ncalls",   ig.ImGuiTableColumnFlags_WidthFixed,  64.0f0)
+        ig.TableSetupColumn("total",    ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
+        ig.TableSetupColumn("avg/call", ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
+        ig.TableSetupColumn("self",     ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
+        ig.TableSetupColumn("% parent", ig.ImGuiTableColumnFlags_WidthFixed,  64.0f0)
+        ig.TableHeadersRow()
+        _render_timer_rows(MAIN_TIMER, 0)
+        ig.EndTable()
     end
 
     gi = performance.gl_info
@@ -169,6 +190,49 @@ function _render_frames_tab(state::BrowserState)::Nothing
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Throughput tab — item-throughput sparklines
+# ---------------------------------------------------------------------------
+
+"""
+Draw a labeled sparkline of `values` with a current-value readout.
+
+Uses Dear ImGui's built-in `PlotLines` (no ImPlot). NOTE: confirm the exact CImGui `PlotLines`
+argument convention against the live library — this passes the `Vector{Float32}` directly with an
+explicit auto-scale range and a fixed graph height.
+"""
+function _sparkline(label::String, values::Vector{Float32}, unit::String)::Nothing
+    current = isempty(values) ? 0.0f0 : values[end]
+    ig.Text(@sprintf("%s: %.1f%s", label, current, unit))
+    if !isempty(values)
+        lo = min(0.0f0, minimum(values))
+        hi = max(1.0f-6, maximum(values))
+        ig.PlotLines("##$label", values, length(values), 0, C_NULL, lo, hi, (0.0f0, 40.0f0))
+    end
+    return nothing
+end
+
+"""Render live item-throughput sparklines. Samples on entry; needs an open workspace."""
+function _render_throughput_tab!(state::BrowserState)::Nothing
+    workspace = state.workspace
+    if !(workspace isa Workspace.Workspace)
+        ig.TextDisabled("Open a workspace to see throughput.")
+        return nothing
+    end
+    _sample_throughput!(state)
+    h = state.performance.history
+
+    _sparkline("Items analyzed", h.items_per_s, " /s")
+    ig.Separator()
+    ig.TextDisabled("Backlog")
+    _sparkline("Active tasks", h.active, "")
+    _sparkline("Pending cache rows", h.pending_rows, "")
+    ig.Separator()
+    _sparkline("Scan discovery", h.scan_per_s, " /s")
+    _sparkline("Cache flush", h.cache_per_s, " /s")
+    return nothing
+end
+
 """Render live pipeline counters and index footprint for the active workspace."""
 function _render_workspace_tab!(workspace::Workspace.Workspace)::Nothing
     completed, total, active = Workspace.work_counts(workspace)
@@ -185,9 +249,9 @@ function _render_workspace_tab!(workspace::Workspace.Workspace)::Nothing
 end
 
 """
-Render the Performance window: app render-loop overhead (Frames) and, when a
-workspace is open, its live pipeline counters (Workspace). Toggled from the Debug
-menu. All figures come from data the render loop already collects.
+Render the Performance window: the main-task section tree (Timings), live item throughput
+(Throughput), and, when a workspace is open, its pipeline counters (Workspace). Toggled from the
+Debug menu. All figures come from data the render loop already collects.
 """
 function render_perf_window(state::BrowserState)::Nothing
     state.show_performance_window || return nothing
@@ -195,9 +259,14 @@ function render_perf_window(state::BrowserState)::Nothing
     if ig.Begin("Performance###perf_window")
         workspace = state.workspace
         if ig.BeginTabBar("##perf_tabs")
-            if ig.BeginTabItem("Frames")
+            if ig.BeginTabItem("Timings")
                 ig.Spacing()
-                _render_frames_tab(state)
+                _render_timings_tab(state)
+                ig.EndTabItem()
+            end
+            if ig.BeginTabItem("Throughput")
+                ig.Spacing()
+                _render_throughput_tab!(state)
                 ig.EndTabItem()
             end
             if workspace isa Workspace.Workspace && ig.BeginTabItem("Workspace")

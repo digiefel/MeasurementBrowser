@@ -102,9 +102,6 @@ Base.@kwdef mutable struct PerformanceState
     item_rows_visible::Int = 0
     item_rows_rendered::Int = 0
     history::PerfHistory = PerfHistory()
-    # Removed in the Performance-window rewrite; unwritten since the @timed migration.
-    timings::Dict{Symbol,Vector{Float64}} = Dict{Symbol,Vector{Float64}}()
-    allocations::Dict{Symbol,Vector{Int}} = Dict{Symbol,Vector{Int}}()
 end
 
 """
