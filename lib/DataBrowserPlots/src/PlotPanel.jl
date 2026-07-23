@@ -54,39 +54,19 @@ function draw_plot_view!(
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
     source = workspace.source
-    started_ns = time_ns()
-    draw_alloc = 0
 
     try
-        figure = nothing
-        items = nothing
-        result = nothing
-        load_alloc = @allocated (
-            items = @timed_dbg Workspace.materialize_items(workspace, records))
-        load_ns = time_ns()
-        setup_alloc = @allocated (
-            result = @timed_dbg setup_plot(workspace, plot_kind, items))
-        setup_ns = time_ns()
-        data_alloc = @allocated @timed_dbg plot_data!(workspace, plot_kind, items, result)
-        data_ns = time_ns()
-        figure = result
-        figure === nothing && error("Plot renderer returned no figure.")
-        draw_alloc = load_alloc + setup_alloc + data_alloc
-        Browser._append_perf_sample!(state, :plot_load, (load_ns - started_ns) / 1e6, load_alloc)
-        Browser._append_perf_sample!(state, :plot_setup, (setup_ns - load_ns) / 1e6, setup_alloc)
-        Browser._append_perf_sample!(state, :plot_data, (data_ns - setup_ns) / 1e6, data_alloc)
-        Browser._append_perf_sample!(state, :plot_draw, (data_ns - started_ns) / 1e6, draw_alloc)
-        view.figure = figure
+        # @timed records each phase (time, allocs, ncalls) into the main-task tree;
+        # the inner @timed_dbg feeds the dev-only engine profiler when enabled.
+        items = Browser.@timed "plot_load" (@timed_dbg Workspace.materialize_items(workspace, records))
+        result = Browser.@timed "plot_setup" (@timed_dbg setup_plot(workspace, plot_kind, items))
+        Browser.@timed "plot_data" (@timed_dbg plot_data!(workspace, plot_kind, items, result))
+        result === nothing && error("Plot renderer returned no figure.")
+        view.figure = result
         view.last_key = plot_key
         view.error = ""
     catch err
         bt = catch_backtrace()
-        Browser._append_perf_sample!(
-            state,
-            :plot_draw,
-            (time_ns() - started_ns) / 1e6,
-            draw_alloc,
-        )
         clear_plot_view!(_plot_state(state), view)
         view.last_key = plot_key
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
@@ -223,7 +203,7 @@ function render_plot_body!(
 
     if view.figure !== nothing
         makie_id = _plot_makie_id(plots, view)
-        Browser._time!(state, :makie_fig) do
+        Browser.@timed "makie_fig" begin
             MakieFigure(
                 makie_id,
                 view.figure;

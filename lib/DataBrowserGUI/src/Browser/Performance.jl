@@ -2,39 +2,6 @@ using Printf
 using Statistics: mean
 import ModernGL as gl
 
-"""Retain a bounded history of one performance sample."""
-function _append_perf_sample!(
-    state::BrowserState,
-    key::Symbol,
-    duration_ms::Float64,
-    alloc_bytes::Int,
-)::Nothing
-    samples = get!(() -> Float64[], state.performance.timings, key)
-    allocations = get!(() -> Int[], state.performance.allocations, key)
-    push!(samples, duration_ms)
-    length(samples) > 400 && popfirst!(samples)
-    push!(allocations, alloc_bytes)
-    length(allocations) > 400 && popfirst!(allocations)
-    return nothing
-end
-
-"""Measure one browser operation and retain its latest timing and allocation samples."""
-function _time!(
-    f::Function,
-    state::BrowserState,
-    key::Symbol,
-)::Nothing
-    started_ns = time_ns()
-    allocated_bytes = @allocated f()
-    _append_perf_sample!(
-        state,
-        key,
-        (time_ns() - started_ns) / 1e6,
-        allocated_bytes,
-    )
-    return nothing
-end
-
 """Format a byte count for the performance window."""
 function _fmt_bytes(bytes::Integer)::String
     gib = bytes / (1024^3)

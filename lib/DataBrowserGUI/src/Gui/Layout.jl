@@ -544,7 +544,7 @@ function _run_browser(
         state.performance.frame += 1
         workspace = state.workspace
         if workspace isa Workspace.Workspace
-            _time!(state, :refresh_status) do
+            @timed "refresh_status" begin
                 refresh_status!(workspace)
             end
         end
@@ -562,7 +562,7 @@ function _run_browser(
             # extension warmup, so the window is never blank during the expensive part.
             _render_startup_preparation!()
             if startup_presented[]
-                _time!(state, :extension_warmup) do
+                @timed "extension_warmup" begin
                     for ext in state.extensions
                         is_ready(ext, state) || warmup!(ext, state)
                     end
@@ -574,39 +574,39 @@ function _run_browser(
             return nothing
         end
         _mark_first_frame!(state)
-        _time!(state, :frame_ui) do
+        @timed "frame_ui" begin
             dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
             if setup_layout[]
                 setup_layout[] = false
                 _setup_docking_layout!(state, dockspace_id)
             end
-            _time!(state, :selection_window) do
+            @timed "selection_window" begin
                 render_selection_window(state)
             end
-            _time!(state, :project_window) do
+            @timed "project_window" begin
                 render_project_window(state)
             end
-            _time!(state, :info) do
+            @timed "info" begin
                 render_info_window(state)
             end
-            _time!(state, :table_inspector) do
+            @timed "table_inspector" begin
                 render_table_inspector_window(state)
             end
-            _time!(state, :extensions) do
+            @timed "extensions" begin
                 for ext in state.extensions
                     draw!(ext, state)
                 end
             end
-            _time!(state, :perf_window) do
+            @timed "perf_window" begin
                 render_perf_window(state)
             end
-            _time!(state, :debug_tools) do
+            @timed "debug_tools" begin
                 render_debug_tools!(state)
             end
-            _time!(state, :persist_view) do
+            @timed "persist_view" begin
                 _save_project_view_if_changed!(state)
             end
-            _time!(state, :modals) do
+            @timed "modals" begin
                 render_cache_rebuild_modal(state)
                 render_collection_metadata_modal(state)
             end

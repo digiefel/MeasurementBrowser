@@ -178,13 +178,12 @@ function _render_hierarchy_tree_panel(
         roots = sorted_child_keys(collections, nothing)
         root_visible = has_root_items &&
             ig.ImGuiTextFilter_PassFilter(filter_tree, "Root", C_NULL)
-        _time!(state, :hierarchy_prep) do
+        @timed "hierarchy_prep" begin
             all_collection_count[] = sum(count_leaf_collections, roots; init=0) +
                 (has_root_items ? 1 : 0)
             for child in roots
                 collect_visible_collections!(child, false)
             end
-            return nothing
         end
 
         visible_collection_ids = function ()
@@ -498,18 +497,8 @@ function _render_items_panel(
     selected_collections, selected_items, selected_path =
         _project_visible_selection(state)
     root_selected = ROOT_COLLECTION_SELECTION_ID in workspace.selection.collection_ids
-    all_items_ref = Ref{Vector{ItemRecord}}()
-    _time!(state, :items_panel) do
-        all_items_ref[] = _items_of_selected_collections(state)
-        return nothing
-    end
-    all_items = all_items_ref[]
-    visible_items_ref = Ref{Vector{ItemRecord}}()
-    _time!(state, :visible_items) do
-        visible_items_ref[] = _visible_items(state, workspace, all_items, filter_item)
-        return nothing
-    end
-    visible_items = visible_items_ref[]
+    all_items = @timed "items_panel" _items_of_selected_collections(state)
+    visible_items = @timed "visible_items" _visible_items(state, workspace, all_items, filter_item)
     selected_id_set = Set(workspace.selection.item_ids)
     registry_ready = _tag_state_ready(state)
 
@@ -689,11 +678,11 @@ function render_selection_window(state::BrowserState)::Nothing
     if ig.Begin("Hierarchy", C_NULL, ig.ImGuiWindowFlags_MenuBar)
         render_menu_bar(state)
         ig.Columns(2, "main_layout")
-        _time!(state, :collection_tree) do
+        @timed "collection_tree" begin
             _render_hierarchy_tree_panel(state, filter_tree)
         end
         ig.NextColumn()
-        _time!(state, :item_panel) do
+        @timed "item_panel" begin
             _render_items_panel(state, filter_item)
         end
     end
