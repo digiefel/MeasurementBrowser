@@ -18,6 +18,70 @@ import DataBrowserCore.Workspace
     return nothing
 end
 
+# ---------------------------------------------------------------------------
+# Throughput sampling
+#
+# Cheap, always-readable engine counters sampled at ~4 Hz into fixed-cap ring
+# buffers. No async timing and no new instrumentation — just differences of
+# counters the pipeline already maintains.
+# ---------------------------------------------------------------------------
+
+"""Append `v` to an ordered history ring, dropping the oldest sample past `PERF_HISTORY_CAP`."""
+@inline function _push_capped!(buf::Vector{Float32}, v::Real)::Nothing
+    push!(buf, Float32(v))
+    length(buf) > PERF_HISTORY_CAP && popfirst!(buf)
+    return nothing
+end
+
+"""
+Record one throughput sample into `h`, throttled to a 0.25s minimum interval.
+
+Pure over its inputs (no workspace/ImGui) so it is unit-testable. The first admitted call only
+seeds the `last_*` baselines (no data point, so rates never spike on open). Returns `true` when the
+sample was admitted (baselines advanced), `false` when throttled.
+"""
+function _record_throughput!(
+    h::PerfHistory,
+    now::Float64,
+    completed::Int,
+    active::Int,
+    pending_rows::Int,
+    discovered::Int,
+    cached::Int,
+)::Bool
+    dt = now - h.last_sample_t
+    dt >= 0.25 || return false
+    if h.last_sample_t != 0.0
+        _push_capped!(h.items_per_s, max(completed - h.last_completed, 0) / dt)
+        _push_capped!(h.active, active)
+        _push_capped!(h.pending_rows, pending_rows)
+        _push_capped!(h.scan_per_s, max(discovered - h.last_discovered, 0) / dt)
+        _push_capped!(h.cache_per_s, max(cached - h.last_cached, 0) / dt)
+    end
+    h.last_sample_t = now
+    h.last_completed = completed
+    h.last_discovered = discovered
+    h.last_cached = cached
+    return true
+end
+
+"""Sample the active workspace's throughput counters into `state.performance.history`."""
+function _sample_throughput!(state::BrowserState)::Nothing
+    workspace = state.workspace
+    workspace isa Workspace.Workspace || return nothing
+    completed, _total, active = Workspace.work_counts(workspace)
+    _record_throughput!(
+        state.performance.history,
+        time(),
+        completed,
+        active,
+        Workspace.cache_pending_counts(workspace.cache.db).rows,
+        workspace.scan.discovered[],
+        Workspace.cache_stage_summary(workspace.cache.db).cached_sources,
+    )
+    return nothing
+end
+
 """Begin a compact fixed-layout table with headers, row background, and inner borders."""
 function _begin_perf_table(id::String, n_cols::Int, height::Float32=0.0f0)::Bool
     flags = ig.ImGuiTableFlags_RowBg         |

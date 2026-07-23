@@ -70,7 +70,29 @@ Base.@kwdef mutable struct TableInspectorState
     error::String = ""
 end
 
-"""Frame counters and engine-phase timings gathered during the render loop."""
+"""Newest-last cap for the throughput history ring buffers (~1 minute at the 0.25s sample rate)."""
+const PERF_HISTORY_CAP = 240
+
+"""
+Bounded history of item-throughput samples for the Performance window's Throughput tab.
+
+Each vector is an ordered ring buffer (oldest first, newest last, capped at `PERF_HISTORY_CAP`).
+Rates are per-second deltas between samples; `active`/`pending_rows` are instantaneous levels.
+The `last_*` fields hold the previous sample's raw counters so the next rate can be differenced.
+"""
+Base.@kwdef mutable struct PerfHistory
+    items_per_s::Vector{Float32}  = Float32[]
+    active::Vector{Float32}       = Float32[]   # background tasks in flight  ┐ backlog
+    pending_rows::Vector{Float32} = Float32[]   # cache write queue depth     ┘
+    scan_per_s::Vector{Float32}   = Float32[]
+    cache_per_s::Vector{Float32}  = Float32[]
+    last_sample_t::Float64 = 0.0
+    last_completed::Int = 0
+    last_discovered::Int = 0
+    last_cached::Int = 0
+end
+
+"""Frame counters and item-throughput history gathered during the render loop."""
 Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
     """Monotonic `time()` when the first non-blank frame was submitted, or `NaN` until then."""
@@ -79,6 +101,8 @@ Base.@kwdef mutable struct PerformanceState
     node_count::Int = 0
     item_rows_visible::Int = 0
     item_rows_rendered::Int = 0
+    history::PerfHistory = PerfHistory()
+    # Removed in the Performance-window rewrite; unwritten since the @timed migration.
     timings::Dict{Symbol,Vector{Float64}} = Dict{Symbol,Vector{Float64}}()
     allocations::Dict{Symbol,Vector{Int}} = Dict{Symbol,Vector{Int}}()
 end
