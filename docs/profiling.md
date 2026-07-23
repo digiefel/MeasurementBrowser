@@ -9,6 +9,12 @@ This document describes how the instrumentation works and how to add it. For the
 investigation workflow — drive a workload, read the tree, iterate with Revise — see the
 `databrowser-profiling` skill.
 
+> **Two timers, don't confuse them.** This page covers the **dev-only, multi-task** `@timed_dbg`
+> engine profiler. There is a separate **always-on** `@timed` timer (`MAIN_TIMER`) that records the
+> GUI main-task render loop and is shown live in the Performance window's **Timings** tab (see
+> [gui.md](gui.md)). `@timed` is main-task-only and lock-free; `@timed_dbg` spans worker tasks and
+> stays off unless `DataBrowserProfiling` is loaded. Same TimerOutputs backend, different scope.
+
 ## The `@timed_dbg` marker
 
 `@timed_dbg` lives in `DataBrowserAPI` (`lib/DataBrowserAPI/src/timing_debug.jl`) and is

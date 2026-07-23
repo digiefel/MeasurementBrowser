@@ -62,17 +62,24 @@ Items without a collection path appear under the hierarchy's `Root` row. That ro
 the same multi-selection, filtering, saved-view, and source-item reveal behavior as collection
 leaves.
 
-## Scan profiling
+## Performance window
 
-The Performance window's always-on scan profile keeps one bounded row per source item. It shows
-interpretation time, expanded item count, and the scheduler thread that performed the source work.
-Processing and statistics belong to the separate processing/summarizing activities and are not
-reported as source-read time.
+The always-on Performance window (Debug menu) has three tabs, all fed from data the render loop
+already collects — it has no dependency on the dev-only profiler:
 
-Explicit benchmark diagnostics use `DebugTimings`, which writes a text and CSV summary after the
-measured work reaches its intended idle point. General live histories stay in the normal Live tab as
-CImGui sparklines fed from bounded ring buffers (CSV export, no Makie). The plot diagnostic retains
-its bounded Julia sampling profile and source-line hotspot table. See [profiling.md](profiling.md).
+- **Timings** — the `MAIN_TIMER` section tree recorded by `@timed` on the main (GUI) task: for each
+  section, its call count (frames), total and self time, average per call, and share of its parent.
+  Children are sorted by time; the tree accumulates from the first frame, and a Reset button clears
+  it. The tab also shows the frame rate, tree/item counts, and the OpenGL strings. `@timed` lives in
+  `lib/DataBrowserGUI/src/Browser/timing.jl` and is main-task-only (lock-free by that invariant).
+- **Throughput** — live item-throughput sparklines (built-in `PlotLines`, no ImPlot): items
+  analyzed/s, backlog (active tasks and pending cache-write rows), scan discovery/s, and cache
+  flush/s, differenced from the workspace's own counters at ~4 Hz while the tab is open.
+- **Workspace** — the active workspace's pipeline counters and index footprint.
+
+Deep multi-task engine timing is a separate, dev-only path: `@timed_dbg` + `DataBrowserProfiling`
+(see [profiling.md](profiling.md)). The plot diagnostics retain the bounded Julia sampling profiler
+and source-line hotspot table.
 
 ## Development tools
 
