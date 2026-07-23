@@ -1,8 +1,5 @@
 # Internal debug-timing instrumentation.
 #
-# This file provides ONLY the zero-cost `@time_dbg` annotation and the dormant
-# hooks it calls. It has no dependency on TimerOutputs and no timing machinery.
-#
 # When the dev-only `DataBrowserProfiling` package is not loaded, `profile_level()`
 # returns 0, so every `@time_dbg level=N ...` (with N >= 1) has a statically-false
 # guard and the compiler folds it away to just the wrapped expression — the
