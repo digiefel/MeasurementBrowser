@@ -294,7 +294,7 @@ function data_items(
     recipe = nothing
     started = time_ns()
     try
-        recipe = @time_dbg _detect_recipe(project, file)
+        recipe = @timed_dbg _detect_recipe(project, file)
     finally
         record_scan_phase!(
             project, file.filepath,
@@ -304,7 +304,7 @@ function data_items(
     recipe === nothing && return AbstractDataItem[]
     started = time_ns()
     read_result = try
-        @time_dbg "read" recipe.read(file)
+        @timed_dbg "read" recipe.read(file)
     finally
         record_scan_phase!(
             project, file.filepath, recipe.kind, :read,
@@ -314,7 +314,7 @@ function data_items(
     inherited_metadata = merge(metadata_dict(metadata(file)), read_metadata)
     started = time_ns()
     items = try
-        @time_dbg "entries" begin
+        @timed_dbg "entries" begin
             values = recipe.entries === nothing ? Any[loaded_data] :
                 recipe.entries(loaded_data, inherited_metadata)
             values isa AbstractVector || error(
@@ -370,7 +370,7 @@ function interpret_source_item(
     end
     source_started = time_ns()
     handles = try
-        @time_dbg data_items(project, source, source_item)
+        @timed_dbg data_items(project, source, source_item)
     catch
         finish_source_profile!(
             project, source_item_id_value, source_item_label_value, source_item_path_value,

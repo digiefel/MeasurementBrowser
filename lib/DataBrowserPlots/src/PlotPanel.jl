@@ -62,12 +62,12 @@ function draw_plot_view!(
         items = nothing
         result = nothing
         load_alloc = @allocated (
-            items = @time_dbg Workspace.materialize_items(workspace, records))
+            items = @timed_dbg Workspace.materialize_items(workspace, records))
         load_ns = time_ns()
         setup_alloc = @allocated (
-            result = @time_dbg setup_plot(workspace, plot_kind, items))
+            result = @timed_dbg setup_plot(workspace, plot_kind, items))
         setup_ns = time_ns()
-        data_alloc = @allocated @time_dbg plot_data!(workspace, plot_kind, items, result)
+        data_alloc = @allocated @timed_dbg plot_data!(workspace, plot_kind, items, result)
         data_ns = time_ns()
         figure = result
         figure === nothing && error("Plot renderer returned no figure.")

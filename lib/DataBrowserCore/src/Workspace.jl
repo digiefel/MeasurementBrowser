@@ -1,7 +1,7 @@
 module Workspace
 
 using Printf
-using DataBrowserAPI: @time_dbg
+using DataBrowserAPI: @timed_dbg
 using DataBrowserSources
 using CancellationTokens:
     CancellationToken,
@@ -286,7 +286,7 @@ function Workspace(
     disk_error::Union{Nothing,Exception} = nothing
     cache_db::AbstractCacheDB = try
         if cache
-            @time_dbg open_cache_db(identity, metrics; rebuild)
+            @timed_dbg open_cache_db(identity, metrics; rebuild)
         else
             open_memory_cache_db(identity, metrics)
         end

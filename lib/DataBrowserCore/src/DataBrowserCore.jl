@@ -18,7 +18,7 @@ using DataBrowserAPI:
     source_item_path
 using DataBrowserAnnotations
 using DataBrowserSources
-using DataBrowserAPI: @time_dbg
+using DataBrowserAPI: @timed_dbg
 
 include("project_engine.jl")
 include("WorkGraph.jl")

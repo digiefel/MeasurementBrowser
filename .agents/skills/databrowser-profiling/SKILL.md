@@ -5,7 +5,7 @@ description: Interactively profile DataBrowser to find where time goes (startup,
 
 # Profiling DataBrowser
 
-`DataBrowserProfiling` is an instrumentation profiler: `@time_dbg` markers in the
+`DataBrowserProfiling` is an instrumentation profiler: `@timed_dbg` markers in the
 engine are aggregated into native `TimerOutputs.TimerOutput` trees. It is inert
 and zero-cost until the package is loaded, task-safe across the async worker pool,
 and every result is a plain `TimerOutput` you inspect with TimerOutputs.
@@ -25,7 +25,7 @@ Launch Julia with Revise, load that project's setup (its `define_project` +
 
 ```julia
 using Revise
-using DataBrowserProfiling            # loading this enables @time_dbg
+using DataBrowserProfiling            # loading this enables @timed_dbg
 # load the bundled project's definitions (project/), then:
 ws = open_workspace(project, root)
 browser = open_browser(ws)
@@ -47,7 +47,7 @@ show(t)
 - `take_debug_timings!()` — snapshot **and** reset, to isolate the next interval.
 - `finish_debug_timings!()` — stop recording and return the final tree at the end.
 
-A snapshot contains only work whose outermost `@time_dbg` section has already
+A snapshot contains only work whose outermost `@timed_dbg` section has already
 finished; sections still running on a worker show up in a later snapshot.
 
 ## 3. Read the tree to find the hotspot
@@ -80,12 +80,12 @@ after  = take_debug_timings!()        # compare against `before`
 ## 5. Add resolution where you're blind
 
 If a hot section has no inner detail, drop a marker into the engine and let Revise
-reload — no restart. `@time_dbg` lives in `DataBrowserAPI`:
+reload — no restart. `@timed_dbg` lives in `DataBrowserAPI`:
 
 ```julia
-@time_dbg some_call(...)              # label taken from the callee
-@time_dbg "phase" begin ... end       # explicit label
-@time_dbg level=2 inner_call(...)     # level >= 2: opt-in, for chatty inner loops
+@timed_dbg some_call(...)              # label taken from the callee
+@timed_dbg "phase" begin ... end       # explicit label
+@timed_dbg level=2 inner_call(...)     # level >= 2: opt-in, for chatty inner loops
 ```
 
 Sections record when their `level` (default 1) is <= the active level. Markers are

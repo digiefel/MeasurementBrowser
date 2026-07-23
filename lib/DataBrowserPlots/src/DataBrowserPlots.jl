@@ -9,7 +9,7 @@ import DataBrowserAPI:
     Project
 import DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
-using DataBrowserAPI: @time_dbg
+using DataBrowserAPI: @timed_dbg
 import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
 
@@ -51,7 +51,7 @@ function setup_plot(
     items::Vector{<:AbstractDataItem},
 )::Figure where {Kind,Label}
     recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
-    return @time_dbg "setup_plot" recipe.setup(workspace, items)::Figure
+    return @timed_dbg "setup_plot" recipe.setup(workspace, items)::Figure
 end
 
 function plot_data!(
@@ -61,7 +61,7 @@ function plot_data!(
     figure::Figure,
 )::Nothing where {Kind,Label}
     recipe = _plot_recipes(workspace.project)[Kind][String(Label)]
-    @time_dbg "draw_plot" recipe.draw(workspace, items, figure)
+    @timed_dbg "draw_plot" recipe.draw(workspace, items, figure)
     return nothing
 end
 

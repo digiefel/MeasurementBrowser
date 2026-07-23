@@ -1,6 +1,6 @@
 # Profiling
 
-DataBrowser is instrumented for timing with `@time_dbg` markers whose data is aggregated
+DataBrowser is instrumented for timing with `@timed_dbg` markers whose data is aggregated
 into native [TimerOutputs](https://github.com/KristofferC/TimerOutputs.jl) timing trees.
 Instrumentation is **dev-only and zero-cost when off**: production builds do not depend on
 the profiler and the markers compile away.
@@ -9,16 +9,16 @@ This document describes how the instrumentation works and how to add it. For the
 investigation workflow — drive a workload, read the tree, iterate with Revise — see the
 `databrowser-profiling` skill.
 
-## The `@time_dbg` marker
+## The `@timed_dbg` marker
 
-`@time_dbg` lives in `DataBrowserAPI` (`lib/DataBrowserAPI/src/debug_timing.jl`) and is
+`@timed_dbg` lives in `DataBrowserAPI` (`lib/DataBrowserAPI/src/timing_debug.jl`) and is
 internal — it is not exported to DataBrowser's public API. Engine code pulls it in with
-`using DataBrowserAPI: @time_dbg`. Forms:
+`using DataBrowserAPI: @timed_dbg`. Forms:
 
 ```julia
-@time_dbg some_call(...)              # label taken from the callee
-@time_dbg "label" begin ... end       # explicit label
-@time_dbg level=2 inner_call(...)     # records only when the active level >= 2
+@timed_dbg some_call(...)              # label taken from the callee
+@timed_dbg "label" begin ... end       # explicit label
+@timed_dbg level=2 inner_call(...)     # records only when the active level >= 2
 ```
 
 `level` and `label` are independent; the default level is 1.
@@ -28,7 +28,7 @@ internal — it is not exported to DataBrowser's public API. Engine code pulls i
 The macro expands to `if DataBrowserAPI.profile_level() >= level; <timed>; else <expr> end`.
 `profile_level()` returns `0` by default, so the guard is statically false and the compiler
 removes the timed branch entirely — no timer, no allocation, no call. When the profiler is
-not loaded, `@time_dbg` is exactly the wrapped expression, so production carries no timing
+not loaded, `@timed_dbg` is exactly the wrapped expression, so production carries no timing
 overhead and no dependency on TimerOutputs.
 
 ### Levels
@@ -45,7 +45,7 @@ environment that depends on it, installs the timing hooks into `DataBrowserAPI`,
 `profile_level()`, and starts the collector:
 
 ```julia
-using DataBrowserProfiling   # turns @time_dbg on, process-wide, for the session
+using DataBrowserProfiling   # turns @timed_dbg on, process-wide, for the session
 ```
 
 That redefinition recompiles the annotated methods with their timed branch live. It runs at
@@ -59,7 +59,7 @@ pool of long-lived worker tasks that migrate across Julia threads:
 
 - Each Julia task records into its **own** `TimerOutput`, keyed on the task (never on
   `threadid()`), so no two tasks touch the same timer and recording needs no lock.
-- Nested `@time_dbg` sections on a task build a native parent/child tree in that task's timer.
+- Nested `@timed_dbg` sections on a task build a native parent/child tree in that task's timer.
 - When a task's **outermost** section exits, its completed timer is merged into a shared master
   under a lock, then cleared. The macro's `finally` runs this even when the timed call throws.
 - All access to the master — merges, snapshots, resets — is serialized by that one lock, so a

@@ -1,14 +1,14 @@
 """
 Dev-only DataBrowser instrumentation.
 
-Loading this package turns on `@time_dbg` timing (the macro itself lives in
+Loading this package turns on `@timed_dbg` timing (the macro itself lives in
 DataBrowserAPI and is dormant until enabled): on load we install the timing hooks
 into DataBrowserAPI and raise its active profiling level, then accumulate
 per-task `TimerOutput` segments into one shared master timer.
 
 The collector is task-safe by construction: each Julia task records into its own
 `TimerOutput`, and a completed segment is merged into the master under a lock when
-that task's outermost `@time_dbg` section exits. All master access goes through
+that task's outermost `@timed_dbg` section exits. All master access goes through
 the lock, so a snapshot can never race a merge.
 
 Public entry points return native `TimerOutputs.TimerOutput` objects; display and
@@ -32,7 +32,7 @@ import DataBrowserAPI
 # Instrumentation collector
 # ===========================================================================
 
-const _TLS_KEY = gensym(:databrowser_time_dbg)
+const _TLS_KEY = gensym(:databrowser_timed_dbg)
 const DEFAULT_LEVEL = 1
 
 # Per-task timing state. One task owns one TimerOutput segment and never shares
@@ -95,8 +95,8 @@ function _enable!()
     beginimpl = _begin
     endimpl = _end
     Core.eval(DataBrowserAPI, quote
-        _time_dbg_begin(label) = $(beginimpl)(label)
-        _time_dbg_end(token) = $(endimpl)(token)
+        _timed_dbg_begin(label) = $(beginimpl)(label)
+        _timed_dbg_end(token) = $(endimpl)(token)
         profile_level() = $(DEFAULT_LEVEL)
     end)
     RECORDING[] = true

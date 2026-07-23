@@ -10,7 +10,7 @@ import DataBrowserCore.Workspace
 # already collects: the per-panel `_time!` timings/allocations in
 # `state.performance`, and live workspace pipeline counters. It has no dependency
 # on the (dev-only) instrumentation profiler — for deep engine timing use
-# `@time_dbg` + DataBrowserProfiling instead (see docs/profiling.md).
+# `@timed_dbg` + DataBrowserProfiling instead (see docs/profiling.md).
 # ---------------------------------------------------------------------------
 
 @inline function _table_text(s::AbstractString)::Nothing

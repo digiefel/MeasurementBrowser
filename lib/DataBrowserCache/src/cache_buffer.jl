@@ -955,7 +955,7 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
         end
         writing === nothing && return nothing
         try
-            @time_dbg _flush_to_db!(store, writing)
+            @timed_dbg _flush_to_db!(store, writing)
         catch error
             lock(store.flush_condition) do
                 notify(store.flush_condition, error; all=true, error=true)

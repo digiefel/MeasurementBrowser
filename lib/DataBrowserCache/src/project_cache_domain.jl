@@ -1710,7 +1710,7 @@ function load_cache_index(
     cachedb::CacheDB;
     on_progress::Union{Nothing,Function}=nothing,
 )::ProjectCacheIndex
-    index = @time_dbg load_cache_index_body(cachedb)
+    index = @timed_dbg load_cache_index_body(cachedb)
     return _report_loaded_cache_index(index, on_progress)
 end
 
