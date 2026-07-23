@@ -1,8 +1,5 @@
 # Internal debug-timing instrumentation.
 #
-# This file provides ONLY the zero-cost `@timed_dbg` annotation and the dormant
-# hooks it calls. It has no dependency on TimerOutputs and no timing machinery.
-#
 # When the dev-only `DataBrowserProfiling` package is not loaded, `profile_level()`
 # returns 0, so every `@timed_dbg level=N ...` (with N >= 1) has a statically-false
 # guard and the compiler folds it away to just the wrapped expression — the
@@ -16,10 +13,6 @@
 # `@timed_dbg` is INTERNAL: it is deliberately not exported. Consuming modules pull
 # it in with `using DataBrowserAPI: @timed_dbg`; it never reaches DataBrowser's
 # public API.
-#
-# The label-derivation helpers `_timed_label`/`_timed_callee` are dependency-free
-# expression parsing, shared by both `@timed_dbg` (here) and the always-on `@timed`
-# macro in DataBrowserGUI.
 
 """
     profile_level() -> Int
@@ -38,30 +31,6 @@ profile_level() = 0
 _timed_dbg_begin(@nospecialize(label)) = nothing
 _timed_dbg_end(@nospecialize(token)) = nothing
 
-# Derive a section label from the timed expression when none is given explicitly.
-# For a call `f(...)` this is `"f"`; for `Mod.f(...)` it is `"f"`. Anything else
-# falls back to the stringified expression (callers timing a `begin ... end`
-# block are expected to pass an explicit label). Shared by `@timed_dbg` and `@timed`.
-_timed_label(sym::Symbol) = String(sym)
-function _timed_label(ex::Expr)
-    if ex.head === :call
-        return _timed_callee(ex.args[1])
-    elseif ex.head === :. && length(ex.args) == 2 && ex.args[2] isa QuoteNode
-        return String(ex.args[2].value)
-    end
-    return string(ex)
-end
-_timed_label(x) = string(x)
-
-_timed_callee(sym::Symbol) = String(sym)
-function _timed_callee(ex::Expr)
-    if ex.head === :. && length(ex.args) == 2 && ex.args[2] isa QuoteNode
-        return String(ex.args[2].value)
-    end
-    return string(ex)
-end
-_timed_callee(x) = string(x)
-
 """
     @timed_dbg [level=N] [label] expr
 
@@ -70,9 +39,9 @@ compiles away to just `expr` unless `DataBrowserProfiling` is loaded.
 
 Forms:
 
-    @timed_dbg expr                  # level 1, label derived from the call
+    @timed_dbg expr                  # level 1, label is the expression text
     @timed_dbg "label" expr          # level 1, explicit label
-    @timed_dbg level=2 expr          # level 2, label derived from the call
+    @timed_dbg level=2 expr          # level 2, label is the expression text
     @timed_dbg level=2 "label" expr  # level 2, explicit label
 
 `level` and `label` are independent. The section records only when
@@ -98,7 +67,7 @@ macro timed_dbg(args...)
         "@timed_dbg expects a single expression, optionally preceded by `level=N` and a string label",
     )
     expr = rest[1]
-    lbl = label === nothing ? _timed_label(expr) : label
+    lbl = label === nothing ? string(expr) : label
 
     return quote
         if profile_level() >= $(esc(level))

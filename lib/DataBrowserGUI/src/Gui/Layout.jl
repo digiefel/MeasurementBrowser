@@ -545,6 +545,12 @@ function _run_browser(
             return :imgui_exit_loop
         end
         state.performance.frame += 1
+        if state.performance.reset_main_timer
+            # Safe here: the previous frame's @timed sections have all closed, so the section
+            # stack is empty. Resetting mid-frame would underflow it when the open sections pop.
+            TimerOutputs.reset_timer!(MAIN_TIMER)
+            state.performance.reset_main_timer = false
+        end
         workspace = state.workspace
         if workspace isa Workspace.Workspace
             @timed "refresh_status" begin

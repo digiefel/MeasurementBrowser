@@ -3,28 +3,14 @@ import CImGui as ig
 import DataBrowserCore.Workspace
 import TimerOutputs
 
-# ---------------------------------------------------------------------------
-# Performance window
-#
-# Always-on diagnostics driven entirely by data the render loop already
-# collects: the MAIN_TIMER section tree (recorded by `@timed`) and a handful of
-# live workspace throughput counters. It has no dependency on the (dev-only)
-# instrumentation profiler — for deep multi-task engine timing use `@timed_dbg`
-# + DataBrowserProfiling instead (see docs/profiling.md).
-# ---------------------------------------------------------------------------
+# Performance window: the MAIN_TIMER section tree (Timings), live throughput sparklines
+# (Throughput), and workspace pipeline counters (Workspace). For deep multi-task engine timing
+# use `@timed_dbg` + DataBrowserProfiling instead (docs/profiling.md).
 
 @inline function _table_text(s::AbstractString)::Nothing
     ig.TextUnformatted(s)
     return nothing
 end
-
-# ---------------------------------------------------------------------------
-# Throughput sampling
-#
-# Cheap, always-readable engine counters sampled at ~4 Hz into fixed-cap ring
-# buffers. No async timing and no new instrumentation — just differences of
-# counters the pipeline already maintains.
-# ---------------------------------------------------------------------------
 
 """Append `v` to an ordered history ring, dropping the oldest sample past `PERF_HISTORY_CAP`."""
 @inline function _push_capped!(buf::Vector{Float32}, v::Real)::Nothing
@@ -34,11 +20,8 @@ end
 end
 
 """
-Record one throughput sample into `h`, throttled to a 0.25s minimum interval.
-
-Pure over its inputs (no workspace/ImGui) so it is unit-testable. The first admitted call only
-seeds the `last_*` baselines (no data point, so rates never spike on open). Returns `true` when the
-sample was admitted (baselines advanced), `false` when throttled.
+Record one throughput sample into `h`, throttled to a 0.25s minimum interval. The first admitted
+call seeds the `last_*` baselines only, so rates never spike on open. Returns whether it was admitted.
 """
 function _record_throughput!(
     h::PerfHistory,
@@ -94,47 +77,6 @@ function _begin_perf_table(id::String, n_cols::Int, height::Float32=0.0f0)::Bool
     return ig.BeginTable("##perf_$id", n_cols, flags, (0.0f0, height))
 end
 
-# ---------------------------------------------------------------------------
-# Timings tab — the MAIN_TIMER section tree
-# ---------------------------------------------------------------------------
-
-"""Format a nanosecond duration compactly. Self-contained (avoids TimerOutputs' private formatters)."""
-function _fmt_ns(ns::Real)::String
-    ns >= 1e9 && return @sprintf("%.2f s", ns / 1e9)
-    ns >= 1e6 && return @sprintf("%.2f ms", ns / 1e6)
-    ns >= 1e3 && return @sprintf("%.1f µs", ns / 1e3)
-    return @sprintf("%.0f ns", ns)
-end
-
-"""Summed time (ns) across a node's direct children — self-time complement and % denominator."""
-_children_time(node)::Float64 = sum(TimerOutputs.time, values(node.inner_timers); init=0.0)
-
-"""Recursively render `node`'s children (sorted by time desc) as indented timing rows."""
-function _render_timer_rows(node, depth::Int)::Nothing
-    # A child's share is measured against its parent's own time; the root section has no
-    # self-time, so fall back to the sum over its direct children (TimerOutputs' tottime).
-    parent_time = TimerOutputs.time(node)
-    parent_time <= 0 && (parent_time = _children_time(node))
-    children = sort!(collect(values(node.inner_timers)); by=TimerOutputs.time, rev=true)
-    for child in children
-        t = TimerOutputs.time(child)
-        n = TimerOutputs.ncalls(child)
-        self = max(t - _children_time(child), 0.0)
-        avg = n > 0 ? t / n : 0.0
-        pct = parent_time > 0 ? 100 * t / parent_time : 0.0
-
-        ig.TableNextRow()
-        ig.TableNextColumn(); _table_text(repeat("  ", depth) * child.name)
-        ig.TableNextColumn(); _table_text(string(n))
-        ig.TableNextColumn(); _table_text(_fmt_ns(t))
-        ig.TableNextColumn(); _table_text(_fmt_ns(avg))
-        ig.TableNextColumn(); _table_text(_fmt_ns(self))
-        ig.TableNextColumn(); _table_text(@sprintf("%.1f%%", pct))
-        _render_timer_rows(child, depth + 1)
-    end
-    return nothing
-end
-
 """Render frame stats, the MAIN_TIMER section tree, and the OpenGL strings."""
 function _render_timings_tab(state::BrowserState)::Nothing
     performance = state.performance
@@ -149,7 +91,7 @@ function _render_timings_tab(state::BrowserState)::Nothing
     ig.Spacing()
 
     if ig.Button("Reset")
-        TimerOutputs.reset_timer!(MAIN_TIMER)
+        state.performance.reset_main_timer = true   # applied at frame top, outside any @timed section
     end
     ig.SameLine()
     ig.TextDisabled("Cumulative since the first frame; ncalls counts frames.")
@@ -157,17 +99,11 @@ function _render_timings_tab(state::BrowserState)::Nothing
 
     if isempty(MAIN_TIMER.inner_timers)
         ig.TextDisabled("No sections recorded yet.")
-    elseif _begin_perf_table("timings", 6, 320.0f0)
-        ig.TableSetupScrollFreeze(0, 1)
-        ig.TableSetupColumn("Section",  ig.ImGuiTableColumnFlags_WidthStretch, 0.0f0)
-        ig.TableSetupColumn("ncalls",   ig.ImGuiTableColumnFlags_WidthFixed,  64.0f0)
-        ig.TableSetupColumn("total",    ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
-        ig.TableSetupColumn("avg/call", ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
-        ig.TableSetupColumn("self",     ig.ImGuiTableColumnFlags_WidthFixed,  80.0f0)
-        ig.TableSetupColumn("% parent", ig.ImGuiTableColumnFlags_WidthFixed,  64.0f0)
-        ig.TableHeadersRow()
-        _render_timer_rows(MAIN_TIMER, 0)
-        ig.EndTable()
+    else
+        # Reuse TimerOutputs' own tree rendering. The default ImGui font is fixed-width but ASCII-only
+        # (no box-drawing glyphs, no micro sign), so use ascii rules and render microseconds as "us".
+        text = sprint(io -> TimerOutputs.print_timer(io, MAIN_TIMER; linechars=:ascii))
+        _table_text(replace(rstrip(text), 'μ' => 'u'))
     end
 
     gi = performance.gl_info
@@ -194,13 +130,7 @@ end
 # Throughput tab — item-throughput sparklines
 # ---------------------------------------------------------------------------
 
-"""
-Draw a labeled sparkline of `values` with a current-value readout.
-
-Uses Dear ImGui's built-in `PlotLines` (no ImPlot). NOTE: confirm the exact CImGui `PlotLines`
-argument convention against the live library — this passes the `Vector{Float32}` directly with an
-explicit auto-scale range and a fixed graph height.
-"""
+"""Draw a labeled sparkline of `values` (Dear ImGui `PlotLines`, no ImPlot) with a current-value readout."""
 function _sparkline(label::String, values::Vector{Float32}, unit::String)::Nothing
     current = isempty(values) ? 0.0f0 : values[end]
     ig.Text(@sprintf("%s: %.1f%s", label, current, unit))
@@ -256,7 +186,7 @@ Debug menu. All figures come from data the render loop already collects.
 function render_perf_window(state::BrowserState)::Nothing
     state.show_performance_window || return nothing
 
-    if ig.Begin("Performance###perf_window")
+    if ig.Begin("Performance###perf_window", C_NULL, ig.ImGuiWindowFlags_HorizontalScrollbar)
         workspace = state.workspace
         if ig.BeginTabBar("##perf_tabs")
             if ig.BeginTabItem("Timings")

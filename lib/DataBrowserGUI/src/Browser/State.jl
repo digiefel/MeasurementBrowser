@@ -102,6 +102,8 @@ Base.@kwdef mutable struct PerformanceState
     item_rows_visible::Int = 0
     item_rows_rendered::Int = 0
     history::PerfHistory = PerfHistory()
+    """Set by the Timings tab's Reset button; applied at frame top, where no `@timed` section is open."""
+    reset_main_timer::Bool = false
 end
 
 """

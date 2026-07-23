@@ -1,5 +1,4 @@
 import TimerOutputs
-using DataBrowserAPI: _timed_label
 
 # Always-on render-loop instrumentation.
 #
@@ -21,7 +20,7 @@ section. Like `@timed_dbg` but always on and with no `level`.
 
 Forms:
 
-    @timed some_call(...)          # label taken from the callee
+    @timed some_call(...)          # label is the expression text
     @timed "label" begin ... end   # explicit label
 
 Main-task-only (see `MAIN_TIMER`). Internal; pulled in with `using ...: @timed`.
@@ -37,6 +36,6 @@ macro timed(args...)
         "@timed expects a single expression, optionally preceded by a string label",
     )
     expr = rest[1]
-    lbl = label === nothing ? _timed_label(expr) : label
+    lbl = label === nothing ? string(expr) : label
     return :(TimerOutputs.@timeit MAIN_TIMER $lbl $(esc(expr)))
 end
