@@ -94,6 +94,7 @@ registration order; the first match wins, so register specific filename patterns
 | Plot rendering, Makie integration | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
 | Browser shell, table inspector, extension registry | `lib/DataBrowserGUI/` | [gui.md](docs/gui.md) |
 | Adding `@timed_dbg` instrumentation, debug timings, sampling | `lib/DataBrowserAPI/src/timing_debug.jl`, `lib/DataBrowserProfiling/` | [profiling.md](docs/profiling.md) |
+| Always-on render-loop timing (`@timed`, `MAIN_TIMER`), Performance window | `lib/DataBrowserGUI/src/Browser/timing.jl`, `lib/DataBrowserGUI/src/Gui/PerformanceWindow.jl` | [gui.md](docs/gui.md) |
 | Tags, notes, spatial layout | `lib/DataBrowserAnnotations/` | [annotations.md](docs/annotations.md) |
 
 `docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change

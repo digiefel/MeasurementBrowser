@@ -1,5 +1,6 @@
 module Browser
 
+include("Browser/timing.jl")
 include("Browser/Extensions.jl")
 include("Browser/State.jl")
 include("Browser/Performance.jl")
