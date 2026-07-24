@@ -136,7 +136,6 @@ mutable struct RowStore{K,R} <: AbstractDiskStore{K,R}
     # DuckDB connections are not thread-safe; every read_connection use holds this lock.
     read_lock::ReentrantLock
     write_connection::DuckDB.Connection
-    profiler::Profiling.ProfileSession
     table_name::String
     quoted_table::String
     key_columns::Tuple{Vararg{Symbol}}
@@ -156,7 +155,6 @@ function RowStore{K,R}(
     database::DuckDB.DB,
     table::AbstractString,
     key_columns::Tuple{Vararg{AbstractString}};
-    profiler::Profiling.ProfileSession,
     row_limit::Union{Nothing,Int}=nothing,
 ) where {K,R}
     row_limit === nothing || row_limit > 0 ||
@@ -173,7 +171,6 @@ function RowStore{K,R}(
         read_connection,
         ReentrantLock(),
         write_connection,
-        profiler,
         String(table),
         quoted_table,
         key_symbols,
@@ -296,7 +293,6 @@ mutable struct WideRowStore{K} <: AbstractDiskStore{K,MetadataDict}
     read_connection::DuckDB.Connection
     read_lock::ReentrantLock
     write_connection::DuckDB.Connection
-    profiler::Profiling.ProfileSession
     table_name::String
     quoted_table::String
     key_column::Symbol
@@ -322,8 +318,7 @@ _buffer_rows(::MetadataDict)::Int = 1
 function WideRowStore{K}(
     database::DuckDB.DB,
     table::AbstractString,
-    key_column::AbstractString;
-    profiler::Profiling.ProfileSession,
+    key_column::AbstractString,
 ) where {K}
     key_symbol = Symbol(String(key_column))
     quoted_table = _quote_identifier(table)
@@ -354,7 +349,6 @@ function WideRowStore{K}(
         read_connection,
         ReentrantLock(),
         write_connection,
-        profiler,
         String(table),
         quoted_table,
         key_symbol,
@@ -618,7 +612,6 @@ mutable struct TabularFamilyStore <:
     # DuckDB connections are not thread-safe; every read_connection use holds this lock.
     read_lock::ReentrantLock
     write_connection::DuckDB.Connection
-    profiler::Profiling.ProfileSession
     flush_condition::Base.Threads.Condition
     queued::Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}
     writing::Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}
@@ -637,7 +630,6 @@ end
 
 function TabularFamilyStore(
     database::DuckDB.DB;
-    profiler::Profiling.ProfileSession,
     row_limit::Union{Nothing,Int}=nothing,
 )::TabularFamilyStore
     row_limit === nothing || row_limit > 0 ||
@@ -673,7 +665,6 @@ function TabularFamilyStore(
         read_connection,
         ReentrantLock(),
         write_connection,
-        profiler,
         Base.Threads.Condition(),
         Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}(),
         Dict{Tuple{UInt16,UInt32},BufferMutation{TabularBodyBatch}}(),
@@ -939,14 +930,6 @@ function _flush_rows(
     return Int64(rows)
 end
 
-function _flush_profile_attributes(batch::Dict)::ProfileAttributes
-    return ProfileAttributes(
-        stage=:disk,
-        rows=_flush_rows(batch),
-        batch_size=length(batch),
-    )
-end
-
 function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
     while true
         writing = lock(store.flush_condition) do
@@ -972,9 +955,7 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
         end
         writing === nothing && return nothing
         try
-            Profiling.@profile_span store.profiler :cache _flush_operation(store) _flush_profile_attributes(writing) begin
-                _flush_to_db!(store, writing)
-            end
+            @timed_dbg _flush_to_db!(store, writing)
         catch error
             lock(store.flush_condition) do
                 notify(store.flush_condition, error; all=true, error=true)

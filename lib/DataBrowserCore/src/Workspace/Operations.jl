@@ -4,12 +4,6 @@ Start cache loading and source scanning for one new workspace.
 function open_workspace(
     project::Project,
     source::AbstractDataSource;
-    profile_internal::Bool=Profiling.environment_flag("MB_PROFILE_INTERNAL"),
-    profile_cpu::Bool=Profiling.environment_flag("MB_PROFILE_CPU"),
-    profile_output::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_PROFILE_OUTPUT"),
-    crash_trace::Union{Nothing,AbstractString}=
-        Profiling.environment_path("MB_CRASH_TRACE"),
     rebuild::Bool=false,
     cache::Bool=true,
     background_processing::Bool=false,
@@ -19,10 +13,6 @@ function open_workspace(
         Workspace(
             project,
             opened_source;
-            profile_internal,
-            profile_cpu,
-            profile_output,
-            crash_trace,
             rebuild,
             cache,
             background_processing,
@@ -58,13 +48,9 @@ function close_workspace!(workspace::Workspace)::Nothing
     end
     stop_work_workers!(workspace)
     try
-        Profiling.close!(workspace.profiler)
+        close_cache_db!(workspace.cache.db)
     finally
-        try
-            close_cache_db!(workspace.cache.db)
-        finally
-            close_source!(workspace.source)
-        end
+        close_source!(workspace.source)
     end
     return nothing
 end
@@ -498,6 +484,14 @@ function publish_source_item_records!(
     return resolved, invalidated
 end
 
+"""True when the stage ledger already tracks this source item (cached or failed interpret)."""
+function _cache_knows_source_item(cachedb::AbstractCacheDB, source_id::String)::Bool
+    ledger = cachedb.stage_ledger
+    return lock(ledger.lock) do
+        source_id in ledger.source_items || (source_id, source_id) in ledger.failures
+    end
+end
+
 """
 Submit one source-change batch to the work graph and remove deleted published output. Cache
 deletes are buffered mutations, so ordering against re-interpretation is kept by the buffers:
@@ -524,7 +518,12 @@ function ingest_source_changes!(
         for source_item in changes.upserts
             source_item_id_value = source_item_id(source_item)
             old_records = source_item_records(workspace.index, source_item_id_value)
-            delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
+            # Fresh upserts have no published output and no cache row — skip the no-op delete so
+            # discovery does not flood the write buffer with BUFFER_DELETE for every new file.
+            if !isempty(old_records) ||
+               _cache_knows_source_item(workspace.cache.db, source_item_id_value)
+                delete_source_item!(workspace.cache.db, source_item_id_value, old_records)
+            end
             key = WorkKey(SOURCE_INTERPRET, source_item_id_value)
             workspace.work.source_items[source_item_id_value] = source_item
             enqueue_work!(
@@ -541,7 +540,11 @@ function ingest_source_changes!(
         isempty(stale) || invalidate_records_work!(workspace, stale)
         changed = changed || !isempty(stale)
     end
-    refresh_workspace_source!(workspace)
+    # Upsert-only batches only enqueue work; the published index is unchanged until interpretation
+    # lands or removals/metadata reconcile run. Rebuild SourceScan then, not on every discover batch.
+    if !isempty(changes.removals) || changes.metadata_changed
+        refresh_workspace_source!(workspace)
+    end
     status === nothing || (workspace.cache.status = status)
     return changed
 end
@@ -549,11 +552,15 @@ end
 """
 Start one source scan that progressively populates the workspace index and cache.
 
-The scan first surfaces any already-cached index for an instant first view, then streams freshly
-interpreted source items into the workspace and a bounded cache-write batch. The batch flushes by
-source-item count, cached row count, or age, so progressive saves remain frequent without paying for
-one DuckDB transaction per source item. `rebuild=true` first wipes the cache and ignores the prior
-scan, forcing a full re-interpretation.
+The scan first surfaces any already-cached index for an instant first view, then walks the source
+while only fingerprinting new or stale items into a queue — so `sources_found` advances at walk
+speed. After the walk, a publisher task drains that queue in small batches so `SOURCE_INTERPRET`
+starts immediately and overlaps the remaining enqueue (without serializing the walk behind
+`publish_lock` / ingest or contending with interpreters on the filesystem). Removals and
+source-metadata reconcile run in a final batch after the publisher drains. Interpreted results
+stream into the workspace and a bounded cache-write batch that flushes by source-item count, cached
+row count, or age. `rebuild=true` first wipes the cache and ignores the prior scan, forcing a full
+re-interpretation.
 """
 function scan_source!(
     workspace::Workspace;
@@ -588,113 +595,137 @@ function scan_source!(
     end
     task = Base.Threads.@spawn begin
         scan_token = get_token(cancel_source)
-        Profiling.@profile_span workspace.profiler :source :scan Profiling.ProfileAttributes(
-            source_id=source_id(workspace.source),
-        ) begin
-        try
-            rebuild && Profiling.@profile_span workspace.profiler :source :cache_clear Profiling.ProfileAttributes() begin
-                clear_cache_index!(cachedb)
-            end
-            cached = if !rebuild && cache_built(cachedb)
-                try
-                    Profiling.@profile_span(
-                        workspace.profiler,
-                        :source,
-                        :cache_load,
-                        Profiling.ProfileAttributes(),
-                        load_cache_index(cachedb),
-                    )
-                catch error
-                    error isa ProjectCacheDataError || rethrow()
-                    @warn(
-                        "Generated collection cache is incompatible; rebuilding it",
-                        cache=workspace.cache.identity.cache_path,
-                        error,
-                    )
-                    clear_cache_index!(cachedb)
+        @timed_dbg "scan_source" begin
+            try
+                rebuild && clear_cache_index!(cachedb)
+                cached = if !rebuild && cache_built(cachedb)
+                    try
+                        @timed_dbg load_cache_index(cachedb)
+                    catch error
+                        error isa ProjectCacheDataError || rethrow()
+                        @warn(
+                            "Generated collection cache is incompatible; rebuilding it",
+                            cache=workspace.cache.identity.cache_path,
+                            error,
+                        )
+                        clear_cache_index!(cachedb)
+                        nothing
+                    end
+                else
                     nothing
                 end
-            else
-                nothing
-            end
-            publish_cache_state!(
-                workspace, scan_id, cached === nothing ? :missing : :ready, cached)
+                publish_cache_state!(
+                    workspace, scan_id, cached === nothing ? :missing : :ready, cached)
 
-            write_meta_header!(cachedb)
-            discovered = Profiling.@profile_span workspace.profiler :source :discover Profiling.ProfileAttributes() begin
-                source_items(
+                write_meta_header!(cachedb)
+                # Fingerprints must be loaded before discovery so upserts can stream during the walk.
+                # The cache's `source_items` table is the sole home of previous-session fingerprints;
+                # a memory-only cache holds nothing, so every discovered item re-interprets.
+                previous = _load_source_item_fingerprints(cachedb)
+                current = Dict{String,Any}()
+                seen = Set{String}()
+                pending_upserts = Ref{Vector{AbstractDataSourceItem}}(AbstractDataSourceItem[])
+                any_upserts = Ref(false)
+                streamed = Ref(false)
+                # Walk only fingerprints into an unbounded channel — do not publish yet. Starting
+                # SOURCE_INTERPRET during the walk contends on the same filesystem (and publish_lock)
+                # and made discovery unusably slow on large trees. After the walk, a publisher task
+                # drains batches so interpretation overlaps the remaining enqueue, not the walk.
+                upsert_batch = 32
+                upsert_channel = Channel{Vector{AbstractDataSourceItem}}(Inf)
+                flush_pending_upserts! = () -> begin
+                    isempty(pending_upserts[]) && return
+                    batch = pending_upserts[]
+                    pending_upserts[] = AbstractDataSourceItem[]
+                    put!(upsert_channel, batch)
+                end
+                consider_source_item! = item -> begin
+                    is_cancellation_requested(scan_token) &&
+                        throw(OperationCanceledException(scan_token))
+                    id_value = source_item_id(item)
+                    push!(seen, id_value)
+                    current_fingerprint = fingerprint(item)
+                    current[id_value] = current_fingerprint
+                    # A `nothing` fingerprint means the source cannot prove the item is unchanged,
+                    # so it is always re-read.
+                    if !haskey(previous, id_value) || current_fingerprint === nothing ||
+                       !isequal(previous[id_value], current_fingerprint)
+                        push!(pending_upserts[], item)
+                        length(pending_upserts[]) >= upsert_batch && flush_pending_upserts!()
+                    end
+                end
+                discovered = @timed_dbg source_items(
                     workspace.source;
                     cancel_token=scan_token,
                     on_progress=count -> begin
                         job.discovered[] = count
                         workspace.status_dirty[] = true
                     end,
+                    on_item=item -> begin
+                        streamed[] = true
+                        consider_source_item!(item)
+                    end,
                 )
-            end
-            is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-            # The cache's `source_items` table is the sole home of previous-session fingerprints;
-            # a memory-only cache holds nothing, so every discovered item re-interprets.
-            previous = _load_source_item_fingerprints(cachedb)
-            current = Dict{String,Any}()
-            upserts = AbstractDataSourceItem[]
-            seen = Set{String}()
-            for item in discovered
                 is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-                id_value = source_item_id(item)
-                push!(seen, id_value)
-                current_fingerprint = fingerprint(item)
-                current[id_value] = current_fingerprint
-                # A `nothing` fingerprint means the source cannot prove the item is unchanged,
-                # so it is always re-read.
-                if !haskey(previous, id_value) || current_fingerprint === nothing ||
-                   !isequal(previous[id_value], current_fingerprint)
-                    push!(upserts, item)
+                    throw(OperationCanceledException(scan_token))
+                # Sources that ignore `on_item` still queue batches after discovery returns.
+                if !streamed[]
+                    for item in discovered
+                        consider_source_item!(item)
+                    end
                 end
-            end
-            is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-            removals = String[id for id in keys(previous) if !(id in seen)]
-            stale = count(
-                id_value -> haskey(previous, id_value) && !isequal(previous[id_value], current[id_value]),
-                keys(current),
-            )
-            new_items = count(id_value -> !haskey(previous, id_value), keys(current))
-            status = ProjectCacheStatus(
-                length(current),
-                length(previous),
-                length(current) - length(workspace.index.analysis_errors),
-                stale,
-                new_items,
-                length(removals),
-                length(workspace.index.analysis_errors),
-            )
-            Profiling.@profile_span workspace.profiler :source :publish_changes Profiling.ProfileAttributes(
-                items=length(upserts),
-                batch_size=length(removals),
-            ) begin
+                flush_pending_upserts!()
+                publisher = Threads.@spawn begin
+                    for batch in upsert_channel
+                        any_upserts[] = true
+                        publish_source_changes!(
+                            workspace,
+                            scan_id,
+                            SourceChanges(batch, String[]; metadata_changed=false),
+                        )
+                    end
+                end
+                close(upsert_channel)
+                wait(publisher)
                 is_cancellation_requested(scan_token) &&
-                throw(OperationCanceledException(scan_token))
-                publish_source_changes!(
+                    throw(OperationCanceledException(scan_token))
+                removals = String[id for id in keys(previous) if !(id in seen)]
+                stale = count(
+                    id_value -> haskey(previous, id_value) &&
+                        !isequal(previous[id_value], current[id_value]),
+                    keys(current),
+                )
+                new_items = count(id_value -> !haskey(previous, id_value), keys(current))
+                status = ProjectCacheStatus(
+                    length(current),
+                    length(previous),
+                    length(current) - length(workspace.index.analysis_errors),
+                    stale,
+                    new_items,
+                    length(removals),
+                    length(workspace.index.analysis_errors),
+                )
+                is_cancellation_requested(scan_token) &&
+                    throw(OperationCanceledException(scan_token))
+                # Final batch: removals + deferred metadata reconcile (not on every upsert batch).
+                @timed_dbg publish_source_changes!(
                     workspace,
                     scan_id,
-                    SourceChanges(upserts, removals; metadata_changed=true),
+                    SourceChanges(AbstractDataSourceItem[], removals; metadata_changed=true),
                     status,
                 )
-            end
-            publish_scan_end!(
-                workspace, scan_id;
-                cache_hit=isempty(upserts) && isempty(removals),
-            )
-        catch error
-            if error isa OperationCanceledException
-                publish_scan_end!(workspace, scan_id; canceled=true)
-            else
                 publish_scan_end!(
-                    workspace, scan_id; error, backtrace=catch_backtrace())
+                    workspace, scan_id;
+                    cache_hit=!any_upserts[] && isempty(removals),
+                )
+            catch error
+                if error isa OperationCanceledException
+                    publish_scan_end!(workspace, scan_id; canceled=true)
+                else
+                    publish_scan_end!(
+                        workspace, scan_id; error, backtrace=catch_backtrace())
+                end
             end
-        end
         end
     end
     track_task!(workspace, task)
@@ -719,70 +750,6 @@ query_items(workspace::Workspace)::Vector{String} = sort!(collect(keys(workspace
 """Resize this workspace's DuckDB cache buffer-pool limit (MiB) live; suits a GUI control."""
 set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
     set_cache_memory_limit!(workspace.cache.db, mib)
-
-"""Return one lock-consistent counter snapshot for the structured profiler."""
-function profile_counter_snapshot(workspace::Workspace)::NamedTuple
-    completed, total, jobs = work_counts(workspace)
-    depth = jobs + cache_pending_counts(workspace.cache.db).items
-    return (
-        # Scan-level progress counters are not populated; the schema keeps their columns.
-        scan_done=0,
-        scan_total=0,
-        processing_done=completed,
-        processing_total=total,
-        queue_depth=depth,
-    )
-end
-
-"""Begin recording immediately when idle, or prepare one clean rebuild after active work stops."""
-function start_internal_profile!(workspace::Workspace)::Nothing
-    profiler = workspace.profiler
-    Profiling.validate_start(profiler)
-    # Deciding busy, arming the restart, and canceling must be one atomic step against
-    # finish_publish!: a completion landing in between would either strand the profiler in
-    # :preparing forever or let the cancels kill the freshly restarted profiled rebuild.
-    lock(workspace.publish_lock) do
-        if engine_work_running(workspace)
-            profiler.state = :preparing
-            workspace.profile_restart_pending = true
-            cancel_scan!(workspace)
-            cancel_analysis!(workspace)
-            cancel_waiting_work!(workspace)
-        else
-            Profiling.start!(profiler, () -> profile_counter_snapshot(workspace))
-        end
-    end
-    return nothing
-end
-
-"""Stop an active internal profile without canceling application work."""
-function stop_internal_profile!(
-    workspace::Workspace,
-)::Union{Nothing,Profiling.ProfileReport}
-    profiler = workspace.profiler
-    # Aborting a pending restart must be atomic against finish_publish!: a completion landing
-    # between the state check and the clear would start a profiled rebuild this stop then clobbers.
-    aborted_preparation = lock(workspace.publish_lock) do
-        profiler.state === :preparing || return false
-        workspace.profile_restart_pending = false
-        profiler.state = :idle
-        return true
-    end
-    aborted_preparation && return nothing
-    return Profiling.stop!(profiler)
-end
-
-"""Clear one stopped internal profile report."""
-reset_internal_profile!(workspace::Workspace)::Nothing =
-    Profiling.reset!(workspace.profiler)
-
-"""Export one stopped internal profile as Chrome/Perfetto JSON."""
-function export_internal_profile!(
-    workspace::Workspace,
-    path::AbstractString,
-)::String
-    return Profiling.export!(workspace.profiler, path)
-end
 
 """Replace the workspace item index with one complete collection record index."""
 function replace_item_index!(
@@ -978,13 +945,8 @@ function publish_work_success!(
     if key.kind === SOURCE_INTERPRET
         interpretation = result.interpretation::SourceItemInterpretation
         records = interpretation.records
-        resolved, invalidated = Profiling.@profile_span workspace.profiler :source :publish_records Profiling.ProfileAttributes(
-            source_id=key.entity,
-            batch_size=length(records),
-        ) begin
-            publish_source_item_records!(
+        resolved, invalidated = @timed_dbg publish_source_item_records!(
                 workspace, key.entity, records, interpretation.collection_paths)
-        end
         conflicts = store_interpreted!(
             workspace.cache.db,
             result.source_item,
@@ -1159,16 +1121,6 @@ end
 
 """Advance idle-gated work and wake blocked waiters after one publication (publish lock held)."""
 function finish_publish!(workspace::Workspace)::Nothing
-    if workspace.profile_restart_pending && !engine_work_running(workspace)
-        reset_work_graph!(workspace)
-        workspace.profile_restart_pending = false
-        workspace.profiler.state = :idle
-        Profiling.start!(
-            workspace.profiler,
-            () -> profile_counter_snapshot(workspace),
-        )
-        scan_source!(workspace; rebuild=true)
-    end
     workspace.status_dirty[] = true
     notify(workspace.idle_condition; all=true)
     return nothing
@@ -1222,7 +1174,7 @@ function publish_source_changes!(
     workspace::Workspace,
     scan_id::Int,
     changes::SourceChanges,
-    status::ProjectCacheStatus,
+    status::Union{Nothing,ProjectCacheStatus}=nothing,
 )::Nothing
     lock(workspace.publish_lock) do
         scan_id == workspace.scan.id || return

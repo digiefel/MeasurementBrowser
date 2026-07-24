@@ -448,7 +448,6 @@ mutable struct CacheDB <: AbstractCacheDB
     # The signature of the analyzed_item_metadata columns backing the query view; the view is
     # recreated only when it changes.
     query_view_signature::Vector{Symbol}
-    profiler::Profiling.ProfileSession
 end
 
 """Session-only cache state used when DuckDB persistence is disabled or unavailable."""
@@ -465,7 +464,6 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     collection_result_states::Dict{Tuple{Int8,Int64},CachedCollectionResultState}
     stage_ledger::CacheStageLedger
     lock::ReentrantLock
-    profiler::Profiling.ProfileSession
 end
 
 """Delete one generated cache file. Call only from an explicit rebuild path."""
@@ -480,7 +478,6 @@ end
 """Open one generated cache. `rebuild=true` first discards the old generated file."""
 function open_cache_db(
     identity::ProjectCacheIdentity,
-    profiler::Profiling.ProfileSession,
     metrics::BuildMetrics=BuildMetrics(),
     ;
     rebuild::Bool=false,
@@ -520,17 +517,17 @@ function open_cache_db(
         finally
             DBInterface.close!(connection)
         end
-        source_items = RowStore{String,SourceItemRow}(db, "source_items", ("id",); profiler)
+        source_items = RowStore{String,SourceItemRow}(db, "source_items", ("id",))
         collections = RowStore{Int64,CollectionRow}(
-            db, "collections", ("collection_key",); profiler)
-        items = RowStore{String,ItemRow}(db, "items", ("id",); profiler)
+            db, "collections", ("collection_key",))
+        items = RowStore{String,ItemRow}(db, "items", ("id",))
         failures = RowStore{Tuple{String,String},FailureRow}(
-            db, "item_failures", ("item_id", "source_item_id"); profiler)
+            db, "item_failures", ("item_id", "source_item_id"))
         result_states = RowStore{Tuple{Int8,String},CachedResultState}(
-            db, "result_states", ("kind", "entity"); profiler)
+            db, "result_states", ("kind", "entity"))
         collection_result_states = RowStore{Tuple{Int8,Int64},CachedCollectionResultState}(
-            db, "collection_result_states", ("kind", "entity"); profiler)
-        payload = TabularFamilyStore(db; profiler, row_limit=CACHE_BUFFER_ROW_LIMIT)
+            db, "collection_result_states", ("kind", "entity"))
+        payload = TabularFamilyStore(db; row_limit=CACHE_BUFFER_ROW_LIMIT)
         item_keys, next_item_key = _load_item_keys(db)
         stage_ledger = CacheStageLedger(
             read(source_items),
@@ -546,9 +543,9 @@ function open_cache_db(
             source_items,
             collections,
             items,
-            WideRowStore{Int64}(db, "source_item_metadata", "item_key"; profiler),
-            WideRowStore{Int64}(db, "analyzed_item_metadata", "item_key"; profiler),
-            WideRowStore{Int64}(db, "analyzed_collection_metadata", "collection_key"; profiler),
+            WideRowStore{Int64}(db, "source_item_metadata", "item_key"),
+            WideRowStore{Int64}(db, "analyzed_item_metadata", "item_key"),
+            WideRowStore{Int64}(db, "analyzed_collection_metadata", "collection_key"),
             failures,
             result_states,
             collection_result_states,
@@ -562,7 +559,6 @@ function open_cache_db(
             ReentrantLock(),
             stage_ledger,
             Symbol[],
-            profiler,
         )
     catch
         DBInterface.close!(db)
@@ -599,18 +595,8 @@ function item_key!(cache::CacheDB, id::AbstractString; mint::Bool=false)::Int64
     end
 end
 
-"""Open a cache with internal profiling disabled for direct cache operations and tests."""
-function open_cache_db(identity::ProjectCacheIdentity; rebuild::Bool=false)::CacheDB
-    return open_cache_db(
-        identity,
-        Profiling.ProfileSession(false, false, nothing, nothing);
-        rebuild,
-    )
-end
-
 function open_memory_cache_db(
     identity::ProjectCacheIdentity,
-    profiler::Profiling.ProfileSession,
     metrics::BuildMetrics=BuildMetrics(),
 )::MemoryCacheDB
     return MemoryCacheDB(
@@ -626,7 +612,6 @@ function open_memory_cache_db(
         Dict{Tuple{Int8,Int64},CachedCollectionResultState}(),
         CacheStageLedger(),
         ReentrantLock(),
-        profiler,
     )
 end
 
@@ -1725,45 +1710,52 @@ function load_cache_index(
     cachedb::CacheDB;
     on_progress::Union{Nothing,Function}=nothing,
 )::ProjectCacheIndex
+    index = @timed_dbg load_cache_index_body(cachedb)
+    return _report_loaded_cache_index(index, on_progress)
+end
+
+function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
     identity = cachedb.identity
-    index = @profile_span cachedb.profiler :cache :load_index ProfileAttributes(
-        source_id=identity.source_id,
-    ) begin
-        entries_by_key = read(cachedb.source_item_metadata)
-        analyzed_by_key = read(cachedb.analyzed_item_metadata)
-        collection_analysis = read(cachedb.analyzed_collection_metadata)
-        key_to_id = Dict{Int64,String}(
-            row.item_key => row.id for row in values(read(cachedb.items)))
-        # The computed layer is the delivered effective minus the entries layer: what analyze and
-        # collection-process added, restored per item id.
-        item_metadata = Dict{String,MetadataDict}()
-        for (key, analyzed) in analyzed_by_key
-            id = get(key_to_id, key, nothing)
-            id === nothing && continue
-            entries = get(entries_by_key, key, MetadataDict())
-            computed = MetadataDict()
-            for (name, value) in analyzed
-                get(entries, name, nothing) == value || (computed[name] = value)
-            end
-            isempty(computed) || (item_metadata[id] = computed)
+    entries_by_key = read(cachedb.source_item_metadata)
+    analyzed_by_key = read(cachedb.analyzed_item_metadata)
+    collection_analysis = read(cachedb.analyzed_collection_metadata)
+    key_to_id = Dict{Int64,String}(
+        row.item_key => row.id for row in values(read(cachedb.items))
+    )
+    # The computed layer is the delivered effective minus the entries layer: what analyze and
+    # collection-process added, restored per item id.
+    item_metadata = Dict{String,MetadataDict}()
+    for (key, analyzed) in analyzed_by_key
+        id = get(key_to_id, key, nothing)
+        id === nothing && continue
+        entries = get(entries_by_key, key, MetadataDict())
+        computed = MetadataDict()
+        for (name, value) in analyzed
+            get(entries, name, nothing) == value || (computed[name] = value)
         end
-        base = ProjectCacheIndex(
-            identity, _load_source_scan(cachedb, entries_by_key, collection_analysis))
-        result_states = Dict{CacheResultKey,AnyCachedResultState}()
-        for state in values(read(cachedb.result_states))
-            result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
-        end
-        for state in values(read(cachedb.collection_result_states))
-            result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
-        end
-        ProjectCacheIndex(
-            base.identity,
-            base.source,
-            base.analysis_errors,
-            item_metadata,
-            result_states,
-        )
+        isempty(computed) || (item_metadata[id] = computed)
     end
+    base = ProjectCacheIndex(
+        identity,
+        _load_source_scan(cachedb, entries_by_key, collection_analysis),
+    )
+    result_states = Dict{CacheResultKey,AnyCachedResultState}()
+    for state in values(read(cachedb.result_states))
+        result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+    end
+    for state in values(read(cachedb.collection_result_states))
+        result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+    end
+    return ProjectCacheIndex(
+        base.identity,
+        base.source,
+        base.analysis_errors,
+        item_metadata,
+        result_states,
+    )
+end
+
+function _report_loaded_cache_index(index::ProjectCacheIndex, on_progress)
     emit_progress(
         on_progress;
         phase=:cache_load,

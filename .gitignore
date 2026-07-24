@@ -9,3 +9,4 @@ test/*
 !test/fixtures/annotations/**
 imgui.ini
 docs/build/
+lib/*/Manifest.toml

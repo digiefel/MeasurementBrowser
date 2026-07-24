@@ -2,8 +2,7 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-import DataBrowserProfiling as Profiling
-using DataBrowserAPI: KindProfileRow, Project, SourceProfileRow, label
+using DataBrowserAPI: Project
 using DataBrowserSources
 using DataBrowserCore: InspectorTable
 
@@ -71,57 +70,40 @@ Base.@kwdef mutable struct TableInspectorState
     error::String = ""
 end
 
+"""Newest-last cap for the throughput history ring buffers (~1 minute at the 0.25s sample rate)."""
+const PERF_HISTORY_CAP = 240
+
 """
-Ring-buffer state for the Performance window sparklines.
+Bounded history of item-throughput samples for the Performance window's Throughput tab.
 
-Timing buffers hold rolling plot-redraw phase durations (load / setup / draw-data / total).
-Build buffers are sampled while the window is open; throughput is a finite difference of the
-completed-work counter between ticks.
+Each vector is an ordered ring buffer (oldest first, newest last, capped at `PERF_HISTORY_CAP`).
+Rates are per-second deltas between samples; `active`/`pending_rows` are instantaneous levels.
+The `last_*` fields hold the previous sample's raw counters so the next rate can be differenced.
 """
-Base.@kwdef mutable struct LivePlotsState
-    capacity::Int = 600
-
-    load_buf::Vector{Float32} = Float32[]
-    setup_buf::Vector{Float32} = Float32[]
-    data_buf::Vector{Float32} = Float32[]
-    total_buf::Vector{Float32} = Float32[]
-    timings_seen::Int = -1
-    timings_export_error::String = ""
-
-    elapsed_buf::Vector{Float32} = Float32[]
-    throughput_buf::Vector{Float32} = Float32[]
-    active_buf::Vector{Float32} = Float32[]
-    pending_buf::Vector{Float32} = Float32[]
-    rss_buf::Vector{Float32} = Float32[]
-    build_export_error::String = ""
-
-    t0_ns::UInt64 = UInt64(0)
-    last_sample_ns::UInt64 = UInt64(0)
-    last_elapsed_s::Float64 = 0.0
+Base.@kwdef mutable struct PerfHistory
+    items_per_s::Vector{Float32}  = Float32[]
+    active::Vector{Float32}       = Float32[]   # background tasks in flight  ┐ backlog
+    pending_rows::Vector{Float32} = Float32[]   # cache write queue depth     ┘
+    scan_per_s::Vector{Float32}   = Float32[]
+    cache_per_s::Vector{Float32}  = Float32[]
+    last_sample_t::Float64 = 0.0
     last_completed::Int = 0
+    last_discovered::Int = 0
+    last_cached::Int = 0
 end
 
-"""Counters and samples shown by the performance window."""
+"""Frame counters and item-throughput history gathered during the render loop."""
 Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
+    """Monotonic `time()` when the first non-blank frame was submitted, or `NaN` until then."""
+    first_frame_at::Float64 = NaN
     gl_info::Dict{Symbol,String} = Dict{Symbol,String}()
     node_count::Int = 0
     item_rows_visible::Int = 0
     item_rows_rendered::Int = 0
-    memory_start_rss::Union{Nothing,Int64} = nothing
-    memory_peak_rss::Int64 = 0
-    timings::Dict{Symbol,Vector{Float64}} = Dict{Symbol,Vector{Float64}}()
-    allocations::Dict{Symbol,Vector{Int}} = Dict{Symbol,Vector{Int}}()
-    scan_profile_project::Union{Nothing,Project} = nothing
-    scan_profile_refresh_at::Float64 = 0.0
-    scan_kind_rows::Vector{KindProfileRow} = KindProfileRow[]
-    scan_source_rows::Vector{SourceProfileRow} = SourceProfileRow[]
-    scan_kind_grid::DataGridState = DataGridState()
-    scan_source_grid::DataGridState = DataGridState()
-    plot_sampling_profile::Union{Nothing,Profiling.SamplingProfile} = nothing
-    profile_category_filter::Symbol = :all
-    profile_operation_filter::Symbol = :all
-    live_plots::LivePlotsState = LivePlotsState()
+    history::PerfHistory = PerfHistory()
+    """Set by the Timings tab's Reset button; applied at frame top, where no `@timed` section is open."""
+    reset_main_timer::Bool = false
 end
 
 """
@@ -169,7 +151,15 @@ Base.@kwdef mutable struct BrowserState
     cache_rebuild_project::Union{Nothing,Project} = nothing
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
+    """Set by `close_browser!` so the render loop exits without a GLFW close click."""
+    exit_requested::Bool = false
     extensions::Vector{GuiExtension} = GuiExtension[]
+end
+
+"""Non-blocking `open_browser` handle: the render `task` plus its `BrowserState`."""
+struct BrowserSession
+    task::Task
+    state::BrowserState
 end
 
 """Call `shutdown!` on every extension instance."""

@@ -5,9 +5,14 @@
 ## Entry point and frame loop
 
 `open_browser(workspace)` creates one `BrowserState` and runs the render loop for an already-opened
-workspace. The first visible frames are a small preparation surface while the browser pays one-time
-GLMakie/ImGui figure warmup runs through the registered `PlotsExtension`; the normal docked layout
-is shown only after extensions report ready. The folder-open UI still uses the high-level callback project path internally:
+workspace. With `wait=false` it returns a `BrowserSession` (`task` + `state`); call `close_browser!`
+to exit. Before the loop starts, the browser asks Julia 1.12+ for a dedicated libuv IO thread
+(`Base.Experimental.make_io_thread`) so file reads from pipeline workers are not stalled by the
+GLFW-sticky UI thread. `state.performance.first_frame_at` is set to `time()` when the first non-blank
+frame is submitted (startup surface or full UI). The first visible frames are a small preparation
+surface while the browser pays one-time GLMakie/ImGui figure warmup runs through the registered
+`PlotsExtension`; the normal docked layout is shown only after extensions report ready. The
+folder-open UI still uses the high-level callback project path internally:
 `open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
 navigation and information, right side for plot-oriented work.
 
@@ -51,27 +56,30 @@ Directory sources are watched continuously.
 | Information | Selected collection and item details. |
 | Table Inspector | Materialized item-data viewer with per-row provenance and multi-select. |
 | Table Plot (DBPlots) | Independent X/Y plot over the workspace selection's merged table; toggled from the Plot menu. |
-| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and opt-in internal profiling. |
+| Performance | Frame/memory diagnostics, scan phase/source timings, plot timings, and Julia sampling results. |
 
 Items without a collection path appear under the hierarchy's `Root` row. That row participates in
 the same multi-selection, filtering, saved-view, and source-item reveal behavior as collection
 leaves.
 
-## Scan profiling
+## Performance window
 
-The Performance window's always-on scan profile keeps one bounded row per source item. It shows
-interpretation time, expanded item count, and the scheduler thread that performed the source work.
-Processing and statistics belong to the separate processing/summarizing activities and are not
-reported as source-read time.
+The always-on Performance window (Debug menu) has three tabs, all fed from data the render loop
+already collects — it has no dependency on the dev-only profiler:
 
-Internal engine controls are absent unless the workspace was opened with
-`profile_internal=true`. Its Internal tab starts and stops a bounded structured capture, groups span
-latencies, separates writer wait from service, shows process counters and recent filtered events, and
-exports Perfetto JSON. General live histories stay in the normal Live tab as CImGui sparklines
-fed from bounded ring buffers (CSV export, no Makie). Starting during active work drains it and
-starts one clean rebuild. With
-`profile_cpu=true`, the same manual capture also retains a reduced Julia source-line hotspot report;
-raw sampling buffers are cleared when capture stops. See [profiling.md](profiling.md).
+- **Timings** — the `MAIN_TIMER` section tree recorded by `@timed` on the main (GUI) task: for each
+  section, its call count (frames), total and self time, average per call, and share of its parent.
+  Children are sorted by time; the tree accumulates from the first frame, and a Reset button clears
+  it. The tab also shows the frame rate, tree/item counts, and the OpenGL strings. `@timed` lives in
+  `lib/DataBrowserGUI/src/Browser/timing.jl` and is main-task-only (lock-free by that invariant).
+- **Throughput** — live item-throughput sparklines (built-in `PlotLines`, no ImPlot): items
+  analyzed/s, backlog (active tasks and pending cache-write rows), scan discovery/s, and cache
+  flush/s, differenced from the workspace's own counters at ~4 Hz while the tab is open.
+- **Workspace** — the active workspace's pipeline counters and index footprint.
+
+Deep multi-task engine timing is a separate, dev-only path: `@timed_dbg` + `DataBrowserProfiling`
+(see [profiling.md](profiling.md)). The plot diagnostics retain the bounded Julia sampling profiler
+and source-line hotspot table.
 
 ## Development tools
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "DataBrowser Profiling"
-  short_description: "Profile DataBrowser headless or with its GUI"
-  default_prompt: "Use $databrowser-profiling to profile DataBrowser on the real RuO2 v2 project."
+  short_description: "Revise profiling with debug timings, ProfileView, and pprof"
+  default_prompt: "Use $databrowser-profiling in one Revise session. Profile the requested DataBrowser behavior, save the timing and pprof files, and link the inspectable outputs with a short plain-language explanation."

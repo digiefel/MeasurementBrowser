@@ -1,4 +1,3 @@
-using Printf
 using GLMakie: Axis, Figure, lines!, scatter!
 import GLMakie.Makie as Makie
 import CImGui as ig
@@ -12,7 +11,6 @@ using DataBrowserAPI:
     source_label
 using DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
-import DataBrowserProfiling as Profiling
 using .MakieImguiIntegration: MakieFigure, destroy_figure!
 
 _plot_state(state::Browser.BrowserState) = plots_extension(state).plots
@@ -42,50 +40,10 @@ function clear_plot_views!(plots::PlotState)::Nothing
     return nothing
 end
 
-"""Print one captured plot-redraw phase and CPU-sampling report."""
-function _print_plot_profile(
-    phases::NamedTuple,
-    profile::Union{Nothing,Profiling.SamplingProfile},
-)::Nothing
-    io = stdout
-    println(io, "\n======================= PLOT REDRAW PROFILE =======================")
-    @printf(io, "  load  (cache read + DataFrame rebuild)  %9.1f ms   %9.1f MiB\n",
-        phases.load_ms, phases.load_alloc / 1024^2)
-    @printf(io, "  setup (Makie figure + axes)             %9.1f ms   %9.1f MiB\n",
-        phases.setup_ms, phases.setup_alloc / 1024^2)
-    @printf(io, "  draw  (plot the data)                   %9.1f ms   %9.1f MiB\n",
-        phases.data_ms, phases.data_alloc / 1024^2)
-    @printf(io, "  TOTAL                                   %9.1f ms\n",
-        phases.load_ms + phases.setup_ms + phases.data_ms)
-
-    if profile !== nothing
-        secs_per_sample = profile.delay_seconds
-        total = max(profile.total_samples, 1)
-        println(io, "  ---- sampling hotspots (self time, all threads) ----")
-        profile.truncated && println(io, "  (sample buffer filled — result truncated)")
-        @printf(io, "  %6s %7s  %-32s %s\n", "self%", "ms", "function", "location")
-        shown = 0
-        for row in profile.rows
-            row.self_samples == 0 && continue
-            @printf(io, "  %5.1f%% %7.0f  %-32s %s:%d\n",
-                100 * row.self_samples / total, 1e3 * secs_per_sample * row.self_samples,
-                first(row.function_name, 32), basename(row.file), row.line)
-            shown += 1
-            shown >= 15 && break
-        end
-        @printf(io, "  (%d samples over %.2f s wall)\n",
-            profile.total_samples, secs_per_sample * profile.total_samples)
-    end
-    println(io, "===================================================================\n")
-    flush(io)
-    return nothing
-end
-
 """
 Draw one plot and keep a short UI error when drawing fails.
 
 The console receives the complete exception together with the source, plot type, and source items.
-When `state.profile_next_plot` is set, this redraw is wrapped in Julia's sampling profiler.
 """
 function draw_plot_view!(
     state::Browser.BrowserState,
@@ -96,75 +54,19 @@ function draw_plot_view!(
 )::Nothing
     workspace = state.workspace::Workspace.Workspace
     source = workspace.source
-    started_ns = time_ns()
-    draw_alloc = 0
-
-    # Arm Julia's bounded all-thread sampler for this one redraw if requested.
-    ext = plots_extension(state)
-    profiling = ext.profile_next_plot
-    ext.profile_next_plot = false
-    sampling = false
-    if profiling
-        try
-            Profiling.start_sampling!()
-            sampling = true
-        catch profile_err
-            @warn "Could not start plot profiling (a profile may already be running)" exception =
-                profile_err
-        end
-    end
 
     try
-        figure = nothing
-        items = nothing
-        result = nothing
-        load_alloc = @allocated (items = Profiling.@profile_span workspace.profiler :plot :materialize Profiling.ProfileAttributes(
-            items=Int64(length(records)),
-        ) begin
-            Workspace.materialize_items(workspace, records)
-        end)
-        load_ns = time_ns()
-        setup_alloc = @allocated (result = Profiling.@profile_span workspace.profiler :plot :setup Profiling.ProfileAttributes(
-            items=Int64(length(records)),
-        ) begin
-            setup_plot(workspace, plot_kind, items)
-        end)
-        setup_ns = time_ns()
-        data_alloc = @allocated Profiling.@profile_span workspace.profiler :plot :draw Profiling.ProfileAttributes(
-            items=Int64(length(records)),
-        ) begin
-            plot_data!(workspace, plot_kind, items, result)
-        end
-        data_ns = time_ns()
-        figure = result
-        figure === nothing && error("Plot renderer returned no figure.")
-        draw_alloc = load_alloc + setup_alloc + data_alloc
-        Browser._append_perf_sample!(state, :plot_load, (load_ns - started_ns) / 1e6, load_alloc)
-        Browser._append_perf_sample!(state, :plot_setup, (setup_ns - load_ns) / 1e6, setup_alloc)
-        Browser._append_perf_sample!(state, :plot_data, (data_ns - setup_ns) / 1e6, data_alloc)
-        Browser._append_perf_sample!(state, :plot_draw, (data_ns - started_ns) / 1e6, draw_alloc)
-        if profiling
-            captured = sampling ? Profiling.stop_sampling!() : nothing
-            sampling = false
-            captured === nothing || (state.performance.plot_sampling_profile = captured)
-            _print_plot_profile(
-                (load_ms=(load_ns - started_ns) / 1e6, load_alloc=load_alloc,
-                 setup_ms=(setup_ns - load_ns) / 1e6, setup_alloc=setup_alloc,
-                 data_ms=(data_ns - setup_ns) / 1e6, data_alloc=data_alloc),
-                captured)
-            state.show_performance_window = true
-        end
-        view.figure = figure
+        # @timed records each phase (time, allocs, ncalls) into the main-task tree;
+        # the inner @timed_dbg feeds the dev-only engine profiler when enabled.
+        items = Browser.@timed "plot_load" (@timed_dbg Workspace.materialize_items(workspace, records))
+        result = Browser.@timed "plot_setup" (@timed_dbg setup_plot(workspace, plot_kind, items))
+        Browser.@timed "plot_data" (@timed_dbg plot_data!(workspace, plot_kind, items, result))
+        result === nothing && error("Plot renderer returned no figure.")
+        view.figure = result
         view.last_key = plot_key
         view.error = ""
     catch err
         bt = catch_backtrace()
-        Browser._append_perf_sample!(
-            state,
-            :plot_draw,
-            (time_ns() - started_ns) / 1e6,
-            draw_alloc,
-        )
         clear_plot_view!(_plot_state(state), view)
         view.last_key = plot_key
         summary = first(split(sprint(showerror, err), '\n'; limit=2))
@@ -184,8 +86,6 @@ function draw_plot_view!(
             "Items: $(length(records))\n$item_context",
             exception=(err, bt),
         )
-    finally
-        profiling && sampling && Profiling.cancel_sampling!()
     end
     return nothing
 end
@@ -276,15 +176,6 @@ function render_plot_toolbar!(
     !can_export && ig.EndDisabled()
 
     ig.SameLine()
-    if ig.Button("Profile##plot_profile_$(view.id)")
-        request_plot_profile!(state)
-    end
-    if ig.BeginItemTooltip()
-        ig.TextUnformatted("Profile the next redraw and print the full breakdown to the console")
-        ig.EndTooltip()
-    end
-
-    ig.SameLine()
     if ig.Button("?##plot_help_$(view.id)")
         ig.OpenPopup("plot_help_popup_$(view.id)")
     end
@@ -312,7 +203,7 @@ function render_plot_body!(
 
     if view.figure !== nothing
         makie_id = _plot_makie_id(plots, view)
-        Browser._time!(state, :makie_fig) do
+        Browser.@timed "makie_fig" begin
             MakieFigure(
                 makie_id,
                 view.figure;

@@ -1,7 +1,7 @@
 # Profiling & benchmarking
 
-Performance is the reason this app exists, so the engine ships cheap summary metrics, opt-in
-structured profiling, and a headless benchmark harness.
+Performance is the reason this app exists, so the engine ships cheap summary metrics, explicit
+debug timing summaries, and a headless benchmark harness.
 
 For profiling the whole application on the real RuO2 project (compilation, startup, scan
 throughput, overhead, GUI cost), use the `databrowser-profiling` skill
@@ -42,21 +42,12 @@ with `exponent`, `r2`, and `ms_n<size>` columns for each sweep point.
 exponent 0; `metadata_publish` per-call cost grows once past the buffer ceiling (known O(N) per
 publish × N publishes during scan).
 
-## Structured profiling
+## Debug timings
 
-The realistic benchmark records the same workspace-owned trace as the internal GUI by default:
-
-```bash
-MB_PROFILE_INTERNAL=1 MB_PROFILE_CPU=1 julia --project=bench --threads=auto bench/realistic_browse.jl 0.1
-MB_PROFILE_INTERNAL=1 MB_BENCH_START_PROFILE=0 julia --project=bench --threads=auto bench/realistic_browse.jl
-MB_PROFILE_INTERNAL=0 julia --project=bench --threads=auto bench/realistic_browse.jl
-```
-
-The first command adds CPU samples to a 10% workload. The second measures enabled-but-idle overhead
-without recording events. The third disables structured profiling and therefore skips event
-histograms. `profile.json` is Perfetto-compatible, `profile_summary.csv` contains grouped latencies,
-and `scorecard.csv` records event and drop counts. See [profiling.md](../docs/profiling.md) for
-runtime flags and data policy.
+Benchmark code can wrap a selected phase in `with_debug_timings(timings) do ... end` and save the
+result with `write_debug_timings(outdir, timings)`. The output is a readable timing table and CSV;
+it aggregates task-owned timers after the benchmark reaches its intended idle point. Use Julia
+sampling profiles and pprof for call-path attribution.
 
 ## Realistic browsing
 
@@ -90,11 +81,9 @@ It measures, on real functions and real data:
 Outputs land under `bench/results/realistic-<timestamp>/`: `benchmark.log` (git branch, commit,
 Julia version, threads, env), `scorecard.csv` (the one-line summary),
 `responsiveness.csv` (every interactive sample), `memory_samples.csv`, `saturation.csv`,
-`database_aggregation_queries.csv`, `pipeline_event_times.csv`, `pipeline_event_summary.csv`,
-`pipeline_timeseries.csv`, `reopen.csv`, `benchmark.log`, and — when CairoMakie is present —
-`pipeline.png`. Diagnostics that add locks or flushes are disabled in the normal run.
+`database_aggregation_queries.csv`, `reopen.csv`, `benchmark.log`, and explicit timing summaries
+in `debug_timings.txt` and `debug_timings.csv`.
 
 **Compare:** `scorecard.csv` is the primary before/after line — build throughput, normalized
-ms/file and ms/item, plot latencies, memory, warm reopen, and `profile_events`/`profile_dropped`.
-Use `profile_summary.csv` or open `profile.json` in [Perfetto UI](https://ui.perfetto.dev/) for
-span-level regressions. `benchmark.log` records the exact git commit and tunables for each run.
+ms/file and ms/item, plot latencies, memory, and warm reopen. Use `debug_timings.csv` to compare
+instrumented operation totals. `benchmark.log` records the exact git commit and tunables for each run.

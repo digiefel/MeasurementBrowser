@@ -293,13 +293,8 @@ function data_items(
 )::Vector{<:AbstractDataItem}
     recipe = nothing
     started = time_ns()
-    profiler = Profiling.current_session()
     try
-        recipe = Profiling.@profile_span profiler :project :detect Profiling.ProfileAttributes(
-            source_id=file.filepath,
-        ) begin
-            _detect_recipe(project, file)
-        end
+        recipe = @timed_dbg _detect_recipe(project, file)
     finally
         record_scan_phase!(
             project, file.filepath,
@@ -309,12 +304,7 @@ function data_items(
     recipe === nothing && return AbstractDataItem[]
     started = time_ns()
     read_result = try
-        Profiling.@profile_span profiler :project :read Profiling.ProfileAttributes(
-            kind=recipe.kind,
-            source_id=file.filepath,
-        ) begin
-            recipe.read(file)
-        end
+        @timed_dbg "read" recipe.read(file)
     finally
         record_scan_phase!(
             project, file.filepath, recipe.kind, :read,
@@ -324,10 +314,7 @@ function data_items(
     inherited_metadata = merge(metadata_dict(metadata(file)), read_metadata)
     started = time_ns()
     items = try
-        Profiling.@profile_span profiler :project :entries Profiling.ProfileAttributes(
-            kind=recipe.kind,
-            source_id=file.filepath,
-        ) begin
+        @timed_dbg "entries" begin
             values = recipe.entries === nothing ? Any[loaded_data] :
                 recipe.entries(loaded_data, inherited_metadata)
             values isa AbstractVector || error(
@@ -372,7 +359,6 @@ function interpret_source_item(
     project::Project,
     source::AbstractDataSource,
     source_item::AbstractDataSourceItem,
-    profiler::Union{Nothing,Profiling.ProfileSession}=nothing,
 )::SourceItemInterpretation
     source_item_id_value = source_item_id(source_item)
     source_item_path_value = source_item_path(source_item)
@@ -384,11 +370,7 @@ function interpret_source_item(
     end
     source_started = time_ns()
     handles = try
-        Profiling.@profile_span profiler :project :interpret_source_item Profiling.ProfileAttributes(
-            source_id=source_item_id_value,
-        ) begin
-            data_items(project, source, source_item)::Vector{<:AbstractDataItem}
-        end
+        @timed_dbg data_items(project, source, source_item)
     catch
         finish_source_profile!(
             project, source_item_id_value, source_item_label_value, source_item_path_value,

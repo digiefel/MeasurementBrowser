@@ -8,7 +8,6 @@ CImGui = "5d785b6c-b76f-510e-a07c-3070796c7e87"
 DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
 DataBrowserCore = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
 DataBrowserGUI = "f3a4b5c6-d7e8-9f0a-1b2c-3d4e5f6a7b8c"
-DataBrowserProfiling = "eec02e18-64b4-4cc2-bb20-84dd2a3ff701"
 DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
 GLFW = "f7f18e0c-5ee9-5ccd-a5bf-e8befd85ed98"
 GLMakie = "e9467ef8-e4e7-5192-8a1a-b1aee30e663a"
@@ -36,4 +35,3 @@ test = ["Test"]
 DataBrowserAPI = {path = "../DataBrowserAPI"}
 DataBrowserCore = {path = "../DataBrowserCore"}
 DataBrowserGUI = {path = "../DataBrowserGUI"}
-DataBrowserProfiling = {path = "../DataBrowserProfiling"}
