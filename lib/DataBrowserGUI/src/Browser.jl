@@ -3,6 +3,7 @@ module Browser
 include("Browser/timing.jl")
 include("Browser/Extensions.jl")
 include("Browser/State.jl")
+include("Browser/api.jl")
 include("Browser/Performance.jl")
 include("Browser/Tags.jl")
 include("Browser/Persistence.jl")
