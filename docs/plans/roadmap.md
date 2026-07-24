@@ -85,6 +85,7 @@ Pause feature expansion for a bounded architecture and performance pass. Measure
 make explicit decisions about the work graph and layer boundaries, and remove recurring per-frame or
 per-row costs before the application API and plotting surface grow substantially.
 
+- [ ] Evaluate again whether TimerOutputs v1.0 can be leveraged better: getting rid of our macros, replacing the level kwarg with multiple timers, dropping MAIN_TIMER and moving timers to be session-based. Move from DataBrowserAPI to DataBrowserCore?
 - [ ] Evaluate the current work graph against cancellation, invalidation, priority, streaming, and
   collection edge cases; finish with either a bounded tuning pass or an explicit redesign.
 - [ ] Clarify ownership between the workspace, index, project cache, database, and write buffers;
