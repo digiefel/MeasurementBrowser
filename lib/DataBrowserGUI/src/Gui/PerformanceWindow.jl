@@ -7,11 +7,6 @@ import TimerOutputs
 # (Throughput), and workspace pipeline counters (Workspace). For deep multi-task engine timing
 # use `@timed_dbg` + DataBrowserProfiling instead (docs/profiling.md).
 
-@inline function _table_text(s::AbstractString)::Nothing
-    ig.TextUnformatted(s)
-    return nothing
-end
-
 """Append `v` to an ordered history ring, dropping the oldest sample past `PERF_HISTORY_CAP`."""
 @inline function _push_capped!(buf::Vector{Float32}, v::Real)::Nothing
     push!(buf, Float32(v))
@@ -77,6 +72,15 @@ function _begin_perf_table(id::String, n_cols::Int, height::Float32=0.0f0)::Bool
     return ig.BeginTable("##perf_$id", n_cols, flags, (0.0f0, height))
 end
 
+"""
+Render the whole MAIN_TIMER tree as text with no cropping. TimerOutputs (via PrettyTables) crops to
+the IO's `displaysize` otherwise; a huge one prints every section and full width. `linechars` is
+`:ascii` for ImGui's font, `:unicode` for the clipboard.
+"""
+_timer_text(linechars::Symbol)::String =
+    sprint(io -> TimerOutputs.print_timer(
+        IOContext(io, :displaysize => (typemax(Int), typemax(Int))), MAIN_TIMER; linechars))
+
 """Render frame stats, the MAIN_TIMER section tree, and the OpenGL strings."""
 function _render_timings_tab(state::BrowserState)::Nothing
     performance = state.performance
@@ -96,7 +100,7 @@ function _render_timings_tab(state::BrowserState)::Nothing
     ig.SameLine()
     if ig.Button("Copy")
         # Copy the unicode tree — the paste target isn't limited to ImGui's ASCII-only font.
-        ig.SetClipboardText(sprint(show, MAIN_TIMER))
+        ig.SetClipboardText(_timer_text(:unicode))
     end
     ig.SameLine()
     ig.TextDisabled("Cumulative since the first frame; ncalls counts frames.")
@@ -105,10 +109,9 @@ function _render_timings_tab(state::BrowserState)::Nothing
     if isempty(MAIN_TIMER.inner_timers)
         ig.TextDisabled("No sections recorded yet.")
     else
-        # Reuse TimerOutputs' own tree rendering. The default ImGui font is fixed-width but ASCII-only
-        # (no box-drawing glyphs, no micro sign), so use ascii rules and render microseconds as "us".
-        text = sprint(io -> TimerOutputs.print_timer(io, MAIN_TIMER; linechars=:ascii))
-        _table_text(replace(rstrip(text), 'μ' => 'u'))
+        # Reuse TimerOutputs' own tree rendering. linechars=:ascii keeps it inside ImGui's ASCII-only
+        # font: rules, the share bars, and microseconds all come out ASCII.
+        ig.TextUnformatted(rstrip(_timer_text(:ascii)))
     end
 
     gi = performance.gl_info
@@ -122,8 +125,8 @@ function _render_timings_tab(state::BrowserState)::Nothing
             for k in (:vendor, :renderer, :version, :sl)
                 haskey(gi, k) || continue
                 ig.TableNextRow()
-                ig.TableNextColumn(); _table_text(String(k))
-                ig.TableNextColumn(); _table_text(gi[k])
+                ig.TableNextColumn(); ig.TextUnformatted(String(k))
+                ig.TableNextColumn(); ig.TextUnformatted(gi[k])
             end
             ig.EndTable()
         end
