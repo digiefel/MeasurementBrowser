@@ -172,7 +172,7 @@ function draw_plot_view!(
         item_context = join(
             [
                 "$(record.label) ($(record.kind))\n" *
-                "  $(something(record.source_item_path, "source key $(record.source_item_key)"))"
+                "  $(Workspace.source_item_id(workspace, record.source_item_key))"
                 for record in records
             ],
             "\n",
