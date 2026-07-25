@@ -21,8 +21,8 @@ DataBrowserAPI.source_items(::PhotoSource; kwargs...) = [
     PhotoSourceItem("a.photo", 2.0, "typed camera", 1),
     PhotoSourceItem("b.photo", 4.0, "typed camera", 2),
 ]
-DataBrowserAPI.source_item_id(item::PhotoSourceItem) = item.key
-DataBrowserAPI.source_item_label(item::PhotoSourceItem) = item.key
+DataBrowserAPI.id(item::PhotoSourceItem) = item.key
+DataBrowserAPI.label(item::PhotoSourceItem) = item.key
 DataBrowserAPI.metadata(item::PhotoSourceItem) =
     Dict(:camera => item.camera, :gain => item.gain)
 

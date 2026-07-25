@@ -50,7 +50,7 @@ function _item_matches_filter(
         display_label(workspace.project,
             Workspace.effective_record(workspace.index.collections, item)),
         "\n",
-        item.item_label,
+        item.label,
         "\n",
         kind_label(workspace.project, item.kind),
     )
@@ -629,7 +629,7 @@ function _render_items_panel(
                                     ext,
                                     state;
                                     item_ids=[id],
-                                    label=item.item_label,
+                                    label=item.label,
                                     kind=item.kind,
                                 )
                             end

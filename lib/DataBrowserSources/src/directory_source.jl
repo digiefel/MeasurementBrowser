@@ -3,8 +3,8 @@ using BetterFileWatching
 using CancellationTokens: CancellationToken, CancellationTokenSource, OperationCanceledException, cancel, get_token, is_cancellation_requested
 
 import DataBrowserAPI
-using DataBrowserAPI.ItemIndex: CollectionInput, RegisteredCollection
-import DataBrowserAPI.ItemIndex: collection_inputs
+using DataBrowserAPI.ItemIndex: RegisteredCollection
+import DataBrowserAPI.ItemIndex: registered_collection_path
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -14,11 +14,11 @@ using DataBrowserAPI:
 import DataBrowserAPI:
     close_source!,
     fingerprint,
+    id,
+    label,
     metadata,
     open_source,
     source_id,
-    source_item_id,
-    source_item_label,
     source_item_noun,
     source_item_path,
     source_item_timestamp,
@@ -84,8 +84,8 @@ struct SourceFile <: AbstractDataSourceItem
     fingerprint::FileFingerprint
 end
 
-source_item_id(file::SourceFile)::String = file.filepath
-source_item_label(file::SourceFile)::String = file.filename
+id(file::SourceFile)::String = file.filepath
+label(file::SourceFile)::String = file.filename
 fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
 source_item_path(file::SourceFile)::String = file.filepath
 source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
@@ -317,13 +317,13 @@ function own_collection_metadata(
     return own
 end
 
-"""Normalize a directory registration path with source-owned metadata on each level."""
-function collection_inputs(
+"""Wrap a directory registration path with source-owned metadata on each level."""
+function registered_collection_path(
     source::DirectorySource,
     path::AbstractVector{<:AbstractString},
-)::Vector{CollectionInput}
+)::Vector{DataBrowserAPI.AbstractCollection}
     names = String.(path)
-    collections = lock(source.metadata_lock) do
+    return lock(source.metadata_lock) do
         DataBrowserAPI.AbstractCollection[
             RegisteredCollection(
                 name;
@@ -335,7 +335,6 @@ function collection_inputs(
             for (depth, name) in pairs(names)
         ]
     end
-    return collection_inputs(collections)
 end
 
 function source_items(
@@ -365,7 +364,7 @@ function watch_source(
     cancel_source = CancellationTokenSource(cancel_token)
     watch_token = get_token(cancel_source)
     known = Dict(
-        source_item_id(file) => fingerprint(file)
+        id(file) => fingerprint(file)
         for file in collect_source_files(source; cancel_token=watch_token)
     )
     ignore(rel::AbstractString)::Bool =
@@ -384,13 +383,13 @@ function watch_source(
                 end
                 files = collect_source_files(source; cancel_token=watch_token)
                 is_cancellation_requested(watch_token) && return
-                current = Dict(source_item_id(file) => fingerprint(file) for file in files)
+                current = Dict(id(file) => fingerprint(file) for file in files)
                 upserts = SourceFile[
                     file for file in files
-                    if !haskey(known, source_item_id(file)) ||
-                       !isequal(known[source_item_id(file)], fingerprint(file))
+                    if !haskey(known, id(file)) ||
+                       !isequal(known[id(file)], fingerprint(file))
                 ]
-                removals = String[id for id in keys(known) if !haskey(current, id)]
+                removals = String[file_id for file_id in keys(known) if !haskey(current, file_id)]
                 isempty(upserts) && isempty(removals) && !metadata_changed && !errored && return
                 known = current
                 errored = false

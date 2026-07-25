@@ -3,7 +3,7 @@ using GLMakie
 
 function setup_pund_plot(_workspace, measurements)::Figure
     isempty(measurements) && error("PUND plot requires at least one measurement")
-    title = length(measurements) == 1 ? item_label(only(measurements)) : "PUND overlay"
+    title = length(measurements) == 1 ? DataBrowser.label(only(measurements)) : "PUND overlay"
     figure = Figure(size=(1100, 720))
     Axis(figure[1, 1:2], xlabel="Time (μs)", ylabel="Current (μA)", title=title)
     Axis(figure[1, 1:2], yaxisposition=:right, ylabel="Voltage (V)")
@@ -28,7 +28,7 @@ function draw_pund_plot(_workspace, measurements, figure::Figure)::Nothing
         nrow(df) == 0 && continue
 
         color = colors[index]
-        label = single ? nothing : item_label(measurement)
+        label = single ? nothing : DataBrowser.label(measurement)
         current_color = single ? :blue : color
         voltage_color = single ? :red : color
         fe_color = single ? :purple : color
@@ -61,7 +61,7 @@ end
 
 function setup_iv_plot(_workspace, measurements)::Figure
     isempty(measurements) && error("IV plot requires at least one measurement")
-    title = length(measurements) == 1 ? item_label(only(measurements)) : "IV overlay"
+    title = length(measurements) == 1 ? DataBrowser.label(only(measurements)) : "IV overlay"
     figure = Figure(size=(820, 580))
     Axis(figure[1, 1], xlabel="Voltage (V)", ylabel="|Current| (A)", title=title, yscale=log10)
     return figure
@@ -72,7 +72,7 @@ function draw_iv_plot(_workspace, measurements, figure::Figure)::Nothing
     axis = only(contents(figure[1, 1]))
     for (measurement, df) in zip(measurements, processed)
         nrow(df) == 0 && continue
-        label = length(measurements) == 1 ? nothing : item_label(measurement)
+        label = length(measurements) == 1 ? nothing : DataBrowser.label(measurement)
         lines!(axis, df.v, abs.(df.i); color=df.i .> 0, colormap=:RdBu_3, linewidth=2, label)
     end
     length(measurements) > 1 && axislegend(axis)
@@ -88,7 +88,7 @@ end
 
 function setup_tlm_plot(_workspace, measurements)::Figure
     isempty(measurements) && error("TLM plot requires at least one measurement")
-    title = length(measurements) == 1 ? item_label(only(measurements)) : "TLM 4-point overlay"
+    title = length(measurements) == 1 ? DataBrowser.label(only(measurements)) : "TLM 4-point overlay"
     figure = Figure(size=(1000, 560))
     Label(figure[0, :], title, fontsize=18)
     Axis(figure[1, 1], xlabel="Current (μA)", ylabel="Voltage (mV)", title="Linear fit")
@@ -106,7 +106,7 @@ function draw_tlm_plot(_workspace, measurements, figure::Figure)::Nothing
     for (index, (measurement, df)) in enumerate(zip(measurements, data))
         nrow(df) == 0 && continue
         color = colors[index]
-        label = length(measurements) == 1 ? "Data" : item_label(measurement)
+        label = length(measurements) == 1 ? "Data" : DataBrowser.label(measurement)
         scatter!(ax_iv, df.i .* 1e6, df.v .* 1e3; color, markersize=8, label)
 
         fit_i, fit_v = fit_line(df)
@@ -120,7 +120,7 @@ function draw_tlm_plot(_workspace, measurements, figure::Figure)::Nothing
             df.resistance_ohm[valid] ./ 1e3;
             color,
             markersize=8,
-            label=length(measurements) == 1 ? "V/I" : item_label(measurement),
+            label=length(measurements) == 1 ? "V/I" : DataBrowser.label(measurement),
         )
         hlines!(ax_r, [first(df.fit_resistance_ohm) / 1e3]; color=length(measurements) == 1 ? :red : color, linestyle=:dash)
     end
@@ -133,7 +133,7 @@ end
 
 function setup_cv_plot(_workspace, measurements)::Figure
     isempty(measurements) && error("C-V plot requires at least one measurement")
-    title = length(measurements) == 1 ? item_label(only(measurements)) : "C-V overlay"
+    title = length(measurements) == 1 ? DataBrowser.label(only(measurements)) : "C-V overlay"
     figure = Figure(size=(1050, 500))
     Label(figure[0, :], title, fontsize=18)
     Axis(figure[1, 1], xlabel="Bias (V)", ylabel="C (pF)", title="Capacitance")
@@ -154,7 +154,7 @@ function draw_cv_plot(_workspace, measurements, figure::Figure)::Nothing
             mask = df.frequency_Hz .== freq_Hz
             label = length(measurements) == 1 ?
                 engineering_label(freq_Hz, "Hz") :
-                "$(item_label(measurement)) $(engineering_label(freq_Hz, "Hz"))"
+                "$(DataBrowser.label(measurement)) $(engineering_label(freq_Hz, "Hz"))"
             lines!(ax_c, df.bias_V[mask], df.Cp_F[mask] .* 1e12; color=colors[index], linewidth=2, label)
             lines!(ax_z, df.bias_V[mask], df.Z_Ohm[mask] ./ 1e6; color=colors[index], linewidth=2)
         end
@@ -166,7 +166,7 @@ end
 
 function setup_wgfmu_sampling_plot(_workspace, measurements)::Figure
     isempty(measurements) && error("WGFMU sampling plot requires at least one measurement")
-    title = length(measurements) == 1 ? item_label(only(measurements)) : "WGFMU Sampling overlay"
+    title = length(measurements) == 1 ? DataBrowser.label(only(measurements)) : "WGFMU Sampling overlay"
     figure = Figure(size=(900, 520))
     Axis(figure[1, 1], xlabel="Time (s)", ylabel="Current (A)", title=title)
     return figure
@@ -177,7 +177,7 @@ function draw_wgfmu_sampling_plot(_workspace, measurements, figure::Figure)::Not
     for measurement in measurements
         df = item_data(measurement)
         nrow(df) == 0 && continue
-        label = length(measurements) == 1 ? nothing : item_label(measurement)
+        label = length(measurements) == 1 ? nothing : DataBrowser.label(measurement)
         lines!(axis, df.Time_s, df.Current_1_A; linewidth=1.5, label)
         lines!(axis, df.Time_s, df.Current_2_A; linewidth=1.5, linestyle=:dash)
     end

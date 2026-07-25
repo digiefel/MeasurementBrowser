@@ -77,11 +77,22 @@ Watch a source and call `on_change` with each `SourceChanges` batch or recoverab
 """
 watch_source(::AbstractDataSource, ::Function; cancel_token::CancellationToken) = nothing
 
-"""Stable source-item identity within a source."""
-function source_item_id end
+"""
+    id(value)
 
-"""Human-readable source-item label."""
-function source_item_label end
+Stable identity supplied by `value`. Source items must implement this: the id has to be stable
+within their source across scans and reopenings. Data items and collections have defaults (see
+the item contract).
+"""
+function id end
+
+"""
+    label(value) -> String
+
+Human-readable label supplied by `value`. Source items must implement this; data items and
+collections have defaults (see the item contract).
+"""
+function label end
 
 """Optional invalidation token for source items and data items."""
 function fingerprint end
