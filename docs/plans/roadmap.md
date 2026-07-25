@@ -67,7 +67,7 @@ workspace internals.
   registration reference from Core, Cache, Sources, and the GUI packages. Ship `register_csv!` as
   the first premade recipe.
 - [ ] Clean-up and rename/file organization pass of DataBrowserAPI. // e.g. what's interface.jl?? 
-- [ ] Remove built-in profiling and consolidate/document proper debugging and profiling.
+- [ ] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling.
 - [ ] Run every example entirely through the documented public APIs and remove any remaining public
   callback dependency on cache, index, scheduler, or browser values.
 
@@ -126,6 +126,9 @@ per-row costs before the application API and plotting surface grow substantially
   collection edge cases; finish with either a bounded tuning pass or an explicit redesign.
 - [ ] Clarify ownership between the workspace, index, project cache, database, and write buffers;
   remove duplicated state and layer-skipping call paths.
+- [ ] Name item metadata layers after the pipeline stages (`metadata_entries`, `metadata_analyze`) on
+  `ItemRecord`, and remove the parallel `WorkspaceIndex.item_metadata` dict so each item’s interpret
+  and analyze layers live in one place.
 - [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining stable
   logical item identities at the project boundary.
 - [ ] Audit source fingerprinting and document exactly what each source-provided change token

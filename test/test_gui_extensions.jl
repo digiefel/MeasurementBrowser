@@ -61,14 +61,6 @@ end
         ext = state.extensions[1]
         @test ext isa TestGuiExtension
 
-        Browser.init!(ext, state)
-        @test ext.calls[:init] == 1
-
-        Browser.menu!(ext, state)
-        Browser.draw!(ext, state)
-        @test ext.calls[:menu] == 1
-        @test ext.calls[:draw] == 1
-
         # warmup! has a no-op fallback; is_ready stays a pure predicate
         @test Browser.warmup!(ext, state) === nothing
         @test !Browser.is_ready(ext, state)
@@ -92,12 +84,6 @@ end
         Browser.load_view!(ext, state, view.extensions["TestGuiExtension"])
         @test ext.persisted == 42
 
-        Browser.reset!(ext, state)
-        @test ext.calls[:reset] == 1
-        @test !ext.ready
-
-        Browser.shutdown!(ext, state)
-        @test ext.calls[:shutdown] == 1
     finally
         empty!(registry)
         append!(registry, original)

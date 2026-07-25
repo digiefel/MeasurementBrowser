@@ -42,9 +42,27 @@ open_workspace(project, source)::Workspace
 open_workspace(project, root_path::AbstractString)::Workspace
 open_browser(workspace)
 close_workspace!(workspace)::Nothing
+wait_workspace_idle!(workspace; timeout=60)::Workspace
+workspace_status(workspace)::WorkspaceStatus
 ```
 
 See [Workspaces](workspaces.md).
+
+## Workspace items
+
+```julia
+query_items(workspace)::Vector{String}
+query_items(workspace, predicate::AbstractString)::Vector{String}
+select_items!(workspace, ids)::Nothing
+materialize_items(workspace, ids)::Vector{<:AbstractDataItem}
+materialize_items(workspace)::Vector{<:AbstractDataItem}
+read_item_data(workspace, ids)::Vector
+read_item_data(workspace)::Vector
+```
+
+The no-argument `query_items` returns every currently published stable item ID. The no-argument
+materialization and data-access forms use the current selection. Predicate queries filter committed
+effective metadata in the project cache.
 
 ## Registration callbacks
 

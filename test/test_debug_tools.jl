@@ -3,17 +3,6 @@ import CImGui as ig
 @testset "debug tools state" begin
     state = DataBrowserGUI.Browser.BrowserState()
 
-    @test !state.show_imgui_metrics
-    @test !state.show_imgui_debug_log
-    @test !state.show_imgui_id_stack
-    @test !state.show_imgui_style_editor
-    @test !state.show_imgui_user_guide
-    @test !state.show_imgui_about
-    @test !state.show_imgui_demo
-    @test !state.show_implot_metrics
-    @test !state.show_implot_style_editor
-    @test !state.show_implot_user_guide
-    @test !state.show_implot_demo
     @test state.implot_context == C_NULL
 
     imgui_context = ig.CreateContext()

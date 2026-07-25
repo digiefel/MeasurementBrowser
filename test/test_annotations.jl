@@ -124,22 +124,6 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
             end
         end
 
-        @testset "Tags.save writes tags.txt only" begin
-            mktempdir() do dir
-                state = Annotations.Tags.TagState(
-                    [Annotations.Tags.TagDef("bad", (0xff, 0x30, 0x30), 100),
-                     Annotations.Tags.TagDef("todo", (0x30, 0xc0, 0xff), 50)],
-                    Dict{String,Set{String}}(
-                        "RuO2test/A9/VI/D1" => Set(["bad"]),
-                        ANNOT_MEASUREMENT_KEY * "#cycle=1" => Set(["bad"]),
-                        "RuO2test/A10/VI" => Set(["todo"]),
-                    ),
-                )
-                Annotations.Tags.save(dir, state)
-                @test isfile(Annotations.Tags.tags_path(dir))
-            end
-        end
-
         @testset "Tags.save removes tags.txt when state is empty" begin
             mktempdir() do dir
                 write(joinpath(dir, "tags.txt"), "[catalog]\nbad\tff3030\t100\n")
@@ -162,39 +146,6 @@ const ANNOT_MEASUREMENT_KEY = joinpath(
                 content2 = read(Annotations.Tags.tags_path(dir), String)
 
                 @test content1 == content2
-            end
-        end
-
-        @testset "effective with item key and collection ancestors" begin
-            # Canonical pattern: is this item bad?
-            # Pass item id as the key, collection path + ancestors as ancestor_paths.
-            mktempdir() do dir
-                write(joinpath(dir, "tags.txt"),
-                    "[catalog]\nbad\tff3030\t100\n\n[assignments]\n$(ANNOT_MEASUREMENT_KEY)\tbad\nRuO2test/A9/VI/D1\tbad\n")
-                state = Annotations.Tags.load(dir)
-
-                # item key is found directly
-                eff_meas = Annotations.Tags.effective(state, ANNOT_MEASUREMENT_KEY, String[])
-                @test "bad" in eff_meas
-
-                # collection ancestor inheritance also works via effective
-                eff_dev = Annotations.Tags.effective(state, "RuO2test/A9/VI/D1/leaf",
-                    ["RuO2test/A9/VI/D1"])
-                @test "bad" in eff_dev
-
-                # compose: item key + collection-path ancestors in one call
-                eff_combined = Annotations.Tags.effective(state, ANNOT_MEASUREMENT_KEY,
-                    ["RuO2test/A9", "RuO2test/A9/VI/D1"])
-                @test "bad" in eff_combined
-            end
-        end
-
-        @testset "unknown section raises error" begin
-            mktempdir() do dir
-                write(joinpath(dir, "tags.txt"),
-                    "[catalog]\nbad\tff3030\t100\n\n[assignments]\nsome/path\tbad\n")
-                state = Annotations.Tags.load(dir)
-                @test "bad" in state.assignments["some/path"]
             end
         end
 

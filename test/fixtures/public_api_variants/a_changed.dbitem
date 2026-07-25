@@ -1,0 +1,3 @@
+device = "A"
+values = [10.0, 20.0]
+channels = ["up", "down"]

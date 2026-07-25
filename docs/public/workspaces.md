@@ -37,6 +37,24 @@ Items are published as soon as their interpretation and cheap description are av
 processing and analysis continue in the background. Selecting an unfinished item raises the
 priority of the work needed to use it.
 
+## Driving a workspace
+
+The same operations used by the browser are available to Julia callers:
+
+```julia
+wait_workspace_idle!(workspace)
+status = workspace_status(workspace)
+
+ids = query_items(workspace)
+select_items!(workspace, ids)
+items = materialize_items(workspace)
+payloads = read_item_data(workspace)
+```
+
+`query_items(workspace, predicate)` filters committed effective metadata with a SQL predicate.
+The ID-taking forms of `materialize_items` and `read_item_data` preserve the requested order; their
+no-argument forms use the current selection.
+
 ## Live changes
 
 Directory sources watch for added, changed, and removed files. Custom sources can implement the same

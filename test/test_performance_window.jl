@@ -1,7 +1,6 @@
 const PERFORMANCE_BROWSER = DataBrowserGUI.Browser
 
 import CImGui
-import DataBrowserProfiling as Profiling
 
 @testset "performance window sparklines" begin
     live = PERFORMANCE_BROWSER.LivePlotsState(capacity=3)
@@ -29,12 +28,4 @@ import DataBrowserProfiling as Profiling
               Tuple{Float32,Float32}},
     )
 
-    profiler = Profiling.ProfileSession(true, false, nothing, nothing)
-    called = Ref(false)
-    PERFORMANCE_BROWSER._profile_action!(profiler) do
-        called[] = true
-    end
-    @test called[]
-    @test profiler.state === :idle
-    Profiling.close!(profiler)
 end

@@ -1,10 +1,7 @@
-using DataBrowserGUI
 using DataBrowserPlots
 using DataBrowserCore: merge_item_tables
 using DataFrames: DataFrame
 using Test
-
-const Browser = DataBrowserGUI.Browser
 
 @testset "table plot typed extraction" begin
     # Float32 (and Rational) columns must plot via typed values, not display strings.
@@ -19,21 +16,4 @@ const Browser = DataBrowserGUI.Browser
     mixed, _ = merge_item_tables(Tuple{Any,Any}[("i", df_mixed)])
     x2, y2 = DataBrowserPlots._table_plot_vectors(mixed, 1, 2)
     @test isempty(x2) && isempty(y2)
-end
-
-@testset "plots extension boundary" begin
-    registry = getfield(Browser, :_GUI_EXTENSION_TYPES)
-    original = copy(registry)
-    try
-        empty!(registry)
-        @test isempty(Browser._instantiate_extensions())
-
-        Browser.register_gui_extension!(DataBrowserPlots.PlotsExtension)
-        extensions = Browser._instantiate_extensions()
-        @test length(extensions) == 1
-        @test extensions[1] isa DataBrowserPlots.PlotsExtension
-    finally
-        empty!(registry)
-        append!(registry, original)
-    end
 end

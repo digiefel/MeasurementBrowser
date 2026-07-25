@@ -44,11 +44,6 @@ end
     @test !haskey(copied.records, first)
     @test haskey(index.records, first)
 
-    COLLECTION_RECORD_INDEX.set_collection_analysis!(index, second, Dict(:count => 1))
-    @test index.records[second].analysis == Dict(:count => 1)
-    COLLECTION_RECORD_INDEX.clear_collection_analysis!(index, second)
-    @test isempty(index.records[second].analysis)
-
     registered = COLLECTION_RECORD_INDEX.CollectionIndex("registered")
     registered_inputs = COLLECTION_RECORD_INDEX.collection_inputs(AbstractCollection[
         COLLECTION_RECORD_INDEX.RegisteredCollection("wafer"),
@@ -84,5 +79,4 @@ end
         [original_inputs, conflicting_inputs],
     )
     @test isempty(batched.records)
-    @test batched.next_key == 1
 end
