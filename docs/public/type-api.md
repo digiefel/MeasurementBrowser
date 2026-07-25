@@ -42,12 +42,11 @@ Projects implement only the behavior they need:
 |---|---|---|---|
 | `item_data` | one concrete item | its data | the item itself |
 | `metadata` | one concrete item | metadata supplied by the item as a `Dict` | empty `Dict` |
-| `item_label` | one concrete item | browser text | source-derived label |
+| `label` | one concrete item | browser text | source-derived label |
 | `collection` | one concrete item | complete vector of `AbstractCollection` values | empty root path |
 | `id` | one concrete item | stable sibling key | returned position |
 | `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
-| `fingerprint` | one concrete item | an item-specific invalidation value | none |
 | `cacheable` | one concrete item | whether its data can be persisted | determined by its data |
 
 The complete signatures are:
@@ -55,12 +54,11 @@ The complete signatures are:
 ```julia
 item_data(item::MyItem)::MyData
 metadata(item::MyItem)::Dict
-item_label(item::MyItem)::String
+label(item::MyItem)::String
 collection(item::MyItem)::Vector{<:AbstractCollection}
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-fingerprint(item::MyItem)::Any
 cacheable(item::MyItem)::Bool
 ```
 
@@ -156,8 +154,8 @@ that owns live resources. `close_source!` releases those resources.
 
 | Method | Purpose | Default |
 |---|---|---|
-| `source_item_id(item)` | stable identity within its source | required |
-| `source_item_label(item)` | name used for progress and errors | required |
+| `id(item)` | stable identity within its source | required |
+| `label(item)` | name used for progress and errors | required |
 | `fingerprint(item)` | detect changes to this source item | always reinterpret |
 | `source_item_path(item)` | expose a filesystem path when one exists | nothing |
 | `source_item_timestamp(item)` | expose acquisition or modification time | nothing |
@@ -166,8 +164,8 @@ that owns live resources. `close_source!` releases those resources.
 The method signatures are:
 
 ```julia
-source_item_id(item::MySourceItem)::String
-source_item_label(item::MySourceItem)::String
+id(item::MySourceItem)::String
+label(item::MySourceItem)::String
 fingerprint(item::MySourceItem)::Any
 source_item_path(item::MySourceItem)::Union{Nothing,String}
 source_item_timestamp(item::MySourceItem)::Any

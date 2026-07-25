@@ -114,9 +114,9 @@ end
             select_items!(workspace, ids)
             items = materialize_items(workspace)
             @test read_item_data(workspace) == item_data.(items)
-            @test Set(item_label.(items)) ==
+            @test Set(label.(items)) ==
                 Set(["a.dbitem/up", "a.dbitem/down", "b.dbitem/only"])
-            @test all(item -> collection(item)[1] == "runs", items)
+            @test all(item -> label(collection(item)[1]) == "runs", items)
             @test sort([metadata(item)[:peak] for item in items]) == [4.0, 6.0, 9.0]
             @test sort([first(item_data(item).members) for item in items]) == [1, 2, 2]
 

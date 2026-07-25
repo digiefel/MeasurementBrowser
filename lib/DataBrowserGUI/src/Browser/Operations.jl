@@ -90,11 +90,12 @@ function select_source_item!(
 )::Bool
     workspace = state.workspace
     workspace isa Workspace.Workspace || return false
-    id = String(source_item_id)
+    key = Workspace.source_item_key(workspace, String(source_item_id))
+    key === nothing && return false
     items = [
         item
         for item in values(workspace.index.items)
-        if item.source_item_id == id
+        if item.source_item_key == key
     ]
     isempty(items) && return false
 

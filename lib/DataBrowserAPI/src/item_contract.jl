@@ -17,16 +17,19 @@ label(collection::AbstractCollection)::String = string(collection)
 """Return metadata supplied directly by one collection level."""
 metadata(::AbstractCollection)::Dict = Dict()
 
-"""Stable identity of an item. An empty value lets DataBrowser assign one."""
+"""
+Stable sibling key of an item within its source item. DataBrowser mints the final item id once,
+namespacing this key under the source item and kind; an empty value uses the returned position.
+"""
 id(::AbstractDataItem) = ""
 
 """Human-readable label for an item. An empty value uses a source-derived label."""
-item_label(::AbstractDataItem)::String = ""
+label(::AbstractDataItem)::String = ""
 
 """Internal item category. Custom item types default to their type name."""
 kind(item::AbstractDataItem)::Symbol = Symbol(nameof(typeof(item)))
 
-"""Return a typed item's complete root-to-leaf path of concrete collection values."""
+"""Return an item's complete root-to-leaf path of concrete collection values."""
 collection(::AbstractDataItem)::Vector{AbstractCollection} = AbstractCollection[]
 
 """Return metadata supplied directly by a data item. The default is an empty `Dict`."""
@@ -51,11 +54,15 @@ storable column types at write time. A type can opt out (or a non-tabular type o
 """
 cacheable_data(data)::Bool = Tables.istable(data)
 
-fingerprint(::AbstractDataItem) = nothing
-
 # ---------------------------------------------------------------------------
 # Internal workspace hooks
 # ---------------------------------------------------------------------------
+
+"""
+Let an item adopt the normalized record interpretation produced for it. Internal workspace hook;
+the default keeps the item unchanged.
+"""
+attach_record(item::AbstractDataItem, record) = item
 
 """Optional rewrite of a collection's members (one output per input). Internal workspace hook."""
 function _process_collection end

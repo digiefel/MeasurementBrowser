@@ -1,3 +1,5 @@
+lib/*/Manifest.toml
+
 test/*
 !test/test_*.jl
 !test/test_pund_fatigue.jl
@@ -7,6 +9,8 @@ test/*
 !test/fixtures/
 !test/fixtures/annotations/
 !test/fixtures/annotations/**
+
 imgui.ini
+
 docs/build/
 lib/*/Manifest.toml
