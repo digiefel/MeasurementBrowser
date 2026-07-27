@@ -18,13 +18,6 @@ project_description(::AbstractProject)::String = ""
 kind_label(::AbstractProject, kind::Symbol)::String = string(kind)
 
 """
-Classify the item kind a project would produce from a source filename, without reading it.
-
-A cheap description query for status surfaces, not a pipeline stage: routing happens inside `read`.
-"""
-detect_kind(::AbstractProject, ::String)::Symbol = :unknown
-
-"""
 Whether a project runs a collection `process` stage for one item kind.
 
 A scheduling declaration, not a capability: the stage dispatches for any project, but the engine

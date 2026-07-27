@@ -47,14 +47,6 @@ function _mint_id(
     return "$(source_item_id)#$(kind):$(suffix)"
 end
 
-"""Split the documented `(data=..., metadata=Dict(...))` result form."""
-function _data_and_metadata(value)::Tuple{Any,MetadataDict}
-    if value isa NamedTuple && keys(value) == (:data, :metadata)
-        return value.data, metadata_dict(value.metadata)
-    end
-    return value, MetadataDict()
-end
-
 """
 Resolve where one interpreted item is placed, with the source in hand.
 
@@ -109,8 +101,8 @@ Interpret every logical data item produced by one source item.
 The source is touched only by `read`; `entries` expands its result into items without going back to
 the origin. Collection placement is applied here, where the source is legitimately in hand: an item
 declaring no path of its own takes the source's default, and every path is offered to the source to
-annotate. Concrete typed items remain unchanged; registered data uses a private carrier. Processing
-and analysis belong to the workspace work graph. `source_item_key` is the workspace-minted surrogate
+annotate. Items are otherwise passed through untouched, whatever their type. Processing and
+analysis belong to the workspace work graph. `source_item_key` is the workspace-minted surrogate
 stamped on every record; transient interpretations outside a workspace (such as `items_for_file`)
 leave it at 0.
 """

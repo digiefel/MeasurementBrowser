@@ -56,8 +56,10 @@ source item — which is exactly what the engine can supply without touching the
 There is no routing stage. Registration `detect` is not a universal typed stage: a typed source
 already controls which source-item types it discovers, and the recipes adapter runs `detect`
 inside its own `read` method (read runs for every changed source item anyway, and detect costs
-filename-predicate time). Cheap kind classification for status surfaces stays a description query
-(`detect_kind`), not a pipeline stage.
+filename-predicate time). Cheap kind classification for status surfaces would be a description
+query rather than a pipeline stage; `detect_kind` was the placeholder for one, and was removed
+after the extraction left it with no implementations and no callers. Reintroduce it when a status
+surface actually asks.
 
 `read`'s return value and `entries`' `loaded` argument deliberately have no abstract supertype:
 the loaded value is a private handoff between two stages of the same project, and the type
