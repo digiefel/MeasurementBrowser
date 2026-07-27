@@ -12,7 +12,6 @@ import ..DataBrowserAPI:
     MetadataValue,
     Project,
     attach_record,
-    cacheable,
     cacheable_data,
     collection,
     collection_record_id,
@@ -23,6 +22,7 @@ import ..DataBrowserAPI:
     kind,
     label,
     metadata,
+    reconstruct,
     source_id,
     source_item_path,
     source_item_timestamp,
@@ -628,11 +628,25 @@ kind(item::RegisteredDataItem)::Symbol = item.registration
 collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
 item_data(item::RegisteredDataItem) = item.data
-cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
+"""
+A registered carrier adopts its normalized record wholesale, and the index's collection path when
+one is supplied. Its own segments survive interpretation, where the index has nothing yet.
+"""
+attach_record(
+    item::RegisteredDataItem,
+    record::ItemRecord,
+    path::AbstractVector=AbstractCollection[],
+)::RegisteredDataItem = RegisteredDataItem(
+    record, item.data, isempty(path) ? item.collection : AbstractCollection[s for s in path])
 
-"""A registered carrier adopts its normalized record wholesale; its segments and payload remain."""
-attach_record(item::RegisteredDataItem, record::ItemRecord)::RegisteredDataItem =
-    RegisteredDataItem(record, item.data, item.collection)
+"""
+Rebuild a registered carrier from a cached payload.
+
+Identity is not derived here: the carrier is package-owned, so `attach_record` restores its minted
+id, label, kind, and collection path from the record and index straight afterwards.
+"""
+reconstruct(::Type{RegisteredDataItem}, data, metadata::Dict)::RegisteredDataItem =
+    RegisteredDataItem("", "", :_, AbstractCollection[], data, metadata_dict(metadata))
 
 """Return one item record's inherited collection metadata plus its own entries layer."""
 function effective_metadata(index::CollectionIndex, record::ItemRecord)::MetadataDict

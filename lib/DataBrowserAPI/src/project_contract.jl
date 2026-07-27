@@ -41,3 +41,13 @@ function display_label end
 
 """Return the project-specific display label for one collection path."""
 function collection_path_label end
+
+"""
+Resolve one stored item kind back to the concrete type that produced it, or `nothing`.
+
+The cache stores `kind` as a `Symbol`, but rebuilding a cached item through `reconstruct` needs the
+type. The project answers, because the project is what knows its own item types — no module
+scanning, and no module-qualified type name to keep valid across refactors. Returning `nothing`
+(the default) is always safe: the engine falls back to rerunning `read` → `entries` → `process`.
+"""
+item_type(::AbstractProject, ::Symbol)::Union{Nothing,Type} = nothing

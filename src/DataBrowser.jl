@@ -15,7 +15,6 @@ using DataBrowserAPI:
     AbstractCollection,
     AbstractProject,
     analyze,
-    cacheable,
     collection,
     define_project,
     entries,
@@ -39,6 +38,7 @@ using DataBrowserAPI:
     source_open_options,
     watch_source,
     reconstruct,
+    item_type,
     read
 using DataBrowserPlots:
     PlotKind,
@@ -96,7 +96,6 @@ export open_browser,
     item_data,
     process,
     analyze,
-    cacheable,
     fingerprint,
     Project,
     DirectorySource,
@@ -120,6 +119,7 @@ export open_browser,
     watch_source,
     entries,
     reconstruct,
+    item_type,
     AbstractProject
 
 using DataBrowserAPI: Project, project_name

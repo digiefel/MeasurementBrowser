@@ -316,21 +316,49 @@ function member_collection(items::AbstractVector)::AbstractCollection
     return last(path)
 end
 
-"""Materialize a registered item with its user-facing registration string path."""
-function registered_data_item(
+"""
+The collection path the index holds for one record, when it can express it.
+
+Only named levels survive in the index; a typed collection path is not recoverable from records, so
+a typed item rebuilds its own path in `reconstruct` instead. An empty result means "the index has
+nothing to say", and the item keeps whatever path it carries.
+"""
+function indexed_collection_path(
     collections::CollectionIndex,
     record::ItemRecord,
-    data,
-)::RegisteredDataItem
+)::Vector{AbstractCollection}
     names = registration_names(collections, record.collection_key)
-    names === nothing && error(
-        "Cannot materialize registered item '$(record.id)' from a typed collection path",
+    names === nothing && return AbstractCollection[]
+    return named_collection_path(names)
+end
+
+"""
+Turn one cached value into an item ready for the next project stage.
+
+Two deliveries meet here. A value the cache held as an item (memory-resident, or any typed item) is
+adopted as-is. A raw payload read back from disk is rebuilt through `reconstruct`, which the item's
+own type opts into; without that method the engine cannot rebuild it and says so, and callers with
+a source in reach rerun the earlier stages instead. Either way the item then adopts its record and
+the index's collection path, so identity comes from the engine and never from stale cached state.
+"""
+function materialized_item(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    record::ItemRecord,
+    stored,
+)::AbstractDataItem
+    path = indexed_collection_path(collections, record)
+    stored isa AbstractDataItem &&
+        return attach_record(stored, effective_record(collections, record), path)
+    item_type_value = item_type(workspace.project, record.kind)
+    (item_type_value === nothing || !reconstructable(item_type_value)) && error(
+        "Cannot rebuild item '$(record.id)' of kind :$(record.kind) from its cached payload: " *
+        "implement `item_type(::$(typeof(workspace.project)), ::Symbol)` and " *
+        "`reconstruct(::Type{T}, data, metadata)` for it",
     )
-    return RegisteredDataItem(
-        record,
-        data,
-        names,
-    )
+    rebuilt = reconstruct(
+        item_type_value, stored, effective_metadata(collections, record))
+    return attach_record(rebuilt, effective_record(collections, record), path)
 end
 
 """Run processing without computing or publishing statistics."""
@@ -343,9 +371,7 @@ function run_processing(
         workspace.cache.db, [record]; stage=:interpreted))
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
     materialized_record = effective_record(collections, record)
-    input = interpreted isa RegisteredDataItem ?
-        registered_data_item(
-            collections, materialized_record, item_data(interpreted)) : interpreted
+    input = materialized_item(workspace, collections, record, interpreted)
     processed = @timed_dbg process(workspace.project, input)
     processed isa AbstractDataItem || error(
         "process(::$(typeof(workspace.project)), ::$(typeof(input))) must return an " *
@@ -354,7 +380,6 @@ function run_processing(
     return (
         item=processed,
         record=materialized_record,
-        cacheable=cacheable(processed),
     )
 end
 
@@ -396,10 +421,9 @@ function run_item_analysis(
         "Cannot analyze item '$(record.id)': processed data is missing",
     )
     return @timed_dbg "analyze" begin
-        input = processed isa RegisteredDataItem ?
-            registered_data_item(
-                collections, delivered_record, item_data(processed)) : processed
-        metadata_dict(analyze(workspace.project, input))
+        metadata_dict(analyze(
+            workspace.project,
+            materialized_item(workspace, collections, delivered_record, processed)))
     end
 end
 
@@ -428,10 +452,7 @@ function run_collection_process(workspace::Workspace, collection_key::Int64)::Na
         "Cannot process collection '$collection_key': one or more processed members are missing",
     )
     inputs = AbstractDataItem[
-        payload isa RegisteredDataItem ?
-            registered_data_item(
-                collections, delivered[index], item_data(payload)) :
-            payload::AbstractDataItem
+        materialized_item(workspace, collections, delivered[index], payload)
         for (index, payload) in pairs(payloads)
     ]
     outputs = process(workspace.project, member_collection(inputs), inputs)
@@ -481,10 +502,7 @@ function run_collection_analysis(workspace::Workspace, collection_key::Int64)::M
         "Cannot analyze collection '$collection_key': one or more processed members are missing",
     )
     items = AbstractDataItem[
-        payload isa RegisteredDataItem ?
-            registered_data_item(
-                collections, delivered[index], item_data(payload)) :
-            payload::AbstractDataItem
+        materialized_item(workspace, collections, delivered[index], payload)
         for (index, payload) in pairs(payloads)
     ]
     return metadata_dict(analyze(workspace.project, member_collection(items), items))
@@ -651,12 +669,12 @@ function request_processed_items(
 )::Vector{AbstractDataItem}
     index = workspace.index
     collections = index.collections
-    loaded_item(record, item) = item isa RegisteredDataItem ?
-        registered_data_item(
-            collections,
-            ItemRecord(record; metadata=delivered_metadata(workspace, record, collections)),
-            item_data(item),
-        ) : item
+    loaded_item(record, item) = materialized_item(
+        workspace,
+        collections,
+        ItemRecord(record; metadata=delivered_metadata(workspace, record, collections)),
+        item,
+    )
     loaded = Vector{AbstractDataItem}(undef, length(records))
     for (position, record) in pairs(records)
         gate, mode = delivery_gate(workspace, record)
@@ -702,7 +720,7 @@ function request_processed_items(
         payload = _delivered_payload(workspace, collections, record, mode)
         payload === nothing && error(
             "Delivered data for item '$(record.id)' is missing from the cache")
-        loaded[position] = loaded_item(record, payload::AbstractDataItem)
+        loaded[position] = loaded_item(record, payload)
     end
     return loaded
 end

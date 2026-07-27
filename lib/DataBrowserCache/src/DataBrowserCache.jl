@@ -8,7 +8,6 @@ using DataBrowserAPI:
     AbstractDataItem,
     AbstractDataSourceItem,
     MetadataDict,
-    cacheable,
     fingerprint,
     id,
     item_data,
@@ -28,7 +27,6 @@ using Dates
 import DataBrowserAPI.ItemIndex:
     CollectionIndex,
     CollectionRecord,
-    RegisteredDataItem,
     ItemFailure,
     ItemRecord,
     MetadataValue,

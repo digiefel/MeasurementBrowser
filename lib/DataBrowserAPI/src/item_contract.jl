@@ -44,9 +44,6 @@ process(item::AbstractDataItem) = item
 """Analyze a processed item into additional metadata. Optional; default empty `Dict`."""
 analyze(::AbstractDataItem)::Dict = Dict()
 
-"""Whether an item's data should be persisted by the data cache. Optional; default `false`."""
-cacheable(::AbstractDataItem)::Bool = false
-
 """
 Whether a payload value can be stored natively by the data cache. Tables are first-class: by
 default anything implementing the Tables.jl interface is cacheable, and the cache still requires
@@ -59,7 +56,8 @@ cacheable_data(data)::Bool = Tables.istable(data)
 # ---------------------------------------------------------------------------
 
 """
-Let an item adopt the normalized record interpretation produced for it. Internal workspace hook;
-the default keeps the item unchanged.
+Let an item adopt the normalized record interpretation produced for it, and the collection path the
+index holds for it. Internal workspace hook; the default keeps the item unchanged, because a typed
+item derives its own path from its own state. Package-owned carriers adopt both.
 """
-attach_record(item::AbstractDataItem, record) = item
+attach_record(item::AbstractDataItem, record, path::AbstractVector=AbstractCollection[]) = item

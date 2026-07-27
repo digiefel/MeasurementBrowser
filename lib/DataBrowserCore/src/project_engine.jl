@@ -15,6 +15,7 @@ import DataBrowserAPI:
     attach_record,
     detect_kind,
     entries,
+    item_type,
     _has_collection_analysis,
     _has_collection_process,
     collection,
@@ -165,6 +166,10 @@ end
 # ---------------------------------------------------------------------------
 # Engine interface implementation
 # ---------------------------------------------------------------------------
+
+"""Every registered kind is carried by the same package-owned type."""
+item_type(project::Project, kind::Symbol)::Union{Nothing,Type} =
+    _recipe(project, kind) === nothing ? nothing : RegisteredDataItem
 
 project_name(project::Project)::String = project.name
 project_description(project::Project)::String = project.description

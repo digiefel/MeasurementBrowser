@@ -916,7 +916,7 @@ function store_processed!(
 )::Nothing
     key = item_key!(cache, record.id)
     payload = item_data(item)
-    disk = item isa RegisteredDataItem && cacheable(item) && _storable_table(payload)
+    disk = _storable_table(payload)
     if disk
         started = time_ns()
         if stage === :processed
@@ -1464,7 +1464,7 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     for (index, record) in pairs(records)
         loaded[index] !== nothing && continue
         data = get(disk_data, (item_key!(cache, record.id), stage_code), nothing)
-        loaded[index] = data === nothing ? nothing : RegisteredDataItem(record, data)
+        loaded[index] = data
     end
     return loaded
 end
