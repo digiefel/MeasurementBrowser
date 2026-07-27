@@ -30,7 +30,7 @@ Source interpretation and data processing are defined by the registered callback
 Plot registration lives in `DataBrowserPlots`. Package-owned cache, job, and browser state does
 not belong here.
 """
-mutable struct Project
+mutable struct Project <: AbstractProject
     name::String
     description::String
     recipes::Vector{ItemRecipe}

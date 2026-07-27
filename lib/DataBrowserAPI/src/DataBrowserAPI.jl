@@ -12,11 +12,17 @@ using Dates
 using SHA
 import Tables
 
+# `read` is the pipeline's source-touching stage, and that is exactly what `Base.read` means.
+# Extending it keeps `using DataBrowser` from shadowing a function every Julia user already knows.
+import Base: read
+
+include("project_contract.jl")
 include("project_types.jl")
 include("metadata_types.jl")
 include("source_contract.jl")
 include("item_contract.jl")
 include("collection_id.jl")
+include("stage_contract.jl")
 include("interface.jl")
 include("construction.jl")
 include("ItemIndex.jl")

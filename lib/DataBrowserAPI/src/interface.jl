@@ -1,9 +1,3 @@
-"""Return the stable name used to identify a project."""
-function project_name end
-
-"""Return a short human-readable description of a project."""
-function project_description end
-
 """Classify the item kind represented by a project source filename."""
 function detect_kind end
 
