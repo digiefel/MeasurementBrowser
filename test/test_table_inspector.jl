@@ -1,5 +1,4 @@
 using DataBrowserGUI
-using DataBrowser: inspect_table
 using DataFrames: DataFrame
 using Test
 
@@ -7,21 +6,6 @@ const Browser = DataBrowserGUI.Browser
 using DataBrowserCore: merge_item_tables
 
 @testset "table inspector" begin
-    fixture_root = joinpath(@__DIR__, "fixtures", "tables")
-    preview = inspect_table(joinpath(fixture_root, "with_preamble.dat"))
-    @test preview.delimiter == ','
-    @test preview.header_row == 3
-    @test preview.columns == ["time_s", "current_A", "voltage_V"]
-    @test preview.row_count == 2
-    @test isempty(preview.warnings)
-
-    headerless = inspect_table(joinpath(fixture_root, "no_header.dat"); max_rows=1)
-    @test headerless.delimiter == '\t'
-    @test headerless.header_row === nothing
-    @test headerless.row_count == 2
-    @test headerless.preview_rows == 1
-    @test !isempty(headerless.warnings)
-
     # --- merge_item_tables: single item ---
     @testset "merge_item_tables single item" begin
         df = DataFrame(x=[1.0, 2.0, 3.0], y=[4.0, 5.0, 6.0])

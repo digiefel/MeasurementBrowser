@@ -218,14 +218,14 @@ window positions persist per machine rather than being reset each launch.
 
 ## Table Inspector
 
-The Table Inspector shows data in two modes, both rendered through the same `DataGrid` component.
+The Table Inspector shows selected items' Tables.jl-compatible payloads, rendered through the
+`DataGrid` component.
 
-**Primary mode (item data)**:
 - On each frame, resolves the browser selection to `ItemRecord`s via `_project_visible_selection`
   and materializes items with `Workspace.materialize_items`.
-- Merges multiple items' Tables.jl-compatible data by column union; columns present in only some
-  items render blank for the others. Non-tabular items are skipped with a per-item warning rather
-  than failing the whole view. A stable key based on item ids prevents redundant rebuilds.
+- Merges multiple items' data by column union; columns present in only some items render blank for
+  the others. Non-tabular items are skipped with a per-item warning rather than failing the whole
+  view. A stable key based on item ids prevents redundant rebuilds.
 - Multi-item selections: subtle per-item alternating row background tint for provenance; an optional
   leading "\_item\_" column (toggled by the "Provenance column" checkbox) shows each row's source label.
 - All rows are rendered (no cap); virtualization keeps rendering O(visible).
@@ -234,22 +234,10 @@ The Table Inspector shows data in two modes, both rendered through the same `Dat
 - The inspector only shows tables. Plotting columns lives in the separate Table Plot window
   (DBPlots), an independent visualizer over the same workspace selection.
 
-**Column width persistence (item mode)**: The DataGrid uses the registration identity or concrete
-item type for a uniform selection and `"mixed"` for a heterogeneous selection. ImGui keys `[Table]`
-entries by that value, so column widths are stored and restored for compatible data across restarts.
-There is no toml layer for column widths.
-
-**Secondary raw-file mode**: `Inspect → Table Inspector` exposes the path bar, `Live` checkbox,
-`Open...`, and `Reload` controls for inspecting arbitrary delimited files. The full file is
-loaded (no row cap; a soft warning appears above 100 000 rows) and rendered through `DataGrid`
-with id `"file"`. This mode has no provenance tinting. The grid model
-is built by `_file_grid_model(preview)` which returns `(columns, n_rows, cell)` from the parsed
-`TablePreview`; its column widths are persisted separately under the `"file"` ini key.
-
-`inspect_table(path)` remains exported for external use. It returns a `TablePreview` with the
-file's detected delimiter, header row, first data row, approximate row count, and a DataFrame of
-all rows (or a bounded subset when called with an explicit `max_rows`). It does not call project
-readers or write cache entries.
+**Column width persistence**: The DataGrid uses the registration identity or concrete item type for
+a uniform selection and `"mixed"` for a heterogeneous selection. ImGui keys `[Table]` entries by
+that value, so column widths are stored and restored for compatible data across restarts. There is
+no toml layer for column widths.
 
 ## Annotations in the GUI
 

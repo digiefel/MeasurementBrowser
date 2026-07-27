@@ -55,7 +55,7 @@ using DataBrowserPlots:
     registered_plot_kinds,
     setup_plot
 
-using DataBrowserSources: DirectorySource, SourceFile, inspect_table
+using DataBrowserSources: DirectorySource, SourceFile
 using DataBrowserCore: items_for_file
 using DataBrowserCore.Workspace:
     close_workspace!,
@@ -105,7 +105,6 @@ export open_browser,
     Project,
     DirectorySource,
     SourceFile,
-    inspect_table,
     items_for_file,
     PlotKind,
     display_label,
