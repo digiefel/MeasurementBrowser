@@ -16,6 +16,29 @@ folder-open UI still uses the high-level callback project path internally:
 `open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
 navigation and information, right side for plot-oriented work.
 
+### Whether a window actually appears (macOS)
+
+`wait` decides which task owns the render loop, and `window_start` decides whether the process
+promotes itself to a foreground app (`_promote_to_foreground_app`, first frame, `:normal` only). On
+macOS an unbundled Julia process is an accessory app until something promotes it, and only a
+main-task loop shows a window without that promotion. Measured on macOS 15 / Julia 1.12:
+
+| `wait` | `window_start` | window on screen |
+|---|---|---|
+| `false` | `:background` | **no** — renders frames, dock icon flashes and vanishes |
+| `false` | `:normal` | yes |
+| `true` | `:background` | yes |
+| `true` | `:normal` | yes |
+
+`wait=false, :background` is the one combination that renders invisibly. It is the right mode for
+headless frame-loop work (warmup, precompilation, timing a fixed number of frames) precisely because
+nothing is shown; it is the wrong mode for anything meant to be looked at. Scripted runs that want a
+visible window and a handle to close it should use `wait=false, :normal` and `close_browser!`.
+
+Never end such a run with `exit()` from a spawned task: Julia's atexit hook runs GLFW's `terminate`,
+which destroys the Cocoa window on whatever thread called `exit`, and AppKit traps with
+`dispatch_assert_queue` (SIGTRAP) when that is not the main thread.
+
 ## State boundary
 
 Render functions receive one `BrowserState`. Its `workspace` field is the browser's single reference
