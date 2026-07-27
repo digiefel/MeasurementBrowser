@@ -60,8 +60,6 @@ end
             workspace = open_workspace(
                 project,
                 fixture_dir;
-                profile_internal=false,
-                profile_cpu=false,
             )
             Workspace.wait_workspace_idle!(workspace; timeout=45)
             Workspace.refresh_status!(workspace)
@@ -85,8 +83,6 @@ end
             )
             Browser.current_status(state)
             Browser._project_visible_selection(state)
-            Browser._update_live_timings!(state.performance.live_plots, state.performance.timings)
-            Browser._sample_build!(state.performance.live_plots, workspace)
         finally
             workspace === nothing || close_workspace!(workspace)
             popfirst!(DEPOT_PATH)

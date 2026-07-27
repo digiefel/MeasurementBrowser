@@ -7,16 +7,14 @@ const Browser = DataBrowserGUI.Browser
 The Makie plotting extension registered with the `DataBrowserGUI` shell.
 
 One instance per browser owns all plot state: the main and detached plot
-windows (`plots`), the table-plot window (`table_plot`), and the one-shot
-redraw-profiling flag (`profile_next_plot`).
+windows (`plots`) and the table-plot window (`table_plot`).
 """
 mutable struct PlotsExtension <: Browser.GuiExtension
     plots::PlotState
-    profile_next_plot::Bool
     table_plot::TablePlotState
 end
 
-PlotsExtension() = PlotsExtension(PlotState(), false, TablePlotState())
+PlotsExtension() = PlotsExtension(PlotState(), TablePlotState())
 
 function _persisted_plot_view_from_dict(data::AbstractDict)::PersistedPlotView
     items = get(data, "items", Any[])
@@ -59,7 +57,6 @@ end
 
 function Browser.reset!(ext::PlotsExtension, ::Browser.BrowserState)
     ext.plots = PlotState()
-    ext.profile_next_plot = false
     ext.table_plot = TablePlotState()
     return nothing
 end
@@ -192,19 +189,4 @@ function plots_extension(state::Browser.BrowserState)::PlotsExtension
     error("PlotsExtension is not loaded")
 end
 
-"""
-Arm a full profile of the next plot redraw.
-
-Invalidates every open plot view so the next frame redraws and captures the
-phase timing/CPU-sampling breakdown (also wired to each plot's Profile button).
-"""
-function request_plot_profile!(state::Browser.BrowserState)::Nothing
-    ext = plots_extension(state)
-    ext.profile_next_plot = true
-    for view in (ext.plots.main, ext.plots.windows...)
-        view.last_key = nothing
-    end
-    return nothing
-end
-
-export PlotsExtension, plots_extension, request_plot_profile!
+export PlotsExtension, plots_extension

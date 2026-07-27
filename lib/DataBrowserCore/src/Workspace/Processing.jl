@@ -276,8 +276,11 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
             source_item = discovered[position]
         end
         interpretation = interpret_source_item(
-            workspace.project, workspace.source, source_item, workspace.profiler;
-            source_item_key=record.source_item_key)
+            workspace.project,
+            workspace.source,
+            source_item;
+            source_item_key=record.source_item_key,
+        )
         resolved_records = ItemRecord[
             get(workspace.index.items, candidate.id, candidate)
             for candidate in interpretation.records
@@ -329,13 +332,7 @@ function run_processing(
     input = interpreted isa RegisteredDataItem ?
         registered_data_item(
             collections, materialized_record, item_data(interpreted)) : interpreted
-    processed = Profiling.@profile_span workspace.profiler :project :process Profiling.ProfileAttributes(
-        kind=record.kind,
-        source_id=source_ref,
-        item_id=record.id,
-    ) begin
-        process(workspace.project, workspace.source, input)
-    end
+    processed = @timed_dbg process(workspace.project, workspace.source, input)
     record_scan_phase!(workspace.project, source_ref, record.kind,
         :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
     return (
@@ -384,11 +381,7 @@ function run_item_analysis(
     )
     analyze_started = time_ns()
     source_ref = source_item_id(workspace, record.source_item_key)
-    computed = Profiling.@profile_span workspace.profiler :project :analyze Profiling.ProfileAttributes(
-        kind=record.kind,
-        source_id=source_ref,
-        item_id=record.id,
-    ) begin
+    computed = @timed_dbg "analyze" begin
         input = processed isa RegisteredDataItem ?
             registered_data_item(
                 collections, delivered_record, item_data(processed)) : processed
@@ -509,7 +502,7 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
             source_item === nothing &&
                 error("Cannot interpret removed source item '$(key.entity)'")
             interpretation = interpret_source_item(
-                workspace.project, workspace.source, source_item, workspace.profiler;
+                workspace.project, workspace.source, source_item;
                 source_item_key=key.entity::Int64)
             (
                 source_item=source_item,

@@ -20,5 +20,6 @@ include("collection_id.jl")
 include("interface.jl")
 include("construction.jl")
 include("ItemIndex.jl")
+include("timing_debug.jl")
 
 end

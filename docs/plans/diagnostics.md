@@ -30,7 +30,7 @@ Remove the always-available internal tracing product:
 - The broad internal span taxonomy for engine implementation details.
 - Counter tracks sampled for trace export.
 - Crash-forensics JSONL tracing as a normal workspace option.
-- The Internal Performance tab as a separate engine-profiler UI.
+- A separate engine-profiler UI.
 - Makie-based performance figures in the GUI.
 
 The browser can still log errors and expose current workspace status. It should not retain a second
@@ -120,13 +120,10 @@ at callback boundaries, but the work graph should not be shaped around profiling
 
 ## Migration
 
-1. Replace Makie performance plots with CImGui tables, bars, and sparklines.
-2. Remove Perfetto export and the internal trace UI.
-3. Shrink `DataBrowserProfiling` to timing samples, CPU sampling, memory helpers, and result summaries.
-4. Add explicit diagnostic-run controls for plot setup/draw first, because that path already has manual
-   profiling behavior.
-5. Extend the same mechanism to source `read`/`entries` and item `process` only after the plot path is
-   clean.
+1. Keep CImGui tables, bars, and sparklines for normal workspace diagnostics.
+2. Keep `DebugTimings` as the explicit benchmark diagnostic surface.
+3. Keep `DataBrowserProfiling` focused on timing summaries, CPU sampling, and memory helpers.
+4. Extend explicit timing call sites only where a concrete diagnostic question needs them.
 
 The first useful version is small: one button profiles the current plot redraw, one table shows the
 hotspots, and the GUI no longer imports GLMakie for the Performance window.

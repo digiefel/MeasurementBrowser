@@ -1,5 +1,3 @@
-using Printf
-using Statistics: mean
 import GLFW
 import CImGui as ig
 import CImGui.CSyntax: @c
@@ -14,12 +12,10 @@ using NativeFileDialog: pick_folder
 const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
 using DataBrowserAPI:
-    KindProfileRow,
     DEFAULT_PROJECT,
     PROJECTS,
     project_description,
     project_name,
-    SourceProfileRow,
     source_label
 using DataBrowserAPI.ItemIndex: SourceScan
 using DataBrowserCache: ProjectCacheIdentity
@@ -79,64 +75,6 @@ function _render_cache_toolbar_button!(state::BrowserState)::Nothing
     return nothing
 end
 
-const SCAN_KIND_PROFILE_COLUMNS = String[
-    "Kind", "Sources", "Items", "Total", "Detect", "Read", "Entries", "Process", "Analyze",
-]
-const SCAN_SOURCE_PROFILE_COLUMNS = String[
-    "Source item", "Kind", "Items", "Total", "Detect", "Read", "Entries", "Process", "Analyze",
-    "Threads",
-]
-"""Render the per-kind summary for the latest source scan."""
-function _render_scan_kind_table(
-    rows::Vector{KindProfileRow},
-    state::DataGridState,
-)::Nothing
-    function cell(row_index::Int, column::Int)::String
-        row = rows[row_index]
-        column == 1 && return String(row.kind)
-        column == 2 && return string(row.source_items)
-        column == 3 && return string(row.items)
-        seconds = column == 4 ? row.total_seconds :
-            column == 5 ? row.detect_seconds :
-            column == 6 ? row.read_seconds :
-            column == 7 ? row.entries_seconds :
-            column == 8 ? row.process_seconds : row.analyze_seconds
-        return @sprintf("%.1f ms", 1000 * seconds)
-    end
-    render_data_grid!(
-        "scan_kind_profile", state;
-        n_rows=length(rows), columns=SCAN_KIND_PROFILE_COLUMNS, cell,
-        selection_mode=:cells, height=180.0f0)
-    return nothing
-end
-
-"""Render source-item timings, sorted by total elapsed time."""
-function _render_scan_source_table(
-    rows::Vector{SourceProfileRow},
-    state::DataGridState,
-)::Nothing
-    function cell(row_index::Int, column::Int)::String
-        row = rows[row_index]
-        column == 1 && return row.source_item_label
-        column == 2 && return String(row.kind)
-        column == 3 && return string(row.items)
-        column == 10 && return join(row.thread_ids, ", ")
-        seconds = column == 4 ? row.total_seconds :
-            column == 5 ? row.detect_seconds :
-            column == 6 ? row.read_seconds :
-            column == 7 ? row.entries_seconds :
-            column == 8 ? row.process_seconds : row.analyze_seconds
-        return @sprintf("%.2f ms", 1000 * seconds)
-    end
-    cell_link(row::Int, column::Int)::Union{Nothing,String} =
-        column == 1 ? rows[row].source_item_path : nothing
-    render_data_grid!(
-        "scan_source_profile", state;
-        n_rows=length(rows), columns=SCAN_SOURCE_PROFILE_COLUMNS, cell, cell_link,
-        selection_mode=:cells, height=260.0f0)
-    return nothing
-end
-
 
 """Render project, cache, annotation, workflow, and debug controls."""
 function render_menu_bar(state::BrowserState)::Nothing
@@ -181,11 +119,7 @@ function render_menu_bar(state::BrowserState)::Nothing
         end
         _render_table_inspector_menu!(state)
         if ig.BeginMenu("Debug")
-            if ig.MenuItem(
-                "Performance Window",
-                C_NULL,
-                state.show_performance_window,
-            )
+            if ig.MenuItem("Performance Window", C_NULL, state.show_performance_window)
                 state.show_performance_window = !state.show_performance_window
             end
             ig.Separator()
@@ -431,11 +365,22 @@ function _setup_docking_layout!(state::BrowserState, dockspace_id::UInt32)::Noth
     return nothing
 end
 
-"""Return whether the native GLFW window requested shutdown."""
-function _window_close_requested()::Bool
+"""Return whether the native GLFW window or `close_browser!` requested shutdown."""
+function _window_close_requested(state::BrowserState)::Bool
+    state.exit_requested && return true
     window = ig.current_window()
     window === nothing && return false
     return GLFW.WindowShouldClose(window)
+end
+
+"""Record the first painted frame once, and wake any waiter."""
+function _mark_first_frame!(state::BrowserState)::Nothing
+    isnan(state.performance.first_frame_at) || return nothing
+    state.performance.first_frame_at = time()
+    # Discard warmup-frame timings so the section tree's avg/call and ncalls==frames
+    # reflect steady-state rendering, not first-frame compilation and setup.
+    TimerOutputs.reset_timer!(MAIN_TIMER)
+    return nothing
 end
 
 """Create the ImGui context with the docking/viewport configuration the browser needs."""
@@ -543,6 +488,22 @@ function _render_startup_preparation!()::Nothing
 end
 
 """
+Move Julia's libuv event loop off the GLFW sticky thread when the runtime supports it.
+
+The browser render loop is pinned to thread 1 (the `:interactive` pool tid when that pool exists).
+Julia historically also ran libuv there ([JuliaLang/julia#50643](https://github.com/JuliaLang/julia/issues/50643)).
+A busy `PollEvents` UI loop then delays IO completions, so pipeline workers that read source files
+starve and GUI interpret throughput collapses versus headless. Julia 1.12's
+`Base.Experimental.make_io_thread()` gives libuv its own thread; call it before the render loop starts.
+"""
+function _ensure_dedicated_io_thread!()::Nothing
+    if isdefined(Base.Experimental, :make_io_thread)
+        Base.Experimental.make_io_thread()
+    end
+    return nothing
+end
+
+"""
 Run the browser render loop for a prepared state. With `wait=false` the loop runs as a background
 task pinned to thread 1 (required for GLFW) and the call returns that task, leaving the REPL live.
 """
@@ -557,6 +518,7 @@ function _run_browser(
 )
     exit_after_frames === nothing || exit_after_frames > 0 ||
         error("exit_after_frames must be positive when provided; got $exit_after_frames")
+    _ensure_dedicated_io_thread!()
     _set_browser_window_hints(window_start)
     first_frame       = Ref(true)
     setup_layout      = Ref(true)
@@ -575,17 +537,23 @@ function _run_browser(
             _shutdown_extensions!(state)
             _shutdown_implot_context!(state)
             _save_project_view_if_changed!(state)
-            _print_perf_summary(state)
+            @debug sprint(show, MAIN_TIMER)
         end,
     ) do
-        if _window_close_requested()
+        if _window_close_requested(state)
             _shutdown_background_jobs!(state)
             return :imgui_exit_loop
         end
         state.performance.frame += 1
+        if state.performance.reset_main_timer
+            # Safe here: the previous frame's @timed sections have all closed, so the section
+            # stack is empty. Resetting mid-frame would underflow it when the open sections pop.
+            TimerOutputs.reset_timer!(MAIN_TIMER)
+            state.performance.reset_main_timer = false
+        end
         workspace = state.workspace
         if workspace isa Workspace.Workspace
-            _time!(state, :refresh_status) do
+            @timed "refresh_status" begin
                 refresh_status!(workspace)
             end
         end
@@ -603,47 +571,51 @@ function _run_browser(
             # extension warmup, so the window is never blank during the expensive part.
             _render_startup_preparation!()
             if startup_presented[]
-                _time!(state, :extension_warmup) do
+                @timed "extension_warmup" begin
                     for ext in state.extensions
                         is_ready(ext, state) || warmup!(ext, state)
                     end
                 end
             else
                 startup_presented[] = true
+                _mark_first_frame!(state)
             end
             return nothing
         end
-        _time!(state, :frame_ui) do
+        _mark_first_frame!(state)
+        @timed "frame_ui" begin
             dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
             if setup_layout[]
                 setup_layout[] = false
                 _setup_docking_layout!(state, dockspace_id)
             end
-            render_selection_window(state)
-            _time!(state, :project_window) do
+            @timed "selection_window" begin
+                render_selection_window(state)
+            end
+            @timed "project_window" begin
                 render_project_window(state)
             end
-            _time!(state, :info) do
+            @timed "info" begin
                 render_info_window(state)
             end
-            _time!(state, :table_inspector) do
+            @timed "table_inspector" begin
                 render_table_inspector_window(state)
             end
-            _time!(state, :extensions) do
+            @timed "extensions" begin
                 for ext in state.extensions
                     draw!(ext, state)
                 end
             end
-            _time!(state, :perf_window) do
+            @timed "perf_window" begin
                 render_perf_window(state)
             end
-            _time!(state, :debug_tools) do
+            @timed "debug_tools" begin
                 render_debug_tools!(state)
             end
-            _time!(state, :persist_view) do
+            @timed "persist_view" begin
                 _save_project_view_if_changed!(state)
             end
-            _time!(state, :modals) do
+            @timed "modals" begin
                 render_cache_rebuild_modal(state)
                 render_collection_metadata_modal(state)
             end
@@ -655,6 +627,10 @@ end
 Open the browser on an already-opened workspace (see `open_workspace`). By default, blocks
 until the window closes in non-interactive sessions (`julia script.jl`) and returns immediately
 in the REPL so it stays interactive.
+
+With `wait=false`, returns a [`BrowserSession`](@ref) (`task` + `state`). Use
+[`close_browser!`](@ref) to exit the loop cleanly. `state.performance.first_frame_at` is set to
+`time()` when the first non-blank frame is submitted (startup surface or full UI).
 """
 function open_browser(
     workspace::Workspace.Workspace;
@@ -673,5 +649,17 @@ function open_browser(
     end
     ctx = _init_browser_context!()
     _attach_workspace!(state, workspace)
-    return _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
+    result = _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
+    return wait ? result : BrowserSession(result::Task, state)
+end
+
+"""Ask a non-blocking browser session to exit and wait until the render task finishes."""
+function close_browser!(session::BrowserSession; timeout_s::Real=60.0)::Nothing
+    session.state.exit_requested = true
+    deadline = time() + Float64(timeout_s)
+    while !istaskdone(session.task) && time() < deadline
+        sleep(0.05)
+    end
+    istaskdone(session.task) || @warn "close_browser!: render task still running after $(timeout_s)s"
+    return nothing
 end
