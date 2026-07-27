@@ -593,7 +593,6 @@ function scan_source!(
         workspace.cache_error = ""
         workspace.cache.operation = rebuild ? :rebuild : :update
         reset_build_metrics!(workspace.metrics)
-        reset_scan_profile!(workspace.project)
         # Detach the previous scan so this one streams into a fresh hierarchy: progressive results
         # update the displayed tree live while any still-finishing analysis from the previous scan
         # keeps reading its own, now-detached hierarchy — no shared mutable state, no race. Errors

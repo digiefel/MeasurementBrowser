@@ -30,8 +30,6 @@ using DataBrowserAPI:
     register_item!,
     close_source!,
     open_source,
-    scan_profile_summary,
-    scan_source_profile,
     source_items,
     source_id,
     source_label,
@@ -117,9 +115,7 @@ export open_browser,
     source_item_timestamp,
     source_open_options,
     watch_source,
-    data_items,
-    scan_profile_summary,
-    scan_source_profile
+    data_items
 
 using DataBrowserAPI: Project, project_name
 import DataBrowserCache as Cache

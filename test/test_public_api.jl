@@ -125,27 +125,6 @@ end
             @test plot_data!(workspace, plot_kind, items, figure) === nothing
             @test counters.draws[] == 1
 
-            profile = only(row for row in scan_profile_summary(project) if row.kind === :trace)
-            @test profile.source_items == 2
-            @test profile.items == 3
-            @test profile.detect_seconds >= 0
-            @test profile.read_seconds >= 0
-            @test profile.entries_seconds >= 0
-            @test profile.process_seconds >= 0
-            @test profile.analyze_seconds >= 0
-            @test profile.total_seconds >= profile.read_seconds
-
-            source_profile = filter(row -> row.kind === :trace, scan_source_profile(project))
-            @test length(source_profile) == 2
-            @test all(row -> row.items > 0 && !isempty(row.thread_ids), source_profile)
-            @test Set(row.source_item_label for row in source_profile) ==
-                Set(["a.dbitem", joinpath("nested", "b.dbitem")])
-            @test Set(row.source_item_path for row in source_profile) == Set([
-                joinpath(root, "a.dbitem"),
-                joinpath(root, "nested", "b.dbitem"),
-            ])
-            @test all(row -> !isabspath(row.source_item_label), source_profile)
-            @test issorted(source_profile; by=row -> row.total_seconds, rev=true)
             @test counters.collection_processes[] == 2
             @test counters.collection_analyses[] == 2
             reads_after_build = Dict(name => count[] for (name, count) in counters.reads)

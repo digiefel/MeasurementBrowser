@@ -40,8 +40,6 @@ function define_project(name::AbstractString; description::AbstractString="")::P
         String(description),
         ItemRecipe[],
         Dict{Symbol,CollectionRecipe}(),
-        Dict{String,SourceItemProfile}(),
-        ReentrantLock(),
     )
 end
 

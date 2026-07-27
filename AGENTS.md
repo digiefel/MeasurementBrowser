@@ -109,8 +109,8 @@ When code and docs disagree, fix the doc in the same commit.
 ## Testing
 When a change needs validation, run the full suite once:
 `julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
-harmless local edits. Fixtures in `test/fixtures/`; inline projects in `test/test_project.jl` and
-`test/test_scan_profile.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
+harmless local edits. Fixtures in `test/fixtures/`; the inline project lives in
+`test/test_project.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
 
 ## Benchmarks
 Use `bench/` for performance work (`julia --project=bench`). Results persist under

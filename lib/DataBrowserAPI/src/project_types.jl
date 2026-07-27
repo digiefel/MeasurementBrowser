@@ -23,58 +23,6 @@ struct CollectionRecipe
     analyze::Union{Nothing,Function}
 end
 
-"""Timing retained for one source item in the current scan."""
-mutable struct SourceItemProfile
-    source_item_id::String
-    source_item_label::String
-    source_item_path::Union{Nothing,String}
-    kind::Symbol
-    item_count::Int
-    detect_seconds::Float64
-    read_seconds::Float64
-    entries_seconds::Float64
-    process_seconds::Float64
-    analyze_seconds::Float64
-    total_seconds::Float64
-    thread_ids::Set{Int}
-end
-
-SourceItemProfile(source_item_id::AbstractString)::SourceItemProfile = SourceItemProfile(
-    String(source_item_id), String(source_item_id), nothing,
-    :unmatched, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, Set{Int}())
-
-"""One item-kind summary derived from the current source-item timings."""
-mutable struct KindProfileRow
-    kind::Symbol
-    source_items::Int
-    items::Int
-    detect_seconds::Float64
-    read_seconds::Float64
-    entries_seconds::Float64
-    process_seconds::Float64
-    analyze_seconds::Float64
-    total_seconds::Float64
-end
-
-KindProfileRow(kind::Symbol)::KindProfileRow =
-    KindProfileRow(kind, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-
-"""Read-only source-item row returned to the Performance window."""
-struct SourceProfileRow
-    source_item_id::String
-    source_item_label::String
-    source_item_path::Union{Nothing,String}
-    kind::Symbol
-    items::Int
-    detect_seconds::Float64
-    read_seconds::Float64
-    entries_seconds::Float64
-    process_seconds::Float64
-    analyze_seconds::Float64
-    total_seconds::Float64
-    thread_ids::Vector{Int}
-end
-
 """
 A callback project assembled from registered recipes.
 
@@ -87,10 +35,6 @@ mutable struct Project
     description::String
     recipes::Vector{ItemRecipe}
     collections::Dict{Symbol,CollectionRecipe}
-    # Transient timing for the latest scan, surfaced in the performance window. One row per source
-    # item keeps the profile useful without retaining every expanded data-item event.
-    scan_profile::Dict{String,SourceItemProfile}
-    profile_lock::ReentrantLock
 end
 
 const PROJECTS = Project[]

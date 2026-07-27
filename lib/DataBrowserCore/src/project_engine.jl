@@ -2,12 +2,12 @@
 Project.jl - engine methods for the registration-based project API.
 
 Construction (`define_project`, `register_item!`, `register_collection_analysis!`) and the
-payload-agnostic contracts live in `DataBrowserAPI`. This file keeps scan profiling and
-callback-driving methods that touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
+payload-agnostic contracts live in `DataBrowserAPI`. This file keeps the callback-driving methods
+that touch engine types (`ItemRecord`, `SourceFile`, `DataFrame`, …).
 """
 
 using DataBrowserAPI
-using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, KindProfileRow, SourceProfileRow, analyze, source_id, source_item_path, source_item_timestamp
+using DataBrowserAPI: AbstractCollection, AbstractDataItem, AbstractDataSource, AbstractDataSourceItem, analyze, source_id, source_item_path, source_item_timestamp
 using DataBrowserSources: DirectorySource, SourceFile, index_source_file
 using DataFrames: DataFrame
 import DataBrowserAPI:
@@ -18,7 +18,6 @@ import DataBrowserAPI:
     data_items,
     detect_kind,
     display_label,
-    finish_source_profile!,
     _has_collection_analysis,
     _has_collection_process,
     kind_label,
@@ -31,11 +30,7 @@ import DataBrowserAPI:
     process,
     _process_collection,
     project_description,
-    project_name,
-    record_scan_phase!,
-    reset_scan_profile!,
-    scan_profile_summary,
-    scan_source_profile
+    project_name
 import DataBrowserAPI.ItemIndex:
     CollectionIndex,
     CollectionInput,
@@ -51,100 +46,6 @@ import DataBrowserAPI.ItemIndex:
 
 function _with_data(item::RegisteredDataItem, data)::RegisteredDataItem
     return RegisteredDataItem(item, data)
-end
-
-function record_scan_phase!(
-    project::Project,
-    source_item_id::AbstractString,
-    kind::Symbol,
-    phase::Symbol,
-    seconds::Float64,
-    thread_id::Int,
-)::Nothing
-    lock(project.profile_lock) do
-        entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
-        kind !== :unmatched && (entry.kind = kind)
-        phase === :detect ? (entry.detect_seconds += seconds) :
-        phase === :read ? (entry.read_seconds += seconds) :
-        phase === :entries ? (entry.entries_seconds += seconds) :
-        phase === :process ? (entry.process_seconds += seconds) :
-        phase === :analyze ? (entry.analyze_seconds += seconds) :
-        error("Unknown scan timing phase: $phase")
-        push!(entry.thread_ids, thread_id)
-    end
-    return nothing
-end
-
-function finish_source_profile!(
-    project::Project,
-    source_item_id::AbstractString,
-    source_item_label::AbstractString,
-    source_item_path::Union{Nothing,String},
-    kind::Symbol,
-    item_count::Int,
-    total_seconds::Float64,
-    thread_ids::Set{Int},
-)::Nothing
-    lock(project.profile_lock) do
-        entry = get!(() -> SourceItemProfile(source_item_id), project.scan_profile, source_item_id)
-        entry.source_item_label = String(source_item_label)
-        entry.source_item_path = source_item_path
-        entry.kind = kind
-        entry.item_count = item_count
-        # process_seconds and analyze_seconds are accumulated separately during analysis via
-        # record_scan_phase!, so finish (which runs at scan time) must not overwrite them.
-        entry.total_seconds = total_seconds
-        union!(entry.thread_ids, thread_ids)
-    end
-    return nothing
-end
-
-function reset_scan_profile!(project::Project)::Nothing
-    lock(project.profile_lock) do
-        empty!(project.scan_profile)
-    end
-    return nothing
-end
-
-function scan_profile_summary(project::Project)::Vector{KindProfileRow}
-    rows = lock(project.profile_lock) do
-        by_kind = Dict{Symbol,KindProfileRow}()
-        for profile in values(project.scan_profile)
-            row = get!(() -> KindProfileRow(profile.kind), by_kind, profile.kind)
-            row.source_items += 1
-            row.items += profile.item_count
-            row.detect_seconds += profile.detect_seconds
-            row.read_seconds += profile.read_seconds
-            row.entries_seconds += profile.entries_seconds
-            row.process_seconds += profile.process_seconds
-            row.analyze_seconds += profile.analyze_seconds
-            row.total_seconds += profile.total_seconds
-        end
-        collect(values(by_kind))
-    end
-    sort!(rows; by=row -> row.total_seconds, rev=true)
-    return rows
-end
-
-function scan_source_profile(project::Project)::Vector{SourceProfileRow}
-    rows = lock(project.profile_lock) do
-        [SourceProfileRow(
-            profile.source_item_id,
-            profile.source_item_label,
-            profile.source_item_path,
-            profile.kind,
-            profile.item_count,
-            profile.detect_seconds,
-            profile.read_seconds,
-            profile.entries_seconds,
-            profile.process_seconds,
-            profile.analyze_seconds,
-            profile.total_seconds,
-            sort!(collect(profile.thread_ids)),
-        ) for profile in values(project.scan_profile)]
-    end
-    sort!(rows; by=row -> row.total_seconds, rev=true)
-    return rows
 end
 
 # ---------------------------------------------------------------------------
@@ -309,47 +210,23 @@ function data_items(
     source::AbstractDataSource,
     file::SourceFile,
 )::Vector{<:AbstractDataItem}
-    recipe = nothing
-    started = time_ns()
-    try
-        recipe = @timed_dbg _detect_recipe(project, file)
-    finally
-        record_scan_phase!(
-            project, file.filepath,
-            recipe === nothing ? :unmatched : recipe.kind,
-            :detect, (time_ns() - started) / 1e9, Base.Threads.threadid())
-    end
+    recipe = @timed_dbg _detect_recipe(project, file)
     recipe === nothing && return AbstractDataItem[]
-    started = time_ns()
-    read_result = try
-        @timed_dbg "read" recipe.read(file)
-    finally
-        record_scan_phase!(
-            project, file.filepath, recipe.kind, :read,
-            (time_ns() - started) / 1e9, Base.Threads.threadid())
-    end
+    read_result = @timed_dbg "read" recipe.read(file)
     loaded_data, read_metadata = _data_and_metadata(read_result)
     inherited_metadata = merge(metadata_dict(metadata(file)), read_metadata)
-    started = time_ns()
-    items = try
-        @timed_dbg "entries" begin
-            values = recipe.entries === nothing ? Any[loaded_data] :
-                recipe.entries(loaded_data, inherited_metadata)
-            values isa AbstractVector || error(
-                "entries callback for registration $(recipe.kind) must return a vector; " *
-                "got $(typeof(values))",
-            )
-            AbstractDataItem[
-                _registered_item(recipe, source, file, value, inherited_metadata)
-                for value in values
-            ]
-        end
-    finally
-        record_scan_phase!(
-            project, file.filepath, recipe.kind, :entries,
-            (time_ns() - started) / 1e9, Base.Threads.threadid())
+    return @timed_dbg "entries" begin
+        values = recipe.entries === nothing ? Any[loaded_data] :
+            recipe.entries(loaded_data, inherited_metadata)
+        values isa AbstractVector || error(
+            "entries callback for registration $(recipe.kind) must return a vector; " *
+            "got $(typeof(values))",
+        )
+        AbstractDataItem[
+            _registered_item(recipe, source, file, value, inherited_metadata)
+            for value in values
+        ]
     end
-    return items
 end
 
 """
@@ -391,20 +268,8 @@ function interpret_source_item(
     else
         label(source_item)
     end
-    source_started = time_ns()
-    handles = try
-        @timed_dbg data_items(project, source, source_item)
-    catch
-        finish_source_profile!(
-            project, source_item_id_value, source_item_label_value, source_item_path_value,
-            :unmatched, 0,
-            (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
-        rethrow()
-    end
+    handles = @timed_dbg data_items(project, source, source_item)
     item_count = length(handles)
-    item_kinds = unique(kind(handle) for handle in handles)
-    source_kind = length(item_kinds) == 1 ? only(item_kinds) :
-        isempty(item_kinds) ? :unmatched : :mixed
     records = Vector{ItemRecord}(undef, item_count)
     collection_paths = Vector{Vector{CollectionInput}}(undef, item_count)
     interpreted_items = Vector{AbstractDataItem}(undef, item_count)
@@ -426,10 +291,6 @@ function interpret_source_item(
         collection_paths[index] = collection_inputs(_collection_path(handle))
         interpreted_items[index] = attach_record(handle, record)
     end
-    finish_source_profile!(
-        project, source_item_id_value, source_item_label_value, source_item_path_value,
-        source_kind, item_count,
-        (time_ns() - source_started) / 1e9, Set([Base.Threads.threadid()]))
     return SourceItemInterpretation(
         records, collection_paths, interpreted_items, ItemFailure[],
         String(source_item_label_value))

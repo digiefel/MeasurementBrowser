@@ -326,15 +326,11 @@ function run_processing(
     interpreted = only(read_item_data(
         workspace.cache.db, [record]; stage=:interpreted))
     interpreted === nothing && (interpreted = source_fallback(workspace, record))
-    process_started = time_ns()
-    source_ref = source_item_id(workspace, record.source_item_key)
     materialized_record = effective_record(collections, record)
     input = interpreted isa RegisteredDataItem ?
         registered_data_item(
             collections, materialized_record, item_data(interpreted)) : interpreted
     processed = @timed_dbg process(workspace.project, workspace.source, input)
-    record_scan_phase!(workspace.project, source_ref, record.kind,
-        :process, (time_ns() - process_started) / 1e9, Base.Threads.threadid())
     return (
         item=processed,
         record=materialized_record,
@@ -379,9 +375,7 @@ function run_item_analysis(
     processed === nothing && error(
         "Cannot analyze item '$(record.id)': processed data is missing",
     )
-    analyze_started = time_ns()
-    source_ref = source_item_id(workspace, record.source_item_key)
-    computed = @timed_dbg "analyze" begin
+    return @timed_dbg "analyze" begin
         input = processed isa RegisteredDataItem ?
             registered_data_item(
                 collections, delivered_record, item_data(processed)) : processed
@@ -391,9 +385,6 @@ function run_item_analysis(
             input,
         ))
     end
-    record_scan_phase!(workspace.project, source_ref, record.kind,
-        :analyze, (time_ns() - analyze_started) / 1e9, Base.Threads.threadid())
-    return computed
 end
 
 """
