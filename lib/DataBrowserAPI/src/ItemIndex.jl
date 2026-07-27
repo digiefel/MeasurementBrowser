@@ -10,7 +10,6 @@ import ..DataBrowserAPI:
     MetadataDict,
     AbstractProject,
     MetadataValue,
-    Project,
     attach_record,
     cacheable_data,
     collection,
@@ -22,7 +21,6 @@ import ..DataBrowserAPI:
     kind,
     label,
     metadata,
-    reconstruct,
     source_id,
     source_item_path,
     source_item_timestamp,
@@ -71,23 +69,23 @@ function metadata_dict(dict::AbstractDict)::MetadataDict
     return out
 end
 
-"""Package-owned collection value created by the registration string-path adapter."""
-struct RegisteredCollection <: AbstractCollection
+"""Package-owned collection level identified by a name."""
+struct NamedCollection <: AbstractCollection
     name::String
     metadata::MetadataDict
 end
 
-RegisteredCollection(name::AbstractString; metadata::AbstractDict=MetadataDict()) =
-    RegisteredCollection(String(name), metadata_dict(metadata))
+NamedCollection(name::AbstractString; metadata::AbstractDict=MetadataDict()) =
+    NamedCollection(String(name), metadata_dict(metadata))
 
-label(collection::RegisteredCollection)::String = collection.name
-metadata(collection::RegisteredCollection)::MetadataDict = collection.metadata
-id(collection::RegisteredCollection)::String = collection.name
-Base.:(==)(left::RegisteredCollection, right::RegisteredCollection)::Bool =
+label(collection::NamedCollection)::String = collection.name
+metadata(collection::NamedCollection)::MetadataDict = collection.metadata
+id(collection::NamedCollection)::String = collection.name
+Base.:(==)(left::NamedCollection, right::NamedCollection)::Bool =
     left.name == right.name
-Base.isequal(left::RegisteredCollection, right::RegisteredCollection)::Bool =
+Base.isequal(left::NamedCollection, right::NamedCollection)::Bool =
     isequal(left.name, right.name)
-Base.hash(collection::RegisteredCollection, seed::UInt)::UInt = hash(collection.name, seed)
+Base.hash(collection::NamedCollection, seed::UInt)::UInt = hash(collection.name, seed)
 
 """
 One transient normalized collection level produced during interpretation.
@@ -112,7 +110,7 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
             collection_id,
             String(label(value)),
             metadata_dict(metadata(value)),
-            value isa RegisteredCollection ? value.name : nothing,
+            value isa NamedCollection ? value.name : nothing,
         ))
         parent_id = collection_id
     end
@@ -121,7 +119,7 @@ end
 
 """Wrap a string path in package-owned named collection values."""
 named_collection_path(names::AbstractVector{<:AbstractString})::Vector{AbstractCollection} =
-    AbstractCollection[RegisteredCollection(name) for name in names]
+    AbstractCollection[NamedCollection(name) for name in names]
 
 """
 One package-owned indexed collection occurrence.
@@ -552,101 +550,6 @@ label(record::ItemRecord)::String = record.label
 
 """Item labels are resolved once at interpretation, so the UI never reruns project code."""
 display_label(::AbstractProject, record::ItemRecord)::String = record.label
-
-"""
-Private carrier handing one registration's `read` output to its `entries` stage.
-
-The registration name is a type parameter rather than a field, so `entries` selects its recipe by
-dispatch. `detect` runs inside the dialect's `read`, which is why the tag first appears here.
-"""
-struct RegisteredReadResult{K,D}
-    data::D
-    metadata::MetadataDict
-end
-
-RegisteredReadResult{K}(data::D, metadata::MetadataDict) where {K,D} =
-    RegisteredReadResult{K,D}(data, metadata)
-
-"""Result of a `read` whose source item matched no registration; `entries` yields no items."""
-struct NoMatch end
-
-"""
-Private carrier for ordinary data produced by `register_item!`.
-
-Adaptation converts the registration callback's collection strings into normalized
-`AbstractCollection` segments, so the carrier answers the generic item contract directly. Before
-interpretation normalizes the item, `id` holds only the callback-supplied sibling key (or `""`);
-the carrier delivered by interpretation is rebuilt on its record and carries the final minted id.
-"""
-struct RegisteredDataItem{D} <: AbstractDataItem
-    id::String
-    label::String
-    registration::Symbol
-    collection::Vector{AbstractCollection}
-    data::D
-    metadata::MetadataDict
-end
-
-"""Reconstruct registered data from a record, payload, and its normalized collection segments."""
-RegisteredDataItem(
-    record::ItemRecord,
-    data,
-    path::Vector{AbstractCollection}=AbstractCollection[],
-)::RegisteredDataItem = RegisteredDataItem(
-    record.id,
-    record.label,
-    record.kind,
-    path,
-    data,
-    record.metadata,
-)
-
-"""Reconstruct registered data from a record, payload, and its registration string path."""
-RegisteredDataItem(
-    record::ItemRecord,
-    data,
-    names::Vector{String},
-)::RegisteredDataItem = RegisteredDataItem(
-    record,
-    data,
-    AbstractCollection[RegisteredCollection(name) for name in names],
-)
-
-"""Copy registered data while replacing only its payload."""
-RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = RegisteredDataItem(
-    item.id,
-    item.label,
-    item.registration,
-    item.collection,
-    data,
-    item.metadata,
-)
-
-id(item::RegisteredDataItem)::String = item.id
-label(item::RegisteredDataItem)::String = item.label
-kind(item::RegisteredDataItem)::Symbol = item.registration
-collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
-metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
-item_data(item::RegisteredDataItem) = item.data
-"""
-A registered carrier adopts its normalized record wholesale, and the index's collection path when
-one is supplied. Its own segments survive interpretation, where the index has nothing yet.
-"""
-attach_record(
-    item::RegisteredDataItem,
-    record::ItemRecord,
-    path::AbstractVector=AbstractCollection[],
-)::RegisteredDataItem = RegisteredDataItem(
-    record, item.data, isempty(path) ? item.collection : AbstractCollection[s for s in path])
-
-"""
-Rebuild a registered carrier from a cached payload.
-
-Identity is not derived here: the carrier is package-owned, so `attach_record` restores its minted
-id, label, kind, and collection path from the record and index straight afterwards.
-"""
-reconstruct(::Type{RegisteredDataItem}, data, metadata::Dict)::RegisteredDataItem =
-    RegisteredDataItem("", "", :_, AbstractCollection[], data, metadata_dict(metadata))
 
 """Return one item record's inherited collection metadata plus its own entries layer."""
 function effective_metadata(index::CollectionIndex, record::ItemRecord)::MetadataDict

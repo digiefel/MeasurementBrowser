@@ -74,8 +74,8 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
     source = test_source(project, root_path)
     workspace = DataBrowserCore.Workspace.Workspace(project, source)
     collections = DataBrowserAPI.ItemIndex.CollectionIndex(root_path)
-    path_1 = DataBrowserAPI.ItemIndex.RegisteredCollection.(["chip", "device-1"])
-    path_2 = DataBrowserAPI.ItemIndex.RegisteredCollection.(["chip", "device-2"])
+    path_1 = DataBrowserAPI.ItemIndex.NamedCollection.(["chip", "device-1"])
+    path_2 = DataBrowserAPI.ItemIndex.NamedCollection.(["chip", "device-2"])
     key_1 = DataBrowserAPI.ItemIndex.resolve_collection_path!(
         collections, DataBrowserAPI.ItemIndex.collection_inputs(path_1))
     key_2 = DataBrowserAPI.ItemIndex.resolve_collection_path!(

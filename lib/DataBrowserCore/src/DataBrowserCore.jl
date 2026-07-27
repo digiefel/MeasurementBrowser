@@ -5,13 +5,7 @@ and the `DataBrowserCache` store.
 module DataBrowserCore
 
 using DataBrowserAPI
-using DataBrowserAPI:
-    CollectionRecipe,
-    ItemRecipe,
-    Project,
-    detect_kind,
-    kind_label,
-    source_item_path
+using DataBrowserAPI: source_item_path
 using DataBrowserAnnotations
 using DataBrowserSources
 using DataBrowserAPI: @timed_dbg

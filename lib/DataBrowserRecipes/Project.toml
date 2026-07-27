@@ -1,0 +1,16 @@
+name = "DataBrowserRecipes"
+uuid = "a7c3e5d9-2b4f-4816-9e0d-3f5a7c9b1e24"
+version = "0.1.0"
+authors = ["Davide Lombardo <dlombardo32@gmail.com>"]
+
+[deps]
+DataBrowserAPI = "08de5a46-6e49-4091-bc31-d2c451d3c374"
+
+[compat]
+julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

@@ -46,8 +46,8 @@ end
 
     registered = COLLECTION_RECORD_INDEX.CollectionIndex("registered")
     registered_inputs = COLLECTION_RECORD_INDEX.collection_inputs(AbstractCollection[
-        COLLECTION_RECORD_INDEX.RegisteredCollection("wafer"),
-        COLLECTION_RECORD_INDEX.RegisteredCollection("device"),
+        COLLECTION_RECORD_INDEX.NamedCollection("wafer"),
+        COLLECTION_RECORD_INDEX.NamedCollection("device"),
     ])
     registered_key = COLLECTION_RECORD_INDEX.resolve_collection_path!(
         registered, registered_inputs)

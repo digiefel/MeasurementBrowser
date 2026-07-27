@@ -4,7 +4,7 @@ using Test
 const HE_INDEX = DataBrowserAPI.ItemIndex
 
 function _insert_registered!(index, item_id, names...)
-    path = collect(HE_INDEX.RegisteredCollection.(names))
+    path = collect(HE_INDEX.NamedCollection.(names))
     key = HE_INDEX.resolve_collection_path!(index, HE_INDEX.collection_inputs(path))
     HE_INDEX.insert_item!(index, item_id, key)
     return key
@@ -23,7 +23,7 @@ end
             collections = index.collections
             items = index.items
             path = HE_INDEX.collection_inputs(AbstractCollection[
-                HE_INDEX.RegisteredCollection("batch"),
+                HE_INDEX.NamedCollection("batch"),
             ])
             for number in 1:2
                 source_key = DataBrowserCache.source_item_key!(

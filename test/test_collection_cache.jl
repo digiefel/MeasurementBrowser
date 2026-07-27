@@ -1,6 +1,7 @@
 using DataBrowser
 using DataBrowserAPI
 using DataBrowserCache
+using DataBrowserRecipes
 using DataBrowserSources
 using Test
 
@@ -38,7 +39,9 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
         DataBrowserAPI.ItemIndex.insert_item!(collections, record.id, leaf_key)
         try
             write_meta_header!(cache)
-            item = DataBrowserAPI.ItemIndex.RegisteredDataItem(record, nothing)
+            item = DataBrowserRecipes.RegisteredDataItem{:test}(
+                record.id, record.label, DataBrowser.AbstractCollection[], nothing,
+                record.metadata)
             DataBrowserCache.store_interpreted_records!(
                 cache, source_item, "item file", [record], [item])
             store_collection_index!(cache, collections, [record])

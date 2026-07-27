@@ -58,14 +58,14 @@ again with the same name replaces that registration in place.
 function register_item!(
     project::Project,
     kind::Symbol;
-    read::Function,
-    detect::Function=Returns(true),
-    entries::Union{Nothing,Function}=nothing,
-    process::Union{Nothing,Function}=nothing,
-    analyze::Union{Nothing,Function}=nothing,
-    label::Union{Nothing,Function}=nothing,
-    collection::Union{Nothing,Function}=nothing,
-    id::Union{Nothing,Function}=nothing,
+    read,
+    detect=Returns(true),
+    entries=nothing,
+    process=nothing,
+    analyze=nothing,
+    label=nothing,
+    collection=nothing,
+    id=nothing,
 )::Project
     recipe = ItemRecipe(
         kind, detect, read, entries, process, analyze, label, collection, id)
@@ -88,8 +88,8 @@ Re-calling with the same registration name replaces the recipe.
 function register_collection_analysis!(
     project::Project,
     kind::Symbol;
-    process::Union{Nothing,Function}=nothing,
-    analyze::Union{Nothing,Function}=nothing,
+    process=nothing,
+    analyze=nothing,
 )::Project
     project.collections[kind] = CollectionRecipe(kind, process, analyze)
     return project

@@ -3,7 +3,7 @@ using BetterFileWatching
 using CancellationTokens: CancellationToken, CancellationTokenSource, OperationCanceledException, cancel, get_token, is_cancellation_requested
 
 import DataBrowserAPI
-using DataBrowserAPI.ItemIndex: RegisteredCollection
+using DataBrowserAPI.ItemIndex: NamedCollection
 import DataBrowserAPI: annotate_collection_path, default_collection_path
 using DataBrowserAPI:
     AbstractDataSource,
@@ -327,7 +327,7 @@ function _named_path(
 )::Vector{DataBrowserAPI.AbstractCollection}
     return lock(source.metadata_lock) do
         DataBrowserAPI.AbstractCollection[
-            RegisteredCollection(
+            NamedCollection(
                 name;
                 metadata=own_collection_metadata(
                     source.collection_metadata_entries,
@@ -355,7 +355,7 @@ function annotate_collection_path(
     source::DirectorySource,
     path::AbstractVector,
 )::Vector{DataBrowserAPI.AbstractCollection}
-    all(segment -> segment isa RegisteredCollection, path) ||
+    all(segment -> segment isa NamedCollection, path) ||
         return DataBrowserAPI.AbstractCollection[segment for segment in path]
     return _named_path(source, String[DataBrowserAPI.label(segment) for segment in path])
 end

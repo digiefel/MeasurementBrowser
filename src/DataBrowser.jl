@@ -3,6 +3,7 @@ module DataBrowser
 
 using PrecompileTools
 using DataBrowserAPI
+using DataBrowserRecipes
 using DataBrowserSources
 using DataBrowserCore
 using DataBrowserPlots
@@ -16,7 +17,6 @@ using DataBrowserAPI:
     AbstractProject,
     analyze,
     collection,
-    define_project,
     entries,
     display_label,
     fingerprint,
@@ -26,8 +26,6 @@ using DataBrowserAPI:
     label,
     metadata,
     process,
-    register_collection_analysis!,
-    register_item!,
     close_source!,
     open_source,
     source_items,
@@ -40,6 +38,11 @@ using DataBrowserAPI:
     reconstruct,
     item_type,
     read
+using DataBrowserRecipes:
+    Project,
+    define_project,
+    register_collection_analysis!,
+    register_item!
 using DataBrowserPlots:
     PlotKind,
     RegisteredPlot,
@@ -122,7 +125,7 @@ export open_browser,
     item_type,
     AbstractProject
 
-using DataBrowserAPI: Project, project_name
+using DataBrowserAPI: project_name
 import DataBrowserCache as Cache
 import DataBrowserCore.Workspace as Workspace
 import DataBrowserGUI: Browser

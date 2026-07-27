@@ -51,3 +51,12 @@ scanning, and no module-qualified type name to keep valid across refactors. Retu
 (the default) is always safe: the engine falls back to rerunning `read` → `entries` → `process`.
 """
 item_type(::AbstractProject, ::Symbol)::Union{Nothing,Type} = nothing
+
+"""
+Projects a GUI session can offer when the caller did not supply one, and the preferred default.
+
+Registries of `AbstractProject`, not of any one dialect: the GUI picks between projects without
+knowing how they were defined.
+"""
+const PROJECTS = AbstractProject[]
+const DEFAULT_PROJECT = Ref{Union{AbstractProject,Nothing}}(nothing)
