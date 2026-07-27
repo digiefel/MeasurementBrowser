@@ -20,13 +20,15 @@ measurement cycles, or no recognized data at all.
 The registration API produces logical items from ordinary data. DataBrowser supplies identity,
 labels, collection placement, and empty metadata when callbacks omit them.
 
-The type API returns concrete `AbstractDataItem` values from `data_items`. Their Julia types remain
-intact, so processing and visualization can use multiple dispatch.
+The type API returns concrete `AbstractDataItem` values from `entries`, after `read` has performed
+the one expensive source operation. Their Julia types remain intact, so processing and
+visualization can use multiple dispatch. The registration API is a dialect written over the same
+stages — it has no stage, cache boundary, or engine integration a typed project lacks.
 
 ```mermaid
 flowchart TB
     registration["register_item!<br/>ordinary data callbacks"] --> workspace["Workspace pipeline"]
-    typed["data_items<br/>concrete AbstractDataItem values"] --> workspace
+    typed["read + entries<br/>concrete AbstractDataItem values"] --> workspace
     workspace --> index["Browse and query metadata"]
     workspace --> materialize["Materialize selected data"]
     materialize --> views["Inspect and visualize"]
@@ -138,10 +140,14 @@ output. Sibling items may execute concurrently, so callbacks treat shared input 
 
 ## Data and caching
 
-Registration data implementing the Tables.jl interface is persisted natively when its column types
-are supported. Other registration data remains available through the source and in-memory pipeline.
+Any item's data is persisted natively when it implements the Tables.jl interface with supported
+column types — typed and registered alike. Other data remains available through the source and
+in-memory pipeline.
 
-Typed items are source-backed and recreated through `data_items` when selected. Domain sources may
+A cached payload is delivered to views without running project code. Rebuilding a concrete item
+from one, in order to run a further stage, needs its type to implement
+`reconstruct(::Type{T}, data, metadata)`; without that method the item is recreated through
+`read` → `entries` → `process` when selected. Domain sources may
 own their own loading cache. Cache policy changes how DataBrowser obtains a value; it does not change
 the value delivered to processing or visualization.
 

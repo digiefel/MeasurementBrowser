@@ -383,7 +383,7 @@ uuid = "a7c3e5d9-2b4f-4816-9e0d-3f5a7c9b1e24"
 version = "0.1.0"
 
 [[deps.DataBrowserSources]]
-deps = ["BetterFileWatching", "CSV", "CancellationTokens", "DataBrowserAPI", "DataFrames", "Dates"]
+deps = ["BetterFileWatching", "CancellationTokens", "DataBrowserAPI", "Dates"]
 path = "lib/DataBrowserSources"
 uuid = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
 version = "0.1.0"

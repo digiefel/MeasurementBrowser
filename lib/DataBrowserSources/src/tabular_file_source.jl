@@ -1,11 +1,12 @@
-using CSV
-using DataFrames: DataFrame, names, nrow
-
 """
 Preview of one arbitrary delimited text table.
 
-This is intentionally not item data. It keeps the file's own columns and only records how
-the table was detected so the browser can show the user what it found.
+This is intentionally not item data. It keeps the file's own columns and only records how the table
+was detected so the browser can show the user what it found. Reading a file *as data* is a project
+concern, served by the recipes in `DataBrowserRecipes`; a source only has to discover files and show
+enough of one for a person to recognize it, so this deliberately owns no format parser.
+
+`table` holds one vector per entry in `columns`, positionally aligned.
 """
 struct TabularFileSource
     path::String
@@ -15,7 +16,7 @@ struct TabularFileSource
     columns::Vector{String}
     row_count::Int
     preview_rows::Int
-    table::DataFrame
+    table::Vector{AbstractVector}
     warnings::Vector{String}
 end
 
@@ -30,7 +31,7 @@ function inspect_table(
 
     lines = readlines(filepath)
     layout = detect_table_layout(lines)
-    table = read_preview_table(filepath, layout; max_rows=Int(max_rows))
+    column_names, table = read_preview_table(lines, layout; max_rows=Int(max_rows))
     row_count = count_data_lines(lines, layout.data_start_row)
     warnings = row_count > max_rows ?
         ["Showing first $(max_rows) rows of approximately $(row_count)."] :
@@ -41,9 +42,9 @@ function inspect_table(
         layout.delimiter,
         layout.header_row,
         layout.data_start_row,
-        String.(names(table)),
+        column_names,
         row_count,
-        nrow(table),
+        isempty(table) ? 0 : length(first(table)),
         table,
         warnings,
     )
@@ -94,23 +95,54 @@ function table_fields(line::AbstractString, delimiter::Char)::Vector{String}
     return strip.(String.(split(text, delimiter; keepempty=true)))
 end
 
-"""Read the detected table with CSV.jl while preserving source column names."""
+"""
+Read the detected table into column vectors, preserving the file's own column names.
+
+Splitting is the same `table_fields` the layout detection already used, so a preview needs no
+parser beyond it. Ragged rows are padded rather than rejected: the point is to show the user what
+is in the file, including that it is ragged.
+"""
 function read_preview_table(
-    filepath::AbstractString,
+    lines::Vector{String},
     layout::NamedTuple;
     max_rows::Int,
-)::DataFrame
-    options = (
-        delim=layout.delimiter,
-        skipto=layout.data_start_row,
-        limit=max_rows,
-        normalizenames=false,
-        silencewarnings=true,
-    )
-    if layout.header_row === nothing
-        return CSV.read(filepath, DataFrame; options..., header=false)
+)::Tuple{Vector{String},Vector{AbstractVector}}
+    header = layout.header_row === nothing ? String[] :
+        table_fields(lines[layout.header_row], layout.delimiter)
+    rows = Vector{String}[]
+    for line in @view(lines[min(layout.data_start_row, length(lines) + 1):end])
+        length(rows) >= max_rows && break
+        fields = table_fields(line, layout.delimiter)
+        isempty(fields) && continue
+        push!(rows, fields)
     end
-    return CSV.read(filepath, DataFrame; options..., header=layout.header_row)
+    width = maximum(length, rows; init=length(header))
+    names = String[
+        index <= length(header) && !isempty(header[index]) ? header[index] : "column_$index"
+        for index in 1:width
+    ]
+    columns = AbstractVector[
+        _typed_column(String[index <= length(row) ? row[index] : "" for row in rows])
+        for index in 1:width
+    ]
+    return names, columns
+end
+
+"""
+Narrow one column of raw fields to the most specific type its every value supports.
+
+Empty fields become `missing`, which is what makes a numeric column with gaps stay numeric.
+"""
+function _typed_column(fields::Vector{String})::AbstractVector
+    present = [field for field in fields if !isempty(field)]
+    for type in (Int64, Float64)
+        all(field -> tryparse(type, field) !== nothing, present) || continue
+        any(isempty, fields) || return type[parse(type, field) for field in fields]
+        return Union{Missing,type}[
+            isempty(field) ? missing : parse(type, field) for field in fields]
+    end
+    any(isempty, fields) || return fields
+    return Union{Missing,String}[isempty(field) ? missing : field for field in fields]
 end
 
 """Count non-empty source lines after the detected table start."""

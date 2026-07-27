@@ -215,7 +215,7 @@ DataBrowserAPI     the shared surface every interface calls and every extension 
 DataBrowserProfiling  instrumentation / traces (leaf: traces don't reference item identity)
 DataBrowserAnnotations → API : tags / notes / spatial-layout model, attached to item identities
 DataBrowserSources → API : file discovery, loading, metadata extraction, data summaries
-DataBrowserRecipes → API, Sources : the callback dialect (define_project, register_*) implemented
+DataBrowserRecipes → API : the callback dialect (define_project, register_*) implemented
                    as a client of the typed stage contract, plus premade recipes (CSV first)
 DataBrowserCache   → API : persistence (DuckDB where it fits); keyed by PROJECT, not workspace
 DataBrowserCore    → API, Sources, Cache, Annotations : the workspace, the index, background work,

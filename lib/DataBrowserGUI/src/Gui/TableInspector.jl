@@ -1,4 +1,3 @@
-using Tables
 import CImGui as ig
 import CImGui.CSyntax: @c
 using NativeFileDialog: pick_file
@@ -203,14 +202,12 @@ function _file_grid_model(
 )::Tuple{Vector{String},Int,Function}
     table = preview.table
     columns = preview.columns
-    n_rows = Tables.rowcount(table)
-    col_indices = Dict(c => j for (j, c) in enumerate(columns))
+    n_rows = preview.preview_rows
 
+    # Columns are positionally aligned with their names, so duplicate header names stay distinct.
     function cell(row::Int, col::Int)::String
-        col_name = columns[col]
-        ci = get(col_indices, col_name, nothing)
-        ci === nothing && return ""
-        text = sprint(show, table[row, ci])
+        col in eachindex(table) || return ""
+        text = sprint(show, table[col][row])
         return length(text) > 90 ? first(text, 87) * "..." : text
     end
 

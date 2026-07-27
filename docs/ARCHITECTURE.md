@@ -50,8 +50,8 @@ directory discovery stays fast. After the walk, a publisher task submits `Source
 on `publish_lock` / ingest. Removals and source-metadata reconcile happen in a final batch when
 that publisher drains. Source watchers submit the same batch type;
 `DirectorySource` watches the directory tree recursively and reports file creates, edits, renames,
-deletes, and metadata changes through that path. Interpretation workers call
-`data_items(project, source, source_item)`, put interpreted data into the memory cache, and publish
+deletes, and metadata changes through that path. Interpretation workers run `read(project, source, source_item)` and then
+`entries(project, source_item, loaded)`, put interpreted data into the memory cache, and publish
 their own completions: each finishing worker takes the workspace publish lock, rejects stale
 revisions, atomically publishes replacement records into `WorkspaceIndex`, sends semantic record
 writes/deletes to `ProjectCache`, queues follow-up work, and notifies the idle condition. Nothing
@@ -76,10 +76,13 @@ The cache ([cache.md](cache.md)) restores the previous hierarchy quickly while s
 
 When a view needs item data, delivery consults the live graph then the cache: a live node blocks
 until it publishes; a `RESULT_READY` row loads the payload; absence enqueues work. Otherwise the
-processing job loads interpreted data from the in-memory interpreted store or reuses the normal
-`data_items` path as source fallback, then runs `process`.
+processing job loads interpreted data from the in-memory interpreted store, rebuilds it from a
+cached payload through `reconstruct`, or reruns `read`/`entries` as source fallback, then runs
+`process`.
 Registration views receive processed data with effective metadata. Type-based views receive the
-project's concrete `AbstractDataItem` values.
+project's concrete `AbstractDataItem` values. Both travel the same stages: the registration dialect
+in `DataBrowserRecipes` implements them as ordinary methods, and no engine or cache path knows it
+exists.
 GUI selection, background work, and Makie embedding are described in [gui.md](gui.md).
 
 The **high-level callback API** (`define_project` + `register_*`, the exported convenience surface)
