@@ -19,17 +19,36 @@ Profile against the copy of the RuO2 project bundled with this skill, under
 `project/` next to this file. It defines the real measurement recipes but is a
 self-contained copy, so profiling never touches your actual project or data.
 
-Launch Julia with Revise, load that project's setup (its `define_project` +
-`register_*` calls), and open the workspace/browser against a data root. Loading
-`DataBrowserProfiling` is the whole switch — it turns timing on process-wide:
+**Use the `bench` environment.** It is the only environment that has
+`DataBrowserProfiling` together with every package the bundled project needs
+(CSV, DataFrames, GLMakie, SmoothData, Revise), all dev'd against this repo. A
+user's own analysis environment will not have `DataBrowserProfiling`, and
+`using DataBrowserProfiling` there fails outright — do not paper over that by
+running without instrumentation, and do not add the package to their project.
+
+`jmux -p bench '<code>'` keeps one persistent Julia REPL per environment, which
+removes the ~40 s startup and package-load cost from every iteration. Prefer it
+over launching a fresh `julia` for each measurement.
+
+**Load `Revise` first, before anything pulls in `DataBrowser`.** Revise cannot
+track packages that were already loaded when it starts, and it fails silently:
+`Revise.revise()` returns cleanly and you measure the *old* code. If a session is
+already loaded without it, `using Revise; using DataBrowserCache, DataBrowserCore;
+Revise.track(DataBrowserCache); Revise.track(DataBrowserCore)` recovers it —
+track the module by its own name, not as `DataBrowser.DataBrowserCache`.
 
 ```julia
-using Revise
+using Revise                          # FIRST — see above
 using DataBrowserProfiling            # loading this enables @timed_dbg
-# load the bundled project's definitions (project/), then:
-ws = open_workspace(project, root)
+include(".../databrowser-profiling/project/definitions.jl")   # defines PROJECT
+ws = open_workspace(PROJECT, root; metadata_file="device_info.txt")
 browser = open_browser(ws)
 ```
+
+The cache is DuckDB, single-writer: a workspace left open in the persistent
+session locks the project cache, and any other process opening the same project
+dies with an IO error. Call `close_workspace!(ws)` before running a second
+process against the same project.
 
 ## 2. Isolate one action and measure it
 
@@ -65,6 +84,13 @@ DataFrame(t)                                      # or CSV.write("t.csv", t) —
 
 The TimerOutputs README documents the rest (bars, GC time, allocations, `%par`,
 complement rows, flame graphs) — this skill does not restate it.
+
+`show(t)` pads every row to the width of the longest label, so one marker whose
+auto-generated label is a multi-line closure makes the whole tree unreadable in a
+terminal. Give such markers an explicit short label (section 5) rather than
+fighting the output. Reading a tree while the workload is still running also
+yields impossible numbers (children exceeding parents) because the timer mutates
+under you — stop the work, or accept that only finished sections are meaningful.
 
 ## 4. Iterate with Revise
 
