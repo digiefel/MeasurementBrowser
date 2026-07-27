@@ -9,7 +9,6 @@ using DataBrowserAPI:
     CollectionRecipe,
     ItemRecipe,
     Project,
-    data_items,
     detect_kind,
     kind_label,
     source_item_path

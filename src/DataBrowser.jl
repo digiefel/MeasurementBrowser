@@ -13,11 +13,12 @@ using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractCollection,
+    AbstractProject,
     analyze,
     cacheable,
     collection,
     define_project,
-    data_items,
+    entries,
     display_label,
     fingerprint,
     id,
@@ -36,7 +37,9 @@ using DataBrowserAPI:
     source_item_path,
     source_item_timestamp,
     source_open_options,
-    watch_source
+    watch_source,
+    reconstruct,
+    read
 using DataBrowserPlots:
     PlotKind,
     RegisteredPlot,
@@ -115,7 +118,9 @@ export open_browser,
     source_item_timestamp,
     source_open_options,
     watch_source,
-    data_items
+    entries,
+    reconstruct,
+    AbstractProject
 
 using DataBrowserAPI: Project, project_name
 import DataBrowserCache as Cache

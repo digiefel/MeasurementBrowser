@@ -6,7 +6,7 @@ using GLMakie: Figure
 import DataBrowserAPI
 import DataBrowserAPI:
     AbstractDataItem,
-    Project
+    AbstractProject
 import DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
 using DataBrowserAPI: @timed_dbg

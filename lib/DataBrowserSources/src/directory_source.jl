@@ -4,11 +4,10 @@ using CancellationTokens: CancellationToken, CancellationTokenSource, OperationC
 
 import DataBrowserAPI
 using DataBrowserAPI.ItemIndex: RegisteredCollection
-import DataBrowserAPI.ItemIndex: registered_collection_path
+import DataBrowserAPI: annotate_collection_path, default_collection_path
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
-    Project,
     SourceChanges,
     SourceError
 import DataBrowserAPI:
@@ -321,12 +320,11 @@ function own_collection_metadata(
     return own
 end
 
-"""Wrap a directory registration path with source-owned metadata on each level."""
-function registered_collection_path(
+"""Wrap a directory path with this source's `metadata.txt` entries on each level."""
+function _named_path(
     source::DirectorySource,
-    path::AbstractVector{<:AbstractString},
+    names::Vector{String},
 )::Vector{DataBrowserAPI.AbstractCollection}
-    names = String.(path)
     return lock(source.metadata_lock) do
         DataBrowserAPI.AbstractCollection[
             RegisteredCollection(
@@ -339,6 +337,27 @@ function registered_collection_path(
             for (depth, name) in pairs(names)
         ]
     end
+end
+
+"""Place an item with no collection path of its own under its directory, relative to the root."""
+function default_collection_path(
+    source::DirectorySource,
+    file::SourceFile,
+)::Vector{DataBrowserAPI.AbstractCollection}
+    isabspath(source.root_path) || return DataBrowserAPI.AbstractCollection[]
+    relative_directory = dirname(relpath(file.filepath, source.root_path))
+    relative_directory == "." && return DataBrowserAPI.AbstractCollection[]
+    return _named_path(source, splitpath(relative_directory))
+end
+
+"""Attach `metadata.txt` entries to every named level of one item's collection path."""
+function annotate_collection_path(
+    source::DirectorySource,
+    path::AbstractVector,
+)::Vector{DataBrowserAPI.AbstractCollection}
+    all(segment -> segment isa RegisteredCollection, path) ||
+        return DataBrowserAPI.AbstractCollection[segment for segment in path]
+    return _named_path(source, String[DataBrowserAPI.label(segment) for segment in path])
 end
 
 function source_items(

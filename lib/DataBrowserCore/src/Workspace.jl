@@ -104,7 +104,7 @@ using DataBrowserAPI.ItemIndex:
     effective_metadata,
     effective_record,
     metadata_dict,
-    registered_collection_path,
+    named_collection_path,
     registration_names,
     remove_item!,
     resolve_collection_path!,
@@ -119,15 +119,15 @@ import DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractDataItem,
-    Project,
+    AbstractProject,
     SourceChanges,
     SourceError,
-    _analyze_collection,
-    _analyze_item,
+    analyze,
+    annotate_collection_path,
     close_source!,
+    collection,
     _has_collection_analysis,
     _has_collection_process,
-    _process_collection,
     cacheable,
     fingerprint,
     id,
@@ -241,8 +241,8 @@ WorkspaceStatus() =
 """
 One open project/source pair and all package-managed state belonging to it.
 """
-mutable struct Workspace{S<:AbstractDataSource}
-    project::Project
+mutable struct Workspace{P<:AbstractProject,S<:AbstractDataSource}
+    project::P
     source::S
     index::WorkspaceIndex
     selection::WorkspaceSelection
@@ -273,12 +273,12 @@ end
 Create the empty state for one project-owned source.
 """
 function Workspace(
-    project::Project,
+    project::P,
     source::S;
     rebuild::Bool=false,
     cache::Bool=true,
     background_processing::Bool=false,
-)::Workspace{S} where {S<:AbstractDataSource}
+)::Workspace{P,S} where {P<:AbstractProject,S<:AbstractDataSource}
     collections = CollectionIndex(source_id(source))
     identity = project_cache_identity(project_name(project), source)
     metrics = BuildMetrics()
@@ -371,7 +371,7 @@ include("Workspace/Processing.jl")
 include("Workspace/MemoryDiagnostics.jl")
 
 function open_workspace(
-    project::Project,
+    project::AbstractProject,
     root_path::AbstractString;
     recursive::Bool=true,
     metadata_file::Union{Nothing,AbstractString}=DataBrowserSources.DEFAULT_DIRECTORY_METADATA_FILE,

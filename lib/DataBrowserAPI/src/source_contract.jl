@@ -105,5 +105,19 @@ source_item_path(::AbstractDataSourceItem)::Union{Nothing,String} = nothing
 """Timestamp for a source item, when one exists."""
 source_item_timestamp(::AbstractDataSourceItem) = nothing
 
-"""Interpret one source item into lightweight logical data items."""
-function data_items end
+"""
+Where a source places an item that declares no collection path of its own.
+
+Applied by the engine after `entries`, where the source is legitimately in hand — the pipeline
+stages themselves stay pure functions of values. The default leaves such items at the root; a
+directory source places them under their directory relative to its root.
+"""
+default_collection_path(::AbstractDataSource, ::AbstractDataSourceItem) = AbstractCollection[]
+
+"""
+Let a source attach its own metadata to the levels of one item's collection path.
+
+The directory source attaches its `metadata.txt` entries to each named level. The default returns
+the path unchanged, so a source with nothing to add costs nothing.
+"""
+annotate_collection_path(::AbstractDataSource, path::AbstractVector) = path

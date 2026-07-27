@@ -38,10 +38,13 @@ DataBrowser.label(collection::DurableCollection) = collection.shown
 DataBrowser.id(item::DurableCollectionItem) = item.id
 DataBrowser.collection(item::DurableCollectionItem) = item.path
 
-function DataBrowser.data_items(
-    ::Project,
-    source::DurableCollectionSource,
+struct DurableProject <: DataBrowser.AbstractProject end
+
+DataBrowser.read(source::DurableCollectionSource, ::DurableCollectionSourceItem) = source
+
+function DataBrowser.entries(
     ::DurableCollectionSourceItem,
+    source::DurableCollectionSource,
 )
     parent = DurableCollection(1, "parent $(source.label_suffix)")
     return [
@@ -62,7 +65,7 @@ const DURABLE_SECOND_ID = "source#DurableCollectionItem:durable-2"
 
 @testset "collection IDs survive a clean cache rebuild" begin
     root_path = mktempdir()
-    project = define_project("CollectionIdPersistence")
+    project = DurableProject()
     first = open_workspace(
         project,
         DurableCollectionSource(root_path, "before");
@@ -96,7 +99,7 @@ const DURABLE_SECOND_ID = "source#DurableCollectionItem:durable-2"
             annotation_root, annotation_key, "persists across rebuild")
 
         view = COLLECTION_ID_BROWSER.PersistedProjectView(
-            project=project.name,
+            project=DataBrowser.project_name(project),
             tree=COLLECTION_ID_BROWSER.PersistedTreeView(
                 expanded=[durable_id],
                 selected=[durable_id],

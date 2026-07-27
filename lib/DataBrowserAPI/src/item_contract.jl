@@ -63,18 +63,3 @@ Let an item adopt the normalized record interpretation produced for it. Internal
 the default keeps the item unchanged.
 """
 attach_record(item::AbstractDataItem, record) = item
-
-"""Optional rewrite of a collection's members (one output per input). Internal workspace hook."""
-function _process_collection end
-
-"""Optional fold over a collection's members into collection-node metadata. Internal workspace hook."""
-function _analyze_collection end
-
-"""Per-item analysis metadata computed after indexing. Internal workspace hook."""
-function _analyze_item end
-
-"""Whether one item kind has a registered collection `process` stage."""
-function _has_collection_process end
-
-"""Whether one item kind has a registered collection `analyze` stage."""
-function _has_collection_analysis end

@@ -300,6 +300,22 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     end
 end
 
+"""
+The concrete collection value one collection's members belong to.
+
+Collection stages dispatch on the project's own collection value, which the engine reads back off a
+member's path rather than storing separately: an item's last path segment *is* the collection it
+sits in. Cache, index, and GUI state keep using `CollectionRecord`.
+"""
+function member_collection(items::AbstractVector)::AbstractCollection
+    isempty(items) && error("Cannot run a collection stage over no members")
+    path = collection(first(items))
+    isempty(path) && error(
+        "Cannot run a collection stage: member '$(id(first(items)))' declares no collection path",
+    )
+    return last(path)
+end
+
 """Materialize a registered item with its user-facing registration string path."""
 function registered_data_item(
     collections::CollectionIndex,
@@ -330,7 +346,11 @@ function run_processing(
     input = interpreted isa RegisteredDataItem ?
         registered_data_item(
             collections, materialized_record, item_data(interpreted)) : interpreted
-    processed = @timed_dbg process(workspace.project, workspace.source, input)
+    processed = @timed_dbg process(workspace.project, input)
+    processed isa AbstractDataItem || error(
+        "process(::$(typeof(workspace.project)), ::$(typeof(input))) must return an " *
+        "AbstractDataItem; got $(typeof(processed))",
+    )
     return (
         item=processed,
         record=materialized_record,
@@ -379,11 +399,7 @@ function run_item_analysis(
         input = processed isa RegisteredDataItem ?
             registered_data_item(
                 collections, delivered_record, item_data(processed)) : processed
-        metadata_dict(_analyze_item(
-            workspace.project,
-            workspace.source,
-            input,
-        ))
+        metadata_dict(analyze(workspace.project, input))
     end
 end
 
@@ -418,11 +434,7 @@ function run_collection_process(workspace::Workspace, collection_key::Int64)::Na
             payload::AbstractDataItem
         for (index, payload) in pairs(payloads)
     ]
-    outputs = _process_collection(
-        workspace.project,
-        workspace.source,
-        inputs,
-    )
+    outputs = process(workspace.project, member_collection(inputs), inputs)
     by_id = Dict(id(input) => input for input in inputs)
     rewritten_ids = String[]
     for output in outputs
@@ -475,11 +487,7 @@ function run_collection_analysis(workspace::Workspace, collection_key::Int64)::M
             payload::AbstractDataItem
         for (index, payload) in pairs(payloads)
     ]
-    return metadata_dict(_analyze_collection(
-        workspace.project,
-        workspace.source,
-        items,
-    ))
+    return metadata_dict(analyze(workspace.project, member_collection(items), items))
 end
 
 """Execute one work node and publish its completion immediately."""

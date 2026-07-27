@@ -2,13 +2,15 @@ using DataBrowser
 using DelimitedFiles: readdlm
 import DataBrowser:
     collection,
-    data_items,
+    entries,
     fingerprint,
     id,
     item_data,
     label,
     metadata,
     process,
+    project_name,
+    read,
     source_id,
     source_item_path,
     source_items,
@@ -63,17 +65,18 @@ function process(image::Micrograph)::Micrograph
     return Micrograph(image.name, normalized, image.exposure_ms)
 end
 
-function data_items(
-    ::Project,
-    ::MicrographDirectory,
-    file::MicrographFile,
-)::Vector{Micrograph}
-    pixels = Float32.(readdlm(file.path, ','))
-    name = splitext(basename(file.path))[1]
-    return [Micrograph(name, pixels, 10.0)]
-end
+# `read` is the only stage that touches the source; `entries` is a pure function of its result.
+read(::MicrographDirectory, file::MicrographFile)::Matrix{Float32} =
+    Float32.(readdlm(file.path, ','))
 
-project = define_project("Typed micrographs"; description="Matrix-valued microscopy images")
+entries(file::MicrographFile, pixels::Matrix{Float32})::Vector{Micrograph} =
+    [Micrograph(splitext(basename(file.path))[1], pixels, 10.0)]
+
+struct MicrographProject <: DataBrowser.AbstractProject end
+
+project_name(::MicrographProject) = "Typed micrographs"
+
+project = MicrographProject()
 source = MicrographDirectory(only(ARGS))
 workspace = open_workspace(project, source)
 open_browser(workspace)

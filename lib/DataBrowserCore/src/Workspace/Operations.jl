@@ -2,7 +2,7 @@
 Start cache loading and source scanning for one new workspace.
 """
 function open_workspace(
-    project::Project,
+    project::AbstractProject,
     source::AbstractDataSource;
     rebuild::Bool=false,
     cache::Bool=true,
@@ -264,7 +264,7 @@ function reconcile_source_metadata_cache!(
         names = registration_names(workspace.index.collections, key)
         names === nothing && continue
         inputs = collection_inputs(
-            registered_collection_path(workspace.source, names),
+            annotate_collection_path(workspace.source, named_collection_path(names)),
         )
         resolve_collection_path!(
             workspace.index.collections,

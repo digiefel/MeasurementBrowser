@@ -2,7 +2,7 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-using DataBrowserAPI: Project
+using DataBrowserAPI: AbstractProject
 using DataBrowserSources
 using DataBrowserCore: InspectorTable
 
@@ -148,7 +148,7 @@ Base.@kwdef mutable struct BrowserState
     modal_root_path::String = ""
     cache_rebuild_modal::Bool = false
     cache_rebuild_path::String = ""
-    cache_rebuild_project::Union{Nothing,Project} = nothing
+    cache_rebuild_project::Union{Nothing,AbstractProject} = nothing
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
     """Set by `close_browser!` so the render loop exits without a GLFW close click."""

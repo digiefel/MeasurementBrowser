@@ -8,6 +8,7 @@ import ..DataBrowserAPI:
     AbstractDataItem,
     AbstractCollection,
     MetadataDict,
+    AbstractProject,
     MetadataValue,
     Project,
     attach_record,
@@ -16,6 +17,7 @@ import ..DataBrowserAPI:
     collection,
     collection_record_id,
     collection_path_label,
+    display_label,
     id,
     item_data,
     kind,
@@ -33,7 +35,7 @@ struct ItemFailure
     message::String
 end
 
-collection_path_label(::Project, path::AbstractVector{<:AbstractCollection})::String =
+collection_path_label(::AbstractProject, path::AbstractVector{<:AbstractCollection})::String =
     join(label.(path), "_")
 
 """Normalize one value into the supported metadata value union."""
@@ -117,17 +119,8 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
     return inputs
 end
 
-"""
-Wrap a registration string path in package-owned collection values.
-
-Sources may specialize this to attach source-owned metadata to each level (the directory source
-attaches its `metadata.txt` entries). Applied when adapting registration callback output, so
-registered items satisfy the generic `collection(item)` contract.
-"""
-registered_collection_path(
-    ::AbstractDataSource,
-    names::AbstractVector{<:AbstractString},
-)::Vector{AbstractCollection} =
+"""Wrap a string path in package-owned named collection values."""
+named_collection_path(names::AbstractVector{<:AbstractString})::Vector{AbstractCollection} =
     AbstractCollection[RegisteredCollection(name) for name in names]
 
 """
@@ -556,6 +549,26 @@ end
 
 id(record::ItemRecord)::String = record.id
 label(record::ItemRecord)::String = record.label
+
+"""Item labels are resolved once at interpretation, so the UI never reruns project code."""
+display_label(::AbstractProject, record::ItemRecord)::String = record.label
+
+"""
+Private carrier handing one registration's `read` output to its `entries` stage.
+
+The registration name is a type parameter rather than a field, so `entries` selects its recipe by
+dispatch. `detect` runs inside the dialect's `read`, which is why the tag first appears here.
+"""
+struct RegisteredReadResult{K,D}
+    data::D
+    metadata::MetadataDict
+end
+
+RegisteredReadResult{K}(data::D, metadata::MetadataDict) where {K,D} =
+    RegisteredReadResult{K,D}(data, metadata)
+
+"""Result of a `read` whose source item matched no registration; `entries` yields no items."""
+struct NoMatch end
 
 """
 Private carrier for ordinary data produced by `register_item!`.
