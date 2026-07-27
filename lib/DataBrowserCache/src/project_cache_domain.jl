@@ -811,8 +811,14 @@ function store_collection_index!(
     collections::CollectionIndex,
     records::Vector{ItemRecord},
 )::Nothing
-    for record in records
+    # Items share ancestors, so the same collection appears in hundreds of records' paths. Write
+    # each collection once per call: re-serializing and re-writing it per record made this loop
+    # scale with item count instead of collection count.
+    written = Set{Int64}()
+    @timed_dbg "store_collections" for record in records
         for collection_key in collection_path_keys(collections, record.collection_key)
+            collection_key in written && continue
+            push!(written, collection_key)
             collection_record = collections.records[collection_key]
             lock(cache.key_lock) do
                 row = CollectionRow(
@@ -831,6 +837,8 @@ function store_collection_index!(
                 end
             end
         end
+    end
+    @timed_dbg "store_items" for record in records
         key = item_key!(cache, record.id)
         edit!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_key, record.label,

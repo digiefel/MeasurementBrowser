@@ -257,9 +257,9 @@ function reconcile_source_metadata_cache!(
     refresh_hierarchy::Bool=false,
 )::Vector{ItemRecord}
     refresh_hierarchy || return ItemRecord[]
-    old_collections = copy(workspace.index.collections)
+    old_collections = @timed_dbg "recon_copy" copy(workspace.index.collections)
     current_keys = collect(keys(workspace.index.collections.records))
-    for key in current_keys
+    @timed_dbg "recon_resolve" for key in current_keys
         haskey(workspace.index.collections.records, key) || continue
         names = registration_names(workspace.index.collections, key)
         names === nothing && continue
@@ -272,14 +272,14 @@ function reconcile_source_metadata_cache!(
             update_existing=true,
         )
     end
-    refresh_collection_metadata_keys!(workspace.index)
+    @timed_dbg "recon_keys" refresh_collection_metadata_keys!(workspace.index)
     records = collect(values(workspace.index.items))
-    changed = ItemRecord[
+    changed = @timed_dbg "recon_diff" ItemRecord[
         record for record in records
         if effective_metadata(old_collections, record) !=
            effective_metadata(workspace.index.collections, record)
     ]
-    isempty(records) || store_collection_index!(
+    isempty(records) || @timed_dbg "recon_store" store_collection_index!(
         workspace.cache.db, workspace.index.collections, records)
     return changed
 end
@@ -548,14 +548,14 @@ function ingest_source_changes!(
         end
     end
     if changes.metadata_changed
-        stale = reconcile_source_metadata_cache!(workspace; refresh_hierarchy=true)
-        isempty(stale) || invalidate_records_work!(workspace, stale)
+        stale = @timed_dbg "reconcile_metadata" reconcile_source_metadata_cache!(workspace; refresh_hierarchy=true)
+        isempty(stale) || @timed_dbg "invalidate_work" invalidate_records_work!(workspace, stale)
         changed = changed || !isempty(stale)
     end
     # Upsert-only batches only enqueue work; the published index is unchanged until interpretation
     # lands or removals/metadata reconcile run. Rebuild SourceScan then, not on every discover batch.
     if !isempty(changes.removals) || changes.metadata_changed
-        refresh_workspace_source!(workspace)
+        @timed_dbg "refresh_source" refresh_workspace_source!(workspace)
     end
     status === nothing || (workspace.cache.status = status)
     return changed
@@ -666,7 +666,7 @@ function scan_source!(
                         length(pending_upserts[]) >= upsert_batch && flush_pending_upserts!()
                     end
                 end
-                discovered = @timed_dbg source_items(
+                discovered = @timed_dbg "source_walk" source_items(
                     workspace.source;
                     cancel_token=scan_token,
                     on_progress=count -> begin
