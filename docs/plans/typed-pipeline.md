@@ -179,15 +179,12 @@ Only the second requires the project to say anything:
 reconstruct(::Type{T}, data, metadata::Dict)::T
 ```
 
-Package-owned, opt-in, and pure, gated by `hasmethod` — a generic function rather than a
-constructor, so opting in is unambiguous and collision-free, and the package never defines methods
-on a name a project owns. The rebuilt item re-derives `id`, `collection`, and `metadata`; the
-engine validates them against the record and fails loudly on mismatch. Without a `reconstruct`
-method the engine falls back to rerunning upstream stages — always correct, just slower, and
-payload delivery keeps working meanwhile. `RegisteredDataItem` implements `reconstruct`
-internally, which dissolves the registration-only cache gate into dispatch any item type can
-implement. Rehydration must stay a pure function of cached content; values a type needs to rebuild
-itself belong in its metadata, never in live workspace state.
+Package-owned and pure. The default returns `nothing`; a type opts in by defining a method that
+returns an item. Without one the engine falls back to rerunning upstream stages — always correct,
+just slower, and payload delivery keeps working meanwhile. `RegisteredDataItem` implements
+`reconstruct` internally, which dissolves the registration-only cache gate into dispatch any item
+type can implement. Rehydration must stay a pure function of cached content; values a type needs to
+rebuild itself belong in its metadata, never in live workspace state.
 
 The engine always takes the cheapest valid path: cached downstream payload → `reconstruct` →
 rerun upstream stages. Warm reopen therefore delivers concrete user types at deserialization

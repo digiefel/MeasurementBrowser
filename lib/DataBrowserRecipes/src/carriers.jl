@@ -90,5 +90,7 @@ Identity is not derived here: the carrier is package-owned, so `attach_record` r
 id, label, and collection path from the record and index straight afterwards. The registration
 comes from the type, so it survives the round trip without ever entering the payload.
 """
-reconstruct(::Type{RegisteredDataItem{K}}, data, metadata::Dict) where {K} =
+# `Type{<:RegisteredDataItem{K}}` accepts both the seeded UnionAll `RegisteredDataItem{kind}` and
+# a concrete `RegisteredDataItem{kind,D}` remembered from a live item.
+reconstruct(::Type{<:RegisteredDataItem{K}}, data, metadata::Dict) where {K} =
     RegisteredDataItem{K}("", "", AbstractCollection[], data, metadata_dict(metadata))

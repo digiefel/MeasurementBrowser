@@ -1,6 +1,7 @@
 module Workspace
 
 using Printf
+using InteractiveUtils: subtypes
 using DataBrowserAPI: @timed_dbg
 using DataBrowserSources
 using CancellationTokens:
@@ -136,7 +137,6 @@ import DataBrowserAPI:
     metadata,
     process,
     reconstruct,
-    reconstructable,
     open_source,
     project_name,
     source_id,

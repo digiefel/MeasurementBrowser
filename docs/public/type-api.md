@@ -47,7 +47,7 @@ Projects implement only the behavior they need:
 | `id` | one concrete item | stable sibling key | returned position |
 | `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
-| `reconstruct` | the item's type, a cached payload, and metadata | the rebuilt item | not defined; upstream stages rerun |
+| `reconstruct` | the item's type, a cached payload, and metadata | the rebuilt item, or `nothing` | `nothing`; upstream stages rerun |
 
 The complete signatures are:
 
@@ -67,8 +67,8 @@ payload is delivered to views without running project code either way. `reconstr
 to run a *further* stage on a cached item — implement it and reopening rebuilds items at
 deserialization speed, omit it and the engine reruns `read` → `entries` → `process`, which is always
 correct and only slower. It must be a pure function of what was cached, so anything the type needs
-to rebuild itself belongs in its metadata. Pair it with `item_type(::MyProject, ::Symbol)` so the
-engine can turn a stored kind back into your type.
+to rebuild itself belongs in its metadata. `item_type(project, kind)` supplies `T` when kinds are
+not type names; otherwise the engine matches `kind` to a loaded leaf subtype of `AbstractDataItem`.
 
 Multiple dispatch replaces registration names as the behavior selector. Different item types can
 provide entirely different processing and analysis methods while sharing one workspace.

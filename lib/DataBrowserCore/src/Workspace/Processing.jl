@@ -332,14 +332,36 @@ function indexed_collection_path(
     return named_collection_path(names)
 end
 
+"""Rebuild one item by rerunning `read` → `entries` → `process` when `reconstruct` is unavailable."""
+function reprocess_item(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    record::ItemRecord,
+)::AbstractDataItem
+    interpreted = only(read_item_data(
+        workspace.cache.db, [record]; stage=:interpreted))
+    interpreted === nothing && (interpreted = source_fallback(workspace, record))
+    interpreted isa AbstractDataItem || error(
+        "Interpreted cache for item '$(record.id)' returned $(typeof(interpreted)), not an item",
+    )
+    path = indexed_collection_path(collections, record)
+    input = attach_record(interpreted, effective_record(collections, record), path)
+    processed = process(workspace.project, input)
+    processed isa AbstractDataItem || error(
+        "process(::$(typeof(workspace.project)), ::$(typeof(input))) must return an " *
+        "AbstractDataItem; got $(typeof(processed))",
+    )
+    return processed
+end
+
 """
 Turn one cached value into an item ready for the next project stage.
 
-Two deliveries meet here. A value the cache held as an item (memory-resident, or any typed item) is
-adopted as-is. A raw payload read back from disk is rebuilt through `reconstruct`, which the item's
-own type opts into; without that method the engine cannot rebuild it and says so, and callers with
-a source in reach rerun the earlier stages instead. Either way the item then adopts its record and
-the index's collection path, so identity comes from the engine and never from stale cached state.
+A value the cache held as an item is adopted as-is. A raw payload is rebuilt through `reconstruct`
+when a type is known — via `item_type`, or a loaded leaf `AbstractDataItem` whose name matches the
+kind — and that method returns an item. Otherwise the engine reruns `read` → `entries` → `process`.
+Either way the item then adopts its record and the index's collection path, so identity comes from
+the engine and never from stale cached state.
 """
 function materialized_item(
     workspace::Workspace,
@@ -350,15 +372,26 @@ function materialized_item(
     path = indexed_collection_path(collections, record)
     stored isa AbstractDataItem &&
         return attach_record(stored, effective_record(collections, record), path)
-    item_type_value = item_type(workspace.project, record.kind)
-    (item_type_value === nothing || !reconstructable(item_type_value)) && error(
-        "Cannot rebuild item '$(record.id)' of kind :$(record.kind) from its cached payload: " *
-        "implement `item_type(::$(typeof(workspace.project)), ::Symbol)` and " *
-        "`reconstruct(::Type{T}, data, metadata)` for it",
-    )
-    rebuilt = reconstruct(
-        item_type_value, stored, effective_metadata(collections, record))
-    return attach_record(rebuilt, effective_record(collections, record), path)
+    T = item_type(workspace.project, record.kind)
+    if T === nothing
+        pending = Type[AbstractDataItem]
+        while T === nothing && !isempty(pending)
+            for S in subtypes(pop!(pending))
+                if isabstracttype(S)
+                    push!(pending, S)
+                elseif nameof(S) === record.kind
+                    T = S
+                    break
+                end
+            end
+        end
+    end
+    if T !== nothing
+        rebuilt = reconstruct(T, stored, effective_metadata(collections, record))
+        rebuilt !== nothing &&
+            return attach_record(rebuilt, effective_record(collections, record), path)
+    end
+    return reprocess_item(workspace, collections, record)
 end
 
 """Run processing without computing or publishing statistics."""

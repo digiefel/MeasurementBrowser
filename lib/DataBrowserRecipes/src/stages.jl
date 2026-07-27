@@ -86,14 +86,8 @@ function _registered_item(
 end
 
 
-"""
-Every registered kind is carried by the same package-owned type, tagged with that kind.
-
-Returning `RegisteredDataItem{kind}` rather than the bare type is what lets `reconstruct` restore
-the registration from the type rather than from the cached payload.
-"""
-item_type(project::Project, kind::Symbol)::Union{Nothing,Type} =
-    _recipe(project, kind) === nothing ? nothing : RegisteredDataItem{kind}
+"""Registration kinds are type parameters, not type names: `:sweep` → `RegisteredDataItem{:sweep}`."""
+item_type(::Project, kind::Symbol)::Type = RegisteredDataItem{kind}
 
 project_name(project::Project)::String = project.name
 project_description(project::Project)::String = project.description

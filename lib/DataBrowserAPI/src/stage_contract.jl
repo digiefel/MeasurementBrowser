@@ -113,18 +113,15 @@ analyze(::AbstractCollection, items::AbstractVector)::Dict = Dict()
 # ---------------------------------------------------------------------------
 
 """
-    reconstruct(::Type{T}, data, metadata::Dict) -> T
+    reconstruct(::Type{T}, data, metadata::Dict) -> Union{Nothing,T}
 
-Rebuild one concrete item from its cached payload and metadata. Opt-in: the engine checks
-`hasmethod` and, without a method, falls back to rerunning `read` → `entries` → `process`, which is
-always correct and only slower. Cached payloads are still delivered to views either way; this stage
-is needed only to run further project dispatch on a cached item.
+Rebuild one concrete item from its cached payload and metadata. The default returns `nothing`;
+the engine then reruns `read` → `entries` → `process`, which is always correct and only slower.
+Cached payloads are still delivered to views either way; this is needed only to run further
+project dispatch on a cached item.
 
 Rehydration must be a pure function of cached content. Anything a type needs to rebuild itself
-belongs in its metadata, never in live workspace state. The engine re-derives `id`, `collection`,
-and `metadata` from the result and validates them against the stored record.
+belongs in its metadata, never in live workspace state. Identity comes from `attach_record`
+afterwards, not from this method.
 """
-function reconstruct end
-
-"""Whether `T` opts into cache rehydration by implementing `reconstruct`."""
-reconstructable(::Type{T}) where {T} = hasmethod(reconstruct, Tuple{Type{T},Any,Dict})
+reconstruct(::Type, data, metadata::Dict) = nothing

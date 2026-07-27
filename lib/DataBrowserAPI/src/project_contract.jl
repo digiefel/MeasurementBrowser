@@ -39,9 +39,9 @@ function collection_path_label end
 Resolve one stored item kind back to the concrete type that produced it, or `nothing`.
 
 The cache stores `kind` as a `Symbol`, but rebuilding a cached item through `reconstruct` needs the
-type. The project answers, because the project is what knows its own item types — no module
-scanning, and no module-qualified type name to keep valid across refactors. Returning `nothing`
-(the default) is always safe: the engine falls back to rerunning `read` → `entries` → `process`.
+type. Returning `nothing` (the default) is always safe: the engine looks for a loaded leaf subtype
+of `AbstractDataItem` whose name matches the kind, then falls back to rerunning
+`read` → `entries` → `process`. Override when kinds are not type names.
 """
 item_type(::AbstractProject, ::Symbol)::Union{Nothing,Type} = nothing
 
