@@ -208,7 +208,7 @@ talks to; the engine packages implement it; the frontends call it.**
 
 ```
 DataBrowserAPI     the shared surface every interface calls and every extension implements:
-                   command declarations (open_workspace, scan, load, select, construct, plot,
+                   command declarations (open_workspace, scan, load, select, reconstruct, plot,
                    export, query, …), the extension definitions (what a source / loader /
                    visualizer / command is), the typed pipeline stage contract, and the
                    `AbstractProject` contract. Payload-agnostic; tiny deps.

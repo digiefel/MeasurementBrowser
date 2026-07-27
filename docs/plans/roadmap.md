@@ -47,10 +47,16 @@ workspace internals.
   `label(record)` return it without materializing a payload or running project code in the UI.
 - [ ] Make typed materialization explicit and tested: reopening restores records, not arbitrary
   user-defined instances; a valid cached processed payload is delivered without rerunning
-  `process`, an opt-in `construct(::Type{T}, data, metadata)` method rebuilds a concrete item from
-  record and payload with its rederived identity validated, and a missing typed item without one
-  is recreated through `source_items` → `read` → `entries`. Obtain a typed collection value from
-  `collection(item)` only after materializing its owning item.
+  `process`, an opt-in `reconstruct(::Type{T}, data, metadata)` method rebuilds a concrete item
+  from record and payload with its rederived identity validated, and a missing typed item without
+  one is recreated through `source_items` → `read` → `entries`. Obtain a typed collection value
+  from `collection(item)` only after materializing its owning item.
+- [ ] Remove the registration-only `item isa RegisteredDataItem` payload-cache gate, and the
+  item-level `cacheable` predicate with it. Persistence becomes the payload's supported shape
+  alone; rehydration into a user type becomes `reconstruct` dispatch, keeping cached payload
+  delivery distinct from rebuilding a typed item for multiple dispatch. (Moved up from 0.5.0: the
+  `DataBrowserRecipes` extraction below cannot leave Cache registration-free while this gate
+  stands.)
 - [x] Replace `HierarchyNode` and the hierarchy-owned object graph with a package-owned
   `CollectionRecord` plus collection-parent, child, and membership indexes owned by
   `WorkspaceIndex`. Collection records expose a durable occurrence ID, compact internal key, and
@@ -134,18 +140,11 @@ per-row costs before the application API and plotting surface grow substantially
   logical item identities at the project boundary.
 - [ ] Audit source fingerprinting and document exactly what each source-provided change token
   invalidates across live updates and workspace reopen.
-- [ ] Remove the registration-only `item isa RegisteredDataItem` payload-cache gate. Choose disk
-  caching through `cacheable(stage, value)` dispatch on the stage's output value and the payload's
-  supported shape, while keeping cached payload delivery distinct from reconstructing a
-  user-defined typed item through `construct` for multiple dispatch.
 - [ ] Define and test persistence at every expensive pipeline boundary: source discovery, read,
   entries, item processing and analysis, and collection processing and analysis. A valid persisted
   stage must satisfy downstream work without rerunning earlier user code; supported core payload
   shapes cache automatically, while custom typed values may opt into rehydration with a
-  `construct` method.
-- [ ] Provide the workspace-keyed cached constructor entry point
-  `(::Type{T})(ws, key...) where {T<:AbstractDataItem}` so concrete user items rehydrate from the
-  cache on demand — threaded, query- and selection-driven — and settle its key grammar.
+  `reconstruct` method.
 - [ ] Support expensive or non-repeatable sources such as simulations, compressed inputs, and
   streams through source-owned durable handles/snapshots or persisted interpreted outputs. Memory
   eviction must not rerun a simulation or consume a stream again when a valid durable result exists.
