@@ -42,6 +42,7 @@ using DataBrowserRecipes:
     Project,
     define_project,
     register_collection_analysis!,
+    register_csv!,
     register_item!
 using DataBrowserPlots:
     PlotKind,
@@ -81,6 +82,7 @@ export open_browser,
     wait_workspace_idle!,
     workspace_status,
     define_project,
+    register_csv!,
     register_item!,
     register_collection_analysis!,
     register_plot!,

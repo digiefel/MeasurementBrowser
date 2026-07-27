@@ -212,3 +212,31 @@ end
         end
     end
 end
+
+@testset "premade CSV recipe registers a working pipeline" begin
+    mktempdir() do root
+        write(joinpath(root, "a.csv"), "x,y\n1,10\n2,20\n3,30\n")
+        write(joinpath(root, "b.CSV"), "x,y\n4,40\n5,50\n")
+        write(joinpath(root, "skipped.dat"), "not a table\n")
+
+        project = define_project("CsvRecipe_$(basename(root))")
+        register_csv!(project, :sweep;
+            extensions=[".csv"],
+            analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => size(data, 1)),
+        )
+        workspace = open_workspace(project, root; cache=false, background_processing=true)
+        try
+            wait_workspace_idle!(workspace; timeout=30)
+            ids = query_items(workspace)
+            @test length(ids) == 2
+            select_items!(workspace, ids)
+            items = materialize_items(workspace)
+            # Extension matching is case-insensitive, and non-matching files are left alone.
+            @test Set(label.(items)) == Set(["a.csv", "b.CSV"])
+            @test sort([metadata(item)[:rows] for item in items]) == [2, 3]
+            @test all(item -> kind(item) === :sweep, items)
+        finally
+            close_workspace!(workspace)
+        end
+    end
+end

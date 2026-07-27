@@ -12,6 +12,8 @@ here needs a private hook, the type API is missing something.
 """
 module DataBrowserRecipes
 
+using CSV: CSV
+using DataFrames: DataFrame
 using DataBrowserAPI
 using DataBrowserAPI:
     AbstractCollection,
@@ -19,6 +21,7 @@ using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractProject,
+    source_item_path,
     @timed_dbg
 import DataBrowserAPI:
     analyze,
@@ -45,6 +48,7 @@ include("carriers.jl")
 include("recipes.jl")
 include("registration.jl")
 include("stages.jl")
+include("premade.jl")
 
 export CollectionRecipe,
     ItemRecipe,
@@ -54,6 +58,7 @@ export CollectionRecipe,
     RegisteredReadResult,
     define_project,
     register_collection_analysis!,
+    register_csv!,
     register_item!
 
 end
