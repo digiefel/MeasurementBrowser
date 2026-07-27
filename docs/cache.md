@@ -52,9 +52,13 @@ The cache is its own package, `lib/DataBrowserCache/`, depending only on `DataBr
 item contracts and `ItemIndex` types it reconstructs on reopen), `DataBrowserProfiling`, and its
 storage backend (DuckDB/DBInterface). `DataBrowserCore`'s `Workspace` consumes it. The cache never
 requires a specific table container: payloads come in as anything implementing Tables.jl (the
-`cacheable_data` default is `Tables.istable`) and come back out as the container type they were
-stored with. A non-tabular type can opt in by dispatching `cacheable_data` and implementing the
-interface.
+`cacheable_data` default is `Tables.istable`) and come back out as the shape they were stored with.
+A non-tabular type can opt in by dispatching `cacheable_data` and implementing the interface.
+
+Whether a payload persists is that shape question alone — there is no item-level opt-in, and no
+path branches on how the item's project was defined. The cache returns payloads, never items;
+rebuilding a concrete item from one is the engine's job, through the item type's `reconstruct`
+method, and a type without one simply has its upstream stages rerun.
 
 `project_cache_domain.jl` owns everything specific to DataBrowser's project cache:
 
@@ -100,13 +104,13 @@ disk-backed.
 Some item data is useful only as a short-lived input to downstream work:
 
 - interpreted item data waiting to be processed;
-- processed data that the project declares non-cacheable.
+- processed data whose shape the cache cannot store.
 
 These values use the same keyed buffer mechanism without a connection or flush task. They are never
 written to DuckDB. If an incoming value would exceed the configured row limit, it is not retained.
 A later miss causes the required upstream work to be performed again.
 
-This prevents interpretation from being throttled by processing and prevents non-cacheable processed
+This prevents interpretation from being throttled by processing and prevents unstorable processed
 data from becoming an unbounded Julia object cache.
 
 ## Capacity and backpressure

@@ -13,8 +13,8 @@ The complete registration has this data flow:
 
 ```julia
 register_item!(project, registration_name;
-    detect = (file::SourceFile) -> accepted::Bool,
-    read = (file::SourceFile) -> loaded_data::LoadedData,
+    detect = (source_item) -> accepted::Bool,
+    read = (source_item) -> loaded_data::LoadedData,
     entries = (loaded_data::LoadedData, metadata::Dict) -> items::Vector,
     label = (data::ItemData, metadata::Dict) -> label::String,
     collection = (data::ItemData, metadata::Dict) -> path::Vector{String},
@@ -26,6 +26,11 @@ register_item!(project, registration_name;
 
 `LoadedData`, `ItemData`, and `ProcessedData` stand for concrete types chosen by the project. They
 are not DataBrowser types, and each stage may use a different type.
+
+`detect` and `read` receive whatever the source discovers — a `SourceFile` from a directory source,
+with `.filepath` and `.filename`. Registration is not tied to files: any source's items work, and a
+callback that sticks to `label(source_item)` and `source_item_path(source_item)` works with all of
+them.
 
 The registration name is optional. It identifies a registration inside the project; it is not a
 property attached to every item.
@@ -53,7 +58,7 @@ identity, scheduling, and cache records private.
 ## `read`
 
 ```julia
-read = (file::SourceFile) -> loaded_data::LoadedData
+read = (source_item) -> loaded_data::LoadedData
 ```
 
 `read` loads one accepted source. It runs once for that source revision. Parsing a complete file,
@@ -148,7 +153,7 @@ and summaries used for filtering or querying belong here.
 ## Detection
 
 ```julia
-detect = (file::SourceFile) -> accepted::Bool
+detect = (source_item) -> accepted::Bool
 ```
 
 `detect` decides whether a registration handles a source. It should normally inspect information
@@ -163,7 +168,7 @@ A project with one interpretation normally uses the unnamed form:
 
 ```julia
 register_item!(project;
-    read = (file::SourceFile) -> loaded_data::LoadedData,
+    read = (source_item) -> loaded_data::LoadedData,
 )
 ```
 
@@ -220,3 +225,21 @@ register_collection_analysis!(project, registration_name;
 Collection `process` receives members after their item-level processing and returns one data value
 per member in the same order. Collection `analyze` returns metadata describing the collection
 itself. Both wait for their required member results, run in the background, and can be cached.
+
+## Premade recipes
+
+Formats common enough to ship come with a complete registration. `register_csv!` supplies `detect`
+and `read` for delimited text; every other `register_item!` callback still applies, so a premade
+recipe is a starting point rather than a different kind of thing.
+
+```julia
+register_csv!(project, :sweep;
+    extensions = [".csv", ".txt"],
+    read_options = (; delim='\t', comment="#"),
+    collection = (data, metadata) -> ["sweeps", metadata[:device]],
+    analyze = (data, _metadata) -> Dict(:rows => nrow(data)),
+)
+```
+
+`extensions` are matched case-insensitively and default to `[".csv"]`; `read_options` are forwarded
+to CSV.jl. Detection order still decides ties, so register narrower recipes before this one.

@@ -89,7 +89,7 @@ metadata(collection::AbstractCollection)::Dict
 id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-cacheable(item::MyItem)::Bool
+reconstruct(::Type{MyItem}, data, metadata::Dict)::MyItem
 ```
 
 See [Type API](type-api.md).
@@ -116,9 +116,16 @@ source_item_path(item::MySourceItem)::Union{Nothing,String}
 source_item_timestamp(item::MySourceItem)::Any
 metadata(item::MySourceItem)::Dict
 
-data_items(
-    project,
-    source::MySource,
-    source_item::MySourceItem,
-)::Vector{<:AbstractDataItem}
+read(source::MySource, source_item::MySourceItem)::MyLoaded
+entries(source_item::MySourceItem, loaded::MyLoaded)::Vector{<:AbstractDataItem}
+```
+
+## Project interface
+
+```julia
+struct MyProject <: AbstractProject end
+
+project_name(project::MyProject)::String
+project_description(project::MyProject)::String
+item_type(project::MyProject, kind::Symbol)::Union{Nothing,Type}
 ```
