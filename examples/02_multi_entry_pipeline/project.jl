@@ -22,8 +22,10 @@ function analyze_cycle(table::DataFrame, metadata::Dict)::Dict{Symbol,Any}
 end
 
 register_item!(project, :cycles;
-    detect = (file::SourceFile) -> endswith(file.filename, "_fatigue.csv"),
-    read = (file::SourceFile) -> CSV.read(file.filepath, DataFrame),
+    # `detect` and `read` receive a source item, whatever kind of source produced it. Reach it
+    # through the contract — `label`, `source_item_path` — rather than any one source's fields.
+    detect = source_item -> endswith(label(source_item), "_fatigue.csv"),
+    read = source_item -> CSV.read(source_item_path(source_item), DataFrame),
     entries = (table::DataFrame, metadata::Dict) -> [
         (
             data=view(table, findall(==(cycle), table.cycle), :),

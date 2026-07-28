@@ -30,7 +30,10 @@ end
 source_id(source::MicrographDirectory)::String = abspath(source.root)
 source_label(source::MicrographDirectory)::String = basename(abspath(source.root))
 
-function source_items(source::MicrographDirectory)::Vector{MicrographFile}
+# The engine scans with `cancel_token`, `on_progress`, and `on_item` keywords so a slow source can
+# stream and be interrupted. A source that discovers everything at once absorbs and ignores them:
+# the engine queues the returned batch when `on_item` was never called.
+function source_items(source::MicrographDirectory; kwargs...)::Vector{MicrographFile}
     paths = sort!(filter(
         path -> endswith(lowercase(path), ".txt"),
         readdir(source.root; join=true),
@@ -43,6 +46,16 @@ label(file::MicrographFile)::String = basename(file.path)
 source_item_path(file::MicrographFile)::String = file.path
 fingerprint(file::MicrographFile)::Float64 = file.modified
 
+# A typed project supplies its own collection levels too. `collection` returns `AbstractCollection`
+# values, not names: the level is a value the project can dispatch on later, and the package derives
+# its identity and label from the contract below.
+struct MicrographSet <: AbstractCollection
+    name::String
+end
+
+id(set::MicrographSet)::String = set.name
+label(set::MicrographSet)::String = set.name
+
 struct Micrograph <: AbstractDataItem
     name::String
     pixels::Matrix{Float32}
@@ -50,7 +63,8 @@ struct Micrograph <: AbstractDataItem
 end
 
 label(image::Micrograph)::String = image.name
-collection(::Micrograph)::Vector{String} = ["Micrographs"]
+collection(::Micrograph)::Vector{AbstractCollection} =
+    AbstractCollection[MicrographSet("Micrographs")]
 metadata(image::Micrograph)::Dict{Symbol,Any} = Dict{Symbol,Any}(
     :exposure_ms => image.exposure_ms,
     :height_px => size(image.pixels, 1),

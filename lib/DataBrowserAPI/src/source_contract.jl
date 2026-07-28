@@ -65,7 +65,18 @@ accepted by the source's `open_workspace` method. Sources without reopen options
 """
 source_open_options(::AbstractDataSource)::NamedTuple = (;)
 
-"""Return the current source items discovered by a source."""
+"""
+    source_items(source; cancel_token, on_progress, on_item) -> Vector{<:AbstractDataSourceItem}
+
+Return the current source items discovered by a source.
+
+The engine always passes the three keywords, so every method must accept them — a source that
+discovers everything at once absorbs them with `; kwargs...` and ignores them. A source slow enough
+to be worth streaming calls `on_item` per item as it finds them (the engine then queues each one
+immediately rather than waiting for the return), reports counts through `on_progress`, and honors
+`cancel_token`. The returned vector is queued only when `on_item` was never called, so a streaming
+source may return its items as well without them being processed twice.
+"""
 function source_items end
 
 """Human noun for source items, used by status surfaces."""
