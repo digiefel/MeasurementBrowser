@@ -29,11 +29,11 @@ integration a typed project lacked.
 ## What was built
 
 **Collections are rebuilt from their row.** `CollectionRecord` and the persisted `CollectionRow`
-carry `kind::Symbol` — `nameof(typeof(value))` — in place of `registration_name`. Rebuilding goes
-through a new method with no default:
+carry `kind::Symbol` — `nameof(typeof(value))` — in place of `registration_name`, plus `identity`:
+`id(collection)` kept verbatim. Rebuilding goes through a new method with no default:
 
 ```julia
-reconstruct(::Type{T}, label, metadata) where {T<:AbstractCollection}
+reconstruct(::Type{T}, id, metadata) where {T<:AbstractCollection}
 ```
 
 No default, unlike the item method. An item that cannot be rebuilt is recreated by rerunning
@@ -41,11 +41,22 @@ No default, unlike the item method. An item that cannot be rebuilt is recreated 
 fires from the first interpretation, since collection values are discarded at interpretation and
 never retained.
 
-The occurrence ID is a digest of the parent ID, the type, and `id(collection)`, so it cannot be
-inverted. Label and own metadata are all a rebuild has. **A collection's identity must therefore be
-reproducible from those two** — `test_collection_id_persistence.jl` is the case that proves it, with
-two collections sharing a label and distinguished by an integer key that now has to live in
-metadata.
+`id(::AbstractCollection)` is now required and must return a `String`. Identity is what `id` was
+always for; it was previously only hashed into the occurrence digest and discarded, which is what
+made rebuilding look impossible. Two dead ends came first and are recorded because they are tempting:
+rebuilding from `label` (display text — two levels may legitimately share one) and from `metadata`
+(forces identity into user-visible metadata; `NamedCollection` gained a `:name` field duplicating its
+own label, which `test_hierarchy_edit` caught).
+
+Narrowing `id` to `String` deletes ~150 lines of `collection_id.jl`: the canonical encoder existed to
+hash arbitrary structs, dicts, and arrays into the digest, and served collections only. The digest is
+now three length-prefixed strings.
+
+**`NamedCollection` left `DataBrowserAPI`.** It had two consumers and belonged to neither layer above
+them. `DataBrowserSources` now owns `DirectoryCollection` for directory levels; `DataBrowserRecipes`
+owns `NamedCollection` for registered string paths. `annotate_collection_path` no longer type-checks
+for a package type — it merges `metadata.txt` entries into any level through that level's own
+`reconstruct`, so it now works for typed collections instead of silently skipping them.
 
 **Both booleans are gone.** Collection process and analyze are scheduled without asking; the stage
 defaults (`items` unchanged, empty `Dict`) make a project without stages a no-op, so "defined means

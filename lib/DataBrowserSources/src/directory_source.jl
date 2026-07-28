@@ -3,8 +3,7 @@ using BetterFileWatching
 using CancellationTokens: CancellationToken, CancellationTokenSource, OperationCanceledException, cancel, get_token, is_cancellation_requested
 
 import DataBrowserAPI
-using DataBrowserAPI.ItemIndex: NamedCollection
-import DataBrowserAPI: annotate_collection_path, default_collection_path
+import DataBrowserAPI: annotate_collection_path, default_collection_path, reconstruct
 using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
@@ -320,6 +319,20 @@ function own_collection_metadata(
     return own
 end
 
+"""One collection level of a directory tree, identified by the directory's name."""
+struct DirectoryCollection <: DataBrowserAPI.AbstractCollection
+    name::String
+    metadata::Dict{Symbol,Any}
+end
+
+DirectoryCollection(name::AbstractString) = DirectoryCollection(String(name), Dict{Symbol,Any}())
+
+id(level::DirectoryCollection)::String = level.name
+label(level::DirectoryCollection)::String = level.name
+metadata(level::DirectoryCollection)::Dict = level.metadata
+reconstruct(::Type{DirectoryCollection}, identity::AbstractString, metadata::Dict) =
+    DirectoryCollection(String(identity), Dict{Symbol,Any}(metadata))
+
 """Wrap a directory path with this source's `metadata.txt` entries on each level."""
 function _named_path(
     source::DirectorySource,
@@ -327,12 +340,12 @@ function _named_path(
 )::Vector{DataBrowserAPI.AbstractCollection}
     return lock(source.metadata_lock) do
         DataBrowserAPI.AbstractCollection[
-            NamedCollection(
-                name;
-                metadata=own_collection_metadata(
+            DirectoryCollection(
+                name,
+                Dict{Symbol,Any}(own_collection_metadata(
                     source.collection_metadata_entries,
                     names[1:depth],
-                ),
+                )),
             )
             for (depth, name) in pairs(names)
         ]
@@ -350,14 +363,35 @@ function default_collection_path(
     return _named_path(source, splitpath(relative_directory))
 end
 
-"""Attach `metadata.txt` entries to every named level of one item's collection path."""
+"""
+Merge this source's `metadata.txt` entries into one collection level.
+
+Any collection type works: a level that gains no entries is returned untouched, and one that does is
+rebuilt through its own `reconstruct` with the entries merged over its metadata.
+"""
+function _annotated_level(
+    source::DirectorySource,
+    segment::DataBrowserAPI.AbstractCollection,
+    names::Vector{String},
+)::DataBrowserAPI.AbstractCollection
+    entries = own_collection_metadata(source.collection_metadata_entries, names)
+    isempty(entries) && return segment
+    merged = merge(Dict{Symbol,Any}(DataBrowserAPI.metadata(segment)), Dict(entries))
+    return reconstruct(typeof(segment), DataBrowserAPI.id(segment), merged)
+end
+
+"""Attach `metadata.txt` entries to every level of one item's collection path."""
 function annotate_collection_path(
     source::DirectorySource,
     path::AbstractVector,
 )::Vector{DataBrowserAPI.AbstractCollection}
-    all(segment -> segment isa NamedCollection, path) ||
-        return DataBrowserAPI.AbstractCollection[segment for segment in path]
-    return _named_path(source, String[DataBrowserAPI.label(segment) for segment in path])
+    names = String[DataBrowserAPI.id(segment) for segment in path]
+    return lock(source.metadata_lock) do
+        DataBrowserAPI.AbstractCollection[
+            _annotated_level(source, segment, names[1:depth])
+            for (depth, segment) in pairs(path)
+        ]
+    end
 end
 
 function source_items(

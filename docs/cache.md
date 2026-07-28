@@ -22,7 +22,7 @@ persisted results already exist. The work dependency graph decides what remains 
 application.
 
 Cached item records carry the entries layer of their metadata. Collection nodes separately persist
-the package-owned label, metadata, and kind projections needed to reconstruct the
+the package-owned identity, label, metadata, and kind projections needed to reconstruct the
 hierarchy and inherited collection metadata after reopen. Concrete project collection values do not
 enter the cache.
 
@@ -248,8 +248,8 @@ The fixed DuckDB stores are:
 - `items` — data-less logical-item records, each item's integer `item_key` surrogate, the
   `source_item_key` of its owning source item, and the private key of its leaf collection;
 - `collections` — one row per collection record, with its compact integer key, parent key, durable
-  occurrence ID, resolved label and metadata, and the collection kind (its concrete type's name);
-  arbitrary user-defined collection values and canonical ID inputs are not stored;
+  occurrence ID, the `id(collection)` identity string, resolved label and metadata, and the
+  collection kind (its concrete type's name); user-defined collection values are not stored;
 - `source_item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
   `ItemRecord.metadata`;
 - `analyzed_item_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
@@ -295,11 +295,11 @@ at boundaries such as status errors and the GUI.
 
 Collection records use a separate package-owned integer key. The index assigns it after resolving
 the complete path by deterministic collection ID. That ID combines the parent ID, concrete
-collection type, and a canonical encoding of `id(collection)`; it never uses process-dependent
-`Base.hash`. The cache persists the key, parent edge, final ID, resolved label and metadata, and the
-collection kind. It stores neither user-defined collection values nor canonical ID inputs — the
-engine rebuilds a value from its kind, label, and metadata through `reconstruct`, which is why the
-occurrence ID being a one-way digest costs nothing. The compact key may change after a clean rebuild, while saved selection and annotation state
+collection type, and `id(collection)`; it never uses process-dependent `Base.hash`. The cache
+persists the key, parent edge, final ID, the identity string, resolved label and metadata, and the
+collection kind. It does not store user-defined collection values — the engine rebuilds one from its
+kind, identity, and metadata through `reconstruct`, which is why the occurrence ID being a one-way
+digest costs nothing. The compact key may change after a clean rebuild, while saved selection and annotation state
 reconnect through the deterministic ID.
 
 ### Persisted result state

@@ -70,24 +70,6 @@ function metadata_dict(dict::AbstractDict)::MetadataDict
     return out
 end
 
-"""Package-owned collection level identified by a name."""
-struct NamedCollection <: AbstractCollection
-    name::String
-    metadata::MetadataDict
-end
-
-NamedCollection(name::AbstractString; metadata::AbstractDict=MetadataDict()) =
-    NamedCollection(String(name), metadata_dict(metadata))
-
-label(collection::NamedCollection)::String = collection.name
-metadata(collection::NamedCollection)::MetadataDict = collection.metadata
-id(collection::NamedCollection)::String = collection.name
-Base.:(==)(left::NamedCollection, right::NamedCollection)::Bool =
-    left.name == right.name
-Base.isequal(left::NamedCollection, right::NamedCollection)::Bool =
-    isequal(left.name, right.name)
-Base.hash(collection::NamedCollection, seed::UInt)::UInt = hash(collection.name, seed)
-
 """
 One transient normalized collection level produced during interpretation.
 
@@ -96,6 +78,7 @@ user value itself.
 """
 struct CollectionInput
     id::String
+    identity::String
     label::String
     own_metadata::MetadataDict
     kind::Symbol
@@ -104,8 +87,8 @@ end
 """
 Resolve a live collection path into package-owned inputs without retaining user values.
 
-`kind` is the concrete type's name. The occurrence id is a digest and cannot be inverted, so the
-kind, label, and own metadata are everything a later `reconstruct` has to work from.
+`identity` is `id(value)` kept verbatim, and `kind` is the concrete type's name. The occurrence id
+is a one-way digest, so those two plus the own metadata are what a later `reconstruct` works from.
 """
 function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{CollectionInput}
     inputs = CollectionInput[]
@@ -114,6 +97,7 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
         collection_id = collection_record_id(parent_id, value)
         push!(inputs, CollectionInput(
             collection_id,
+            id(value),
             String(label(value)),
             metadata_dict(metadata(value)),
             nameof(typeof(value)),
@@ -122,13 +106,6 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
     end
     return inputs
 end
-
-"""Wrap a string path in package-owned named collection values."""
-named_collection_path(names::AbstractVector{<:AbstractString})::Vector{AbstractCollection} =
-    AbstractCollection[NamedCollection(name) for name in names]
-
-reconstruct(::Type{NamedCollection}, label::AbstractString, metadata::Dict) =
-    NamedCollection(String(label); metadata)
 
 """
 One package-owned indexed collection occurrence.
@@ -140,6 +117,7 @@ workspace/cache-local integer. `label` is display text. These are distinct contr
 struct CollectionRecord
     key::Int64
     id::String
+    identity::String
     parent_key::Union{Nothing,Int64}
     label::String
     own_metadata::MetadataDict
@@ -217,11 +195,13 @@ function register_collection!(index::CollectionIndex, collection_record::Collect
 end
 
 _projection_changed(record::CollectionRecord, input::CollectionInput)::Bool =
+    record.identity != input.identity ||
     record.label != input.label ||
     record.own_metadata != input.own_metadata ||
     record.kind != input.kind
 
 _projection_changed(left::CollectionInput, right::CollectionInput)::Bool =
+    left.identity != right.identity ||
     left.label != right.label ||
     left.own_metadata != right.own_metadata ||
     left.kind != right.kind
@@ -293,6 +273,7 @@ function resolve_collection_path!(
             register_collection!(index, CollectionRecord(
                 key,
                 input.id,
+                input.identity,
                 parent_key,
                 input.label,
                 copy(input.own_metadata),
@@ -315,6 +296,7 @@ function resolve_collection_path!(
                 index.records[key] = CollectionRecord(
                     existing.key,
                     existing.id,
+                    input.identity,
                     existing.parent_key,
                     input.label,
                     copy(input.own_metadata),
@@ -392,10 +374,7 @@ function collection_value_path(
             "AbstractCollection type named :$(collection_record.kind)",
         )
         push!(path, reconstruct(
-            collection_type,
-            collection_record.label,
-            collection_record.own_metadata,
-        ))
+            collection_type, collection_record.identity, collection_record.own_metadata))
     end
     return path
 end
@@ -473,6 +452,7 @@ function clear_collection_analysis!(index::CollectionIndex, key::Int64)::Nothing
     index.records[key] = CollectionRecord(
         collection_record.key,
         collection_record.id,
+        collection_record.identity,
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
@@ -492,6 +472,7 @@ function set_collection_analysis!(
     index.records[key] = CollectionRecord(
         collection_record.key,
         collection_record.id,
+        collection_record.identity,
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,

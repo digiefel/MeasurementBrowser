@@ -63,10 +63,11 @@ at boundaries (status errors, GUI selection and display).
 A registration name such as `:cycles` identifies the registered pipeline. It is not a property of
 the data and does not replace the concrete type of a typed item.
 
-Collection records carry a `kind` — the concrete collection type's name — for the same reason item
-records carry one: it is how the engine gets from a stored row back to the project's own value.
-Rebuilding goes through `reconstruct(::Type{T}, label, metadata)`, which has no default, because a
-collection has no rerun-from-source fallback the way an item does.
+Collection records carry a `kind` — the concrete collection type's name — and the `id(collection)`
+string verbatim. Together they are how the engine gets from a stored row back to the project's own
+value: `reconstruct(::Type{T}, id, metadata)`, which has no default, because a collection has no
+rerun-from-source fallback the way an item does. The occurrence ID stays a one-way digest; the
+stored identity is what makes that affordable.
 
 ## Labels and collections
 

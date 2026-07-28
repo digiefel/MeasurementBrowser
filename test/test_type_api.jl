@@ -30,9 +30,10 @@ struct PhotoCollection <: MB.AbstractCollection
     name::String
 end
 
+MB.id(collection::PhotoCollection) = collection.name
 MB.label(collection::PhotoCollection) = collection.name
-MB.reconstruct(::Type{PhotoCollection}, label::AbstractString, ::Dict) =
-    PhotoCollection(String(label))
+MB.reconstruct(::Type{PhotoCollection}, identity::AbstractString, ::Dict) =
+    PhotoCollection(String(identity))
 
 struct Photo <: MB.AbstractDataItem
     exposure::Float64

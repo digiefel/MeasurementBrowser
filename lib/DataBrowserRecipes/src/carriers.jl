@@ -94,3 +94,31 @@ comes from the type, so it survives the round trip without ever entering the pay
 # a concrete `RegisteredDataItem{kind,D}` remembered from a live item.
 reconstruct(::Type{<:RegisteredDataItem{K}}, data, metadata::Dict) where {K} =
     RegisteredDataItem{K}("", "", AbstractCollection[], data, metadata_dict(metadata))
+
+"""
+One collection level of a registered path, identified by its name.
+
+`metadata` carries whatever the source attached to this level — `metadata.txt` entries, say — which
+is why it survives the round trip through `reconstruct` rather than being rebuilt from the name.
+"""
+struct NamedCollection <: AbstractCollection
+    name::String
+    metadata::MetadataDict
+end
+
+NamedCollection(name::AbstractString; metadata::AbstractDict=MetadataDict()) =
+    NamedCollection(String(name), metadata_dict(metadata))
+
+id(level::NamedCollection)::String = level.name
+label(level::NamedCollection)::String = level.name
+metadata(level::NamedCollection)::MetadataDict = level.metadata
+reconstruct(::Type{NamedCollection}, identity::AbstractString, metadata::Dict) =
+    NamedCollection(String(identity); metadata)
+Base.:(==)(left::NamedCollection, right::NamedCollection)::Bool = left.name == right.name
+Base.isequal(left::NamedCollection, right::NamedCollection)::Bool =
+    isequal(left.name, right.name)
+Base.hash(level::NamedCollection, seed::UInt)::UInt = hash(level.name, seed)
+
+"""Wrap a registered path's names in collection levels."""
+named_collection_path(names::AbstractVector{<:AbstractString})::Vector{AbstractCollection} =
+    AbstractCollection[NamedCollection(name) for name in names]

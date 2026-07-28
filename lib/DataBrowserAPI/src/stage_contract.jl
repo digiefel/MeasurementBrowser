@@ -127,16 +127,17 @@ afterwards, not from this method.
 reconstruct(::Type, data, metadata::Dict) = nothing
 
 """
-    reconstruct(::Type{T}, label, metadata::Dict) -> T
+    reconstruct(::Type{T}, metadata::Dict) -> T
 
-Rebuild one collection value from its stored row. Collections hold no payload, so `label` and the
-collection's own metadata are everything the row keeps about the user's value — its occurrence id is
-a digest and cannot be inverted.
+Rebuild one collection value from its own metadata. Collections hold no payload, and their
+occurrence id is a digest that cannot be inverted, so metadata is the only thing a rebuild has —
+whatever a collection type needs to reconstitute itself belongs there. Label is display text, not
+identity: two collections may legitimately share one.
 
 Unlike the item method there is no default and no way to opt out: an item that cannot be rebuilt is
 recreated by rerunning `read` → `entries`, but a collection has no such path, so a project that
 defines collection types must make them rebuildable. The engine rebuilds collections from the very
 first interpretation, not only after reopening, so a missing method fails immediately.
 """
-reconstruct(::Type{T}, label::AbstractString, metadata::Dict) where {T<:AbstractCollection} =
-    error("Collection type $T must implement reconstruct(::Type{$T}, label, metadata)")
+reconstruct(::Type{T}, metadata::Dict) where {T<:AbstractCollection} =
+    error("Collection type $T must implement reconstruct(::Type{$T}, metadata)")

@@ -10,8 +10,11 @@ struct CacheCollectionLevel <: AbstractCollection
     value::Int
 end
 
+DataBrowserAPI.id(collection::CacheCollectionLevel) = collection.name
 DataBrowserAPI.label(collection::CacheCollectionLevel) = collection.name
 DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => collection.value)
+DataBrowserAPI.reconstruct(::Type{CacheCollectionLevel}, identity::AbstractString, metadata::Dict) =
+    CacheCollectionLevel(String(identity), metadata[:value])
 
 @testset "cache restores package-owned collection records" begin
     mktempdir() do dir

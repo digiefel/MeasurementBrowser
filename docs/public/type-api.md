@@ -81,10 +81,10 @@ struct Device <: AbstractCollection
     name::String
 end
 
-id(device::Device)::Any = device.name
+id(device::Device)::String = device.name
 label(device::Device)::String = device.name
 metadata(device::Device)::Dict = Dict()
-reconstruct(::Type{Device}, label::AbstractString, metadata::Dict)::Device = Device(String(label))
+reconstruct(::Type{Device}, id::AbstractString, metadata::Dict)::Device = Device(String(id))
 
 process(device::Device, items::AbstractVector)::Vector{<:AbstractDataItem}
 analyze(device::Device, items::AbstractVector)::Dict
@@ -94,16 +94,16 @@ analyze(device::Device, items::AbstractVector)::Dict
 returns them unchanged. `analyze` folds them into metadata attached to the collection node; the
 default is empty. Both run whenever they are defined — there is nothing to declare or enable.
 
-`reconstruct` is required, and differs from the item method in having no default. A collection holds
-no payload, so the row keeps only its kind, label, and own metadata; its occurrence ID is a one-way
-digest of the parent ID, the type, and `id(collection)`, and cannot be inverted. An item that cannot
-be rebuilt is recreated by rerunning `read` → `entries`, but a collection has no such path, so a
-missing method is an error rather than a slow path. It fires from the first interpretation, not only
-after reopening.
+`id` and `reconstruct` are both required, and neither has a default. `id` is what identifies the
+level and must be a `String`, because it is stored verbatim and handed back: the occurrence ID is a
+one-way digest of the parent ID, the type, and `id(collection)`, and cannot be inverted.
+`reconstruct` receives that stored `id` and the level's own metadata — everything the row keeps
+about the value. An item that cannot be rebuilt is recreated by rerunning `read` → `entries`, but a
+collection has no such path, so a missing method is an error rather than a slow path. It fires from
+the first interpretation, not only after reopening.
 
-The practical consequence: **a collection's identity must be reproducible from its label and its own
-metadata.** If `id(collection)` returns something neither carries — a key, a numeric level — put it
-in `metadata` so `reconstruct` can read it back.
+Display text is never involved: two levels may legitimately share a `label`, so anything beyond the
+identity that a type needs — a display string, a numeric parameter — belongs in `metadata`.
 
 `collection_type(project, kind)` supplies the type when kinds are not type names; otherwise the
 engine matches `kind` to a loaded leaf subtype of `AbstractCollection`.

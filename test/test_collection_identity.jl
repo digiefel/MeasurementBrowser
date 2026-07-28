@@ -5,21 +5,25 @@ struct DefaultIdentityCollection <: AbstractCollection
     value::Int
 end
 
+DataBrowser.id(collection::DefaultIdentityCollection) = string(collection.value)
+
 struct ExplicitIdentityCollection <: AbstractCollection
     key::Int
     shown::String
 end
 
-DataBrowser.id(collection::ExplicitIdentityCollection) = collection.key
+DataBrowser.id(collection::ExplicitIdentityCollection) = string(collection.key)
 DataBrowser.label(collection::ExplicitIdentityCollection) = collection.shown
 
 struct OtherIdentityCollection <: AbstractCollection
     value::Int
 end
 
+DataBrowser.id(collection::OtherIdentityCollection) = string(collection.value)
+
 @testset "collection identity contract" begin
     default = DefaultIdentityCollection(2)
-    @test DataBrowser.id(default) == default
+    @test DataBrowser.id(default) == "2"
     @test DataBrowser.label(default) == string(default)
     @test DataBrowser.metadata(default) == Dict()
 

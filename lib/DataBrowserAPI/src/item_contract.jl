@@ -4,12 +4,17 @@ abstract type AbstractDataItem end
 abstract type AbstractCollection end
 
 """
-Value used to derive one collection level's deterministic occurrence ID.
+    id(collection)::String
 
-The default uses the complete concrete collection value. Override this only when the value contains
-state that is deliberately not part of the collection ID or cannot be canonically encoded.
+What identifies one collection level, and the only thing besides its metadata that survives to
+rebuild it. There is no default: a type whose job is to identify a grouping has to say what
+identifies it.
+
+It is combined with the parent occurrence ID and the concrete type into a one-way digest, so the
+digest cannot give it back — `reconstruct(::Type{T}, id, metadata)` receives this value verbatim.
 """
-id(collection::AbstractCollection) = collection
+id(collection::AbstractCollection)::String = error(
+    "Collection type $(typeof(collection)) must implement id(::$(typeof(collection)))::String")
 
 """Human-readable label for one collection level."""
 label(collection::AbstractCollection)::String = string(collection)

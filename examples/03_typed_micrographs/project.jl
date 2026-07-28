@@ -56,10 +56,10 @@ end
 
 id(set::MicrographSet)::String = set.name
 label(set::MicrographSet)::String = set.name
-# Required for collections: the index stores the kind, label, and metadata of a level, never the
+# Required for collections: the index stores a level's kind, identity, and metadata, never the
 # value, and rebuilds it from those. Items get a slow fallback here; collections do not.
-reconstruct(::Type{MicrographSet}, label::AbstractString, ::Dict)::MicrographSet =
-    MicrographSet(String(label))
+reconstruct(::Type{MicrographSet}, identity::AbstractString, ::Dict)::MicrographSet =
+    MicrographSet(String(identity))
 
 struct Micrograph <: AbstractDataItem
     name::String

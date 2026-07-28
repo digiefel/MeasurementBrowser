@@ -360,6 +360,7 @@ struct CollectionRow
     collection_key::Int64
     parent_key::Union{Nothing,Int64}
     id::String
+    identity::String
     label::String
     metadata_hex::String
     kind::String
@@ -369,6 +370,7 @@ CollectionRow(row)::CollectionRow = CollectionRow(
     Int64(row.collection_key),
     _null_to_nothing(row.parent_key),
     String(row.id),
+    String(row.identity),
     String(row.label),
     String(row.metadata_hex),
     String(row.kind),
@@ -825,6 +827,7 @@ function store_collection_index!(
                     collection_record.key,
                     collection_record.parent_key,
                     collection_record.id,
+                    collection_record.identity,
                     collection_record.label,
                     _serialize_hex(collection_record.own_metadata),
                     String(collection_record.kind),
@@ -1719,6 +1722,7 @@ function _load_collection_index(
         register_collection!(collections, CollectionRecord(
             row.collection_key,
             row.id,
+            row.identity,
             row.parent_key,
             row.label,
             metadata_dict(own_metadata),
