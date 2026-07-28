@@ -65,8 +65,8 @@ function DataBrowser.entries(
 end
 
 # Typed sibling keys are namespaced by the engine's single minting rule.
-const DURABLE_FIRST_ID = "source#DurableCollectionItem:durable-1"
-const DURABLE_SECOND_ID = "source#DurableCollectionItem:durable-2"
+const DURABLE_FIRST_ID = "durable-1"
+const DURABLE_SECOND_ID = "durable-2"
 
 @testset "collection IDs survive a clean cache rebuild" begin
     root_path = mktempdir()

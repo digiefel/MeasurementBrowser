@@ -62,11 +62,15 @@ reconstruct(::Type{MicrographSet}, identity::AbstractString, ::Dict)::Micrograph
     MicrographSet(String(identity))
 
 struct Micrograph <: AbstractDataItem
+    path::String
     name::String
     pixels::Matrix{Float32}
     exposure_ms::Float64
 end
 
+# Every item answers `id` verbatim — it is stored, shown in messages, and used for selection and
+# annotations exactly as returned. One file yields one micrograph here, so its path identifies it.
+id(image::Micrograph)::String = image.path
 label(image::Micrograph)::String = image.name
 collection(::Micrograph)::Vector{AbstractCollection} =
     AbstractCollection[MicrographSet("Micrographs")]
@@ -81,7 +85,7 @@ function process(image::Micrograph)::Micrograph
     low, high = extrema(image.pixels)
     scale = high == low ? one(Float32) : high - low
     normalized = (image.pixels .- low) ./ scale
-    return Micrograph(image.name, normalized, image.exposure_ms)
+    return Micrograph(image.path, image.name, normalized, image.exposure_ms)
 end
 
 # `read` is the only stage that touches the source; `entries` is a pure function of its result.
@@ -89,7 +93,7 @@ read(::MicrographDirectory, file::MicrographFile)::Matrix{Float32} =
     Float32.(readdlm(file.path, ','))
 
 entries(file::MicrographFile, pixels::Matrix{Float32})::Vector{Micrograph} =
-    [Micrograph(splitext(basename(file.path))[1], pixels, 10.0)]
+    [Micrograph(file.path, splitext(basename(file.path))[1], pixels, 10.0)]
 
 struct MicrographProject <: DataBrowser.AbstractProject end
 

@@ -20,8 +20,8 @@ by discipline. A `read` returning a live handle (an HDF5 group, a database curso
 but uncacheable; that project's durable boundary is `process` instead.
 
 `entries` still receives the source item because identity is not payload: the loaded value stays
-purely the expensive data, while default sibling ids, labels, and collection placement derive from
-the source item — which the engine can supply without touching the origin.
+purely the expensive data, while ids, labels, and collection placement derive from the source item —
+which the engine can supply without touching the origin.
 
 `read`'s return value and `entries`' `loaded` argument deliberately share no supertype. The loaded
 value is a private handoff between two stages of the same project; the type discipline is enforced
@@ -113,31 +113,28 @@ analyze(::AbstractCollection, items::AbstractVector)::Dict = Dict()
 # ---------------------------------------------------------------------------
 
 """
-    reconstruct(::Type{T}, data, metadata::Dict) -> Union{Nothing,T}
+    reconstruct(::Type{T}, id, data, metadata::Dict) -> Union{Nothing,T}
 
-Rebuild one concrete item from its cached payload and metadata. The default returns `nothing`;
-the engine then reruns `read` → `entries` → `process`, which is always correct and only slower.
-Cached payloads are still delivered to views either way; this is needed only to run further
+Rebuild one concrete item from its stored id, cached payload, and metadata. The default returns
+`nothing`; the engine then reruns `read` → `entries` → `process`, which is always correct and only
+slower. Cached payloads are still delivered to views either way; this is needed only to run further
 project dispatch on a cached item.
 
 Rehydration must be a pure function of cached content. Anything a type needs to rebuild itself
-belongs in its metadata, never in live workspace state. Identity comes from `attach_record`
-afterwards, not from this method.
+belongs in its id or metadata, never in live workspace state.
 """
-reconstruct(::Type, data, metadata::Dict) = nothing
+reconstruct(::Type, id::AbstractString, data, metadata::Dict) = nothing
 
 """
-    reconstruct(::Type{T}, metadata::Dict) -> T
+    reconstruct(::Type{T}, id, metadata::Dict) -> T
 
-Rebuild one collection value from its own metadata. Collections hold no payload, and their
-occurrence id is a digest that cannot be inverted, so metadata is the only thing a rebuild has —
-whatever a collection type needs to reconstitute itself belongs there. Label is display text, not
-identity: two collections may legitimately share one.
+Rebuild one collection value from its stored id and its own metadata. Collections hold no payload,
+so those two are everything the row keeps about the value.
 
 Unlike the item method there is no default and no way to opt out: an item that cannot be rebuilt is
 recreated by rerunning `read` → `entries`, but a collection has no such path, so a project that
 defines collection types must make them rebuildable. The engine rebuilds collections from the very
 first interpretation, not only after reopening, so a missing method fails immediately.
 """
-reconstruct(::Type{T}, metadata::Dict) where {T<:AbstractCollection} =
-    error("Collection type $T must implement reconstruct(::Type{$T}, metadata)")
+reconstruct(::Type{T}, id::AbstractString, metadata::Dict) where {T<:AbstractCollection} =
+    error("Collection type $T must implement reconstruct(::Type{$T}, id, metadata)")

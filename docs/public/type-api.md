@@ -44,22 +44,22 @@ Projects implement only the behavior they need:
 | `metadata` | one concrete item | metadata supplied by the item as a `Dict` | empty `Dict` |
 | `label` | one concrete item | browser text | source-derived label |
 | `collection` | one concrete item | complete vector of `AbstractCollection` values | empty root path |
-| `id` | one concrete item | stable sibling key | returned position |
+| `id` | one concrete item | its identity | **required** |
 | `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
-| `reconstruct` | the item's type, a cached payload, and metadata | the rebuilt item, or `nothing` | `nothing`; upstream stages rerun |
+| `reconstruct` | the item's type, its stored id, a cached payload, and metadata | the rebuilt item, or `nothing` | `nothing`; upstream stages rerun |
 
 The complete signatures are:
 
 ```julia
+id(item::MyItem)::String
 item_data(item::MyItem)::MyData
 metadata(item::MyItem)::Dict
 label(item::MyItem)::String
 collection(item::MyItem)::Vector{<:AbstractCollection}
-id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-reconstruct(::Type{MyItem}, data, metadata::Dict)::MyItem
+reconstruct(::Type{MyItem}, id, data, metadata::Dict)::MyItem
 ```
 
 Data is persisted whenever the cache can store its shape; no opt-in predicate is involved. A cached
@@ -84,7 +84,7 @@ end
 id(device::Device)::String = device.name
 label(device::Device)::String = device.name
 metadata(device::Device)::Dict = Dict()
-reconstruct(::Type{Device}, id::AbstractString, metadata::Dict)::Device = Device(String(id))
+reconstruct(::Type{Device}, id::AbstractString, ::Dict)::Device = Device(String(id))
 
 process(device::Device, items::AbstractVector)::Vector{<:AbstractDataItem}
 analyze(device::Device, items::AbstractVector)::Dict
@@ -94,13 +94,12 @@ analyze(device::Device, items::AbstractVector)::Dict
 returns them unchanged. `analyze` folds them into metadata attached to the collection node; the
 default is empty. Both run whenever they are defined — there is nothing to declare or enable.
 
-`id` and `reconstruct` are both required, and neither has a default. `id` is what identifies the
-level and must be a `String`, because it is stored verbatim and handed back: the occurrence ID is a
-one-way digest of the parent ID, the type, and `id(collection)`, and cannot be inverted.
-`reconstruct` receives that stored `id` and the level's own metadata — everything the row keeps
-about the value. An item that cannot be rebuilt is recreated by rerunning `read` → `entries`, but a
-collection has no such path, so a missing method is an error rather than a slow path. It fires from
-the first interpretation, not only after reopening.
+`reconstruct` is required here and has no default, unlike the item method. An item that cannot be
+rebuilt is recreated by rerunning `read` → `entries`; a collection has no such path, so a missing
+method is an error rather than a slow path, and it fires from the first interpretation rather than
+after reopening. It receives the stored `id` and the level's own metadata — everything the row keeps
+about the value, since the occurrence ID is a one-way digest of the parent ID, the type, and
+`id(collection)`.
 
 Display text is never involved: two levels may legitimately share a `label`, so anything beyond the
 identity that a type needs — a display string, a numeric parameter — belongs in `metadata`.

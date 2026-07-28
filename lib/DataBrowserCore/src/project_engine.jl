@@ -30,24 +30,6 @@ import DataBrowserAPI.ItemIndex:
     metadata_dict
 
 """
-Mint one item's final id from its source item, kind, position, and optional sibling key.
-
-This is the single identity rule for every interpreted item: registered and typed items both
-supply at most a sibling key (`recipe.id` callback or `id(item)`), and the engine namespaces it
-under the source item and kind. An absent or empty key falls back to the item's returned position.
-"""
-function _mint_id(
-    source_item_id::AbstractString,
-    kind::Symbol,
-    position::Integer,
-    supplied_key=nothing,
-)::String
-    suffix = supplied_key === nothing || supplied_key == "" ?
-        string(position) : string(supplied_key)
-    return "$(source_item_id)#$(kind):$(suffix)"
-end
-
-"""
 Resolve where one interpreted item is placed, with the source in hand.
 
 An item declaring no path of its own takes the source's default placement; every path is then
@@ -138,7 +120,7 @@ function interpret_source_item(
             source_item_key,
             source_item_path=source_item_path_value,
             source_item_timestamp=source_item_timestamp(source_item),
-            id=_mint_id(source_item_id_value, kind(handle), index, id(handle)),
+            id=id(handle),
             label=isempty(item_label_value) ? label(source_item) : item_label_value,
             kind=kind(handle),
             collection_key=nothing,

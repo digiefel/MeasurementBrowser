@@ -23,10 +23,17 @@ label(collection::AbstractCollection)::String = string(collection)
 metadata(::AbstractCollection)::Dict = Dict()
 
 """
-Stable sibling key of an item within its source item. DataBrowser mints the final item id once,
-namespacing this key under the source item and kind; an empty value uses the returned position.
+    id(item)::String
+
+What identifies one item. Stored, displayed in messages, and used for selection, annotation, and
+cache lookup exactly as returned — nothing wraps or namespaces it.
+
+There is no default, and no uniqueness is inferred: two items answering the same `id` collide, and
+that is a project error the engine reports. Source items and collections answer the same contract
+the same way.
 """
-id(::AbstractDataItem) = ""
+id(item::AbstractDataItem)::String = error(
+    "Item type $(typeof(item)) must implement id(::$(typeof(item)))::String")
 
 """Human-readable label for an item. An empty value uses a source-derived label."""
 label(::AbstractDataItem)::String = ""

@@ -58,16 +58,20 @@ end
 Adapt one registration callback result into a `RegisteredDataItem`.
 
 This translates the registration dialect (entry tuples, callback-supplied keys, labels, and
-collection strings) into the item contract; it mints nothing and never sees the source. A recipe
-without a `collection` callback leaves the path empty, and the engine applies the source's default
-placement afterwards — the same rule typed items get. The carrier's `id` holds only the
-callback-supplied sibling key (or `""`); final ids are minted once, in `interpret_source_item`,
-through the same path typed items take.
+collection strings) into the item contract. A recipe without a `collection` callback leaves the path
+empty, and the engine applies the source's default placement afterwards — the same rule typed items
+get.
+
+Identity is the dialect's job, not the engine's: `id(item)` is verbatim for every item type, so this
+builds one from the source item, the registration, and either the `id` callback's value or the
+entry's position. A `register_item!` user never supplies or sees it.
 """
 function _registered_item(
     recipe::ItemRecipe{<:Any,<:Any,<:Any,<:Any,<:Any,Label,Collection,Id},
     value,
     inherited_metadata::MetadataDict,
+    source_item_id::AbstractString,
+    position::Integer,
 )::RegisteredDataItem where {Label,Collection,Id}
     data, entry_metadata = _data_and_metadata(value)
     local_metadata = merge(copy(inherited_metadata), entry_metadata)
@@ -75,9 +79,11 @@ function _registered_item(
         named_collection_path(
             _registration_collection_path(recipe.collection(data, local_metadata)))
     supplied_key = recipe.id === nothing ? nothing : recipe.id(data, local_metadata)
+    key = supplied_key === nothing || supplied_key == "" ?
+        string(position) : string(supplied_key)
     label = recipe.label === nothing ? "" : String(recipe.label(data, local_metadata))
     return RegisteredDataItem{recipe.kind}(
-        supplied_key === nothing ? "" : string(supplied_key),
+        "$(source_item_id)#$(recipe.kind):$(key)",
         label,
         collection_path,
         data,
@@ -150,7 +156,8 @@ function entries(
             "entries callback for registration $K must return a vector; got $(typeof(values))",
         )
         AbstractDataItem[
-            _registered_item(recipe, value, inherited_metadata) for value in values
+            _registered_item(recipe, value, inherited_metadata, id(source_item), position)
+            for (position, value) in pairs(values)
         ]
     end
 end

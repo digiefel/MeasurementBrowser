@@ -386,7 +386,7 @@ function materialized_item(
     T = item_type(workspace.project, record.kind)
     T === nothing && (T = _type_by_name(AbstractDataItem, record.kind))
     if T !== nothing
-        rebuilt = reconstruct(T, stored, effective_metadata(collections, record))
+        rebuilt = reconstruct(T, record.id, stored, effective_metadata(collections, record))
         rebuilt !== nothing &&
             return attach_record(rebuilt, effective_record(collections, record), path)
     end

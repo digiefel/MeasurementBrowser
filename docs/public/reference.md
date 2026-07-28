@@ -81,15 +81,20 @@ analyze = (processed_data::ProcessedData, metadata::Dict) -> additional_metadata
 
 ```julia
 item_data(item::MyItem)::MyData
+id(item::MyItem)::String
 metadata(item::MyItem)::Dict
 label(item::MyItem)::String
 collection(item::MyItem)::Vector{<:AbstractCollection}
-label(collection::AbstractCollection)::String
-metadata(collection::AbstractCollection)::Dict
-id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-reconstruct(::Type{MyItem}, data, metadata::Dict)::MyItem
+reconstruct(::Type{MyItem}, id, data, metadata::Dict)::MyItem
+
+id(collection::MyCollection)::String
+label(collection::MyCollection)::String
+metadata(collection::MyCollection)::Dict
+reconstruct(::Type{MyCollection}, id, metadata::Dict)::MyCollection
+process(collection::MyCollection, items)::Vector{<:AbstractDataItem}
+analyze(collection::MyCollection, items)::Dict
 ```
 
 See [Type API](type-api.md).

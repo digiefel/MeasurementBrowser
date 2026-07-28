@@ -69,14 +69,22 @@ is inside `if workspace.background_processing`, which defaults to `false`.
 stage: `:collection_processed` if a fold rewrote this member, else `:processed`. Delivery no longer
 waits for a whole collection to fold before showing anything.
 
-## One bug found on the way
+## What the id overload was hiding
 
-`run_collection_process` paired outputs to inputs by `id(item)`. Typed items carry no id of their own
-— identity is minted by the engine and lives on the record — so every member collided on `""` and the
-identity fold falsely reported rewrites. Pairing is now positional, which the contract already
-implied by requiring one output per input.
+`run_collection_process` paired outputs to inputs by `id(item)`. That worked for the dialect, whose
+carrier answered `id` with the engine-built id, and broke for typed items, which answered with a
+key the engine then wrapped — so members collided and the fold falsely reported rewrites. Pairing is
+now positional, which the contract already implied by requiring one output per input.
 
-It was unreachable before only because typed collection stages never ran.
+Two more callers had the same defect: `select_items!` looked items up by `id(item)`, and
+`item_annotation_key` keyed annotations by it, so typed items were unselectable by value and shared
+one annotation key.
+
+All three came from `id` naming two things — a user's key and the engine's built id — so the fix was
+to stop having two. `id(value)::String` is now the identity for sources, source items, items, and
+collections alike, used verbatim, with no default and no wrapping. `_mint_id` is deleted;
+`DataBrowserRecipes` builds ids for its own items internally, so a `register_item!` user never sees
+one. Item ids read as whatever a project returns — `cycle-2`, not `run.csv#cycles:cycle-2`.
 
 ## Cost
 

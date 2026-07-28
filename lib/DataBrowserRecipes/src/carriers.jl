@@ -86,14 +86,14 @@ end
 """
 Rebuild a registered carrier from a cached payload.
 
-Identity is not derived here: the carrier is package-owned, so `attach_record` restores its minted
-id, label, and collection path from the record and index straight afterwards. The registration
-comes from the type, so it survives the round trip without ever entering the payload.
+The stored id is handed back verbatim, and `attach_record` restores the label and collection path
+from the record and index straight afterwards. The registration comes from the type, so it survives
+the round trip without ever entering the payload.
 """
 # `Type{<:RegisteredDataItem{K}}` accepts both the seeded UnionAll `RegisteredDataItem{kind}` and
 # a concrete `RegisteredDataItem{kind,D}` remembered from a live item.
-reconstruct(::Type{<:RegisteredDataItem{K}}, data, metadata::Dict) where {K} =
-    RegisteredDataItem{K}("", "", AbstractCollection[], data, metadata_dict(metadata))
+reconstruct(::Type{<:RegisteredDataItem{K}}, id::AbstractString, data, metadata::Dict) where {K} =
+    RegisteredDataItem{K}(String(id), "", AbstractCollection[], data, metadata_dict(metadata))
 
 """
 One collection level of a registered path, identified by its name.

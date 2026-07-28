@@ -38,21 +38,23 @@ flowchart TB
 
 Workspace identity is assembled from stable parts:
 
-```text
-source identity
-  + source-item identity
-  + registration identity or concrete item type
-  + sibling identity when one source item expands into several items
+Sources, source items, data items, and collections all answer the same contract:
+
+```julia
+id(value)::String
 ```
 
-The common one-source-item-to-one-data-item case requires no explicit item identity. When a source
-item expands into several logical items, DataBrowser uses their returned positions by default. An
-entry supplies an explicit id when its sibling order can change. Stable explicit ids keep selection,
-annotations, saved views, and cached results attached when siblings are inserted or reordered.
+What it returns is the identity — stored, shown in messages, and used for selection, annotation, and
+cache lookup exactly as returned. Nothing wraps or namespaces it, and no uniqueness is inferred: two
+values answering the same `id` collide, and the engine reports that as the project error it is.
 
-Registered and typed items share one identity rule: project code supplies at most a sibling key
-(the registration `id` callback or `id(item)`), and interpretation mints the final item id once by
-namespacing that key under the source item and kind. Project code never produces a final item id.
+There is no default anywhere. A type that names a thing has to say what identifies it, which is one
+line, and the alternative — a positional fallback — silently re-points annotations and saved views
+whenever a source item's contents are reordered.
+
+The registration dialect builds ids for its own items, from the source item, the registration, and
+the `id` callback or the entry's position. That is internal to `DataBrowserRecipes`; a
+`register_item!` user neither supplies nor sees one.
 
 Alongside the stable public source-item id, the package mints one compact `source_item_key::Int64`
 per source item when a scan first sees it. Item records, the work graph, and the cache tables

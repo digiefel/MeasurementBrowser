@@ -89,11 +89,12 @@ Watch a source and call `on_change` with each `SourceChanges` batch or recoverab
 watch_source(::AbstractDataSource, ::Function; cancel_token::CancellationToken) = nothing
 
 """
-    id(value)
+    id(value)::String
 
-Stable identity supplied by `value`. Source items must implement this: the id has to be stable
-within their source across scans and reopenings. Data items and collections have defaults (see
-the item contract).
+Stable identity supplied by `value`, used exactly as returned. Sources, source items, data items,
+and collections all implement it; none has a default, and none has its answer wrapped or
+namespaced. An id has to stay stable across scans and reopenings, and two values answering the same
+id collide.
 """
 function id end
 
