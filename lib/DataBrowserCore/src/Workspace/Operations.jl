@@ -261,11 +261,10 @@ function reconcile_source_metadata_cache!(
     current_keys = collect(keys(workspace.index.collections.records))
     @timed_dbg "recon_resolve" for key in current_keys
         haskey(workspace.index.collections.records, key) || continue
-        names = registration_names(workspace.index.collections, key)
-        names === nothing && continue
-        inputs = collection_inputs(
-            annotate_collection_path(workspace.source, named_collection_path(names)),
-        )
+        path = collection_value_path(
+            workspace.index.collections, key, kind -> _collection_type(workspace, kind))
+        isempty(path) && continue
+        inputs = collection_inputs(annotate_collection_path(workspace.source, path))
         resolve_collection_path!(
             workspace.index.collections,
             inputs;
@@ -853,11 +852,7 @@ function apply_cache_index!(
                 if haskey(workspace.index.items, id)
             ]
             collection_key = collection_key_value
-            member_kinds = unique(record.kind for record in members)
-            if any(k -> _has_collection_process(workspace.project, k), member_kinds) &&
-                    !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key)
-                enqueue_collection_work!(workspace, [collection_key]; supersede=false)
-            elseif any(k -> _has_collection_analysis(workspace.project, k), member_kinds) &&
+            if !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key) ||
                     !cache_index_ready(index, COLLECTION_ANALYSIS_RESULT, collection_key)
                 enqueue_collection_work!(workspace, [collection_key]; supersede=false)
             end
@@ -904,38 +899,29 @@ function enqueue_collection_work!(
             if haskey(workspace.index.items, id)
         ]
         isempty(members) && continue
-        member_kinds = unique(record.kind for record in members)
         member_analyze = WorkKey[
             WorkKey(ITEM_ANALYZE, record.id) for record in members]
-        has_process = any(k -> _has_collection_process(workspace.project, k), member_kinds)
-        has_analyze = any(k -> _has_collection_analysis(workspace.project, k), member_kinds)
         process_key = WorkKey(COLLECTION_PROCESS, collection_key)
         analyze_key = WorkKey(COLLECTION_ANALYZE, collection_key)
         if !supersede
-            process_done = !has_process ||
-                cache_work_status(workspace, process_key) === :ready
-            analyze_done = !has_analyze ||
-                cache_work_status(workspace, analyze_key) === :ready
+            process_done = cache_work_status(workspace, process_key) === :ready
+            analyze_done = cache_work_status(workspace, analyze_key) === :ready
             already_live = lock(workspace.work.lock) do
                 get(workspace.work.nodes, process_key, nothing) !== nothing ||
                 get(workspace.work.nodes, analyze_key, nothing) !== nothing
             end
             process_done && analyze_done && !already_live && continue
         end
-        if has_process
-            supersede && clear_work_result_state!(workspace, process_key)
-            enqueue_work!(
-                workspace, process_key, revision(process_key);
-                priority=1, dependencies=member_analyze,
-            )
-        end
-        has_analyze || continue
+        supersede && clear_work_result_state!(workspace, process_key)
+        enqueue_work!(
+            workspace, process_key, revision(process_key);
+            priority=1, dependencies=member_analyze,
+        )
         supersede && clear_work_result_state!(workspace, analyze_key)
         enqueue_work!(
             workspace, analyze_key, revision(analyze_key);
             priority=1,
-            dependencies=has_process ?
-                WorkKey[WorkKey(COLLECTION_PROCESS, collection_key)] : member_analyze,
+            dependencies=WorkKey[WorkKey(COLLECTION_PROCESS, collection_key)],
         )
     end
     return nothing

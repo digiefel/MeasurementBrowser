@@ -46,7 +46,7 @@ end
 const UNNAMED_ITEM_REGISTRATION = Symbol("#unnamed")
 
 """
-    register_item!(project, [registration_name]; read, callbacks...) -> project
+    register_item!(project, [kind]; read, callbacks...) -> project
 
 Register or replace one item pipeline. `read` is the only required callback. Registration
 callbacks receive ordinary project data and metadata dictionaries; DataBrowser owns item identity

@@ -31,6 +31,8 @@ struct PhotoCollection <: MB.AbstractCollection
 end
 
 MB.label(collection::PhotoCollection) = collection.name
+MB.reconstruct(::Type{PhotoCollection}, label::AbstractString, ::Dict) =
+    PhotoCollection(String(label))
 
 struct Photo <: MB.AbstractDataItem
     exposure::Float64

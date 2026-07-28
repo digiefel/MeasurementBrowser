@@ -17,18 +17,6 @@ project_description(::AbstractProject)::String = ""
 """Return the human-readable label for a project item kind."""
 kind_label(::AbstractProject, kind::Symbol)::String = string(kind)
 
-"""
-Whether a project runs a collection `process` stage for one item kind.
-
-A scheduling declaration, not a capability: the stage dispatches for any project, but the engine
-only materializes a collection's members when its project says the work exists. The registration
-dialect answers from its collection recipes; a typed project with collection stages overrides this.
-"""
-_has_collection_process(::AbstractProject, ::Symbol)::Bool = false
-
-"""Whether a project runs a collection `analyze` stage for one item kind. See above."""
-_has_collection_analysis(::AbstractProject, ::Symbol)::Bool = false
-
 """Return the human-readable label for one logical item record."""
 function display_label end
 
@@ -44,6 +32,16 @@ of `AbstractDataItem` whose name matches the kind, then falls back to rerunning
 `read` → `entries` → `process`. Override when kinds are not type names.
 """
 item_type(::AbstractProject, ::Symbol)::Union{Nothing,Type} = nothing
+
+"""
+Resolve one stored collection kind back to the concrete type that produced it, or `nothing`.
+
+The collection counterpart of `item_type`. Collections are always rebuilt from their stored row —
+they have no rerun-from-source fallback — so a kind that resolves to nothing is an error at the
+point of use, not a slow path. Returning `nothing` (the default) is safe: the engine looks for a
+loaded leaf subtype of `AbstractCollection` whose name matches.
+"""
+collection_type(::AbstractProject, ::Symbol)::Union{Nothing,Type} = nothing
 
 """
 Projects a GUI session can offer when the caller did not supply one, and the preferred default.

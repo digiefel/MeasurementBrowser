@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 20
+const PROJECT_CACHE_SCHEMA_VERSION = 21
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -362,7 +362,7 @@ struct CollectionRow
     id::String
     label::String
     metadata_hex::String
-    registration_name::Union{Nothing,String}
+    kind::String
 end
 
 CollectionRow(row)::CollectionRow = CollectionRow(
@@ -371,7 +371,7 @@ CollectionRow(row)::CollectionRow = CollectionRow(
     String(row.id),
     String(row.label),
     String(row.metadata_hex),
-    _null_to_nothing(row.registration_name),
+    String(row.kind),
 )
 
 struct ItemRow
@@ -827,7 +827,7 @@ function store_collection_index!(
                     collection_record.id,
                     collection_record.label,
                     _serialize_hex(collection_record.own_metadata),
-                    collection_record.registration_name,
+                    String(collection_record.kind),
                 )
                 if !(collection_record.key in cache.persisted_collection_keys)
                     append!(cache.collections, collection_record.key, row)
@@ -1722,7 +1722,7 @@ function _load_collection_index(
             row.parent_key,
             row.label,
             metadata_dict(own_metadata),
-            row.registration_name,
+            Symbol(row.kind),
             get(collection_analysis, key, MetadataDict()),
         ))
         delete!(visiting, key)

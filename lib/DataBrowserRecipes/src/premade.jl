@@ -29,7 +29,7 @@ function _read_delimited(source_item::AbstractDataSourceItem, options::NamedTupl
 end
 
 """
-    register_csv!(project, [registration_name]; extensions, read_options, callbacks...) -> project
+    register_csv!(project, [kind]; extensions, read_options, callbacks...) -> project
 
 Register delimited text files as items, one item per file.
 

@@ -51,8 +51,12 @@ end
     ])
     registered_key = COLLECTION_RECORD_INDEX.resolve_collection_path!(
         registered, registered_inputs)
-    @test COLLECTION_RECORD_INDEX.registration_names(registered, registered_key) ==
-        ["wafer", "device"]
+    rebuilt = COLLECTION_RECORD_INDEX.collection_value_path(
+        registered, registered_key, _ -> COLLECTION_RECORD_INDEX.NamedCollection)
+    @test rebuilt == AbstractCollection[
+        COLLECTION_RECORD_INDEX.NamedCollection("wafer"),
+        COLLECTION_RECORD_INDEX.NamedCollection("device"),
+    ]
 
     conflicting = COLLECTION_RECORD_INDEX.CollectionIndex("conflicting")
     original_inputs = COLLECTION_RECORD_INDEX.collection_inputs(AbstractCollection[

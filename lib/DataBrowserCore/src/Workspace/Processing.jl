@@ -300,36 +300,47 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     end
 end
 
-"""
-The concrete collection value one collection's members belong to.
+"""Find a loaded leaf subtype of `root` whose name matches `name`, or `nothing`."""
+function _type_by_name(root::Type, name::Symbol)::Union{Nothing,Type}
+    pending = Type[root]
+    while !isempty(pending)
+        for S in subtypes(pop!(pending))
+            isabstracttype(S) ? push!(pending, S) : nameof(S) === name && return S
+        end
+    end
+    return nothing
+end
 
-Collection stages dispatch on the project's own collection value, which the engine reads back off a
-member's path rather than storing separately: an item's last path segment *is* the collection it
-sits in. Cache, index, and GUI state keep using `CollectionRecord`.
-"""
-function member_collection(items::AbstractVector)::AbstractCollection
-    isempty(items) && error("Cannot run a collection stage over no members")
-    path = collection(first(items))
-    isempty(path) && error(
-        "Cannot run a collection stage: member '$(id(first(items)))' declares no collection path",
-    )
-    return last(path)
+"""Resolve a stored collection kind to its concrete type, asking the project first."""
+function _collection_type(workspace::Workspace, kind::Symbol)::Union{Nothing,Type}
+    declared = collection_type(workspace.project, kind)
+    declared === nothing || return declared
+    return _type_by_name(AbstractCollection, kind)
 end
 
 """
-The collection path the index holds for one record, when it can express it.
+The collection path the index holds for one record, ancestor to self.
 
-Only named levels survive in the index; a typed collection path is not recoverable from records, so
-a typed item rebuilds its own path in `reconstruct` instead. An empty result means "the index has
-nothing to say", and the item keeps whatever path it carries.
+Each level is rebuilt from its stored kind, label, and own metadata. Unlike items, a collection has
+no rerun-from-source fallback, so a level that cannot be rebuilt is an error rather than a slow path.
 """
-function indexed_collection_path(
+indexed_collection_path(
+    workspace::Workspace,
     collections::CollectionIndex,
     record::ItemRecord,
-)::Vector{AbstractCollection}
-    names = registration_names(collections, record.collection_key)
-    names === nothing && return AbstractCollection[]
-    return named_collection_path(names)
+)::Vector{AbstractCollection} = collection_value_path(
+    collections, record.collection_key, kind -> _collection_type(workspace, kind))
+
+"""The concrete collection value for one indexed collection key."""
+function collection_value(
+    workspace::Workspace,
+    collections::CollectionIndex,
+    collection_key::Int64,
+)::AbstractCollection
+    path = collection_value_path(
+        collections, collection_key, kind -> _collection_type(workspace, kind))
+    isempty(path) && error("Collection '$collection_key' has no indexed path")
+    return last(path)
 end
 
 """Rebuild one item by rerunning `read` → `entries` → `process` when `reconstruct` is unavailable."""
@@ -344,7 +355,7 @@ function reprocess_item(
     interpreted isa AbstractDataItem || error(
         "Interpreted cache for item '$(record.id)' returned $(typeof(interpreted)), not an item",
     )
-    path = indexed_collection_path(collections, record)
+    path = indexed_collection_path(workspace, collections, record)
     input = attach_record(interpreted, effective_record(collections, record), path)
     processed = process(workspace.project, input)
     processed isa AbstractDataItem || error(
@@ -369,23 +380,11 @@ function materialized_item(
     record::ItemRecord,
     stored,
 )::AbstractDataItem
-    path = indexed_collection_path(collections, record)
+    path = indexed_collection_path(workspace, collections, record)
     stored isa AbstractDataItem &&
         return attach_record(stored, effective_record(collections, record), path)
     T = item_type(workspace.project, record.kind)
-    if T === nothing
-        pending = Type[AbstractDataItem]
-        while T === nothing && !isempty(pending)
-            for S in subtypes(pop!(pending))
-                if isabstracttype(S)
-                    push!(pending, S)
-                elseif nameof(S) === record.kind
-                    T = S
-                    break
-                end
-            end
-        end
-    end
+    T === nothing && (T = _type_by_name(AbstractDataItem, record.kind))
     if T !== nothing
         rebuilt = reconstruct(T, stored, effective_metadata(collections, record))
         rebuilt !== nothing &&
@@ -488,18 +487,22 @@ function run_collection_process(workspace::Workspace, collection_key::Int64)::Na
         materialized_item(workspace, collections, delivered[index], payload)
         for (index, payload) in pairs(payloads)
     ]
-    outputs = process(workspace.project, member_collection(inputs), inputs)
-    by_id = Dict(id(input) => input for input in inputs)
-    rewritten_ids = String[]
-    for output in outputs
-        input = by_id[id(output)]
-        item_data(output) === item_data(input) && continue
-        push!(rewritten_ids, id(output))
-    end
+    outputs = process(
+        workspace.project, collection_value(workspace, collections, collection_key), inputs)
+    length(outputs) == length(inputs) || error(
+        "Collection process for '$collection_key' returned $(length(outputs)) items for " *
+        "$(length(inputs)) members; it must return one output per input, in order",
+    )
+    # Paired by position, not by id: a typed item carries no id of its own, and the contract
+    # already requires one output per input.
+    rewritten = [
+        position for position in eachindex(inputs)
+        if item_data(outputs[position]) !== item_data(inputs[position])
+    ]
     return (
         records=records,
         outputs=outputs,
-        rewritten_ids=Set(rewritten_ids),
+        rewritten=rewritten,
     )
 end
 
@@ -517,15 +520,10 @@ function run_collection_analysis(workspace::Workspace, collection_key::Int64)::M
         ]
     end
     delivered = delivered_records(workspace, collections, records)
-    payloads = Vector{Any}(nothing, length(delivered))
-    rewritten = [
-        index for index in eachindex(records)
-        if _has_collection_process(workspace.project, records[index].kind)
-    ]
-    folded = read_item_data(workspace.cache.db, delivered[rewritten]; stage=:collection_processed)
-    for (position, index) in pairs(rewritten)
-        payloads[index] = folded[position]
-    end
+    # A member has a collection-processed payload only when a fold rewrote it; everyone else
+    # analyzes from their own processed payload.
+    payloads = read_item_data(
+        workspace.cache.db, delivered; stage=:collection_processed)
     remaining = [index for index in eachindex(records) if payloads[index] === nothing]
     base = read_item_data(workspace.cache.db, delivered[remaining]; stage=:processed)
     for (position, index) in pairs(remaining)
@@ -538,7 +536,8 @@ function run_collection_analysis(workspace::Workspace, collection_key::Int64)::M
         materialized_item(workspace, collections, delivered[index], payload)
         for (index, payload) in pairs(payloads)
     ]
-    return metadata_dict(analyze(workspace.project, member_collection(items), items))
+    return metadata_dict(analyze(
+        workspace.project, collection_value(workspace, collections, collection_key), items))
 end
 
 """Execute one work node and publish its completion immediately."""
@@ -575,11 +574,11 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
         elseif key.kind === COLLECTION_PROCESS
             processing = run_collection_process(workspace, key.entity)
             if work_node_current(workspace, node)
-                by_id = Dict(record.id => record for record in processing.records)
-                for output in processing.outputs
-                    id(output) in processing.rewritten_ids || continue
+                for position in processing.rewritten
                     store_processed!(
-                        workspace.cache.db, by_id[id(output)], output;
+                        workspace.cache.db,
+                        processing.records[position],
+                        processing.outputs[position];
                         stage=:collection_processed)
                 end
                 store_collection_process_result!(
@@ -625,33 +624,29 @@ end
 """
 The delivery gate for one record: the work key whose readiness makes the delivered payload current.
 
-Kinds with a registered collection `process` are gated on their collection's COLLECTION_PROCESS and
-read the `:collection_processed` payload (falling back to `:processed`); others gate on ITEM_PROCESS.
+Always ITEM_PROCESS. A collection `process` that rewrites this member supersedes the delivered
+payload when its fold lands, through the normal publish path — delivery does not wait for it, so a
+project with collection stages still shows item-processed data while the fold runs.
 """
-function delivery_gate(workspace::Workspace, record::ItemRecord)::Tuple{WorkKey,Symbol}
-    if _has_collection_process(workspace.project, record.kind)
-        return WorkKey(
-            COLLECTION_PROCESS,
-            record.collection_key::Int64,
-        ), :collection
-    end
-    return WorkKey(ITEM_PROCESS, record.id), :item
-end
+delivery_gate(::Workspace, record::ItemRecord)::WorkKey = WorkKey(ITEM_PROCESS, record.id)
 
-"""Read one record's delivered payload from the cache, honoring its gate's payload stage."""
+"""
+Read one record's delivered payload from the cache: the deepest stage present.
+
+A collection `process` that rewrote this member left a `:collection_processed` payload, and that
+supersedes the member's own. Absent one, the member's `:processed` payload is what it delivers —
+including while a fold is still running.
+"""
 function _delivered_payload(
     workspace::Workspace,
     collections::CollectionIndex,
     record::ItemRecord,
-    mode::Symbol,
 )::Any
     delivered = ItemRecord(
         record; metadata=delivered_metadata(workspace, record, collections))
-    if mode === :collection
-        payload = only(read_item_data(
-            workspace.cache.db, [delivered]; stage=:collection_processed))
-        payload === nothing || return payload
-    end
+    folded = only(read_item_data(
+        workspace.cache.db, [delivered]; stage=:collection_processed))
+    folded === nothing || return folded
     return only(read_item_data(workspace.cache.db, [delivered]; stage=:processed))
 end
 
@@ -710,47 +705,9 @@ function request_processed_items(
     )
     loaded = Vector{AbstractDataItem}(undef, length(records))
     for (position, record) in pairs(records)
-        gate, mode = delivery_gate(workspace, record)
-        if mode === :collection
-            collection_key = gate.entity::Int64
-            haskey(collections.records, collection_key) || error(
-                "Cannot deliver item '$(record.id)': collection '$(gate.entity)' is missing")
-            members = ItemRecord[
-                index.items[id]
-                for id in collection_item_ids(collections, collection_key)
-                if haskey(index.items, id)
-            ]
-            lock(workspace.work.lock) do
-                for member in members
-                    process_key = WorkKey(ITEM_PROCESS, member.id)
-                    get(workspace.work.nodes, process_key, nothing) === nothing && continue
-                    enqueue_work!(
-                        workspace,
-                        process_key,
-                        current_revision(workspace.work, process_key);
-                        priority=4,
-                    )
-                end
-            end
-            result = ensure_uptodate!(
-                workspace, gate;
-                priority=3,
-                dependencies=WorkKey[
-                    WorkKey(ITEM_ANALYZE, member.id) for member in members],
-            )
-            if result.failure !== nothing
-                result.failure.ex isa OperationCanceledException && throw(result.failure)
-            end
-        else
-            result = ensure_uptodate!(workspace, gate; priority=4)
-            if result.failure !== nothing
-                throw(result.failure)
-            elseif result.item !== nothing
-                loaded[position] = loaded_item(record, result.item::AbstractDataItem)
-                continue
-            end
-        end
-        payload = _delivered_payload(workspace, collections, record, mode)
+        result = ensure_uptodate!(workspace, delivery_gate(workspace, record); priority=4)
+        result.failure === nothing || throw(result.failure)
+        payload = _delivered_payload(workspace, collections, record)
         payload === nothing && error(
             "Delivered data for item '$(record.id)' is missing from the cache")
         loaded[position] = loaded_item(record, payload)

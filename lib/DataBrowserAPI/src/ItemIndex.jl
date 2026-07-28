@@ -21,6 +21,7 @@ import ..DataBrowserAPI:
     kind,
     label,
     metadata,
+    reconstruct,
     source_id,
     source_item_path,
     source_item_timestamp,
@@ -97,10 +98,15 @@ struct CollectionInput
     id::String
     label::String
     own_metadata::MetadataDict
-    registration_name::Union{Nothing,String}
+    kind::Symbol
 end
 
-"""Resolve a live collection path into package-owned inputs without retaining user values."""
+"""
+Resolve a live collection path into package-owned inputs without retaining user values.
+
+`kind` is the concrete type's name. The occurrence id is a digest and cannot be inverted, so the
+kind, label, and own metadata are everything a later `reconstruct` has to work from.
+"""
 function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{CollectionInput}
     inputs = CollectionInput[]
     parent_id = ""
@@ -110,7 +116,7 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
             collection_id,
             String(label(value)),
             metadata_dict(metadata(value)),
-            value isa NamedCollection ? value.name : nothing,
+            nameof(typeof(value)),
         ))
         parent_id = collection_id
     end
@@ -120,6 +126,9 @@ end
 """Wrap a string path in package-owned named collection values."""
 named_collection_path(names::AbstractVector{<:AbstractString})::Vector{AbstractCollection} =
     AbstractCollection[NamedCollection(name) for name in names]
+
+reconstruct(::Type{NamedCollection}, label::AbstractString, metadata::Dict) =
+    NamedCollection(String(label); metadata)
 
 """
 One package-owned indexed collection occurrence.
@@ -134,7 +143,7 @@ struct CollectionRecord
     parent_key::Union{Nothing,Int64}
     label::String
     own_metadata::MetadataDict
-    registration_name::Union{Nothing,String}
+    kind::Symbol
     analysis::MetadataDict
 end
 
@@ -210,12 +219,12 @@ end
 _projection_changed(record::CollectionRecord, input::CollectionInput)::Bool =
     record.label != input.label ||
     record.own_metadata != input.own_metadata ||
-    record.registration_name != input.registration_name
+    record.kind != input.kind
 
 _projection_changed(left::CollectionInput, right::CollectionInput)::Bool =
     left.label != right.label ||
     left.own_metadata != right.own_metadata ||
-    left.registration_name != right.registration_name
+    left.kind != right.kind
 
 """
     validate_collection_paths(index, paths) -> Nothing
@@ -258,7 +267,7 @@ function validate_collection_paths(
                 )
                 _projection_changed(existing, input) && throw(ArgumentError(
                     "Collection '$(join(labels, " / "))' produced inconsistent label, " *
-                    "metadata, or registration name for deterministic id $(existing.id)",
+                    "metadata, or kind for deterministic id $(existing.id)",
                 ))
             end
             parent_id = input.id
@@ -287,7 +296,7 @@ function resolve_collection_path!(
                 parent_key,
                 input.label,
                 copy(input.own_metadata),
-                input.registration_name,
+                input.kind,
                 MetadataDict(),
             ))
         else
@@ -299,7 +308,7 @@ function resolve_collection_path!(
             if projection_changed && !update_existing
                 throw(ArgumentError(
                     "Collection '$(join(labels, " / "))' produced inconsistent label, " *
-                    "metadata, or registration name for deterministic id $(existing.id)",
+                    "metadata, or kind for deterministic id $(existing.id)",
                 ))
             end
             if projection_changed
@@ -309,7 +318,7 @@ function resolve_collection_path!(
                     existing.parent_key,
                     input.label,
                     copy(input.own_metadata),
-                    input.registration_name,
+                    input.kind,
                     existing.analysis,
                 )
             end
@@ -362,19 +371,33 @@ collection_id_path(::CollectionIndex, ::Nothing)::Vector{String} = String[]
 collection_location(index::CollectionIndex, key::Int64)::Vector{String} =
     String[index.records[path_key].label for path_key in collection_path_keys(index, key)]
 
-"""Return stored registration names, or `nothing` when the indexed path is typed."""
-function registration_names(
+"""
+Rebuild the collection values on one indexed path, ancestor to self.
+
+Each level is rebuilt from its stored kind, label, and own metadata — the occurrence id is a digest
+and carries nothing invertible. `type_for_kind` resolves a stored kind to its concrete type.
+"""
+function collection_value_path(
     index::CollectionIndex,
     key::Union{Nothing,Int64},
-)::Union{Nothing,Vector{String}}
-    key === nothing && return String[]
-    names = String[]
+    type_for_kind,
+)::Vector{AbstractCollection}
+    key === nothing && return AbstractCollection[]
+    path = AbstractCollection[]
     for path_key in collection_path_keys(index, key)
         collection_record = index.records[path_key]
-        collection_record.registration_name === nothing && return nothing
-        push!(names, collection_record.registration_name)
+        collection_type = type_for_kind(collection_record.kind)
+        collection_type === nothing && error(
+            "Cannot rebuild collection '$(collection_record.label)': no loaded " *
+            "AbstractCollection type named :$(collection_record.kind)",
+        )
+        push!(path, reconstruct(
+            collection_type,
+            collection_record.label,
+            collection_record.own_metadata,
+        ))
     end
-    return names
+    return path
 end
 
 """Return child keys sorted by their resolved display labels."""
@@ -453,7 +476,7 @@ function clear_collection_analysis!(index::CollectionIndex, key::Int64)::Nothing
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
-        collection_record.registration_name,
+        collection_record.kind,
         MetadataDict(),
     )
     return nothing
@@ -472,7 +495,7 @@ function set_collection_analysis!(
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
-        collection_record.registration_name,
+        collection_record.kind,
         metadata_dict(analysis),
     )
     return nothing

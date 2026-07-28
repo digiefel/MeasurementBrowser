@@ -34,6 +34,11 @@ DataBrowser.fingerprint(::DurableCollectionSourceItem) = "stable source"
 
 DataBrowser.id(collection::DurableCollection) = collection.key
 DataBrowser.label(collection::DurableCollection) = collection.shown
+# Two of these share a label, so the key is the identity and must survive in metadata:
+# a collection is rebuilt from its stored label and own metadata, nothing else.
+DataBrowser.metadata(collection::DurableCollection) = Dict(:key => collection.key)
+DataBrowser.reconstruct(::Type{DurableCollection}, label::AbstractString, metadata::Dict) =
+    DurableCollection(metadata[:key], String(label))
 
 DataBrowser.id(item::DurableCollectionItem) = item.id
 DataBrowser.collection(item::DurableCollectionItem) = item.path

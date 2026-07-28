@@ -70,6 +70,44 @@ correct and only slower. It must be a pure function of what was cached, so anyth
 to rebuild itself belongs in its metadata. `item_type(project, kind)` supplies `T` when kinds are
 not type names; otherwise the engine matches `kind` to a loaded leaf subtype of `AbstractDataItem`.
 
+## Collection types
+
+A collection is a grouping level a project defines so it can process and analyze the same items
+different ways — by device in one level, by temperature in another. Collection stages dispatch on
+the collection value, so a project writes one type per grouping:
+
+```julia
+struct Device <: AbstractCollection
+    name::String
+end
+
+id(device::Device)::Any = device.name
+label(device::Device)::String = device.name
+metadata(device::Device)::Dict = Dict()
+reconstruct(::Type{Device}, label::AbstractString, metadata::Dict)::Device = Device(String(label))
+
+process(device::Device, items::AbstractVector)::Vector{<:AbstractDataItem}
+analyze(device::Device, items::AbstractVector)::Dict
+```
+
+`process` rewrites the members, returning one output per input **in the same order**; the default
+returns them unchanged. `analyze` folds them into metadata attached to the collection node; the
+default is empty. Both run whenever they are defined — there is nothing to declare or enable.
+
+`reconstruct` is required, and differs from the item method in having no default. A collection holds
+no payload, so the row keeps only its kind, label, and own metadata; its occurrence ID is a one-way
+digest of the parent ID, the type, and `id(collection)`, and cannot be inverted. An item that cannot
+be rebuilt is recreated by rerunning `read` → `entries`, but a collection has no such path, so a
+missing method is an error rather than a slow path. It fires from the first interpretation, not only
+after reopening.
+
+The practical consequence: **a collection's identity must be reproducible from its label and its own
+metadata.** If `id(collection)` returns something neither carries — a key, a numeric level — put it
+in `metadata` so `reconstruct` can read it back.
+
+`collection_type(project, kind)` supplies the type when kinds are not type names; otherwise the
+engine matches `kind` to a loaded leaf subtype of `AbstractCollection`.
+
 Multiple dispatch replaces registration names as the behavior selector. Different item types can
 provide entirely different processing and analysis methods while sharing one workspace.
 

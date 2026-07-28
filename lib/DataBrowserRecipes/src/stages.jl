@@ -244,12 +244,3 @@ function analyze(project::Project, item::RegisteredDataItem{K})::Dict{Symbol,Any
 end
 
 
-function _has_collection_process(project::Project, item_kind::Symbol)::Bool
-    recipe = get(project.collections, item_kind, nothing)
-    return recipe !== nothing && recipe.process !== nothing
-end
-
-function _has_collection_analysis(project::Project, item_kind::Symbol)::Bool
-    recipe = get(project.collections, item_kind, nothing)
-    return recipe !== nothing && recipe.analyze !== nothing
-end
