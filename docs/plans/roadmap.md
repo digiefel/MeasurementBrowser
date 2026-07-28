@@ -45,12 +45,14 @@ workspace internals.
 - [x] Resolve `label(value)` once from each live source item, data item, and collection during
   interpretation, persist that display value on the corresponding record, and make
   `label(record)` return it without materializing a payload or running project code in the UI.
-- [x] Make typed materialization explicit and tested: reopening restores records, not arbitrary
-  user-defined instances; a valid cached processed payload is delivered without rerunning
-  `process`, an opt-in `reconstruct(::Type{T}, data, metadata)` method rebuilds a concrete item
-  from record and payload with its rederived identity validated, and a missing typed item without
-  one is recreated through `source_items` → `read` → `entries`. Obtain a typed collection value
-  from `collection(item)` only after materializing its owning item.
+- [x] Make typed materialization explicit: reopening restores records, not arbitrary user-defined
+  instances; a valid cached processed payload is delivered without rerunning `process`, and an
+  opt-in `reconstruct(::Type{T}, data, metadata)` method rebuilds a concrete item from the stored
+  payload alone. Identity is not rederived there: `reconstruct` sees no record, and `attach_record`
+  restores the minted id, label, and collection path immediately afterwards. A type that declines
+  to rebuild — the default `reconstruct` returning `nothing` — is recreated through `read` →
+  `entries` → `process`. Obtain a typed collection value from `collection(item)` only after
+  materializing its owning item. (No test covers the decline-to-rebuild path; see #14.)
 - [x] Remove the registration-only `item isa RegisteredDataItem` payload-cache gate, and the
   item-level `cacheable` predicate with it. Persistence becomes the payload's supported shape
   alone; rehydration into a user type becomes `reconstruct` dispatch, keeping cached payload
