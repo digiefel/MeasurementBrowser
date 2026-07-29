@@ -78,12 +78,15 @@ end
 struct SourceFile <: AbstractDataSourceItem
     filepath::String
     filename::String
+    relative_path::String
     timestamp::Union{DateTime,Nothing}
     fingerprint::FileFingerprint
 end
 
-id(file::SourceFile)::String = file.filepath
-label(file::SourceFile)::String = file.filename
+# Identity is the path relative to the source root, not the absolute one: it is unique within the
+# source, short enough to show as-is, and unchanged when the directory is moved or copied.
+id(file::SourceFile)::String = file.relative_path
+label(file::SourceFile)::String = file.relative_path
 fingerprint(file::SourceFile)::FileFingerprint = file.fingerprint
 source_item_path(file::SourceFile)::String = file.filepath
 source_item_timestamp(file::SourceFile)::Union{DateTime,Nothing} = file.timestamp
@@ -133,12 +136,15 @@ function file_fingerprint(
     )
 end
 
-function index_source_file(path::AbstractString)::SourceFile
+"""Index one file as a source item, identified by its path relative to `source_root`."""
+function index_source_file(path::AbstractString, source_root::AbstractString)::SourceFile
     normalized = normpath(abspath(expanduser(String(path))))
     filename = basename(normalized)
+    root = normpath(abspath(expanduser(String(source_root))))
     return SourceFile(
         normalized,
         filename,
+        relpath(normalized, root),
         parse_timestamp(filename),
         file_fingerprint(normalized; normalized=true),
     )
@@ -170,14 +176,14 @@ function collect_source_files(
     if source.recursive
         for (root, _, names) in walkdir(source.root_path)
             append_source_files!(
-                source_files, root, names, metadata_path;
+                source_files, root, names, source.root_path, metadata_path;
                 on_progress, on_item, found, cancel_token,
             )
         end
     else
         names = readdir(source.root_path)
         append_source_files!(
-            source_files, source.root_path, names, metadata_path;
+            source_files, source.root_path, names, source.root_path, metadata_path;
             on_progress, on_item, found, cancel_token,
         )
     end
@@ -189,6 +195,7 @@ function append_source_files!(
     source_files::Vector{SourceFile},
     root::AbstractString,
     names::Vector{String},
+    source_root::AbstractString,
     metadata_path::Union{Nothing,String}=nothing,
     ;
     on_progress::Union{Nothing,Function}=nothing,
@@ -203,7 +210,7 @@ function append_source_files!(
         path = joinpath(root, name)
         metadata_path !== nothing && normpath(path) == metadata_path && continue
         isfile(path) || continue
-        file = index_source_file(path)
+        file = index_source_file(path, source_root)
         push!(source_files, file)
         found[] += 1
         on_item === nothing || on_item(file)

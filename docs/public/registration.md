@@ -203,8 +203,13 @@ Directory-backed workspaces discover files before registrations run. Each callba
 |---|---|
 | `filepath` | complete path used to open the file |
 | `filename` | final path component used for recognition and filename metadata |
+| `relative_path` | path relative to the source root; the source item's `id` and label |
 | `timestamp` | discovered file timestamp, when available |
 | `fingerprint` | value used to detect source changes |
+
+Identity is the relative path rather than the absolute one: it is unique within the source, short
+enough for status surfaces to show as-is, and unchanged when the directory is moved or copied to
+another machine.
 
 The source object lets DataBrowser perform filesystem discovery once and keeps that work out of
 project callbacks. Its metadata dictionary contains `:filename` and, when a timestamp was

@@ -20,7 +20,7 @@ DataBrowserAPI.reconstruct(::Type{CacheCollectionLevel}, identity::AbstractStrin
     mktempdir() do dir
         filepath = joinpath(dir, "item.dat")
         write(filepath, "data")
-        source_item = DataBrowserSources.index_source_file(filepath)
+        source_item = DataBrowserSources.index_source_file(filepath, dir)
         cache_identity = ProjectCacheIdentity(
             "CollectionRoundTrip", dir, basename(dir), joinpath(dir, "cache.duckdb"))
         collections = DataBrowserAPI.ItemIndex.CollectionIndex(dir)

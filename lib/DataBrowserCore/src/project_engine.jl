@@ -96,12 +96,7 @@ function interpret_source_item(
 )::SourceItemInterpretation
     source_item_id_value = id(source_item)
     source_item_path_value = source_item_path(source_item)
-    source_item_label_value = if source_item_path_value !== nothing &&
-                                 isabspath(source_id(source))
-        relpath(source_item_path_value, source_id(source))
-    else
-        label(source_item)
-    end
+    source_item_label_value = label(source_item)
     loaded = read(project, source, source_item)
     handles = entries(project, source_item, loaded)
     handles isa AbstractVector || error(
@@ -155,7 +150,7 @@ function items_for_file(
     interpretation = interpret_source_item(
         project,
         source,
-        index_source_file(filepath),
+        index_source_file(filepath, dirname(filepath)),
     )
     collections = CollectionIndex(source_id(source))
     records = ItemRecord[

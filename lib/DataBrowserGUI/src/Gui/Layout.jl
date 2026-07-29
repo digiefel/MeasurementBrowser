@@ -170,14 +170,10 @@ function _render_cache_controls!(state::BrowserState)::Nothing
         for index in 1:shown
             source_item_id, message = status.errors[index]
             ig.PushID(source_item_id)
-            if ig.TextLink(basename(source_item_id)) && select_source_item!(state, source_item_id)
+            if ig.TextLink(source_item_id) && select_source_item!(state, source_item_id)
                 state.tree_filter = ""
                 state.item_filter = ""
                 state.reset_project_filters = true
-            end
-            if ig.BeginItemTooltip()
-                ig.TextUnformatted(source_item_id)
-                ig.EndTooltip()
             end
             ig.TextWrapped(first(split(message, '\n'; limit=2)))
             ig.PopID()
