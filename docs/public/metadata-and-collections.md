@@ -85,8 +85,8 @@ Labels are presentation, not identity. Changing a label does not create a differ
 
 ## Stable item identity
 
-DataBrowser generates an integer sibling key when `id` is omitted. This is sufficient when a source
-always returns its items in the same order.
+`register_item!` uses the entry's position when the `id` callback is omitted. That is sufficient
+when a source always returns its items in the same order.
 
 Use a stable domain key when sibling order can change:
 

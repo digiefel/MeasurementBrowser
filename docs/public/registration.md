@@ -12,7 +12,7 @@ that pipeline.
 The complete registration has this data flow:
 
 ```julia
-register_item!(project, registration_name;
+register_item!(project, kind;
     detect = (source_item) -> accepted::Bool,
     read = (source_item) -> loaded_data::LoadedData,
     entries = (loaded_data::LoadedData, metadata::Dict) -> items::Vector,
@@ -27,10 +27,10 @@ register_item!(project, registration_name;
 `LoadedData`, `ItemData`, and `ProcessedData` stand for concrete types chosen by the project. They
 are not DataBrowser types, and each stage may use a different type.
 
-`detect` and `read` receive whatever the source discovers — a `SourceFile` from a directory source,
-with `.filepath` and `.filename`. Registration is not tied to files: any source's items work, and a
-callback that sticks to `label(source_item)` and `source_item_path(source_item)` works with all of
-them.
+`detect` and `read` receive whatever the source discovers. Registration is not tied to files:
+reach a source item through the contract — `id`, `label`, `source_item_path`, `metadata` — and the
+same callback works for every source. A directory source hands you a `SourceFile`, whose `id` and
+`label` are its path relative to the source root.
 
 The registration name is optional. It identifies a registration inside the project; it is not a
 property attached to every item.
@@ -122,9 +122,13 @@ See [Metadata and collections](metadata-and-collections.md) for the full groupin
 id = (data::ItemData, metadata::Dict) -> key
 ```
 
-DataBrowser generates an integer sibling key when `id` is omitted. Provide a channel name, cycle
-number, database key, or another stable domain value only when identity must survive inserted or
-reordered siblings.
+`register_item!` builds each item's id for you, from the source item, the registration, and this
+callback — or the entry's position when the callback is omitted. Provide a channel name, cycle
+number, database key, or another stable domain value when identity must survive inserted or
+reordered siblings; positions do not.
+
+This is the one thing the registration API does that the type API does not. A project written
+against types answers `id(item)::String` itself, and what it returns is the identity verbatim.
 
 ## `process`
 
@@ -180,13 +184,13 @@ Name registrations when a project has several interpretations:
 
 ```julia
 register_item!(project, :spectrum;
-    detect = (file::SourceFile) -> accepted::Bool,
-    read = (file::SourceFile) -> spectrum::SpectrumData,
+    detect = (source_item) -> accepted::Bool,
+    read = (source_item) -> spectrum::SpectrumData,
 )
 
 register_item!(project, :image;
-    detect = (file::SourceFile) -> accepted::Bool,
-    read = (file::SourceFile) -> image::ImageData,
+    detect = (source_item) -> accepted::Bool,
+    read = (source_item) -> image::ImageData,
 )
 ```
 
@@ -221,7 +225,7 @@ Item callbacks operate on one item at a time. Collection operations perform work
 related group of items:
 
 ```julia
-register_collection_analysis!(project, registration_name;
+register_collection_analysis!(project, kind;
     process = (data::Vector, metadata::Vector{<:Dict}) -> processed_data::Vector,
     analyze = (processed_data::Vector, metadata::Vector{<:Dict}) -> collection_metadata::Dict,
 )

@@ -12,7 +12,7 @@ define_project(name::AbstractString; description::AbstractString="")::Project
 Creates an empty project definition.
 
 ```julia
-register_item!(project, [registration_name];
+register_item!(project, [kind];
     read,
     detect=nothing,
     entries=nothing,
@@ -27,7 +27,7 @@ register_item!(project, [registration_name];
 Registers or replaces one item pipeline. See [Registration API](registration.md).
 
 ```julia
-register_collection_analysis!(project, registration_name;
+register_collection_analysis!(project, kind;
     process=nothing,
     analyze=nothing,
 )::Project
