@@ -30,8 +30,6 @@ import DataBrowserAPI:
     collection,
     id,
     item_data,
-    item_type,
-    kind,
     label,
     metadata,
     process,

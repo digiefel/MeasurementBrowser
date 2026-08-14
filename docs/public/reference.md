@@ -132,5 +132,4 @@ struct MyProject <: AbstractProject end
 
 project_name(project::MyProject)::String
 project_description(project::MyProject)::String
-item_type(project::MyProject, kind::Symbol)::Union{Nothing,Type}
 ```

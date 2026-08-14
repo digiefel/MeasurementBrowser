@@ -300,45 +300,25 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
     end
 end
 
-"""Find a loaded leaf subtype of `root` whose name matches `name`, or `nothing`."""
-function _type_by_name(root::Type, name::Symbol)::Union{Nothing,Type}
-    pending = Type[root]
-    while !isempty(pending)
-        for S in subtypes(pop!(pending))
-            isabstracttype(S) ? push!(pending, S) : nameof(S) === name && return S
-        end
-    end
-    return nothing
-end
-
-"""Resolve a stored collection kind to its concrete type, asking the project first."""
-function _collection_type(workspace::Workspace, kind::Symbol)::Union{Nothing,Type}
-    declared = collection_type(workspace.project, kind)
-    declared === nothing || return declared
-    return _type_by_name(AbstractCollection, kind)
-end
-
 """
 The collection path the index holds for one record, ancestor to self.
 
-Each level is rebuilt from its stored kind, label, and own metadata. Unlike items, a collection has
-no rerun-from-source fallback, so a level that cannot be rebuilt is an error rather than a slow path.
+Each level is rebuilt from its stored type, identity, and own metadata. Unlike items, a collection
+has no rerun-from-source fallback, so `reconstruct` is required rather than optional.
 """
 indexed_collection_path(
-    workspace::Workspace,
+    ::Workspace,
     collections::CollectionIndex,
     record::ItemRecord,
-)::Vector{AbstractCollection} = collection_value_path(
-    collections, record.collection_key, kind -> _collection_type(workspace, kind))
+)::Vector{AbstractCollection} = collection_value_path(collections, record.collection_key)
 
 """The concrete collection value for one indexed collection key."""
 function collection_value(
-    workspace::Workspace,
+    ::Workspace,
     collections::CollectionIndex,
     collection_key::Int64,
 )::AbstractCollection
-    path = collection_value_path(
-        collections, collection_key, kind -> _collection_type(workspace, kind))
+    path = collection_value_path(collections, collection_key)
     isempty(path) && error("Collection '$collection_key' has no indexed path")
     return last(path)
 end
@@ -369,10 +349,9 @@ end
 Turn one cached value into an item ready for the next project stage.
 
 A value the cache held as an item is adopted as-is. A raw payload is rebuilt through `reconstruct`
-when a type is known — via `item_type`, or a loaded leaf `AbstractDataItem` whose name matches the
-kind — and that method returns an item. Otherwise the engine reruns `read` → `entries` → `process`.
-Either way the item then adopts its record and the index's collection path, so identity comes from
-the engine and never from stale cached state.
+on the record's own concrete type, which the record carries verbatim; when that method declines, the
+engine reruns `read` → `entries` → `process`. Either way the item then adopts its record and the
+index's collection path, so identity comes from the engine and never from stale cached state.
 """
 function materialized_item(
     workspace::Workspace,
@@ -383,14 +362,10 @@ function materialized_item(
     path = indexed_collection_path(workspace, collections, record)
     stored isa AbstractDataItem &&
         return attach_record(stored, effective_record(collections, record), path)
-    T = item_type(workspace.project, record.kind)
-    T === nothing && (T = _type_by_name(AbstractDataItem, record.kind))
-    if T !== nothing
-        rebuilt = reconstruct(T, record.id, stored, effective_metadata(collections, record))
-        rebuilt !== nothing &&
-            return attach_record(rebuilt, effective_record(collections, record), path)
-    end
-    return reprocess_item(workspace, collections, record)
+    rebuilt = reconstruct(
+        record.type, record.id, stored, effective_metadata(collections, record))
+    rebuilt === nothing && return reprocess_item(workspace, collections, record)
+    return attach_record(rebuilt, effective_record(collections, record), path)
 end
 
 """Run processing without computing or publishing statistics."""

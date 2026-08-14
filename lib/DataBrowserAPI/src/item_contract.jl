@@ -19,6 +19,8 @@ id(collection::AbstractCollection)::String = error(
 """Human-readable label for one collection level."""
 label(collection::AbstractCollection)::String = string(collection)
 
+"""Display name for one collection type."""
+label(T::Type{<:AbstractCollection})::Symbol = nameof(T)
 """Return metadata supplied directly by one collection level."""
 metadata(::AbstractCollection)::Dict = Dict()
 
@@ -38,8 +40,8 @@ id(item::AbstractDataItem)::String = error(
 """Human-readable label for an item. An empty value uses a source-derived label."""
 label(::AbstractDataItem)::String = ""
 
-"""Internal item category. Custom item types default to their type name."""
-kind(item::AbstractDataItem)::Symbol = Symbol(nameof(typeof(item)))
+"""Display name for one item type."""
+label(T::Type{<:AbstractDataItem})::Symbol = nameof(T)
 
 """Return an item's complete root-to-leaf path of concrete collection values."""
 collection(::AbstractDataItem)::Vector{AbstractCollection} = AbstractCollection[]

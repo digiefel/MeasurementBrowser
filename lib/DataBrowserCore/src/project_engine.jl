@@ -14,7 +14,6 @@ import DataBrowserAPI:
     collection,
     entries,
     id,
-    kind,
     label,
     metadata,
     read
@@ -117,7 +116,7 @@ function interpret_source_item(
             source_item_timestamp=source_item_timestamp(source_item),
             id=id(handle),
             label=isempty(item_label_value) ? label(source_item) : item_label_value,
-            kind=kind(handle),
+            type=typeof(handle),
             collection_key=nothing,
             metadata=record_metadata,
         )

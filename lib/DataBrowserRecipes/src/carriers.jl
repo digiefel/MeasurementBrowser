@@ -53,7 +53,8 @@ RegisteredDataItem(item::RegisteredDataItem{K}, data) where {K} = RegisteredData
 
 id(item::RegisteredDataItem)::String = item.id
 label(item::RegisteredDataItem)::String = item.label
-kind(::RegisteredDataItem{K}) where {K} = K
+label(::Type{<:RegisteredDataItem{K}}) where {K} = K
+
 collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
 metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
 item_data(item::RegisteredDataItem) = item.data
@@ -62,17 +63,18 @@ item_data(item::RegisteredDataItem) = item.data
 A registered carrier adopts its normalized record wholesale, and the index's collection path when
 one is supplied. Its own segments survive interpretation, where the index has nothing yet.
 
-The record's kind is validated against the carrier's tag rather than copied into it: a mismatch
-means a cached record was paired with the wrong payload, which must fail loudly rather than
-silently produce an item of the wrong registration.
+The record's registration is validated against the carrier's tag: a mismatch means a cached record
+was paired with the wrong payload, which must fail loudly rather than silently produce an item of
+the wrong registration.
 """
 function attach_record(
     item::RegisteredDataItem{K},
     record::ItemRecord,
     path::AbstractVector=AbstractCollection[],
 ) where {K}
-    record.kind === K || error(
-        "Cached record '$(record.id)' has kind :$(record.kind) but its payload was rebuilt as :$K",
+    label(record.type) === K || error(
+        "Cached record '$(record.id)' is registered as :$(label(record.type)) but its payload was " *
+        "rebuilt as :$K",
     )
     return RegisteredDataItem{K}(
         record.id,

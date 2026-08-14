@@ -32,7 +32,7 @@ end
                     source_item_key=source_key,
                     id="item-$number",
                     label="Item $number",
-                    kind=:row,
+                    type=DataBrowserRecipes.RegisteredDataItem{:row},
                 )
                 DataBrowserCore.Workspace.publish_source_item_records!(
                     workspace,

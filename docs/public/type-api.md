@@ -67,8 +67,8 @@ payload is delivered to views without running project code either way. `reconstr
 to run a *further* stage on a cached item — implement it and reopening rebuilds items at
 deserialization speed, omit it and the engine reruns `read` → `entries` → `process`, which is always
 correct and only slower. It must be a pure function of what was cached, so anything the type needs
-to rebuild itself belongs in its metadata. `item_type(project, kind)` supplies `T` when kinds are
-not type names; otherwise the engine matches `kind` to a loaded leaf subtype of `AbstractDataItem`.
+to rebuild itself belongs in its metadata. `T` is never looked up: the item record carries the
+concrete type, so `reconstruct` is dispatched on the type the item actually had.
 
 ## Collection types
 
@@ -103,9 +103,6 @@ about the value, since the occurrence ID is a one-way digest of the parent ID, t
 
 Display text is never involved: two levels may legitimately share a `label`, so anything beyond the
 identity that a type needs — a display string, a numeric parameter — belongs in `metadata`.
-
-`collection_type(project, kind)` supplies the type when kinds are not type names; otherwise the
-engine matches `kind` to a loaded leaf subtype of `AbstractCollection`.
 
 Multiple dispatch replaces registration names as the behavior selector. Different item types can
 provide entirely different processing and analysis methods while sharing one workspace.

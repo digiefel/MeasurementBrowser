@@ -8,6 +8,7 @@ import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
 
 using DataBrowserAPI:
+    label,
     source_label
 using DataBrowserAPI.ItemIndex: ItemRecord
 import DataBrowserCore.Workspace
@@ -73,7 +74,7 @@ function draw_plot_view!(
         view.error = "Plot failed: $summary. See the console for full details."
         item_context = join(
             [
-                "$(record.label) ($(record.kind))\n" *
+                "$(record.label) ($(label(record.type)))\n" *
                 "  $(Workspace.source_item_id(workspace, record.source_item_key))"
                 for record in records
             ],
@@ -111,7 +112,7 @@ function render_plot_toolbar!(
                 view.last_key = nothing
                 view.error = ""
                 for record in records
-                    plots.kind_by_item[record.kind] = candidate
+                    plots.kind_by_item[label(record.type)] = candidate
                 end
             end
         end
@@ -248,8 +249,8 @@ function render_plot_view!(
     kind = if isempty(records)
         nothing
     else
-        kind = first(records).kind
-        all(record -> record.kind == kind, records) ? kind : nothing
+        T = first(records).type
+        all(record -> record.type === T, records) ? label(T) : nothing
     end
     available = kind === nothing ?
         Type{<:PlotKind}[] :

@@ -22,7 +22,6 @@ using DataBrowserAPI:
     fingerprint,
     id,
     item_data,
-    kind,
     label,
     metadata,
     process,
@@ -36,7 +35,6 @@ using DataBrowserAPI:
     source_open_options,
     watch_source,
     reconstruct,
-    item_type,
     read
 using DataBrowserRecipes:
     Project,
@@ -94,7 +92,6 @@ export open_browser,
     AbstractDataSourceItem,
     AbstractCollection,
     id,
-    kind,
     label,
     collection,
     metadata,
@@ -123,7 +120,6 @@ export open_browser,
     watch_source,
     entries,
     reconstruct,
-    item_type,
     AbstractProject
 
 using DataBrowserAPI: project_name

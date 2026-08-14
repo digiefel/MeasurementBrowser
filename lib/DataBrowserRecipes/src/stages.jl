@@ -92,9 +92,6 @@ function _registered_item(
 end
 
 
-"""Registration kinds are type parameters, not type names: `:sweep` → `RegisteredDataItem{:sweep}`."""
-item_type(::Project, kind::Symbol)::Type = RegisteredDataItem{kind}
-
 project_name(project::Project)::String = project.name
 project_description(project::Project)::String = project.description
 
@@ -179,14 +176,14 @@ function process(
     for positions in _group_positions_by_kind(items)
         group = items[positions]
         recipe = first(group) isa RegisteredDataItem ?
-            get(project.collections, kind(first(group)), nothing) : nothing
+            get(project.collections, label(typeof(first(group))), nothing) : nothing
         if recipe === nothing || recipe.process === nothing
             append!(rewritten, process(collection_value, group))
             continue
         end
         output_data = recipe.process(item_data.(group), metadata.(group))
         output_data isa AbstractVector || error(
-            "collection process for kind $(kind(first(group))) must return a vector; " *
+            "collection process for kind $(label(typeof(first(group)))) must return a vector; " *
             "got $(typeof(output_data))",
         )
         outputs = AbstractDataItem[
@@ -194,13 +191,13 @@ function process(
             for (input, data) in zip(group, output_data)
         ]
         length(outputs) == length(group) || error(
-            "collection process for kind $(kind(first(group))) must return one item per input; " *
+            "collection process for kind $(label(typeof(first(group)))) must return one item per input; " *
             "got $(length(outputs)) for $(length(group)) members",
         )
         input_ids = Set(id(item) for item in group)
         for output in outputs
             id(output) in input_ids || error(
-                "collection process for kind $(kind(first(group))) returned unknown item id " *
+                "collection process for kind $(label(typeof(first(group)))) returned unknown item id " *
                 "'$(id(output))'",
             )
         end
@@ -219,7 +216,7 @@ function analyze(
     for positions in _group_positions_by_kind(items)
         group = items[positions]
         recipe = first(group) isa RegisteredDataItem ?
-            get(project.collections, kind(first(group)), nothing) : nothing
+            get(project.collections, label(typeof(first(group))), nothing) : nothing
         if recipe === nothing || recipe.analyze === nothing
             merge!(merged, metadata_dict(analyze(collection_value, group)))
             continue
@@ -235,7 +232,7 @@ function _group_positions_by_kind(items::AbstractVector)::Vector{Vector{Int}}
     groups = Dict{Tuple{Bool,Symbol},Vector{Int}}()
     order = Tuple{Bool,Symbol}[]
     for (position, item) in pairs(items)
-        key = (item isa RegisteredDataItem, kind(item))
+        key = (item isa RegisteredDataItem, label(typeof(item)))
         haskey(groups, key) || push!(order, key)
         push!(get!(() -> Int[], groups, key), position)
     end

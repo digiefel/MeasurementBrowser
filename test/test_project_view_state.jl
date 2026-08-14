@@ -87,7 +87,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         source_item_path=joinpath(root_path, "item-1.csv"),
         id="item-1",
         label="Item 1",
-        kind=:iv_sweep,
+        type=DataBrowserRecipes.RegisteredDataItem{:iv_sweep},
         collection_key=key_1,
     )
     item_2 = DataBrowserAPI.ItemIndex.ItemRecord(;
@@ -96,7 +96,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         source_item_path=joinpath(root_path, "item-2.csv"),
         id="item-2",
         label="Item 2",
-        kind=:iv_sweep,
+        type=DataBrowserRecipes.RegisteredDataItem{:iv_sweep},
         collection_key=key_2,
     )
     DataBrowserAPI.ItemIndex.insert_item!(collections, item_1.id, key_1)
@@ -171,7 +171,7 @@ end
                 source_item_path=joinpath(root_path, "root.csv"),
                 id="root-item",
                 label="Root Item",
-                kind=:table,
+                type=DataBrowserRecipes.RegisteredDataItem{:table},
                 collection_key=nothing,
             )
             DataBrowserAPI.ItemIndex.insert_item!(collections, root_item.id, nothing)

@@ -261,8 +261,7 @@ function reconcile_source_metadata_cache!(
     current_keys = collect(keys(workspace.index.collections.records))
     @timed_dbg "recon_resolve" for key in current_keys
         haskey(workspace.index.collections.records, key) || continue
-        path = collection_value_path(
-            workspace.index.collections, key, kind -> _collection_type(workspace, kind))
+        path = collection_value_path(workspace.index.collections, key)
         isempty(path) && continue
         inputs = collection_inputs(annotate_collection_path(workspace.source, path))
         resolve_collection_path!(

@@ -36,7 +36,7 @@ DataBrowserAPI.reconstruct(::Type{CacheCollectionLevel}, identity::AbstractStrin
             source_item_key=DataBrowserCache.source_item_key!(cache, filepath; mint=true),
             source_item_path=filepath,
             label="item",
-            kind=:test,
+            type=DataBrowserRecipes.RegisteredDataItem{:test},
             collection_key=leaf_key,
         )
         DataBrowserAPI.ItemIndex.insert_item!(collections, record.id, leaf_key)

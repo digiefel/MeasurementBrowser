@@ -4,7 +4,7 @@ import CImGui.CSyntax: @c
 using DataBrowserCore: InspectorTable, merge_item_tables
 
 import DataBrowserCore.Workspace
-using DataBrowserAPI: item_data
+using DataBrowserAPI: item_data, label
 
 # ---------------------------------------------------------------------------
 # Item-data source helpers
@@ -100,8 +100,8 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     inspector.grid.selected_rows = Int[]
 
     # Track current kind to form a stable per-kind DataGrid table id (used by imgui.ini)
-    kinds = unique([r.kind for r in selected_records])
-    inspector.current_kind = length(kinds) == 1 ? first(kinds) : nothing
+    types = unique([r.type for r in selected_records])
+    inspector.current_kind = length(types) == 1 ? label(only(types)) : nothing
 
     return nothing
 end

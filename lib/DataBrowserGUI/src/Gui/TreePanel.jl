@@ -2,7 +2,8 @@ import CImGui as ig
 
 using DataBrowserAPI:
     display_label,
-    kind_label
+    kind_label,
+    label
 using DataBrowserAPI.ItemIndex:
     CollectionRecord,
     ItemRecord,
@@ -51,7 +52,7 @@ function _item_matches_filter(
         "\n",
         item.label,
         "\n",
-        kind_label(workspace.project, item.kind),
+        kind_label(workspace.project, label(item.type)),
     )
     return ig.ImGuiTextFilter_PassFilter(filter_obj, text, C_NULL)
 end
@@ -618,7 +619,7 @@ function _render_items_panel(
                                     state;
                                     item_ids=[id],
                                     label=item.label,
-                                    kind=item.kind,
+                                    kind=label(item.type),
                                 )
                             end
 

@@ -54,8 +54,7 @@ end
     ])
     registered_key = COLLECTION_RECORD_INDEX.resolve_collection_path!(
         registered, registered_inputs)
-    rebuilt = COLLECTION_RECORD_INDEX.collection_value_path(
-        registered, registered_key, _ -> DataBrowserRecipes.NamedCollection)
+    rebuilt = COLLECTION_RECORD_INDEX.collection_value_path(registered, registered_key)
     @test rebuilt == AbstractCollection[
         DataBrowserRecipes.NamedCollection("wafer"),
         DataBrowserRecipes.NamedCollection("device"),

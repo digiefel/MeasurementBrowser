@@ -18,7 +18,6 @@ import ..DataBrowserAPI:
     display_label,
     id,
     item_data,
-    kind,
     label,
     metadata,
     reconstruct,
@@ -81,14 +80,14 @@ struct CollectionInput
     identity::String
     label::String
     own_metadata::MetadataDict
-    kind::Symbol
+    type::Type{<:AbstractCollection}
 end
 
 """
 Resolve a live collection path into package-owned inputs without retaining user values.
 
-`identity` is `id(value)` kept verbatim, and `kind` is the concrete type's name. The occurrence id
-is a one-way digest, so those two plus the own metadata are what a later `reconstruct` works from.
+`identity` is `id(value)` kept verbatim and `type` is the concrete type. The occurrence id is a
+one-way digest, so those two plus the own metadata are what a later `reconstruct` works from.
 """
 function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{CollectionInput}
     inputs = CollectionInput[]
@@ -100,7 +99,7 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
             id(value),
             String(label(value)),
             metadata_dict(metadata(value)),
-            nameof(typeof(value)),
+            typeof(value),
         ))
         parent_id = collection_id
     end
@@ -121,7 +120,7 @@ struct CollectionRecord
     parent_key::Union{Nothing,Int64}
     label::String
     own_metadata::MetadataDict
-    kind::Symbol
+    type::Type{<:AbstractCollection}
     analysis::MetadataDict
 end
 
@@ -198,13 +197,13 @@ _projection_changed(record::CollectionRecord, input::CollectionInput)::Bool =
     record.identity != input.identity ||
     record.label != input.label ||
     record.own_metadata != input.own_metadata ||
-    record.kind != input.kind
+    record.type != input.type
 
 _projection_changed(left::CollectionInput, right::CollectionInput)::Bool =
     left.identity != right.identity ||
     left.label != right.label ||
     left.own_metadata != right.own_metadata ||
-    left.kind != right.kind
+    left.type != right.type
 
 """
     validate_collection_paths(index, paths) -> Nothing
@@ -247,7 +246,7 @@ function validate_collection_paths(
                 )
                 _projection_changed(existing, input) && throw(ArgumentError(
                     "Collection '$(join(labels, " / "))' produced inconsistent label, " *
-                    "metadata, or kind for deterministic id $(existing.id)",
+                    "metadata, or type for deterministic id $(existing.id)",
                 ))
             end
             parent_id = input.id
@@ -277,7 +276,7 @@ function resolve_collection_path!(
                 parent_key,
                 input.label,
                 copy(input.own_metadata),
-                input.kind,
+                input.type,
                 MetadataDict(),
             ))
         else
@@ -289,7 +288,7 @@ function resolve_collection_path!(
             if projection_changed && !update_existing
                 throw(ArgumentError(
                     "Collection '$(join(labels, " / "))' produced inconsistent label, " *
-                    "metadata, or kind for deterministic id $(existing.id)",
+                    "metadata, or type for deterministic id $(existing.id)",
                 ))
             end
             if projection_changed
@@ -300,7 +299,7 @@ function resolve_collection_path!(
                     existing.parent_key,
                     input.label,
                     copy(input.own_metadata),
-                    input.kind,
+                    input.type,
                     existing.analysis,
                 )
             end
@@ -356,25 +355,22 @@ collection_location(index::CollectionIndex, key::Int64)::Vector{String} =
 """
 Rebuild the collection values on one indexed path, ancestor to self.
 
-Each level is rebuilt from its stored kind, label, and own metadata — the occurrence id is a digest
-and carries nothing invertible. `type_for_kind` resolves a stored kind to its concrete type.
+Each level is rebuilt from its stored type, identity, and own metadata — the occurrence id is a
+digest and carries nothing invertible. The record holds the concrete type, so nothing is resolved.
 """
 function collection_value_path(
     index::CollectionIndex,
     key::Union{Nothing,Int64},
-    type_for_kind,
 )::Vector{AbstractCollection}
     key === nothing && return AbstractCollection[]
     path = AbstractCollection[]
     for path_key in collection_path_keys(index, key)
         collection_record = index.records[path_key]
-        collection_type = type_for_kind(collection_record.kind)
-        collection_type === nothing && error(
-            "Cannot rebuild collection '$(collection_record.label)': no loaded " *
-            "AbstractCollection type named :$(collection_record.kind)",
-        )
         push!(path, reconstruct(
-            collection_type, collection_record.identity, collection_record.own_metadata))
+            collection_record.type,
+            collection_record.identity,
+            collection_record.own_metadata,
+        ))
     end
     return path
 end
@@ -456,7 +452,7 @@ function clear_collection_analysis!(index::CollectionIndex, key::Int64)::Nothing
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
-        collection_record.kind,
+        collection_record.type,
         MetadataDict(),
     )
     return nothing
@@ -476,7 +472,7 @@ function set_collection_analysis!(
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
-        collection_record.kind,
+        collection_record.type,
         metadata_dict(analysis),
     )
     return nothing
@@ -495,7 +491,7 @@ struct ItemRecord
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
     label::String
-    kind::Symbol
+    type::Type{<:AbstractDataItem}
     collection_key::Union{Nothing,Int64}
     metadata::MetadataDict
 end
@@ -507,7 +503,7 @@ function ItemRecord(;
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
     label::AbstractString,
-    kind::Symbol,
+    type::Type{<:AbstractDataItem},
     collection_key::Union{Nothing,Integer}=nothing,
     metadata::AbstractDict=MetadataDict(),
 )::ItemRecord
@@ -519,7 +515,7 @@ function ItemRecord(;
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
         String(label),
-        kind,
+        type,
         collection_key === nothing ? nothing : Int64(collection_key),
         metadata_dict(metadata),
     )
@@ -533,7 +529,7 @@ function ItemRecord(
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
     label::AbstractString=record.label,
-    kind::Symbol=record.kind,
+    type::Type{<:AbstractDataItem}=record.type,
     collection_key::Union{Nothing,Integer}=record.collection_key,
     metadata::AbstractDict=deepcopy(record.metadata),
 )::ItemRecord
@@ -543,7 +539,7 @@ function ItemRecord(
         source_item_path,
         source_item_timestamp,
         label,
-        kind,
+        type,
         collection_key,
         metadata,
     )

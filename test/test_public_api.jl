@@ -66,7 +66,7 @@ function toy_project(name::AbstractString, counters::ToyCounters)::Project
         label="Toy",
         setup=(_workspace, _items) -> Figure(),
         draw=function (_workspace, items, _figure)
-            all(item -> kind(item) === :trace && haskey(metadata(item), :peak), items) ||
+            all(item -> label(typeof(item)) === :trace && haskey(metadata(item), :peak), items) ||
                 error("plot did not receive analyzed trace items")
             Threads.atomic_add!(counters.draws, 1)
             return nothing
@@ -234,7 +234,7 @@ end
             # Extension matching is case-insensitive, and non-matching files are left alone.
             @test Set(label.(items)) == Set(["a.csv", "b.CSV"])
             @test sort([metadata(item)[:rows] for item in items]) == [2, 3]
-            @test all(item -> kind(item) === :sweep, items)
+            @test all(item -> label(typeof(item)) === :sweep, items)
         finally
             close_workspace!(workspace)
         end
