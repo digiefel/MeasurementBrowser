@@ -30,9 +30,13 @@ struct PhotoCollection <: MB.AbstractCollection
     name::String
 end
 
+MB.id(collection::PhotoCollection) = collection.name
 MB.label(collection::PhotoCollection) = collection.name
+MB.reconstruct(::Type{PhotoCollection}, identity::AbstractString, ::Dict) =
+    PhotoCollection(String(identity))
 
 struct Photo <: MB.AbstractDataItem
+    id::String
     exposure::Float64
     pixels::Matrix{Float64}
     camera::String
@@ -40,6 +44,7 @@ struct Photo <: MB.AbstractDataItem
     collection::Vector{MB.AbstractCollection}
 end
 
+MB.id(photo::Photo) = photo.id
 MB.collection(photo::Photo) = photo.collection
 MB.metadata(photo::Photo) = Dict(
     :exposure => photo.exposure,
@@ -49,6 +54,7 @@ MB.metadata(photo::Photo) = Dict(
 
 function MB.process(photo::Photo)
     return Photo(
+        photo.id,
         photo.exposure,
         photo.pixels .* photo.gain,
         photo.camera,
@@ -60,22 +66,25 @@ end
 MB.analyze(photo::Photo) =
     Dict(:mean_intensity => sum(photo.pixels) / length(photo.pixels))
 
-function DataBrowserAPI.data_items(
-    ::DataBrowserAPI.Project,
-    ::PhotoSource,
-    source_item::PhotoSourceItem,
-)
-    return [Photo(
-        source_item.exposure,
-        fill(source_item.exposure, 2, 2),
-        source_item.camera,
-        source_item.gain,
-        MB.AbstractCollection[PhotoCollection("micrographs")],
-    )]
-end
+struct PhotoProject <: MB.AbstractProject end
+
+MB.project_name(::PhotoProject) = "Photos"
+
+# A typed project owns its source item type, so it implements the context-free stage forms and
+# never mentions the project or the registration dialect.
+MB.read(::PhotoSource, source_item::PhotoSourceItem) = source_item
+
+MB.entries(source_item::PhotoSourceItem, ::PhotoSourceItem) = [Photo(
+    source_item.key,
+    source_item.exposure,
+    fill(source_item.exposure, 2, 2),
+    source_item.camera,
+    source_item.gain,
+    MB.AbstractCollection[PhotoCollection("micrographs")],
+)]
 
 @testset "type API preserves custom AbstractDataItem values" begin
-    project = MB.define_project("Photos")
+    project = PhotoProject()
     drawn_pixels = Ref(0)
     MB.register_plot!(project, :Photo;
         label="Image",

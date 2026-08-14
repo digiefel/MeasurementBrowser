@@ -66,7 +66,7 @@ function toy_project(name::AbstractString, counters::ToyCounters)::Project
         label="Toy",
         setup=(_workspace, _items) -> Figure(),
         draw=function (_workspace, items, _figure)
-            all(item -> kind(item) === :trace && haskey(metadata(item), :peak), items) ||
+            all(item -> label(typeof(item)) === :trace && haskey(metadata(item), :peak), items) ||
                 error("plot did not receive analyzed trace items")
             Threads.atomic_add!(counters.draws, 1)
             return nothing
@@ -125,27 +125,6 @@ end
             @test plot_data!(workspace, plot_kind, items, figure) === nothing
             @test counters.draws[] == 1
 
-            profile = only(row for row in scan_profile_summary(project) if row.kind === :trace)
-            @test profile.source_items == 2
-            @test profile.items == 3
-            @test profile.detect_seconds >= 0
-            @test profile.read_seconds >= 0
-            @test profile.entries_seconds >= 0
-            @test profile.process_seconds >= 0
-            @test profile.analyze_seconds >= 0
-            @test profile.total_seconds >= profile.read_seconds
-
-            source_profile = filter(row -> row.kind === :trace, scan_source_profile(project))
-            @test length(source_profile) == 2
-            @test all(row -> row.items > 0 && !isempty(row.thread_ids), source_profile)
-            @test Set(row.source_item_label for row in source_profile) ==
-                Set(["a.dbitem", joinpath("nested", "b.dbitem")])
-            @test Set(row.source_item_path for row in source_profile) == Set([
-                joinpath(root, "a.dbitem"),
-                joinpath(root, "nested", "b.dbitem"),
-            ])
-            @test all(row -> !isabspath(row.source_item_label), source_profile)
-            @test issorted(source_profile; by=row -> row.total_seconds, rev=true)
             @test counters.collection_processes[] == 2
             @test counters.collection_analyses[] == 2
             reads_after_build = Dict(name => count[] for (name, count) in counters.reads)
@@ -228,6 +207,34 @@ end
                 joinpath(root, "metadata.txt"); force=true)
             @test Base.timedwait(
                 () -> workspace_status(workspace).label != "Source Error", 5) === :ok
+        finally
+            close_workspace!(workspace)
+        end
+    end
+end
+
+@testset "premade CSV recipe registers a working pipeline" begin
+    mktempdir() do root
+        write(joinpath(root, "a.csv"), "x,y\n1,10\n2,20\n3,30\n")
+        write(joinpath(root, "b.CSV"), "x,y\n4,40\n5,50\n")
+        write(joinpath(root, "skipped.dat"), "not a table\n")
+
+        project = define_project("CsvRecipe_$(basename(root))")
+        register_csv!(project, :sweep;
+            extensions=[".csv"],
+            analyze=(data, _metadata) -> Dict{Symbol,Any}(:rows => size(data, 1)),
+        )
+        workspace = open_workspace(project, root; cache=false, background_processing=true)
+        try
+            wait_workspace_idle!(workspace; timeout=30)
+            ids = query_items(workspace)
+            @test length(ids) == 2
+            select_items!(workspace, ids)
+            items = materialize_items(workspace)
+            # Extension matching is case-insensitive, and non-matching files are left alone.
+            @test Set(label.(items)) == Set(["a.csv", "b.CSV"])
+            @test sort([metadata(item)[:rows] for item in items]) == [2, 3]
+            @test all(item -> label(typeof(item)) === :sweep, items)
         finally
             close_workspace!(workspace)
         end

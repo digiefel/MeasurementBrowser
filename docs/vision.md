@@ -208,14 +208,14 @@ talks to; the engine packages implement it; the frontends call it.**
 
 ```
 DataBrowserAPI     the shared surface every interface calls and every extension implements:
-                   command declarations (open_workspace, scan, load, select, construct, plot,
+                   command declarations (open_workspace, scan, load, select, reconstruct, plot,
                    export, query, …), the extension definitions (what a source / loader /
                    visualizer / command is), the typed pipeline stage contract, and the
                    `AbstractProject` contract. Payload-agnostic; tiny deps.
 DataBrowserProfiling  instrumentation / traces (leaf: traces don't reference item identity)
 DataBrowserAnnotations → API : tags / notes / spatial-layout model, attached to item identities
 DataBrowserSources → API : file discovery, loading, metadata extraction, data summaries
-DataBrowserRecipes → API, Sources : the callback dialect (define_project, register_*) implemented
+DataBrowserRecipes → API : the callback dialect (define_project, register_*) implemented
                    as a client of the typed stage contract, plus premade recipes (CSV first)
 DataBrowserCache   → API : persistence (DuckDB where it fits); keyed by PROJECT, not workspace
 DataBrowserCore    → API, Sources, Cache, Annotations : the workspace, the index, background work,

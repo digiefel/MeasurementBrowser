@@ -12,7 +12,7 @@ define_project(name::AbstractString; description::AbstractString="")::Project
 Creates an empty project definition.
 
 ```julia
-register_item!(project, [registration_name];
+register_item!(project, [kind];
     read,
     detect=nothing,
     entries=nothing,
@@ -27,7 +27,7 @@ register_item!(project, [registration_name];
 Registers or replaces one item pipeline. See [Registration API](registration.md).
 
 ```julia
-register_collection_analysis!(project, registration_name;
+register_collection_analysis!(project, kind;
     process=nothing,
     analyze=nothing,
 )::Project
@@ -81,15 +81,20 @@ analyze = (processed_data::ProcessedData, metadata::Dict) -> additional_metadata
 
 ```julia
 item_data(item::MyItem)::MyData
+id(item::MyItem)::String
 metadata(item::MyItem)::Dict
 label(item::MyItem)::String
 collection(item::MyItem)::Vector{<:AbstractCollection}
-label(collection::AbstractCollection)::String
-metadata(collection::AbstractCollection)::Dict
-id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-cacheable(item::MyItem)::Bool
+reconstruct(::Type{MyItem}, id, data, metadata::Dict)::MyItem
+
+id(collection::MyCollection)::String
+label(collection::MyCollection)::String
+metadata(collection::MyCollection)::Dict
+reconstruct(::Type{MyCollection}, id, metadata::Dict)::MyCollection
+process(collection::MyCollection, items)::Vector{<:AbstractDataItem}
+analyze(collection::MyCollection, items)::Dict
 ```
 
 See [Type API](type-api.md).
@@ -116,9 +121,15 @@ source_item_path(item::MySourceItem)::Union{Nothing,String}
 source_item_timestamp(item::MySourceItem)::Any
 metadata(item::MySourceItem)::Dict
 
-data_items(
-    project,
-    source::MySource,
-    source_item::MySourceItem,
-)::Vector{<:AbstractDataItem}
+read(source::MySource, source_item::MySourceItem)::MyLoaded
+entries(source_item::MySourceItem, loaded::MyLoaded)::Vector{<:AbstractDataItem}
+```
+
+## Project interface
+
+```julia
+struct MyProject <: AbstractProject end
+
+project_name(project::MyProject)::String
+project_description(project::MyProject)::String
 ```

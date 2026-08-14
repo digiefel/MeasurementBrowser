@@ -2,8 +2,7 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-using DataBrowserAPI: Project
-using DataBrowserSources
+using DataBrowserAPI: AbstractProject
 using DataBrowserCore: InspectorTable
 
 """Saved tree controls from `databrowser.toml`."""
@@ -32,8 +31,6 @@ Base.@kwdef struct PersistedProjectView
     extensions::Dict{String,Dict{String,Any}} = Dict{String,Dict{String,Any}}()
 end
 
-const TABLE_INSPECTOR_PATH_BUFFER_SIZE = 1024
-
 """
 Transient selection and scroll state for a DataGrid widget.
 
@@ -51,10 +48,9 @@ Base.@kwdef mutable struct DataGridState
     focused::Bool                        = false
 end
 
-"""State for the generic table-inspection window."""
+"""State for the table-inspection window over selected item data."""
 Base.@kwdef mutable struct TableInspectorState
     visible::Bool = false
-    # Item-data view (primary mode)
     inspector_table::Union{Nothing,InspectorTable} = nothing
     inspector_warnings::Vector{String} = String[]
     inspector_key::Union{Nothing,Tuple} = nothing  # (item_ids..., show_provenance)
@@ -62,12 +58,6 @@ Base.@kwdef mutable struct TableInspectorState
     show_provenance_column::Bool = false
     # current_kind drives the per-kind DataGrid table id so imgui.ini keys column widths per kind
     current_kind::Union{Nothing,Symbol} = nothing
-    # Raw file-preview mode (secondary): file → DataGrid
-    preview::Union{Nothing,DataBrowserSources.TabularFileSource} = nothing
-    file_grid::DataGridState = DataGridState()
-    live::Bool = true
-    path_buffer::Vector{UInt8} = fill(UInt8(0), TABLE_INSPECTOR_PATH_BUFFER_SIZE)
-    error::String = ""
 end
 
 """Newest-last cap for the throughput history ring buffers (~1 minute at the 0.25s sample rate)."""
@@ -148,7 +138,7 @@ Base.@kwdef mutable struct BrowserState
     modal_root_path::String = ""
     cache_rebuild_modal::Bool = false
     cache_rebuild_path::String = ""
-    cache_rebuild_project::Union{Nothing,Project} = nothing
+    cache_rebuild_project::Union{Nothing,AbstractProject} = nothing
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
     """Set by `close_browser!` so the render loop exits without a GLFW close click."""

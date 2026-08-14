@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "9e33e289d933f80a6d9ebf9712fd393787d240ff"
+project_hash = "e4a309c8bf530ad182788de8e2dfff4e0c9ac570"
 
 [[deps.ATK_jll]]
 deps = ["Artifacts", "Glib_jll", "JLLWrappers", "Libdl"]
@@ -335,7 +335,7 @@ uuid = "9a962f9c-6df0-11e9-0e5d-c546b8b5ee8a"
 version = "1.16.0"
 
 [[deps.DataBrowser]]
-deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserGUI", "DataBrowserPlots", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
+deps = ["BetterFileWatching", "CImGui", "CSV", "CancellationTokens", "DBInterface", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserGUI", "DataBrowserPlots", "DataBrowserRecipes", "DataBrowserSources", "DataFrames", "Dates", "DuckDB", "GLFW", "GLMakie", "ModernGL", "NativeFileDialog", "Observables", "PrecompileTools", "Printf", "SHA", "Serialization", "SmoothData", "Statistics", "TOML"]
 path = "."
 uuid = "a11ddd67-7e33-4db9-a4a8-4453f6eb9e68"
 version = "0.1.0-alpha.1"
@@ -359,13 +359,13 @@ uuid = "c7d8e9f0-1a2b-3c4d-5e6f-708192a3b4c5"
 version = "0.1.0"
 
 [[deps.DataBrowserCore]]
-deps = ["CancellationTokens", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserSources", "DataFrames", "Dates", "Printf", "Serialization", "TOML", "Tables"]
+deps = ["CancellationTokens", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserSources", "DataFrames", "Dates", "InteractiveUtils", "Printf", "Serialization", "TOML", "Tables"]
 path = "lib/DataBrowserCore"
 uuid = "d1e2f3a4-b5c6-7d8e-9f0a-1b2c3d4e5f6a"
 version = "0.1.0"
 
 [[deps.DataBrowserGUI]]
-deps = ["CImGui", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "DataBrowserSources", "GLFW", "ModernGL", "NativeFileDialog", "Printf", "Statistics", "TOML", "Tables", "TimerOutputs"]
+deps = ["CImGui", "DataBrowserAPI", "DataBrowserAnnotations", "DataBrowserCache", "DataBrowserCore", "GLFW", "ModernGL", "NativeFileDialog", "Printf", "Statistics", "TOML", "Tables", "TimerOutputs"]
 path = "lib/DataBrowserGUI"
 uuid = "f3a4b5c6-d7e8-9f0a-1b2c-3d4e5f6a7b8c"
 version = "0.1.0"
@@ -376,8 +376,14 @@ path = "lib/DataBrowserPlots"
 uuid = "e2f3a4b5-c6d7-8e9f-0a1b-2c3d4e5f6a7b"
 version = "0.1.0"
 
+[[deps.DataBrowserRecipes]]
+deps = ["CSV", "DataBrowserAPI", "DataFrames"]
+path = "lib/DataBrowserRecipes"
+uuid = "a7c3e5d9-2b4f-4816-9e0d-3f5a7c9b1e24"
+version = "0.1.0"
+
 [[deps.DataBrowserSources]]
-deps = ["BetterFileWatching", "CSV", "CancellationTokens", "DataBrowserAPI", "DataFrames", "Dates"]
+deps = ["BetterFileWatching", "CancellationTokens", "DataBrowserAPI", "Dates"]
 path = "lib/DataBrowserSources"
 uuid = "b4e2f8c1-9a3d-4e5f-8b7c-1d2e3f4a5b6c"
 version = "0.1.0"

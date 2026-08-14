@@ -44,23 +44,65 @@ Projects implement only the behavior they need:
 | `metadata` | one concrete item | metadata supplied by the item as a `Dict` | empty `Dict` |
 | `label` | one concrete item | browser text | source-derived label |
 | `collection` | one concrete item | complete vector of `AbstractCollection` values | empty root path |
-| `id` | one concrete item | stable sibling key | returned position |
+| `id` | one concrete item | its identity | **required** |
 | `process` | one concrete item | the item consumed by views | the item unchanged |
 | `analyze` | one processed item | additional metadata as a `Dict` | empty `Dict` |
-| `cacheable` | one concrete item | whether its data can be persisted | determined by its data |
+| `reconstruct` | the item's type, its stored id, a cached payload, and metadata | the rebuilt item, or `nothing` | `nothing`; upstream stages rerun |
 
 The complete signatures are:
 
 ```julia
+id(item::MyItem)::String
 item_data(item::MyItem)::MyData
 metadata(item::MyItem)::Dict
 label(item::MyItem)::String
 collection(item::MyItem)::Vector{<:AbstractCollection}
-id(item::MyItem)::Any
 process(item::MyItem)::MyProcessedItem
 analyze(item::MyProcessedItem)::Dict
-cacheable(item::MyItem)::Bool
+reconstruct(::Type{MyItem}, id, data, metadata::Dict)::MyItem
 ```
+
+Data is persisted whenever the cache can store its shape; no opt-in predicate is involved. A cached
+payload is delivered to views without running project code either way. `reconstruct` is needed only
+to run a *further* stage on a cached item — implement it and reopening rebuilds items at
+deserialization speed, omit it and the engine reruns `read` → `entries` → `process`, which is always
+correct and only slower. It must be a pure function of what was cached, so anything the type needs
+to rebuild itself belongs in its metadata. `T` is never looked up: the item record carries the
+concrete type, so `reconstruct` is dispatched on the type the item actually had.
+
+## Collection types
+
+A collection is a grouping level a project defines so it can process and analyze the same items
+different ways — by device in one level, by temperature in another. Collection stages dispatch on
+the collection value, so a project writes one type per grouping:
+
+```julia
+struct Device <: AbstractCollection
+    name::String
+end
+
+id(device::Device)::String = device.name
+label(device::Device)::String = device.name
+metadata(device::Device)::Dict = Dict()
+reconstruct(::Type{Device}, id::AbstractString, ::Dict)::Device = Device(String(id))
+
+process(device::Device, items::AbstractVector)::Vector{<:AbstractDataItem}
+analyze(device::Device, items::AbstractVector)::Dict
+```
+
+`process` rewrites the members, returning one output per input **in the same order**; the default
+returns them unchanged. `analyze` folds them into metadata attached to the collection node; the
+default is empty. Both run whenever they are defined — there is nothing to declare or enable.
+
+`reconstruct` is required here and has no default, unlike the item method. An item that cannot be
+rebuilt is recreated by rerunning `read` → `entries`; a collection has no such path, so a missing
+method is an error rather than a slow path, and it fires from the first interpretation rather than
+after reopening. It receives the stored `id` and the level's own metadata — everything the row keeps
+about the value, since the occurrence ID is a one-way digest of the parent ID, the type, and
+`id(collection)`.
+
+Display text is never involved: two levels may legitimately share a `label`, so anything beyond the
+identity that a type needs — a display string, a numeric parameter — belongs in `metadata`.
 
 Multiple dispatch replaces registration names as the behavior selector. Different item types can
 provide entirely different processing and analysis methods while sharing one workspace.
@@ -118,8 +160,9 @@ progress, source errors, and invalidation. One source item may produce zero, one
 ```mermaid
 flowchart TB
     source["MySource <: AbstractDataSource"] -->|"source_items"| source_items["MySourceItem values"]
-    source_items -->|"data_items"| data_items["concrete AbstractDataItem values"]
-    data_items --> dispatch["description · processing · analysis<br/>multiple dispatch"]
+    source_items -->|"read"| loaded["loaded value"]
+    loaded -->|"entries"| items["concrete AbstractDataItem values"]
+    items --> dispatch["description · processing · analysis<br/>multiple dispatch"]
     dispatch --> workspace["workspace and browser"]
 ```
 
@@ -172,24 +215,37 @@ source_item_timestamp(item::MySourceItem)::Any
 metadata(item::MySourceItem)::Dict
 ```
 
-`metadata(::AbstractDataSourceItem)` defaults to an empty `Dict`. `data_items` receives the source
+`metadata(::AbstractDataSourceItem)` defaults to an empty `Dict`. `entries` receives the source
 item, so it can place any metadata needed during processing into each returned data item.
 
 ## Interpretation
 
-`data_items` connects source discovery to the item pipeline:
+Two stages connect source discovery to the item pipeline:
 
 ```julia
-data_items(
-    project,
-    source::MySource,
-    source_item::MySourceItem,
-)::Vector{<:AbstractDataItem}
+read(source::MySource, source_item::MySourceItem)               # -> your loaded value
+entries(source_item::MySourceItem, loaded::MyLoaded)            # -> Vector{<:AbstractDataItem}
 ```
 
-It performs the type API's source reading and item separation together. The returned concrete domain
-values then provide their own description, processing, analysis, and caching behavior through
-multiple dispatch.
+`read` performs the one expensive source operation. `entries` expands its result into zero, one, or
+many items without going back to the origin. The returned concrete domain values then provide their
+own description, processing, analysis, and caching behavior through multiple dispatch.
+
+**The source appears exactly once, at `read`.** Everything after it is a pure function of values,
+which is what lets a cached stage result stand on its own — rerunning `entries` without rereading,
+warm reopen, and eviction recovery are sound by construction rather than by discipline. A `read`
+returning a live handle (an HDF5 group, a database cursor) is fine, but that value is not cacheable;
+such a project's durable boundary is `process` instead.
+
+`entries` still receives the source item because identity is not payload: the loaded value stays
+purely the expensive data, while default ids, labels, and collection placement derive from the
+source item, which the engine can supply without touching the origin.
+
+Both stages also have project-aware forms — `read(project, source, item)` and
+`entries(project, item, loaded)` — for a project that reuses a shared source such as
+`DirectorySource` and therefore dispatches on its own project type instead of its own source type.
+A project type is any `struct MyProject <: AbstractProject`; it needs no fields, and
+`project_name` defaults to the type's name.
 
 ## Choosing between APIs
 

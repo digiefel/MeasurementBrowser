@@ -65,7 +65,18 @@ accepted by the source's `open_workspace` method. Sources without reopen options
 """
 source_open_options(::AbstractDataSource)::NamedTuple = (;)
 
-"""Return the current source items discovered by a source."""
+"""
+    source_items(source; cancel_token, on_progress, on_item) -> Vector{<:AbstractDataSourceItem}
+
+Return the current source items discovered by a source.
+
+The engine always passes the three keywords, so every method must accept them — a source that
+discovers everything at once absorbs them with `; kwargs...` and ignores them. A source slow enough
+to be worth streaming calls `on_item` per item as it finds them (the engine then queues each one
+immediately rather than waiting for the return), reports counts through `on_progress`, and honors
+`cancel_token`. The returned vector is queued only when `on_item` was never called, so a streaming
+source may return its items as well without them being processed twice.
+"""
 function source_items end
 
 """Human noun for source items, used by status surfaces."""
@@ -78,11 +89,12 @@ Watch a source and call `on_change` with each `SourceChanges` batch or recoverab
 watch_source(::AbstractDataSource, ::Function; cancel_token::CancellationToken) = nothing
 
 """
-    id(value)
+    id(value)::String
 
-Stable identity supplied by `value`. Source items must implement this: the id has to be stable
-within their source across scans and reopenings. Data items and collections have defaults (see
-the item contract).
+Stable identity supplied by `value`, used exactly as returned. Sources, source items, data items,
+and collections all implement it; none has a default, and none has its answer wrapped or
+namespaced. An id has to stay stable across scans and reopenings, and two values answering the same
+id collide.
 """
 function id end
 
@@ -105,5 +117,19 @@ source_item_path(::AbstractDataSourceItem)::Union{Nothing,String} = nothing
 """Timestamp for a source item, when one exists."""
 source_item_timestamp(::AbstractDataSourceItem) = nothing
 
-"""Interpret one source item into lightweight logical data items."""
-function data_items end
+"""
+Where a source places an item that declares no collection path of its own.
+
+Applied by the engine after `entries`, where the source is legitimately in hand — the pipeline
+stages themselves stay pure functions of values. The default leaves such items at the root; a
+directory source places them under their directory relative to its root.
+"""
+default_collection_path(::AbstractDataSource, ::AbstractDataSourceItem) = AbstractCollection[]
+
+"""
+Let a source attach its own metadata to the levels of one item's collection path.
+
+The directory source attaches its `metadata.txt` entries to each named level. The default returns
+the path unchanged, so a source with nothing to add costs nothing.
+"""
+annotate_collection_path(::AbstractDataSource, path::AbstractVector) = path

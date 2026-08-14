@@ -4,7 +4,7 @@ using Test
 const HE_INDEX = DataBrowserAPI.ItemIndex
 
 function _insert_registered!(index, item_id, names...)
-    path = collect(HE_INDEX.RegisteredCollection.(names))
+    path = collect(DataBrowserRecipes.NamedCollection.(names))
     key = HE_INDEX.resolve_collection_path!(index, HE_INDEX.collection_inputs(path))
     HE_INDEX.insert_item!(index, item_id, key)
     return key
@@ -23,7 +23,7 @@ end
             collections = index.collections
             items = index.items
             path = HE_INDEX.collection_inputs(AbstractCollection[
-                HE_INDEX.RegisteredCollection("batch"),
+                DataBrowserRecipes.NamedCollection("batch"),
             ])
             for number in 1:2
                 source_key = DataBrowserCache.source_item_key!(
@@ -32,7 +32,7 @@ end
                     source_item_key=source_key,
                     id="item-$number",
                     label="Item $number",
-                    kind=:row,
+                    type=DataBrowserRecipes.RegisteredDataItem{:row},
                 )
                 DataBrowserCore.Workspace.publish_source_item_records!(
                     workspace,

@@ -1,6 +1,6 @@
 using InteractiveUtils: subtypes
 
-using DataBrowserAPI: AbstractDataItem, Project
+using DataBrowserAPI: AbstractDataItem, AbstractProject
 
 """
 One registered plot recipe for an item kind.
@@ -17,10 +17,13 @@ struct PlotRecipe
     draw::Function
 end
 
-const PROJECT_PLOT_RECIPES = WeakKeyDict{Project, Dict{Symbol, Dict{String, PlotRecipe}}}()
+# Keyed by project value, not by weak reference: a typed project is naturally an immutable
+# singleton, which `WeakKeyDict` cannot hold. Mutable dialect projects still key by identity, so
+# separately defined projects keep separate recipes.
+const PROJECT_PLOT_RECIPES = Dict{AbstractProject, Dict{Symbol, Dict{String, PlotRecipe}}}()
 
 """Plot recipes registered for one project."""
-function _plot_recipes(project::Project)::Dict{Symbol, Dict{String, PlotRecipe}}
+function _plot_recipes(project::AbstractProject)::Dict{Symbol, Dict{String, PlotRecipe}}
     return get!(PROJECT_PLOT_RECIPES, project) do
         Dict{Symbol, Dict{String, PlotRecipe}}()
     end
@@ -73,12 +76,12 @@ data itself. A kind may have multiple plots; re-registering the same `label` for
 replaces that plot, which keeps REPL iteration stable.
 """
 function register_plot!(
-    project::Project,
+    project::AbstractProject,
     kind::Symbol;
     label::AbstractString,
     setup::Function,
     draw::Function,
-)::Project
+)::AbstractProject
     label_string = String(label)
     recipes = get!(_plot_recipes(project), kind) do
         Dict{String,PlotRecipe}()

@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 20
+const PROJECT_CACHE_SCHEMA_VERSION = 22
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -360,18 +360,20 @@ struct CollectionRow
     collection_key::Int64
     parent_key::Union{Nothing,Int64}
     id::String
+    identity::String
     label::String
     metadata_hex::String
-    registration_name::Union{Nothing,String}
+    type_hex::String
 end
 
 CollectionRow(row)::CollectionRow = CollectionRow(
     Int64(row.collection_key),
     _null_to_nothing(row.parent_key),
     String(row.id),
+    String(row.identity),
     String(row.label),
     String(row.metadata_hex),
-    _null_to_nothing(row.registration_name),
+    String(row.type_hex),
 )
 
 struct ItemRow
@@ -379,7 +381,7 @@ struct ItemRow
     item_key::Int64
     source_item_key::Int64
     label::String
-    kind::String
+    type_hex::String
     collection_key::Union{Nothing,Int64}
 end
 
@@ -388,7 +390,7 @@ ItemRow(row)::ItemRow = ItemRow(
     Int64(row.item_key),
     Int64(row.source_item_key),
     String(row.label),
-    String(row.kind),
+    String(row.type_hex),
     _null_to_nothing(row.collection_key),
 )
 
@@ -790,7 +792,7 @@ function store_interpreted_records!(
         key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_key, record.label,
-                String(record.kind), nothing))
+                _serialize_type(record.type), nothing))
         _stage_ledger_item!(cache.stage_ledger, record.id, true)
         append!(dropped, edit!(cache.source_item_metadata, key, record.metadata))
     end
@@ -825,9 +827,10 @@ function store_collection_index!(
                     collection_record.key,
                     collection_record.parent_key,
                     collection_record.id,
+                    collection_record.identity,
                     collection_record.label,
                     _serialize_hex(collection_record.own_metadata),
-                    collection_record.registration_name,
+                    _serialize_type(collection_record.type),
                 )
                 if !(collection_record.key in cache.persisted_collection_keys)
                     append!(cache.collections, collection_record.key, row)
@@ -842,7 +845,7 @@ function store_collection_index!(
         key = item_key!(cache, record.id)
         edit!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_key, record.label,
-                String(record.kind), record.collection_key))
+                _serialize_type(record.type), record.collection_key))
     end
     return nothing
 end
@@ -916,7 +919,7 @@ function store_processed!(
 )::Nothing
     key = item_key!(cache, record.id)
     payload = item_data(item)
-    disk = item isa RegisteredDataItem && cacheable(item) && _storable_table(payload)
+    disk = _storable_table(payload)
     if disk
         started = time_ns()
         if stage === :processed
@@ -1464,7 +1467,7 @@ function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symb
     for (index, record) in pairs(records)
         loaded[index] !== nothing && continue
         data = get(disk_data, (item_key!(cache, record.id), stage_code), nothing)
-        loaded[index] = data === nothing ? nothing : RegisteredDataItem(record, data)
+        loaded[index] = data
     end
     return loaded
 end
@@ -1533,6 +1536,14 @@ function _deserialize_hex(value)
     (value === nothing || ismissing(value)) && return nothing
     return deserialize(IOBuffer(hex2bytes(String(value))))
 end
+
+# Records hold the type itself; only the cache needs it as text. Julia's serializer stores a type by
+# module path and package UUID and resolves it back through the package system, which is the one
+# round trip that holds for any user type — parametric, nested, or from any module.
+_serialize_type(T::Type)::String = something(_serialize_hex(T))
+_deserialize_type(value)::Type = _deserialize_hex(value)
+
+
 
 """Map a SQL NULL (`missing`) to `nothing`, passing other values through."""
 _null_to_nothing(value) = ismissing(value) ? nothing : value
@@ -1719,10 +1730,11 @@ function _load_collection_index(
         register_collection!(collections, CollectionRecord(
             row.collection_key,
             row.id,
+            row.identity,
             row.parent_key,
             row.label,
             metadata_dict(own_metadata),
-            row.registration_name,
+            _deserialize_type(row.type_hex),
             get(collection_analysis, key, MetadataDict()),
         ))
         delete!(visiting, key)
@@ -1784,7 +1796,7 @@ function _load_source_scan(
             source_item_path=path,
             source_item_timestamp=timestamp,
             label=row.label,
-            kind=Symbol(row.kind),
+            type=_deserialize_type(row.type_hex),
             collection_key=row.collection_key,
             metadata=get(item_metadata_by_key, row.item_key, MetadataDict()),
         ))

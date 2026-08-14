@@ -1,5 +1,5 @@
 using DataBrowserAPI:
-    Project,
+    AbstractProject,
     DEFAULT_PROJECT,
     PROJECTS,
     project_name
@@ -11,7 +11,7 @@ using DataBrowserCore.Workspace:
     open_workspace
 
 """Return the project selected by the saved project preference."""
-function _project_for_preference(pref::AbstractString)::Project
+function _project_for_preference(pref::AbstractString)::AbstractProject
     pref == "auto" && return something(DEFAULT_PROJECT[])
     for project in PROJECTS
         project_name(project) == pref && return project
@@ -23,7 +23,7 @@ end
 function _open_project_path!(
     state::BrowserState,
     path::String;
-    project::Union{Nothing,Project}=nothing,
+    project::Union{Nothing,AbstractProject}=nothing,
     rebuild_cache::Bool=false,
 )::Nothing
     norm_path = _normalize_project_path(path)

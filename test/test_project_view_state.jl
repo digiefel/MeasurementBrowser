@@ -1,4 +1,5 @@
 using DataBrowser
+using DataBrowserRecipes
 using DataBrowserGUI
 using DataBrowserPlots
 using Test
@@ -74,8 +75,8 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
     source = test_source(project, root_path)
     workspace = DataBrowserCore.Workspace.Workspace(project, source)
     collections = DataBrowserAPI.ItemIndex.CollectionIndex(root_path)
-    path_1 = DataBrowserAPI.ItemIndex.RegisteredCollection.(["chip", "device-1"])
-    path_2 = DataBrowserAPI.ItemIndex.RegisteredCollection.(["chip", "device-2"])
+    path_1 = DataBrowserRecipes.NamedCollection.(["chip", "device-1"])
+    path_2 = DataBrowserRecipes.NamedCollection.(["chip", "device-2"])
     key_1 = DataBrowserAPI.ItemIndex.resolve_collection_path!(
         collections, DataBrowserAPI.ItemIndex.collection_inputs(path_1))
     key_2 = DataBrowserAPI.ItemIndex.resolve_collection_path!(
@@ -86,7 +87,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         source_item_path=joinpath(root_path, "item-1.csv"),
         id="item-1",
         label="Item 1",
-        kind=:iv_sweep,
+        type=DataBrowserRecipes.RegisteredDataItem{:iv_sweep},
         collection_key=key_1,
     )
     item_2 = DataBrowserAPI.ItemIndex.ItemRecord(;
@@ -95,7 +96,7 @@ const _PLOTS_EXTENSION_VIEW = Dict{String,Any}(
         source_item_path=joinpath(root_path, "item-2.csv"),
         id="item-2",
         label="Item 2",
-        kind=:iv_sweep,
+        type=DataBrowserRecipes.RegisteredDataItem{:iv_sweep},
         collection_key=key_2,
     )
     DataBrowserAPI.ItemIndex.insert_item!(collections, item_1.id, key_1)
@@ -170,7 +171,7 @@ end
                 source_item_path=joinpath(root_path, "root.csv"),
                 id="root-item",
                 label="Root Item",
-                kind=:table,
+                type=DataBrowserRecipes.RegisteredDataItem{:table},
                 collection_key=nothing,
             )
             DataBrowserAPI.ItemIndex.insert_item!(collections, root_item.id, nothing)

@@ -2,7 +2,7 @@ using DataBrowser
 
 function _registered_collection_key(collections, names...)
     id_path = DataBrowserAPI.collection_id_path(
-        DataBrowserAPI.ItemIndex.RegisteredCollection.(String.(names)))
+        DataBrowserRecipes.NamedCollection.(String.(names)))
     return collections.key_by_id[last(id_path)]
 end
 

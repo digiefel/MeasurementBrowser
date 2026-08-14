@@ -12,9 +12,9 @@ that pipeline.
 The complete registration has this data flow:
 
 ```julia
-register_item!(project, registration_name;
-    detect = (file::SourceFile) -> accepted::Bool,
-    read = (file::SourceFile) -> loaded_data::LoadedData,
+register_item!(project, kind;
+    detect = (source_item) -> accepted::Bool,
+    read = (source_item) -> loaded_data::LoadedData,
     entries = (loaded_data::LoadedData, metadata::Dict) -> items::Vector,
     label = (data::ItemData, metadata::Dict) -> label::String,
     collection = (data::ItemData, metadata::Dict) -> path::Vector{String},
@@ -26,6 +26,11 @@ register_item!(project, registration_name;
 
 `LoadedData`, `ItemData`, and `ProcessedData` stand for concrete types chosen by the project. They
 are not DataBrowser types, and each stage may use a different type.
+
+`detect` and `read` receive whatever the source discovers. Registration is not tied to files:
+reach a source item through the contract — `id`, `label`, `source_item_path`, `metadata` — and the
+same callback works for every source. A directory source hands you a `SourceFile`, whose `id` and
+`label` are its path relative to the source root.
 
 The registration name is optional. It identifies a registration inside the project; it is not a
 property attached to every item.
@@ -53,7 +58,7 @@ identity, scheduling, and cache records private.
 ## `read`
 
 ```julia
-read = (file::SourceFile) -> loaded_data::LoadedData
+read = (source_item) -> loaded_data::LoadedData
 ```
 
 `read` loads one accepted source. It runs once for that source revision. Parsing a complete file,
@@ -117,9 +122,13 @@ See [Metadata and collections](metadata-and-collections.md) for the full groupin
 id = (data::ItemData, metadata::Dict) -> key
 ```
 
-DataBrowser generates an integer sibling key when `id` is omitted. Provide a channel name, cycle
-number, database key, or another stable domain value only when identity must survive inserted or
-reordered siblings.
+`register_item!` builds each item's id for you, from the source item, the registration, and this
+callback — or the entry's position when the callback is omitted. Provide a channel name, cycle
+number, database key, or another stable domain value when identity must survive inserted or
+reordered siblings; positions do not.
+
+This is the one thing the registration API does that the type API does not. A project written
+against types answers `id(item)::String` itself, and what it returns is the identity verbatim.
 
 ## `process`
 
@@ -148,7 +157,7 @@ and summaries used for filtering or querying belong here.
 ## Detection
 
 ```julia
-detect = (file::SourceFile) -> accepted::Bool
+detect = (source_item) -> accepted::Bool
 ```
 
 `detect` decides whether a registration handles a source. It should normally inspect information
@@ -163,7 +172,7 @@ A project with one interpretation normally uses the unnamed form:
 
 ```julia
 register_item!(project;
-    read = (file::SourceFile) -> loaded_data::LoadedData,
+    read = (source_item) -> loaded_data::LoadedData,
 )
 ```
 
@@ -175,13 +184,13 @@ Name registrations when a project has several interpretations:
 
 ```julia
 register_item!(project, :spectrum;
-    detect = (file::SourceFile) -> accepted::Bool,
-    read = (file::SourceFile) -> spectrum::SpectrumData,
+    detect = (source_item) -> accepted::Bool,
+    read = (source_item) -> spectrum::SpectrumData,
 )
 
 register_item!(project, :image;
-    detect = (file::SourceFile) -> accepted::Bool,
-    read = (file::SourceFile) -> image::ImageData,
+    detect = (source_item) -> accepted::Bool,
+    read = (source_item) -> image::ImageData,
 )
 ```
 
@@ -198,8 +207,13 @@ Directory-backed workspaces discover files before registrations run. Each callba
 |---|---|
 | `filepath` | complete path used to open the file |
 | `filename` | final path component used for recognition and filename metadata |
+| `relative_path` | path relative to the source root; the source item's `id` and label |
 | `timestamp` | discovered file timestamp, when available |
 | `fingerprint` | value used to detect source changes |
+
+Identity is the relative path rather than the absolute one: it is unique within the source, short
+enough for status surfaces to show as-is, and unchanged when the directory is moved or copied to
+another machine.
 
 The source object lets DataBrowser perform filesystem discovery once and keeps that work out of
 project callbacks. Its metadata dictionary contains `:filename` and, when a timestamp was
@@ -211,7 +225,7 @@ Item callbacks operate on one item at a time. Collection operations perform work
 related group of items:
 
 ```julia
-register_collection_analysis!(project, registration_name;
+register_collection_analysis!(project, kind;
     process = (data::Vector, metadata::Vector{<:Dict}) -> processed_data::Vector,
     analyze = (processed_data::Vector, metadata::Vector{<:Dict}) -> collection_metadata::Dict,
 )
@@ -220,3 +234,21 @@ register_collection_analysis!(project, registration_name;
 Collection `process` receives members after their item-level processing and returns one data value
 per member in the same order. Collection `analyze` returns metadata describing the collection
 itself. Both wait for their required member results, run in the background, and can be cached.
+
+## Premade recipes
+
+Formats common enough to ship come with a complete registration. `register_csv!` supplies `detect`
+and `read` for delimited text; every other `register_item!` callback still applies, so a premade
+recipe is a starting point rather than a different kind of thing.
+
+```julia
+register_csv!(project, :sweep;
+    extensions = [".csv", ".txt"],
+    read_options = (; delim='\t', comment="#"),
+    collection = (data, metadata) -> ["sweeps", metadata[:device]],
+    analyze = (data, _metadata) -> Dict(:rows => nrow(data)),
+)
+```
+
+`extensions` are matched case-insensitively and default to `[".csv"]`; `read_options` are forwarded
+to CSV.jl. Detection order still decides ties, so register narrower recipes before this one.

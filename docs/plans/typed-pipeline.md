@@ -56,8 +56,10 @@ source item — which is exactly what the engine can supply without touching the
 There is no routing stage. Registration `detect` is not a universal typed stage: a typed source
 already controls which source-item types it discovers, and the recipes adapter runs `detect`
 inside its own `read` method (read runs for every changed source item anyway, and detect costs
-filename-predicate time). Cheap kind classification for status surfaces stays a description query
-(`detect_kind`), not a pipeline stage.
+filename-predicate time). Cheap kind classification for status surfaces would be a description
+query rather than a pipeline stage; `detect_kind` was the placeholder for one, and was removed
+after the extraction left it with no implementations and no callers. Reintroduce it when a status
+surface actually asks.
 
 `read`'s return value and `entries`' `loaded` argument deliberately have no abstract supertype:
 the loaded value is a private handoff between two stages of the same project, and the type
@@ -148,40 +150,45 @@ Do not spread abstract `Function` dispatch through per-item loops.
 
 ## Caching and rehydration
 
-Whether a stage result persists is ordinary dispatch on the stage and its **output** value — a
-type the project owns, so shared sources never make the declaration ambiguous:
-
-```julia
-cacheable(stage::Function, value)::Bool      # default: cacheable_data(item_data(value))
-
-cacheable(::typeof(process), ::PUNDLoop) = true
-```
-
 The cache stores package-owned records plus payloads in supported shapes, never arbitrary user
-structs. A cached value comes back in two forms: **payload delivery** (views, tables, queries —
-needs no user type) and **materialized delivery** (running further user dispatch — needs the real
-type). Materialization is the package-owned, opt-in, pure function
+structs. Three separate questions decide what happens to a stage result. Today they are tangled
+into one boolean, `cacheable(::AbstractDataItem)`, which usefully answers none of them.
+
+1. **Can storage hold this shape?** The engine's own question, answered without the project by
+   `_storable_table`. A project whose payload is not tabular opts in by dispatching
+   `cacheable_data` on the payload type. No item-level predicate is involved.
+2. **Can this value become the user's type again?** The type's question, answered by whether it
+   implements `reconstruct` (below). Its presence *is* the declaration; there is no boolean.
+3. **Should we bother, given the cost?** Nobody asks this today. If a project ever needs to
+   suppress persistence for a cheap-to-recompute payload, the dialect can expose it per
+   registration. Do not build it speculatively.
+
+`cacheable(::AbstractDataItem)` is therefore **removed**, not generalized into
+`cacheable(stage, value)`. It carries no information now: for typed items the
+`isa RegisteredDataItem` gate discards it before it is consulted, and for registered items it is
+defined as `cacheable_data(item.data)` — that is, `Tables.istable` — which `_storable_table`
+re-checks as its own first line. Per-stage granularity would be illusory besides: only item and
+collection `process` produce payloads at all, while `analyze` produces metadata, which is always
+stored.
+
+A cached value comes back in two forms: **payload delivery** (views, tables, queries — needs no
+user type) and **materialized delivery** (running further user dispatch — needs the real type).
+Only the second requires the project to say anything:
 
 ```julia
-construct(::Type{T}, data, metadata::Dict)::T
+reconstruct(::Type{T}, data, metadata::Dict)::T
 ```
 
-gated by `hasmethod` — a generic function rather than a constructor (StructTypes' `construct`
-precedent), so opting in is unambiguous and collision-free. The reconstructed item re-derives
-`id`, `collection`, and `metadata`; the engine validates them against the record and fails loudly
-on mismatch. Without a `construct` method the engine falls back to rerunning upstream stages —
-always correct, just slower. `RegisteredDataItem` implements `construct` internally, which
-dissolves the registration-only cache gate into dispatch any item type can implement. Rehydration
-must stay a pure function of cached content; values a type needs to rebuild itself belong in its
-metadata, never in live workspace state.
+Package-owned and pure. The default returns `nothing`; a type opts in by defining a method that
+returns an item. Without one the engine falls back to rerunning upstream stages — always correct,
+just slower, and payload delivery keeps working meanwhile. `RegisteredDataItem` implements
+`reconstruct` internally, which dissolves the registration-only cache gate into dispatch any item
+type can implement. Rehydration must stay a pure function of cached content; values a type needs to
+rebuild itself belong in its metadata, never in live workspace state.
 
-The engine always takes the cheapest valid path: cached downstream payload → `construct` → rerun
-upstream stages. On top of this, `DataBrowserCore` provides one cached entry point with
-constructor spelling for every item type — `(::Type{T})(ws, key...) where {T<:AbstractDataItem}` —
-so `PUNDLoop(ws, key)` answers from the cache, schedules work through the graph on a miss, and
-never collides with user constructors because users never implement it. The engine thereby doubles
-as a rehydration accelerator: warm reopen delivers concrete user types at deserialization speed,
-threaded across the worker pool, materializing only the items a query or selection actually
+The engine always takes the cheapest valid path: cached downstream payload → `reconstruct` →
+rerun upstream stages. Warm reopen therefore delivers concrete user types at deserialization
+speed, threaded across the worker pool, rebuilding only the items a query or selection actually
 touches.
 
 ## Work and cache stages
@@ -216,13 +223,16 @@ without world-age or redefinition problems.
 
 - The recipes `entries` item descriptor (today's `DataItem` construction) needs its final name and
   shape.
-- The workspace-keyed constructor's key grammar — likely source-item id + `#` + sibling id.
 - `project_fingerprint`: what enters the project-definition fingerprint and when it invalidates.
+- `reconstruct` needs a concrete type, but `ItemRecord.kind` is a `Symbol` — for typed items,
+  `Symbol(nameof(typeof(item)))`. Resolving `:PUNDLoop` back to `PUNDLoop` needs a module to look
+  in. Candidates: persist a module-qualified name; have the project declare its item types; or
+  accept rerun-from-source whenever the type cannot be resolved.
 
 ## Migration sequence
 
 1. Declare `AbstractProject`, the project-aware stage forms with context-free defaults, typed
-   collection `process`/`analyze`, `cacheable(stage, value)`, and `construct`.
+   collection `process`/`analyze`, and `reconstruct`.
 2. Create `DataBrowserRecipes`: move `Project`, recipes, and `register_*` there; introduce the
    parametric carriers and immutable parametric recipes; implement the adapter methods; re-export
    the dialect from the `DataBrowser` umbrella.
@@ -230,8 +240,8 @@ without world-age or redefinition problems.
    record normalization path.
 4. Split the work graph, result states, profiling, and failure reporting into per-stage
    boundaries.
-5. Replace the `isa RegisteredDataItem` cache gate with `cacheable`/`construct` dispatch; add the
-   workspace-keyed constructor entry point.
+5. Remove the `isa RegisteredDataItem` cache gate and `cacheable(::AbstractDataItem)` with it;
+   persistence becomes the storable-shape check, and rehydration becomes `reconstruct` dispatch.
 6. Remove `data_items` and every registration branch outside `DataBrowserRecipes`; update public
    examples and documentation so an equivalent typed and registered project visibly traverse the
    same stages.
@@ -252,8 +262,10 @@ without world-age or redefinition problems.
 - Re-registering a name replaces callbacks without accumulating methods or registrations.
 - Typed collection process/analyze dispatch receives the current project-created collection value,
   while cache/index/GUI state continues to use `CollectionRecord`.
-- A cached processed payload is delivered to views without running user code; `construct` (where
+- A cached processed payload is delivered to views without running user code; `reconstruct` (where
   defined) rebuilds concrete items without rerunning `read` or `process`, and the rebuilt item's
   rederived identity is validated against the record.
+- No item-level `cacheable` predicate remains; a typed item and a registered item with equivalent
+  payloads persist identically.
 - Full tests, docs, and both equivalent example styles pass without a compatibility layer for
   `data_items`.

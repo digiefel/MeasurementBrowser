@@ -1,6 +1,7 @@
 using DataBrowser
 using DataBrowserAPI
 using DataBrowserCache
+using DataBrowserRecipes
 using DataBrowserSources
 using Test
 
@@ -9,14 +10,17 @@ struct CacheCollectionLevel <: AbstractCollection
     value::Int
 end
 
+DataBrowserAPI.id(collection::CacheCollectionLevel) = collection.name
 DataBrowserAPI.label(collection::CacheCollectionLevel) = collection.name
 DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => collection.value)
+DataBrowserAPI.reconstruct(::Type{CacheCollectionLevel}, identity::AbstractString, metadata::Dict) =
+    CacheCollectionLevel(String(identity), metadata[:value])
 
 @testset "cache restores package-owned collection records" begin
     mktempdir() do dir
         filepath = joinpath(dir, "item.dat")
         write(filepath, "data")
-        source_item = DataBrowserSources.index_source_file(filepath)
+        source_item = DataBrowserSources.index_source_file(filepath, dir)
         cache_identity = ProjectCacheIdentity(
             "CollectionRoundTrip", dir, basename(dir), joinpath(dir, "cache.duckdb"))
         collections = DataBrowserAPI.ItemIndex.CollectionIndex(dir)
@@ -32,13 +36,15 @@ DataBrowserAPI.metadata(collection::CacheCollectionLevel) = Dict(:value => colle
             source_item_key=DataBrowserCache.source_item_key!(cache, filepath; mint=true),
             source_item_path=filepath,
             label="item",
-            kind=:test,
+            type=DataBrowserRecipes.RegisteredDataItem{:test},
             collection_key=leaf_key,
         )
         DataBrowserAPI.ItemIndex.insert_item!(collections, record.id, leaf_key)
         try
             write_meta_header!(cache)
-            item = DataBrowserAPI.ItemIndex.RegisteredDataItem(record, nothing)
+            item = DataBrowserRecipes.RegisteredDataItem{:test}(
+                record.id, record.label, DataBrowser.AbstractCollection[], nothing,
+                record.metadata)
             DataBrowserCache.store_interpreted_records!(
                 cache, source_item, "item file", [record], [item])
             store_collection_index!(cache, collections, [record])

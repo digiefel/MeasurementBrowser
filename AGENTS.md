@@ -72,12 +72,17 @@ handles directory scanning, background processing, DuckDB caching, the item tree
 browser UI. Project code should not touch cache files, background jobs, or UI state.
 
 When a workspace opens, the package scans the data root, finds source files, and interprets each one
-into logical items using the project's registered callbacks. That work runs through a dependency
-graph with five stages: interpret the source file, process each item, analyze each item, then
-process and analyze at the collection level. Completed results are published into an index that
+into logical items using the project's stage methods: `read` performs the one expensive source
+operation, `entries` expands its result into items. That work runs through a dependency graph with
+five stages: interpret the source file, process each item, analyze each item, then process and
+analyze at the collection level. Completed results are published into an index that
 the tree and plots read from. Work is event-driven — background workers finish tasks and publish
 updates; the GUI does not poll a job queue. If the user selects items that are still processing,
 that work gets higher priority. Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+The registration API (`define_project`, `register_*`) is a dialect in `DataBrowserRecipes`, written
+purely over that stage contract — it has no stage, cache boundary, or engine integration a typed
+project lacks.
 
 To register a new measurement type, see [docs/api.md](docs/api.md). For IDs, collection paths, and
 the item tree, see [docs/data-model.md](docs/data-model.md). Recipe `detect` callbacks are tried in
@@ -85,7 +90,8 @@ registration order; the first match wins, so register specific filename patterns
 
 | Editing… | Look in… | Doc |
 |---|---|---|
-| `register_item!`, `register_collection_analysis!`, item callbacks | `lib/DataBrowserAPI/` | [api.md](docs/api.md) |
+| `register_item!`, `register_collection_analysis!`, premade recipes | `lib/DataBrowserRecipes/` | [api.md](docs/api.md) |
+| `read`/`entries`/`process`/`analyze` stage contract, `AbstractProject`, `reconstruct` | `lib/DataBrowserAPI/src/stage_contract.jl`, `project_contract.jl` | [api.md](docs/api.md) |
 | Plot registration, `PlotKind`, Makie rendering | `lib/DataBrowserPlots/` | [gui.md](docs/gui.md) |
 | Item records, hierarchy | `lib/DataBrowserAPI/src/ItemIndex.jl` | [data-model.md](docs/data-model.md) |
 | Directory traversal, `metadata.txt` | `lib/DataBrowserSources/` | [storage.md](docs/storage.md) |
@@ -109,8 +115,8 @@ When code and docs disagree, fix the doc in the same commit.
 ## Testing
 When a change needs validation, run the full suite once:
 `julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
-harmless local edits. Fixtures in `test/fixtures/`; inline projects in `test/test_project.jl` and
-`test/test_scan_profile.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
+harmless local edits. Fixtures in `test/fixtures/`; the inline project lives in
+`test/test_project.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
 
 ## Benchmarks
 Use `bench/` for performance work (`julia --project=bench`). Results persist under

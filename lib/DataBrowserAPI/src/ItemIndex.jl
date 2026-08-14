@@ -8,19 +8,19 @@ import ..DataBrowserAPI:
     AbstractDataItem,
     AbstractCollection,
     MetadataDict,
+    AbstractProject,
     MetadataValue,
-    Project,
     attach_record,
-    cacheable,
     cacheable_data,
     collection,
     collection_record_id,
     collection_path_label,
+    display_label,
     id,
     item_data,
-    kind,
     label,
     metadata,
+    reconstruct,
     source_id,
     source_item_path,
     source_item_timestamp,
@@ -33,7 +33,7 @@ struct ItemFailure
     message::String
 end
 
-collection_path_label(::Project, path::AbstractVector{<:AbstractCollection})::String =
+collection_path_label(::AbstractProject, path::AbstractVector{<:AbstractCollection})::String =
     join(label.(path), "_")
 
 """Normalize one value into the supported metadata value union."""
@@ -69,24 +69,6 @@ function metadata_dict(dict::AbstractDict)::MetadataDict
     return out
 end
 
-"""Package-owned collection value created by the registration string-path adapter."""
-struct RegisteredCollection <: AbstractCollection
-    name::String
-    metadata::MetadataDict
-end
-
-RegisteredCollection(name::AbstractString; metadata::AbstractDict=MetadataDict()) =
-    RegisteredCollection(String(name), metadata_dict(metadata))
-
-label(collection::RegisteredCollection)::String = collection.name
-metadata(collection::RegisteredCollection)::MetadataDict = collection.metadata
-id(collection::RegisteredCollection)::String = collection.name
-Base.:(==)(left::RegisteredCollection, right::RegisteredCollection)::Bool =
-    left.name == right.name
-Base.isequal(left::RegisteredCollection, right::RegisteredCollection)::Bool =
-    isequal(left.name, right.name)
-Base.hash(collection::RegisteredCollection, seed::UInt)::UInt = hash(collection.name, seed)
-
 """
 One transient normalized collection level produced during interpretation.
 
@@ -95,12 +77,18 @@ user value itself.
 """
 struct CollectionInput
     id::String
+    identity::String
     label::String
     own_metadata::MetadataDict
-    registration_name::Union{Nothing,String}
+    type::Type{<:AbstractCollection}
 end
 
-"""Resolve a live collection path into package-owned inputs without retaining user values."""
+"""
+Resolve a live collection path into package-owned inputs without retaining user values.
+
+`identity` is `id(value)` kept verbatim and `type` is the concrete type. The occurrence id is a
+one-way digest, so those two plus the own metadata are what a later `reconstruct` works from.
+"""
 function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{CollectionInput}
     inputs = CollectionInput[]
     parent_id = ""
@@ -108,27 +96,15 @@ function collection_inputs(path::AbstractVector{<:AbstractCollection})::Vector{C
         collection_id = collection_record_id(parent_id, value)
         push!(inputs, CollectionInput(
             collection_id,
+            id(value),
             String(label(value)),
             metadata_dict(metadata(value)),
-            value isa RegisteredCollection ? value.name : nothing,
+            typeof(value),
         ))
         parent_id = collection_id
     end
     return inputs
 end
-
-"""
-Wrap a registration string path in package-owned collection values.
-
-Sources may specialize this to attach source-owned metadata to each level (the directory source
-attaches its `metadata.txt` entries). Applied when adapting registration callback output, so
-registered items satisfy the generic `collection(item)` contract.
-"""
-registered_collection_path(
-    ::AbstractDataSource,
-    names::AbstractVector{<:AbstractString},
-)::Vector{AbstractCollection} =
-    AbstractCollection[RegisteredCollection(name) for name in names]
 
 """
 One package-owned indexed collection occurrence.
@@ -140,10 +116,11 @@ workspace/cache-local integer. `label` is display text. These are distinct contr
 struct CollectionRecord
     key::Int64
     id::String
+    identity::String
     parent_key::Union{Nothing,Int64}
     label::String
     own_metadata::MetadataDict
-    registration_name::Union{Nothing,String}
+    type::Type{<:AbstractCollection}
     analysis::MetadataDict
 end
 
@@ -217,14 +194,16 @@ function register_collection!(index::CollectionIndex, collection_record::Collect
 end
 
 _projection_changed(record::CollectionRecord, input::CollectionInput)::Bool =
+    record.identity != input.identity ||
     record.label != input.label ||
     record.own_metadata != input.own_metadata ||
-    record.registration_name != input.registration_name
+    record.type != input.type
 
 _projection_changed(left::CollectionInput, right::CollectionInput)::Bool =
+    left.identity != right.identity ||
     left.label != right.label ||
     left.own_metadata != right.own_metadata ||
-    left.registration_name != right.registration_name
+    left.type != right.type
 
 """
     validate_collection_paths(index, paths) -> Nothing
@@ -267,7 +246,7 @@ function validate_collection_paths(
                 )
                 _projection_changed(existing, input) && throw(ArgumentError(
                     "Collection '$(join(labels, " / "))' produced inconsistent label, " *
-                    "metadata, or registration name for deterministic id $(existing.id)",
+                    "metadata, or type for deterministic id $(existing.id)",
                 ))
             end
             parent_id = input.id
@@ -293,10 +272,11 @@ function resolve_collection_path!(
             register_collection!(index, CollectionRecord(
                 key,
                 input.id,
+                input.identity,
                 parent_key,
                 input.label,
                 copy(input.own_metadata),
-                input.registration_name,
+                input.type,
                 MetadataDict(),
             ))
         else
@@ -308,17 +288,18 @@ function resolve_collection_path!(
             if projection_changed && !update_existing
                 throw(ArgumentError(
                     "Collection '$(join(labels, " / "))' produced inconsistent label, " *
-                    "metadata, or registration name for deterministic id $(existing.id)",
+                    "metadata, or type for deterministic id $(existing.id)",
                 ))
             end
             if projection_changed
                 index.records[key] = CollectionRecord(
                     existing.key,
                     existing.id,
+                    input.identity,
                     existing.parent_key,
                     input.label,
                     copy(input.own_metadata),
-                    input.registration_name,
+                    input.type,
                     existing.analysis,
                 )
             end
@@ -371,19 +352,27 @@ collection_id_path(::CollectionIndex, ::Nothing)::Vector{String} = String[]
 collection_location(index::CollectionIndex, key::Int64)::Vector{String} =
     String[index.records[path_key].label for path_key in collection_path_keys(index, key)]
 
-"""Return stored registration names, or `nothing` when the indexed path is typed."""
-function registration_names(
+"""
+Rebuild the collection values on one indexed path, ancestor to self.
+
+Each level is rebuilt from its stored type, identity, and own metadata — the occurrence id is a
+digest and carries nothing invertible. The record holds the concrete type, so nothing is resolved.
+"""
+function collection_value_path(
     index::CollectionIndex,
     key::Union{Nothing,Int64},
-)::Union{Nothing,Vector{String}}
-    key === nothing && return String[]
-    names = String[]
+)::Vector{AbstractCollection}
+    key === nothing && return AbstractCollection[]
+    path = AbstractCollection[]
     for path_key in collection_path_keys(index, key)
         collection_record = index.records[path_key]
-        collection_record.registration_name === nothing && return nothing
-        push!(names, collection_record.registration_name)
+        push!(path, reconstruct(
+            collection_record.type,
+            collection_record.identity,
+            collection_record.own_metadata,
+        ))
     end
-    return names
+    return path
 end
 
 """Return child keys sorted by their resolved display labels."""
@@ -459,10 +448,11 @@ function clear_collection_analysis!(index::CollectionIndex, key::Int64)::Nothing
     index.records[key] = CollectionRecord(
         collection_record.key,
         collection_record.id,
+        collection_record.identity,
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
-        collection_record.registration_name,
+        collection_record.type,
         MetadataDict(),
     )
     return nothing
@@ -478,10 +468,11 @@ function set_collection_analysis!(
     index.records[key] = CollectionRecord(
         collection_record.key,
         collection_record.id,
+        collection_record.identity,
         collection_record.parent_key,
         collection_record.label,
         collection_record.own_metadata,
-        collection_record.registration_name,
+        collection_record.type,
         metadata_dict(analysis),
     )
     return nothing
@@ -500,7 +491,7 @@ struct ItemRecord
     source_item_path::Union{Nothing,String}
     source_item_timestamp::Union{DateTime,Nothing}
     label::String
-    kind::Symbol
+    type::Type{<:AbstractDataItem}
     collection_key::Union{Nothing,Int64}
     metadata::MetadataDict
 end
@@ -512,7 +503,7 @@ function ItemRecord(;
     source_item_path::Union{Nothing,AbstractString}=nothing,
     source_item_timestamp::Union{DateTime,Nothing}=nothing,
     label::AbstractString,
-    kind::Symbol,
+    type::Type{<:AbstractDataItem},
     collection_key::Union{Nothing,Integer}=nothing,
     metadata::AbstractDict=MetadataDict(),
 )::ItemRecord
@@ -524,7 +515,7 @@ function ItemRecord(;
         source_item_path === nothing ? nothing : String(source_item_path),
         source_item_timestamp,
         String(label),
-        kind,
+        type,
         collection_key === nothing ? nothing : Int64(collection_key),
         metadata_dict(metadata),
     )
@@ -538,7 +529,7 @@ function ItemRecord(
     source_item_path::Union{Nothing,AbstractString}=record.source_item_path,
     source_item_timestamp::Union{DateTime,Nothing}=record.source_item_timestamp,
     label::AbstractString=record.label,
-    kind::Symbol=record.kind,
+    type::Type{<:AbstractDataItem}=record.type,
     collection_key::Union{Nothing,Integer}=record.collection_key,
     metadata::AbstractDict=deepcopy(record.metadata),
 )::ItemRecord
@@ -548,7 +539,7 @@ function ItemRecord(
         source_item_path,
         source_item_timestamp,
         label,
-        kind,
+        type,
         collection_key,
         metadata,
     )
@@ -557,69 +548,8 @@ end
 id(record::ItemRecord)::String = record.id
 label(record::ItemRecord)::String = record.label
 
-"""
-Private carrier for ordinary data produced by `register_item!`.
-
-Adaptation converts the registration callback's collection strings into normalized
-`AbstractCollection` segments, so the carrier answers the generic item contract directly. Before
-interpretation normalizes the item, `id` holds only the callback-supplied sibling key (or `""`);
-the carrier delivered by interpretation is rebuilt on its record and carries the final minted id.
-"""
-struct RegisteredDataItem{D} <: AbstractDataItem
-    id::String
-    label::String
-    registration::Symbol
-    collection::Vector{AbstractCollection}
-    data::D
-    metadata::MetadataDict
-end
-
-"""Reconstruct registered data from a record, payload, and its normalized collection segments."""
-RegisteredDataItem(
-    record::ItemRecord,
-    data,
-    path::Vector{AbstractCollection}=AbstractCollection[],
-)::RegisteredDataItem = RegisteredDataItem(
-    record.id,
-    record.label,
-    record.kind,
-    path,
-    data,
-    record.metadata,
-)
-
-"""Reconstruct registered data from a record, payload, and its registration string path."""
-RegisteredDataItem(
-    record::ItemRecord,
-    data,
-    names::Vector{String},
-)::RegisteredDataItem = RegisteredDataItem(
-    record,
-    data,
-    AbstractCollection[RegisteredCollection(name) for name in names],
-)
-
-"""Copy registered data while replacing only its payload."""
-RegisteredDataItem(item::RegisteredDataItem, data)::RegisteredDataItem = RegisteredDataItem(
-    item.id,
-    item.label,
-    item.registration,
-    item.collection,
-    data,
-    item.metadata,
-)
-
-id(item::RegisteredDataItem)::String = item.id
-label(item::RegisteredDataItem)::String = item.label
-kind(item::RegisteredDataItem)::Symbol = item.registration
-collection(item::RegisteredDataItem)::Vector{AbstractCollection} = item.collection
-metadata(item::RegisteredDataItem)::MetadataDict = item.metadata
-item_data(item::RegisteredDataItem) = item.data
-cacheable(item::RegisteredDataItem)::Bool = cacheable_data(item.data)
-
-"""A registered carrier adopts its normalized record wholesale; its segments and payload remain."""
-attach_record(item::RegisteredDataItem, record::ItemRecord)::RegisteredDataItem =
-    RegisteredDataItem(record, item.data, item.collection)
+"""Item labels are resolved once at interpretation, so the UI never reruns project code."""
+display_label(::AbstractProject, record::ItemRecord)::String = record.label
 
 """Return one item record's inherited collection metadata plus its own entries layer."""
 function effective_metadata(index::CollectionIndex, record::ItemRecord)::MetadataDict

@@ -22,7 +22,7 @@ persisted results already exist. The work dependency graph decides what remains 
 application.
 
 Cached item records carry the entries layer of their metadata. Collection nodes separately persist
-the package-owned label, metadata, and registration-name projections needed to reconstruct the
+the package-owned identity, label, metadata, and type projections needed to reconstruct the
 hierarchy and inherited collection metadata after reopen. Concrete project collection values do not
 enter the cache.
 
@@ -52,9 +52,13 @@ The cache is its own package, `lib/DataBrowserCache/`, depending only on `DataBr
 item contracts and `ItemIndex` types it reconstructs on reopen), `DataBrowserProfiling`, and its
 storage backend (DuckDB/DBInterface). `DataBrowserCore`'s `Workspace` consumes it. The cache never
 requires a specific table container: payloads come in as anything implementing Tables.jl (the
-`cacheable_data` default is `Tables.istable`) and come back out as the container type they were
-stored with. A non-tabular type can opt in by dispatching `cacheable_data` and implementing the
-interface.
+`cacheable_data` default is `Tables.istable`) and come back out as the shape they were stored with.
+A non-tabular type can opt in by dispatching `cacheable_data` and implementing the interface.
+
+Whether a payload persists is that shape question alone — there is no item-level opt-in, and no
+path branches on how the item's project was defined. The cache returns payloads, never items;
+rebuilding a concrete item from one is the engine's job, through the item type's `reconstruct`
+method, and a type without one simply has its upstream stages rerun.
 
 `project_cache_domain.jl` owns everything specific to DataBrowser's project cache:
 
@@ -100,13 +104,13 @@ disk-backed.
 Some item data is useful only as a short-lived input to downstream work:
 
 - interpreted item data waiting to be processed;
-- processed data that the project declares non-cacheable.
+- processed data whose shape the cache cannot store.
 
 These values use the same keyed buffer mechanism without a connection or flush task. They are never
 written to DuckDB. If an incoming value would exceed the configured row limit, it is not retained.
 A later miss causes the required upstream work to be performed again.
 
-This prevents interpretation from being throttled by processing and prevents non-cacheable processed
+This prevents interpretation from being throttled by processing and prevents unstorable processed
 data from becoming an unbounded Julia object cache.
 
 ## Capacity and backpressure
@@ -244,8 +248,8 @@ The fixed DuckDB stores are:
 - `items` — data-less logical-item records, each item's integer `item_key` surrogate, the
   `source_item_key` of its owning source item, and the private key of its leaf collection;
 - `collections` — one row per collection record, with its compact integer key, parent key, durable
-  occurrence ID, resolved label and metadata, and registration name when applicable; arbitrary
-  user-defined collection values and canonical ID inputs are not stored;
+  occurrence ID, the `id(collection)` identity string, resolved label and metadata, and the
+  name of the concrete collection type; user-defined collection values are not stored;
 - `source_item_metadata` — the entries layer per item, keyed by `item_key`; reload restores
   `ItemRecord.metadata`;
 - `analyzed_item_metadata` — the delivered metadata dict per item (inherited ⊕ entries ⊕ computed
@@ -291,10 +295,12 @@ at boundaries such as status errors and the GUI.
 
 Collection records use a separate package-owned integer key. The index assigns it after resolving
 the complete path by deterministic collection ID. That ID combines the parent ID, concrete
-collection type, and a canonical encoding of `id(collection)`; it never uses process-dependent
-`Base.hash`. The cache persists the key, parent edge, final ID, resolved label and metadata, and
-optional registration name. It stores neither user-defined collection values nor canonical ID
-inputs. The compact key may change after a clean rebuild, while saved selection and annotation state
+collection type, and `id(collection)`; it never uses process-dependent `Base.hash`. The cache
+persists the key, parent edge, final ID, the identity string, resolved label and metadata, and the
+name of the concrete collection type. It does not store user-defined collection values — records
+hold the type itself, the cache stores its name because DuckDB stores text, and the engine rebuilds
+a value from its type, identity, and metadata through `reconstruct`, which is why the occurrence ID being a
+one-way digest costs nothing. The compact key may change after a clean rebuild, while saved selection and annotation state
 reconnect through the deterministic ID.
 
 ### Persisted result state

@@ -78,10 +78,7 @@ function _collection_annotation_key(
         collections.records[key]
         for key in collection_path_keys(collections, collection_record.key)
     ]
-    if all(segment -> segment.registration_name !== nothing, path)
-        return join((segment.registration_name::String for segment in path), '/')
-    end
-    return "@collection/$(collection_record.id)"
+    return join((segment.label for segment in path), '/')
 end
 
 """Return every parent annotation key used when resolving inherited tags."""

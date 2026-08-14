@@ -1,4 +1,5 @@
 using DataBrowser
+using DataBrowserRecipes
 using Test
 
 const COLLECTION_RECORD_INDEX = DataBrowserAPI.ItemIndex
@@ -9,7 +10,9 @@ struct IndexedCollection <: AbstractCollection
     area::Float64
 end
 
-DataBrowser.id(collection::IndexedCollection) = collection.key
+DataBrowser.id(collection::IndexedCollection) = string(collection.key)
+DataBrowser.reconstruct(::Type{IndexedCollection}, identity::AbstractString, metadata::Dict) =
+    IndexedCollection(parse(Int, identity), metadata[:shown], metadata[:score])
 DataBrowser.label(collection::IndexedCollection) = collection.shown
 DataBrowser.metadata(collection::IndexedCollection) = Dict(:area => collection.area)
 
@@ -46,13 +49,16 @@ end
 
     registered = COLLECTION_RECORD_INDEX.CollectionIndex("registered")
     registered_inputs = COLLECTION_RECORD_INDEX.collection_inputs(AbstractCollection[
-        COLLECTION_RECORD_INDEX.RegisteredCollection("wafer"),
-        COLLECTION_RECORD_INDEX.RegisteredCollection("device"),
+        DataBrowserRecipes.NamedCollection("wafer"),
+        DataBrowserRecipes.NamedCollection("device"),
     ])
     registered_key = COLLECTION_RECORD_INDEX.resolve_collection_path!(
         registered, registered_inputs)
-    @test COLLECTION_RECORD_INDEX.registration_names(registered, registered_key) ==
-        ["wafer", "device"]
+    rebuilt = COLLECTION_RECORD_INDEX.collection_value_path(registered, registered_key)
+    @test rebuilt == AbstractCollection[
+        DataBrowserRecipes.NamedCollection("wafer"),
+        DataBrowserRecipes.NamedCollection("device"),
+    ]
 
     conflicting = COLLECTION_RECORD_INDEX.CollectionIndex("conflicting")
     original_inputs = COLLECTION_RECORD_INDEX.collection_inputs(AbstractCollection[

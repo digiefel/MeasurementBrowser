@@ -20,13 +20,15 @@ measurement cycles, or no recognized data at all.
 The registration API produces logical items from ordinary data. DataBrowser supplies identity,
 labels, collection placement, and empty metadata when callbacks omit them.
 
-The type API returns concrete `AbstractDataItem` values from `data_items`. Their Julia types remain
-intact, so processing and visualization can use multiple dispatch.
+The type API returns concrete `AbstractDataItem` values from `entries`, after `read` has performed
+the one expensive source operation. Their Julia types remain intact, so processing and
+visualization can use multiple dispatch. The registration API is a dialect written over the same
+stages — it has no stage, cache boundary, or engine integration a typed project lacks.
 
 ```mermaid
 flowchart TB
     registration["register_item!<br/>ordinary data callbacks"] --> workspace["Workspace pipeline"]
-    typed["data_items<br/>concrete AbstractDataItem values"] --> workspace
+    typed["read + entries<br/>concrete AbstractDataItem values"] --> workspace
     workspace --> index["Browse and query metadata"]
     workspace --> materialize["Materialize selected data"]
     materialize --> views["Inspect and visualize"]
@@ -36,21 +38,23 @@ flowchart TB
 
 Workspace identity is assembled from stable parts:
 
-```text
-source identity
-  + source-item identity
-  + registration identity or concrete item type
-  + sibling identity when one source item expands into several items
+Sources, source items, data items, and collections all answer the same contract:
+
+```julia
+id(value)::String
 ```
 
-The common one-source-item-to-one-data-item case requires no explicit item identity. When a source
-item expands into several logical items, DataBrowser uses their returned positions by default. An
-entry supplies an explicit id when its sibling order can change. Stable explicit ids keep selection,
-annotations, saved views, and cached results attached when siblings are inserted or reordered.
+What it returns is the identity — stored, shown in messages, and used for selection, annotation, and
+cache lookup exactly as returned. Nothing wraps or namespaces it, and no uniqueness is inferred: two
+values answering the same `id` collide, and the engine reports that as the project error it is.
 
-Registered and typed items share one identity rule: project code supplies at most a sibling key
-(the registration `id` callback or `id(item)`), and interpretation mints the final item id once by
-namespacing that key under the source item and kind. Project code never produces a final item id.
+There is no default anywhere. A type that names a thing has to say what identifies it, which is one
+line, and the alternative — a positional fallback — silently re-points annotations and saved views
+whenever a source item's contents are reordered.
+
+The registration dialect builds ids for its own items, from the source item, the registration, and
+the `id` callback or the entry's position. That is internal to `DataBrowserRecipes`; a
+`register_item!` user neither supplies nor sees one.
 
 Alongside the stable public source-item id, the package mints one compact `source_item_key::Int64`
 per source item when a scan first sees it. Item records, the work graph, and the cache tables
@@ -60,6 +64,13 @@ at boundaries (status errors, GUI selection and display).
 
 A registration name such as `:cycles` identifies the registered pipeline. It is not a property of
 the data and does not replace the concrete type of a typed item.
+
+Item and collection records carry the concrete type itself, plus the `id(value)` string verbatim.
+Together they are how the engine gets from a stored row back to the project's own value:
+`reconstruct(::Type{T}, id, metadata)` for a collection, which has no default, because a collection
+has no rerun-from-source fallback the way an item does. Nothing resolves a name to a type — `kind(T)`
+names a type for display, never the reverse. The occurrence ID stays a one-way digest; the
+stored identity is what makes that affordable.
 
 ## Labels and collections
 
@@ -138,10 +149,14 @@ output. Sibling items may execute concurrently, so callbacks treat shared input 
 
 ## Data and caching
 
-Registration data implementing the Tables.jl interface is persisted natively when its column types
-are supported. Other registration data remains available through the source and in-memory pipeline.
+Any item's data is persisted natively when it implements the Tables.jl interface with supported
+column types — typed and registered alike. Other data remains available through the source and
+in-memory pipeline.
 
-Typed items are source-backed and recreated through `data_items` when selected. Domain sources may
+A cached payload is delivered to views without running project code. Rebuilding a concrete item
+from one, in order to run a further stage, needs its type to implement
+`reconstruct(::Type{T}, data, metadata)`; without that method the item is recreated through
+`read` → `entries` → `process` when selected. Domain sources may
 own their own loading cache. Cache policy changes how DataBrowser obtains a value; it does not change
 the value delivered to processing or visualization.
 

@@ -3,6 +3,7 @@ module DataBrowser
 
 using PrecompileTools
 using DataBrowserAPI
+using DataBrowserRecipes
 using DataBrowserSources
 using DataBrowserCore
 using DataBrowserPlots
@@ -13,32 +14,34 @@ using DataBrowserAPI:
     AbstractDataSource,
     AbstractDataSourceItem,
     AbstractCollection,
+    AbstractProject,
     analyze,
-    cacheable,
     collection,
-    define_project,
-    data_items,
+    entries,
     display_label,
     fingerprint,
     id,
     item_data,
-    kind,
     label,
     metadata,
     process,
-    register_collection_analysis!,
-    register_item!,
     close_source!,
     open_source,
-    scan_profile_summary,
-    scan_source_profile,
     source_items,
     source_id,
     source_label,
     source_item_path,
     source_item_timestamp,
     source_open_options,
-    watch_source
+    watch_source,
+    reconstruct,
+    read
+using DataBrowserRecipes:
+    Project,
+    define_project,
+    register_collection_analysis!,
+    register_csv!,
+    register_item!
 using DataBrowserPlots:
     PlotKind,
     RegisteredPlot,
@@ -50,7 +53,7 @@ using DataBrowserPlots:
     registered_plot_kinds,
     setup_plot
 
-using DataBrowserSources: DirectorySource, SourceFile, inspect_table
+using DataBrowserSources: DirectorySource, SourceFile
 using DataBrowserCore: items_for_file
 using DataBrowserCore.Workspace:
     close_workspace!,
@@ -77,6 +80,7 @@ export open_browser,
     wait_workspace_idle!,
     workspace_status,
     define_project,
+    register_csv!,
     register_item!,
     register_collection_analysis!,
     register_plot!,
@@ -88,19 +92,16 @@ export open_browser,
     AbstractDataSourceItem,
     AbstractCollection,
     id,
-    kind,
     label,
     collection,
     metadata,
     item_data,
     process,
     analyze,
-    cacheable,
     fingerprint,
     Project,
     DirectorySource,
     SourceFile,
-    inspect_table,
     items_for_file,
     PlotKind,
     display_label,
@@ -117,11 +118,11 @@ export open_browser,
     source_item_timestamp,
     source_open_options,
     watch_source,
-    data_items,
-    scan_profile_summary,
-    scan_source_profile
+    entries,
+    reconstruct,
+    AbstractProject
 
-using DataBrowserAPI: Project, project_name
+using DataBrowserAPI: project_name
 import DataBrowserCache as Cache
 import DataBrowserCore.Workspace as Workspace
 import DataBrowserGUI: Browser

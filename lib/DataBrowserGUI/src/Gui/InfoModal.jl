@@ -2,7 +2,8 @@ import CImGui as ig
 import CImGui.CSyntax: @c
 
 using DataBrowserAPI:
-    kind_label
+    kind_label,
+    label
 import DataBrowserCore.Workspace
 
 """Render collection and item details for the visible workspace selection."""
@@ -57,7 +58,7 @@ function render_info_window(state::BrowserState)::Nothing
                 workspace, m, workspace.index.collections)
             ig.Text("Title: $(m.label)")
             ig.Separator()
-            kind_text = kind_label(workspace.project, m.kind)
+            kind_text = kind_label(workspace.project, label(m.type))
             ig.BulletText("Type: $(kind_text)")
             ig.BulletText("Timestamp: $(m.source_item_timestamp)")
             source_ref = Workspace.source_item_id(workspace, m.source_item_key)

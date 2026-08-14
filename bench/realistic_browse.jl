@@ -20,7 +20,6 @@
 # summaries are separate `DebugTimings` outputs.
 
 using DataBrowserAPI: define_project, item_data, register_item!
-import DataBrowserAPI: _has_collection_analysis
 using DataBrowserAPI.ItemIndex: ItemRecord, collection_item_ids
 using DataBrowserCore.Workspace
 using DataBrowserCore.Workspace: close_workspace!, open_workspace, select_items!
@@ -590,13 +589,6 @@ function run_benchmark()
                 collection_nodes = count(keys(collections.records)) do collection_key
                     member_ids = collection_item_ids(collections, collection_key)
                     isempty(member_ids) && return false
-                    members = ItemRecord[
-                        ws.index.items[id] for id in member_ids
-                        if haskey(ws.index.items, id)
-                    ]
-                    member_kinds = unique(record.kind for record in members)
-                    has_analyze = any(k -> _has_collection_analysis(ws.project, k), member_kinds)
-                    has_analyze || return false
                     key = Workspace.WorkKey(Workspace.COLLECTION_ANALYZE, collection_key)
                     return Workspace.cache_work_status(ws, key) === :ready
                 end

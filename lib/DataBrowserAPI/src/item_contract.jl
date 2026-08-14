@@ -4,30 +4,44 @@ abstract type AbstractDataItem end
 abstract type AbstractCollection end
 
 """
-Value used to derive one collection level's deterministic occurrence ID.
+    id(collection)::String
 
-The default uses the complete concrete collection value. Override this only when the value contains
-state that is deliberately not part of the collection ID or cannot be canonically encoded.
+What identifies one collection level, and the only thing besides its metadata that survives to
+rebuild it. There is no default: a type whose job is to identify a grouping has to say what
+identifies it.
+
+It is combined with the parent occurrence ID and the concrete type into a one-way digest, so the
+digest cannot give it back — `reconstruct(::Type{T}, id, metadata)` receives this value verbatim.
 """
-id(collection::AbstractCollection) = collection
+id(collection::AbstractCollection)::String = error(
+    "Collection type $(typeof(collection)) must implement id(::$(typeof(collection)))::String")
 
 """Human-readable label for one collection level."""
 label(collection::AbstractCollection)::String = string(collection)
 
+"""Display name for one collection type."""
+label(T::Type{<:AbstractCollection})::Symbol = nameof(T)
 """Return metadata supplied directly by one collection level."""
 metadata(::AbstractCollection)::Dict = Dict()
 
 """
-Stable sibling key of an item within its source item. DataBrowser mints the final item id once,
-namespacing this key under the source item and kind; an empty value uses the returned position.
+    id(item)::String
+
+What identifies one item. Stored, displayed in messages, and used for selection, annotation, and
+cache lookup exactly as returned — nothing wraps or namespaces it.
+
+There is no default, and no uniqueness is inferred: two items answering the same `id` collide, and
+that is a project error the engine reports. Source items and collections answer the same contract
+the same way.
 """
-id(::AbstractDataItem) = ""
+id(item::AbstractDataItem)::String = error(
+    "Item type $(typeof(item)) must implement id(::$(typeof(item)))::String")
 
 """Human-readable label for an item. An empty value uses a source-derived label."""
 label(::AbstractDataItem)::String = ""
 
-"""Internal item category. Custom item types default to their type name."""
-kind(item::AbstractDataItem)::Symbol = Symbol(nameof(typeof(item)))
+"""Display name for one item type."""
+label(T::Type{<:AbstractDataItem})::Symbol = nameof(T)
 
 """Return an item's complete root-to-leaf path of concrete collection values."""
 collection(::AbstractDataItem)::Vector{AbstractCollection} = AbstractCollection[]
@@ -44,9 +58,6 @@ process(item::AbstractDataItem) = item
 """Analyze a processed item into additional metadata. Optional; default empty `Dict`."""
 analyze(::AbstractDataItem)::Dict = Dict()
 
-"""Whether an item's data should be persisted by the data cache. Optional; default `false`."""
-cacheable(::AbstractDataItem)::Bool = false
-
 """
 Whether a payload value can be stored natively by the data cache. Tables are first-class: by
 default anything implementing the Tables.jl interface is cacheable, and the cache still requires
@@ -59,22 +70,8 @@ cacheable_data(data)::Bool = Tables.istable(data)
 # ---------------------------------------------------------------------------
 
 """
-Let an item adopt the normalized record interpretation produced for it. Internal workspace hook;
-the default keeps the item unchanged.
+Let an item adopt the normalized record interpretation produced for it, and the collection path the
+index holds for it. Internal workspace hook; the default keeps the item unchanged, because a typed
+item derives its own path from its own state. Package-owned carriers adopt both.
 """
-attach_record(item::AbstractDataItem, record) = item
-
-"""Optional rewrite of a collection's members (one output per input). Internal workspace hook."""
-function _process_collection end
-
-"""Optional fold over a collection's members into collection-node metadata. Internal workspace hook."""
-function _analyze_collection end
-
-"""Per-item analysis metadata computed after indexing. Internal workspace hook."""
-function _analyze_item end
-
-"""Whether one item kind has a registered collection `process` stage."""
-function _has_collection_process end
-
-"""Whether one item kind has a registered collection `analyze` stage."""
-function _has_collection_analysis end
+attach_record(item::AbstractDataItem, record, path::AbstractVector=AbstractCollection[]) = item
