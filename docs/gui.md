@@ -1,6 +1,6 @@
 # GUI Internals
 
-> The CImGui frontend. This doc describes GUI state and interaction contracts, not a map of files.
+> The CImGui frontend. This doc describes GUI state and interaction contracts.
 
 ## Entry point and frame loop
 

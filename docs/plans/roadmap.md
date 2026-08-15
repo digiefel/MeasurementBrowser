@@ -77,7 +77,7 @@ workspace internals.
 - [x] Clean-up and rename/file organization pass of DataBrowserAPI. `interface.jl` is gone: its
   declarations were the project contract and now sit in `project_contract.jl` beside
   `AbstractProject`, with the stage contract in `stage_contract.jl`.
-- [x] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling.
+- [x] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling. ([#11])
 - [ ] Run every example entirely through the documented public APIs and remove any remaining public
   callback dependency on cache, index, scheduler, or browser values.
 
