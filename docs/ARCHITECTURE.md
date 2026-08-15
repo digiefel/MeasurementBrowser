@@ -72,6 +72,11 @@ flowchart TB
 
     core -.->|"read<br/>entries<br/>process<br/>analyze"| projects
     gui -.->|"draw!<br/>menu!<br/>init!"| plots
+    cache -.-> prof
+    core -.-> prof
+    gui -.-> prof
+    plots -.-> prof
+    recipes -.-> prof
 
     classDef umbrellaC fill:#f7c9b8,stroke:#b5623f,color:#2b2b2b
     classDef plotsC fill:#f2c6d4,stroke:#b0466a,color:#2b2b2b
@@ -128,20 +133,23 @@ visualizers, workflow persistence, and figure composition. User code should not 
 came from memory, cache, or the source. Package code does not know the meaning of a source item
 beyond the contract methods it calls.
 
-## Package internals
+## Subpackages
 
 Each package gets two views. A class diagram shows its data model: the structs, their fields, and
-how they subtype the API abstractions and compose. A flowchart shows its call flow: which functions
-call which, the calls that cross into another package or the operating system, and the hot path.
+how they subtype the API abstractions and compose. The call flow diagram shows which functions
+call which as arrows, with A -data-> B meaning "A calls B, which returns `data`".
 
-A thick border marks a symbol the package exports, a thin border an internal one.
-A node's color is its owning package, so a crossing into another package is a color change.
-A red edge is a hot call: it runs once per item on a critical path.
+A solid arrow is a call, labelled with the value the callee returns.
+External calls from other packages are shown as thicker arrows.
+"hot path" calls which are very frequent and performance-critical are shown in red.
+A dashed arrow is data written to or read from storage.
+
+A thick border marks a symbol the package exports.
 A `?` after a field type means the field may be `nothing`.
 
 ### DataBrowserSources
 
-Data model:
+#### Data model
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'textColor':'#111','lineColor':'#555'}}}%%
@@ -188,9 +196,7 @@ classDiagram
     classDef srcInt fill:#c9e4c5,stroke:#5a9a52,stroke-width:1px,color:#111;
 ```
 
-Call flow. A solid arrow is a call, labelled with the value the callee returns; a dashed arrow is
-data written to or read from the stored dictionary, or emitted to the engine. A leaf contract method
-shows its signature.
+#### Call flow
 
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'textColor':'#111','lineColor':'#555'}}}%%
@@ -243,10 +249,12 @@ flowchart TD
         eqfp("==(::FileFingerprint) → Bool")
     end
 
-    subgraph sgAPI["DataBrowserAPI"]
-        SC["SourceChanges"]
-        SE["SourceError"]
-    end
+    extCore["DataBrowserCore"]
+    extAPI["DataBrowserAPI"]
+    extCache["DataBrowserCache"]
+    extRecipes["DataBrowserRecipes"]
+    extGUI["DataBrowserGUI"]
+    extPlots["DataBrowserPlots"]
 
     subgraph sgExt["external"]
         FSYS["filesystem"]
@@ -288,20 +296,56 @@ flowchart TD
     wsrc -->|"FileFingerprint"| fpsf
     wsrc -->|"watch_folder"| BFW
     wsrc -->|"token"| CT
-    wsrc -.->|"emits"| SC
-    wsrc -.->|"emits"| SE
     csrc -->|"cancel"| CT
+
+    extCore --> osrc
+    extCore --> si
+    extCore --> wsrc
+    extCore --> csrc
+    extCore --> isf
+    extCore --> dcp
+    extCore --> acp
+    extCore --> sopts
+    extCore --> sid
+    extCore --> snoun
+    extCore --> idsf
+    extCore --> lblsf
+    extCore --> metasf
+    extCore --> sipf
+    extCore --> sitf
+    extCore --> fpsf
+    wsrc -.->|"SourceChanges<br/>SourceError"| extCore
+    extCache --> sid
+    extCache --> fpsf
+    extCache --> sipf
+    extCache --> sitf
+    extAPI --> sid
+    extAPI --> slbl
+    extAPI --> recon
+    extRecipes --> sipf
+    extGUI --> slbl
+    extPlots --> slbl
 
     idsf ~~~ lblsf ~~~ fpsf ~~~ sipf ~~~ sitf ~~~ metasf ~~~ sid ~~~ slbl ~~~ snoun ~~~ iddc ~~~ lbldc ~~~ metadc ~~~ recon ~~~ eqfp
 
     classDef srcExp fill:#c9e4c5,stroke:#5a9a52,stroke-width:3px,color:#111;
     classDef srcInt fill:#c9e4c5,stroke:#5a9a52,stroke-width:1px,color:#111;
-    classDef api fill:#cfd8e3,stroke:#5a6b80,stroke-width:1px,color:#111;
     classDef ext fill:#eceff1,stroke:#90a4ae,stroke-width:1px,color:#111;
+    classDef coreC fill:#bcd4f0,stroke:#3f6fb0,color:#111;
+    classDef apiC fill:#cfd8e3,stroke:#5a6b80,color:#111;
+    classDef cacheC fill:#f5d6a8,stroke:#c08a3f,color:#111;
+    classDef recipesC fill:#f5ecc0,stroke:#b09a3f,color:#111;
+    classDef guiC fill:#d9c6ec,stroke:#7d54b0,color:#111;
+    classDef plotsC fill:#f2c6d4,stroke:#b0466a,color:#111;
 
     class isf,ffp srcExp;
     class si,csf,asf,isfn,pts,lcm,lcme,cmfp,pmv,mcm,ocm,np,dcp,al,acp,MD,osrc,wsrc,csrc,sopts,idsf,lblsf,fpsf,sipf,sitf,metasf,sid,slbl,snoun,iddc,lbldc,metadc,recon,eqfp srcInt;
-    class SC,SE api;
+    class extCore coreC;
+    class extAPI apiC;
+    class extCache cacheC;
+    class extRecipes recipesC;
+    class extGUI guiC;
+    class extPlots plotsC;
     class FSYS,BFW,CT ext;
 
     linkStyle 2,4,8 stroke:#d1495b,stroke-width:3px;
