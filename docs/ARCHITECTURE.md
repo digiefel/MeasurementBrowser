@@ -53,7 +53,7 @@ flowchart TB
 
     db --> recipes
     db --> plots
-    gui -->|"open_workspace<br/>select_items!<br/>materialize_items<br/>workspace_status"| core
+    gui -->|"open_workspace<br/>modify_workspace!<br/>select_items!<br/>materialize_items<br/>workspace_status"| core
     gui --> cache
     gui --> ann
     plots --> gui
@@ -70,7 +70,6 @@ flowchart TB
     prof --> api
 
     core -.->|"read<br/>entries<br/>process<br/>analyze"| projects
-    gui -.->|"copy"| src
     gui -.->|"draw!<br/>menu!<br/>init!"| plots
     cache -.->|"@timed_dbg"| prof
     core -.->|"@timed_dbg"| prof
@@ -312,6 +311,7 @@ flowchart TD
     extCore ==> sipf
     extCore ==> sitf
     extCore ==> fpsf
+    extCore ==> cpyds
     extCache ==> sid
     extCache ==> fpsf
     extCache ==> sipf
@@ -321,7 +321,6 @@ flowchart TD
     extAPI ==> recon
     extRecipes ==> sipf
     extGUI ==> slbl
-    extGUI ==> cpyds
     extPlots ==> slbl
 
     wsrc =.=>|"SourceChanges<br/>SourceError"| extCore

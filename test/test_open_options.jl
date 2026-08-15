@@ -3,7 +3,7 @@ using Test
 
 const OO_CACHE = DataBrowserCache
 
-@testset "source copy and workspace reopen" begin
+@testset "source copy and modify_workspace!" begin
     mktempdir() do dir
         project = DataBrowser.define_project("OpenOptions_$(basename(dir))")
         workspace = DataBrowser.open_workspace(
@@ -13,7 +13,6 @@ const OO_CACHE = DataBrowserCache
             cache=false,
             background_processing=false,
         )
-        reopened = nothing
         try
             @test workspace.source.recursive == false
             @test workspace.source.metadata_file == "custom_meta.txt"
@@ -28,19 +27,16 @@ const OO_CACHE = DataBrowserCache
             @test cloned.metadata_file == "custom_meta.txt"
             @test cloned.watcher_task === nothing
 
-            reopened = DataBrowser.open_workspace(
-                project,
-                cloned;
-                cache=workspace.disk_cache,
-                background_processing=workspace.background_processing,
-            )
-            @test reopened.source.recursive == false
-            @test reopened.source.metadata_file == "custom_meta.txt"
-            @test reopened.cache.db isa OO_CACHE.MemoryCacheDB
-            @test reopened.disk_cache == false
-            @test reopened.background_processing == false
+            previous_source = workspace.source
+            modified = DataBrowser.modify_workspace!(workspace)
+            @test modified === workspace
+            @test workspace.source !== previous_source
+            @test workspace.source.recursive == false
+            @test workspace.source.metadata_file == "custom_meta.txt"
+            @test workspace.cache.db isa OO_CACHE.MemoryCacheDB
+            @test workspace.disk_cache == false
+            @test workspace.background_processing == false
         finally
-            reopened === nothing || DataBrowser.close_workspace!(reopened)
             DataBrowser.close_workspace!(workspace)
         end
     end
@@ -51,6 +47,15 @@ const OO_CACHE = DataBrowserCache
         workspace = DataBrowser.open_workspace(project, source; cache=false)
         try
             @test workspace.source.recursive == false
+            @test workspace.source.metadata_file === nothing
+            @test workspace.disk_cache == false
+
+            DataBrowser.modify_workspace!(
+                workspace;
+                source=DataBrowser.DirectorySource(
+                    dir; recursive=true, metadata_file=nothing),
+            )
+            @test workspace.source.recursive == true
             @test workspace.source.metadata_file === nothing
             @test workspace.disk_cache == false
         finally

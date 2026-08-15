@@ -191,9 +191,10 @@ watch_source(source::MySource, on_change; cancel_token)::Nothing
 `open_source` returns the opened source because an immutable description may open a different value
 that owns live resources. `close_source!` releases those resources.
 
-The browser reopens a source with `copy(source)` (`Base.copy`). `DirectorySource` implements it so
-the copy has no watcher. A type with no `copy` method raises `MethodError`. An immutable source with
-no live resources can use `copy(source) = source`.
+The workspace copies a source with `copy(source)` (`Base.copy`) when `modify_workspace!` omits
+`source`. `DirectorySource` implements it so the copy has no watcher.
+A type with no `copy` method raises `MethodError`. An immutable source with no live resources can
+use `copy(source) = source`.
 
 ## Source-item interface
 

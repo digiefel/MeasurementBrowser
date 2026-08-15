@@ -15,6 +15,10 @@ For a directory-backed project, `source` can be a root path:
 workspace = open_workspace(project, "/path/to/data")
 ```
 
+`modify_workspace!` rebuilds the same workspace in place, changing only the keywords you pass
+(`source`, `cache`, `background_processing`). The project cannot change. Omitted settings stay as
+they are. `rebuild=true` discards the generated cache on that rebuild.
+
 ## Project, source, and workspace
 
 These values have separate responsibilities:

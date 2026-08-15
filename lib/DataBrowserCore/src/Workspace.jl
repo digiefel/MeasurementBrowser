@@ -260,6 +260,9 @@ mutable struct Workspace{P<:AbstractProject}
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     publish_lock::ReentrantLock
+    # Held for the whole of `modify_workspace!` / `close_workspace!` so a frame cannot read a
+    # half-rebuilt runtime. The GUI trylocks this at the start of a frame.
+    lifecycle_lock::ReentrantLock
     idle_condition::Base.Threads.Condition
     status::WorkspaceStatus
     status_dirty::Base.Threads.Atomic{Bool}
@@ -268,18 +271,16 @@ mutable struct Workspace{P<:AbstractProject}
 end
 
 """
-Create the empty state for one project-owned source.
+Open the cache for one project/source pair, falling back to memory on a schema error.
 """
-function Workspace(
-    project::P,
-    source::AbstractDataSource;
-    rebuild::Bool=false,
-    cache::Bool=true,
-    background_processing::Bool=false,
-)::Workspace{P} where {P<:AbstractProject}
-    collections = CollectionIndex(source_id(source))
+function _open_workspace_cache(
+    project::AbstractProject,
+    source::AbstractDataSource,
+    metrics::BuildMetrics;
+    rebuild::Bool,
+    cache::Bool,
+)::Tuple{AbstractCacheDB,Union{Nothing,Exception},ProjectCacheIdentity}
     identity = project_cache_identity(project_name(project), source)
-    metrics = BuildMetrics()
     disk_error::Union{Nothing,Exception} = nothing
     cache_db::AbstractCacheDB = try
         if cache
@@ -300,6 +301,23 @@ function Workspace(
             rethrow()
         end
     end
+    return cache_db, disk_error, identity
+end
+
+"""
+Create the empty state for one project-owned source.
+"""
+function Workspace(
+    project::P,
+    source::AbstractDataSource;
+    rebuild::Bool=false,
+    cache::Bool=true,
+    background_processing::Bool=false,
+)::Workspace{P} where {P<:AbstractProject}
+    collections = CollectionIndex(source_id(source))
+    metrics = BuildMetrics()
+    cache_db, disk_error, identity =
+        _open_workspace_cache(project, source, metrics; rebuild, cache)
     publish_lock = ReentrantLock()
     workspace = Workspace(
         project,
@@ -325,6 +343,7 @@ function Workspace(
         Task[],
         metrics,
         publish_lock,
+        ReentrantLock(),
         Base.Threads.Condition(publish_lock),
         WorkspaceStatus(),
         Base.Threads.Atomic{Bool}(true),

@@ -36,16 +36,64 @@ function open_workspace(
 end
 
 """
-Cancel all work owned by a workspace and wait for it to stop.
+    modify_workspace!(workspace; source, rebuild, cache, background_processing) -> Workspace
+
+Rebuild `workspace` in place. The project cannot change. Omitted `source`, `cache`, and
+`background_processing` stay as they are. Omitted `source` is a `copy` of the current source so the
+closed source's watchers are not reused. `rebuild` is a one-shot cache action, not a stored setting.
+
+Returns the same object. A failed rebuild leaves the workspace closed.
 """
-function close_workspace!(workspace::Workspace)::Nothing
-    workspace.closed && return nothing
-    workspace.closed = true
+function modify_workspace!(
+    workspace::Workspace;
+    source::Union{Nothing,AbstractDataSource}=nothing,
+    rebuild::Bool=false,
+    cache::Union{Nothing,Bool}=nothing,
+    background_processing::Union{Nothing,Bool}=nothing,
+)::Workspace
+    return lock(workspace.lifecycle_lock) do
+        workspace.closed && error("Cannot modify a closed workspace")
+        next_source = source === nothing ? copy(workspace.source) : source
+        next_cache = cache === nothing ? workspace.disk_cache : cache
+        next_background =
+            background_processing === nothing ? workspace.background_processing :
+            background_processing
+        opened_source = open_source(next_source)
+        _stop_runtime!(workspace)
+        try
+            _install_runtime!(
+                workspace,
+                opened_source;
+                rebuild,
+                cache=next_cache,
+                background_processing=next_background,
+            )
+            scan_source!(workspace; rebuild)
+            watch_source(
+                opened_source,
+                event -> publish_source_event!(workspace, event);
+                cancel_token=get_token(workspace.cancel_source),
+            )
+            return workspace
+        catch
+            workspace.closed = true
+            try
+                _stop_runtime!(workspace)
+            catch
+            end
+            rethrow()
+        end
+    end
+end
+
+"""Stop workers, scan, cache, and source without marking the workspace closed."""
+function _stop_runtime!(workspace::Workspace)::Nothing
     cancel(workspace.cancel_source)
     cancel_scan!(workspace)
     for task in workspace.background_tasks
         istaskdone(task) || wait(task)
     end
+    empty!(workspace.background_tasks)
     stop_work_workers!(workspace)
     try
         close_cache_db!(workspace.cache.db)
@@ -53,6 +101,55 @@ function close_workspace!(workspace::Workspace)::Nothing
         close_source!(workspace.source)
     end
     return nothing
+end
+
+"""Replace runtime fields after `_stop_runtime!` and start cache workers."""
+function _install_runtime!(
+    workspace::Workspace,
+    source::AbstractDataSource;
+    rebuild::Bool,
+    cache::Bool,
+    background_processing::Bool,
+)::Nothing
+    metrics = BuildMetrics()
+    cache_db, disk_error, identity =
+        _open_workspace_cache(workspace.project, source, metrics; rebuild, cache)
+    workspace.source = source
+    workspace.index = WorkspaceIndex(
+        CollectionIndex(source_id(source)),
+        Dict{String,ItemRecord}(),
+        Dict{String,Dict{Symbol,Any}}(),
+        Symbol[],
+        nothing,
+        Dict{Union{String,Int64},String}(),
+        Dict{Int64,Vector{String}}(),
+    )
+    workspace.cache = WorkspaceCache(identity, cache_db, disk_error, nothing, :load)
+    workspace.cache_state = :idle
+    workspace.cache_error = ""
+    workspace.source_error = ""
+    workspace.work = WorkDependencyGraph()
+    workspace.background_processing = background_processing
+    workspace.disk_cache = cache
+    workspace.metrics = metrics
+    workspace.status = WorkspaceStatus()
+    workspace.status_dirty[] = true
+    workspace.cancel_source = CancellationTokenSource()
+    start_cache!(cache_db)
+    start_work_workers!(workspace)
+    return nothing
+end
+
+"""
+Cancel all work owned by a workspace and wait for it to stop.
+"""
+function close_workspace!(workspace::Workspace)::Nothing
+    lock(workspace.lifecycle_lock) do
+        workspace.closed && return nothing
+        workspace.closed = true
+        _stop_runtime!(workspace)
+        return nothing
+    end
 end
 
 """Replace the selection with the supplied indexed item records."""
