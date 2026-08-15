@@ -23,7 +23,6 @@ and presentation details that are specific to the experiment.
 
 A solid arrow from A to B means A depends on B at compile time: A needs B to build.
 A dotted arrow from A to B means A calls functions whose methods live in B through dispatch, even though A has no dependency on B.
-A label lists the functions that cross that boundary.
 🦆 marks DuckDB, 📈 GLMakie, 🖼 CImGui / GLFW.
 
 ```mermaid
@@ -73,11 +72,11 @@ flowchart TB
     core -.->|"read<br/>entries<br/>process<br/>analyze"| projects
     gui -.->|"copy"| src
     gui -.->|"draw!<br/>menu!<br/>init!"| plots
-    cache -.-> prof
-    core -.-> prof
-    gui -.-> prof
-    plots -.-> prof
-    recipes -.-> prof
+    cache -.->|"@timed_dbg"| prof
+    core -.->|"@timed_dbg"| prof
+    gui -.->|"@timed_dbg"| prof
+    plots -.->|"@timed_dbg"| prof
+    recipes -.->|"@timed_dbg"| prof
 
     classDef umbrellaC fill:#f7c9b8,stroke:#b5623f,color:#2b2b2b
     classDef plotsC fill:#f2c6d4,stroke:#b0466a,color:#2b2b2b
@@ -298,33 +297,34 @@ flowchart TD
     wsrc -->|"token"| CT
     csrc -->|"cancel"| CT
 
-    extCore --> osrc
-    extCore --> si
-    extCore --> wsrc
-    extCore --> csrc
-    extCore --> isf
-    extCore --> dcp
-    extCore --> acp
-    extCore --> sid
-    extCore --> snoun
-    extCore --> idsf
-    extCore --> lblsf
-    extCore --> metasf
-    extCore --> sipf
-    extCore --> sitf
-    extCore --> fpsf
-    wsrc -.->|"SourceChanges<br/>SourceError"| extCore
-    extCache --> sid
-    extCache --> fpsf
-    extCache --> sipf
-    extCache --> sitf
-    extAPI --> sid
-    extAPI --> slbl
-    extAPI --> recon
-    extRecipes --> sipf
-    extGUI --> slbl
-    extGUI --> cpyds
-    extPlots --> slbl
+    extCore ==> osrc
+    extCore ==> si
+    extCore ==> wsrc
+    extCore ==> csrc
+    extCore ==> isf
+    extCore ==> dcp
+    extCore ==> acp
+    extCore ==> sid
+    extCore ==> snoun
+    extCore ==> idsf
+    extCore ==> lblsf
+    extCore ==> metasf
+    extCore ==> sipf
+    extCore ==> sitf
+    extCore ==> fpsf
+    extCache ==> sid
+    extCache ==> fpsf
+    extCache ==> sipf
+    extCache ==> sitf
+    extAPI ==> sid
+    extAPI ==> slbl
+    extAPI ==> recon
+    extRecipes ==> sipf
+    extGUI ==> slbl
+    extGUI ==> cpyds
+    extPlots ==> slbl
+
+    wsrc =.=>|"SourceChanges<br/>SourceError"| extCore
 
     idsf ~~~ lblsf ~~~ fpsf ~~~ sipf ~~~ sitf ~~~ metasf ~~~ sid ~~~ slbl ~~~ snoun ~~~ iddc ~~~ lbldc ~~~ metadc ~~~ recon ~~~ eqfp
 
