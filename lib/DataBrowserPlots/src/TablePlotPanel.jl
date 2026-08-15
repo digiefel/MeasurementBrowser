@@ -80,7 +80,7 @@ function _sync_table_plot_table!(
         return nothing
     end
 
-    key = Tuple(sort!([r.id for r in selected_records]))
+    key = (workspace.scan.id, Tuple(sort!([r.id for r in selected_records])))
     table_plot.table_key == key && return table_plot.table
 
     table_plot.table_key = key

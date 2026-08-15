@@ -135,8 +135,10 @@ Base.@kwdef mutable struct BrowserState
     implot_context::Ptr{ig.lib.ImPlotContext} = C_NULL
     collection_metadata_modal::Bool = true
     modal_root_path::String = ""
+    loaded_source_id::String = ""
     cache_rebuild_modal::Bool = false
     cache_rebuild_error::String = ""
+    cache_schema_prompted::Bool = false
     shutdown_complete::Bool = false
     """Set by `close_browser!` so the render loop exits without a GLFW close click."""
     exit_requested::Bool = false

@@ -1,70 +1,21 @@
 using DataBrowserAPI:
-    AbstractProject,
-    DEFAULT_PROJECT,
-    PROJECTS,
-    project_name
+    project_name,
+    source_id
 using DataBrowserAPI.ItemIndex: collection_path_keys
 using DataBrowserCache: ProjectCacheSchemaError
 import DataBrowserCore.Workspace
 using DataBrowserCore.Workspace:
-    close_workspace!,
-    open_workspace
+    close_workspace!
 
-"""Return the project selected by the saved project preference."""
-function _project_for_preference(pref::AbstractString)::AbstractProject
-    pref == "auto" && return something(DEFAULT_PROJECT[])
-    for project in PROJECTS
-        project_name(project) == pref && return project
-    end
-    error("Unknown project preference '$pref'")
-end
-
-"""Project used when the browser reopens a workspace."""
-function _open_project(state::BrowserState)::AbstractProject
-    if state.project_locked
-        workspace = state.workspace
-        workspace isa Workspace.Workspace ||
-            error("Cannot reopen before a workspace exists")
-        return workspace.project
-    end
-    return _project_for_preference(state.project_preference)
-end
-
-"""Open a new workspace for the current source. Used for project change and cache rebuild."""
-function _reopen_workspace!(
-    state::BrowserState;
-    rebuild_cache::Bool=false,
-)::Nothing
-    previous = state.workspace
-    previous isa Workspace.Workspace || error("Cannot reopen before a workspace exists")
-    _attach_workspace!(
-        state,
-        open_workspace(
-            _open_project(state),
-            copy(previous.source);
-            rebuild=rebuild_cache,
-            cache=previous.disk_cache,
-            background_processing=previous.background_processing,
-        ),
-    )
-    return nothing
-end
-
-"""
-Make an already-opened workspace the browser's current one, loading its saved view, tag state, and
-figure-script context. Shared by `_reopen_workspace!` and `open_browser`.
-"""
-function _attach_workspace!(
+"""Reload tags and the persisted view when the workspace source identity changes."""
+function _follow_source_identity!(
     state::BrowserState,
     workspace::Workspace.Workspace,
 )::Nothing
-    source = workspace.source
-    source_root = hasproperty(source, :root_path) ? source.root_path : ""
-    previous_workspace = state.workspace
-    previous_workspace isa Workspace.Workspace && previous_workspace !== workspace &&
-        close_workspace!(previous_workspace)
-    _reset_extensions!(state)
-    state.workspace = workspace
+    current = source_id(workspace.source)
+    current == state.loaded_source_id && return nothing
+    isempty(state.loaded_source_id) || _reset_extensions!(state)
+    source_root = hasproperty(workspace.source, :root_path) ? workspace.source.root_path : ""
     view = isempty(source_root) ? PersistedProjectView() : _load_project_view(source_root)
     project = project_name(workspace.project)
     !isempty(view.project) && view.project != project &&
@@ -72,9 +23,26 @@ function _attach_workspace!(
     _load_tag_state_for_root!(state, _annotation_root(workspace))
     _apply_project_view!(state, view)
     state.saved_project_view = view
-    if workspace.cache.disk_error isa ProjectCacheSchemaError
-        state.cache_rebuild_modal = true
-        state.cache_rebuild_error = sprint(showerror, workspace.cache.disk_error)
+    state.loaded_source_id = current
+    return nothing
+end
+
+"""Open the cache-rebuild modal when a schema error appears; do not reopen it after dismiss."""
+function _follow_disk_error!(
+    state::BrowserState,
+    workspace::Workspace.Workspace,
+)::Nothing
+    err = workspace.cache.disk_error
+    if err isa ProjectCacheSchemaError
+        if !state.cache_schema_prompted
+            state.cache_rebuild_modal = true
+            state.cache_rebuild_error = sprint(showerror, err)
+            state.cache_schema_prompted = true
+        end
+    else
+        state.cache_schema_prompted = false
+        state.cache_rebuild_modal = false
+        state.cache_rebuild_error = ""
     end
     return nothing
 end

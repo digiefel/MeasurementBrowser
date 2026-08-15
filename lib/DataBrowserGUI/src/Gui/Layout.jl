@@ -11,9 +11,6 @@ import CImGui.CSyntax: @c
 const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
 using DataBrowserAPI:
-    DEFAULT_PROJECT,
-    PROJECTS,
-    project_description,
     project_name,
     source_label
 using DataBrowserAPI.ItemIndex: SourceScan
@@ -274,39 +271,9 @@ function render_project_window(state::BrowserState)::Nothing
 
         ig.Separator()
 
-        if state.project_locked
-            ig.TextDisabled("Project supplied by the Julia caller")
-        else
-            pref = state.project_preference
-            changed = false
-
-            default_project = something(DEFAULT_PROJECT[])
-            default_label = "Default ($(project_name(default_project)))"
-
-            if ig.RadioButton(default_label, pref == "auto")
-                state.project_preference = "auto"
-                changed = true
-            end
-            ig.SameLine()
-            _helpmarker("Use the default project without trying to infer the project from the files in the folder.")
-
-            for p in PROJECTS
-                pn = project_name(p)
-                if ig.RadioButton(pn, pref == pn)
-                    state.project_preference = pn
-                    changed = true
-                end
-                ig.SameLine()
-                _helpmarker(project_description(p))
-            end
-
-            if changed && workspace isa Workspace.Workspace
-                @info(
-                    "Project preference changed to '$(state.project_preference)' - " *
-                    "reloading cache",
-                )
-                _reopen_workspace!(state)
-            end
+        if workspace isa Workspace.Workspace
+            ig.Text("Project: $(project_name(workspace.project))")
+            ig.TextDisabled("Project is fixed for this workspace")
         end
     end
     open_ref[] || (state.show_project_window = false)
@@ -470,6 +437,20 @@ function _render_startup_preparation!()::Nothing
     return nothing
 end
 
+"""Shown while `modify_workspace!` holds the lifecycle lock, so the frame does not read torn state."""
+function _render_workspace_updating!()::Nothing
+    center = ig.ImGuiViewport_GetCenter(ig.GetMainViewport())
+    flags = ig.ImGuiWindowFlags_NoDecoration | ig.ImGuiWindowFlags_NoMove |
+            ig.ImGuiWindowFlags_NoSavedSettings | ig.ImGuiWindowFlags_AlwaysAutoResize |
+            ig.ImGuiWindowFlags_NoInputs
+    ig.SetNextWindowPos(center, ig.ImGuiCond_Always, (0.5, 0.5))
+    if ig.Begin("###workspace_updating", C_NULL, flags)
+        ig.TextUnformatted("Updating workspace…")
+    end
+    ig.End()
+    return nothing
+end
+
 """
 Move Julia's libuv event loop off the GLFW sticky thread when the runtime supports it.
 
@@ -535,73 +516,84 @@ function _run_browser(
             state.performance.reset_main_timer = false
         end
         workspace = state.workspace
-        if workspace isa Workspace.Workspace
-            @timed "refresh_status" begin
-                refresh_status!(workspace)
+        held = workspace isa Workspace.Workspace && trylock(workspace.lifecycle_lock)
+        try
+            if workspace isa Workspace.Workspace && !held
+                _render_workspace_updating!()
+                return nothing
             end
-        end
-        if exit_after_frames !== nothing && state.performance.frame >= exit_after_frames
-            _shutdown_background_jobs!(state)
-            return :imgui_exit_loop
-        end
-        if first_frame[]
-            state.performance.gl_info = _gl_info()
-            window_start == :normal && _promote_to_foreground_app()
-            first_frame[] = false
-        end
-        if !_extensions_ready(state)
-            # Present the preparation surface for one frame before running any blocking
-            # extension warmup, so the window is never blank during the expensive part.
-            _render_startup_preparation!()
-            if startup_presented[]
-                @timed "extension_warmup" begin
+            if workspace isa Workspace.Workspace
+                @timed "refresh_status" begin
+                    refresh_status!(workspace)
+                end
+                _follow_source_identity!(state, workspace)
+                _follow_disk_error!(state, workspace)
+            end
+            if exit_after_frames !== nothing && state.performance.frame >= exit_after_frames
+                _shutdown_background_jobs!(state)
+                return :imgui_exit_loop
+            end
+            if first_frame[]
+                state.performance.gl_info = _gl_info()
+                window_start == :normal && _promote_to_foreground_app()
+                first_frame[] = false
+            end
+            if !_extensions_ready(state)
+                # Present the preparation surface for one frame before running any blocking
+                # extension warmup, so the window is never blank during the expensive part.
+                _render_startup_preparation!()
+                if startup_presented[]
+                    @timed "extension_warmup" begin
+                        for ext in state.extensions
+                            is_ready(ext, state) || warmup!(ext, state)
+                        end
+                    end
+                else
+                    startup_presented[] = true
+                    _mark_first_frame!(state)
+                end
+                return nothing
+            end
+            _mark_first_frame!(state)
+            @timed "frame_ui" begin
+                dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
+                if setup_layout[]
+                    setup_layout[] = false
+                    _setup_docking_layout!(state, dockspace_id)
+                end
+                @timed "selection_window" begin
+                    render_selection_window(state)
+                end
+                @timed "project_window" begin
+                    render_project_window(state)
+                end
+                @timed "info" begin
+                    render_info_window(state)
+                end
+                @timed "table_inspector" begin
+                    render_table_inspector_window(state)
+                end
+                @timed "extensions" begin
                     for ext in state.extensions
-                        is_ready(ext, state) || warmup!(ext, state)
+                        draw!(ext, state)
                     end
                 end
-            else
-                startup_presented[] = true
-                _mark_first_frame!(state)
-            end
-            return nothing
-        end
-        _mark_first_frame!(state)
-        @timed "frame_ui" begin
-            dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
-            if setup_layout[]
-                setup_layout[] = false
-                _setup_docking_layout!(state, dockspace_id)
-            end
-            @timed "selection_window" begin
-                render_selection_window(state)
-            end
-            @timed "project_window" begin
-                render_project_window(state)
-            end
-            @timed "info" begin
-                render_info_window(state)
-            end
-            @timed "table_inspector" begin
-                render_table_inspector_window(state)
-            end
-            @timed "extensions" begin
-                for ext in state.extensions
-                    draw!(ext, state)
+                @timed "perf_window" begin
+                    render_perf_window(state)
+                end
+                @timed "debug_tools" begin
+                    render_debug_tools!(state)
+                end
+                @timed "persist_view" begin
+                    _save_project_view_if_changed!(state)
+                end
+                @timed "modals" begin
+                    render_cache_rebuild_modal(state)
+                    render_collection_metadata_modal(state)
                 end
             end
-            @timed "perf_window" begin
-                render_perf_window(state)
-            end
-            @timed "debug_tools" begin
-                render_debug_tools!(state)
-            end
-            @timed "persist_view" begin
-                _save_project_view_if_changed!(state)
-            end
-            @timed "modals" begin
-                render_cache_rebuild_modal(state)
-                render_collection_metadata_modal(state)
-            end
+        finally
+            held && unlock(workspace.lifecycle_lock)
         end
     end
 end
@@ -631,7 +623,7 @@ function open_browser(
         init!(ext, state)
     end
     ctx = _init_browser_context!()
-    _attach_workspace!(state, workspace)
+    state.workspace = workspace
     result = _run_browser(state, ctx; engine, spawn, wait, window_start=window_start)
     return wait ? result : BrowserSession(result::Task, state)
 end

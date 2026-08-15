@@ -283,6 +283,7 @@ function render_plot_view!(
         view.plot_kind === nothing ? :needs_kind : :ready
     if status == :ready
         plot_key = (
+            workspace.scan.id,
             source_label(workspace.source),
             view.id,
             plot_kind_name(view.plot_kind),
