@@ -293,24 +293,6 @@ function load_collection_metadata!(source::DirectorySource)::Bool
     end
 end
 
-function matching_collection_metadata(
-    entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},
-    location::AbstractVector{<:AbstractString},
-)::Dict{Symbol,Any}
-    merged = Dict{Symbol,Any}()
-    for width in eachindex(location)
-        for start in 1:(length(location) - width + 1)
-            metadata = get(
-                entries,
-                Tuple(location[start:(start + width - 1)]),
-                nothing,
-            )
-            metadata === nothing || merge!(merged, metadata)
-        end
-    end
-    return merged
-end
-
 """Metadata owned by the final collection level in `location`."""
 function own_collection_metadata(
     entries::Dict{Tuple{Vararg{String}},Dict{Symbol,Any}},

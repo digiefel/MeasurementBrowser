@@ -216,7 +216,6 @@ flowchart TD
         lcme("load_collection_metadata_entries")
         cmfp("collection_metadata_file_path")
         pmv("parse_metadata_value")
-        mcm("matching_collection_metadata")
         ocm("own_collection_metadata")
         np("_named_path")
         dcp("default_collection_path")
