@@ -239,9 +239,9 @@ WorkspaceStatus() =
 """
 One open project/source pair and all package-managed state belonging to it.
 """
-mutable struct Workspace{P<:AbstractProject,S<:AbstractDataSource}
+mutable struct Workspace{P<:AbstractProject}
     project::P
-    source::S
+    source::AbstractDataSource
     index::WorkspaceIndex
     selection::WorkspaceSelection
     cache::WorkspaceCache
@@ -272,11 +272,11 @@ Create the empty state for one project-owned source.
 """
 function Workspace(
     project::P,
-    source::S;
+    source::AbstractDataSource;
     rebuild::Bool=false,
     cache::Bool=true,
     background_processing::Bool=false,
-)::Workspace{P,S} where {P<:AbstractProject,S<:AbstractDataSource}
+)::Workspace{P} where {P<:AbstractProject}
     collections = CollectionIndex(source_id(source))
     identity = project_cache_identity(project_name(project), source)
     metrics = BuildMetrics()
