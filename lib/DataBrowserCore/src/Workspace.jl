@@ -144,10 +144,13 @@ import DataBrowserAPI:
 
 
 """
-One cancellable workspace operation and its latest visible state.
+State of the workspace's source scan: running or idle, cancel token, and how many sources were found.
+
+`epoch` increments each time a scan starts. A background scan task captures that value and ignores
+its own publishes if a newer scan has begun.
 """
 mutable struct WorkspaceJob
-    id::Int
+    epoch::Int
     state::Symbol
     error::String
     cancel_token::Union{Nothing,CancellationTokenSource}

@@ -40,7 +40,7 @@ Registers or replaces collection-level operations for one registered pipeline.
 ```julia
 open_workspace(project, source)::Workspace
 open_workspace(project, root_path::AbstractString)::Workspace
-modify_workspace!(workspace; source, rebuild, cache, background_processing)::Workspace
+modify_workspace!(workspace; source, rebuild, cache, background_processing)::Nothing
 open_browser(workspace)
 close_workspace!(workspace)::Nothing
 wait_workspace_idle!(workspace; timeout=60)::Workspace

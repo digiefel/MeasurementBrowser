@@ -36,13 +36,11 @@ function open_workspace(
 end
 
 """
-    modify_workspace!(workspace; source, rebuild, cache, background_processing) -> Workspace
-
 Rebuild `workspace` in place. The project cannot change. Omitted `source`, `cache`, and
 `background_processing` stay as they are. Omitted `source` is a `copy` of the current source so the
 closed source's watchers are not reused. `rebuild` is a one-shot cache action, not a stored setting.
 
-Returns the same object. A failed rebuild leaves the workspace closed.
+A failed rebuild leaves the workspace closed.
 """
 function modify_workspace!(
     workspace::Workspace;
@@ -50,8 +48,8 @@ function modify_workspace!(
     rebuild::Bool=false,
     cache::Union{Nothing,Bool}=nothing,
     background_processing::Union{Nothing,Bool}=nothing,
-)::Workspace
-    return lock(workspace.lifecycle_lock) do
+)::Nothing
+    lock(workspace.lifecycle_lock) do
         workspace.closed && error("Cannot modify a closed workspace")
         next_source = source === nothing ? copy(workspace.source) : source
         next_cache = cache === nothing ? workspace.disk_cache : cache
@@ -74,7 +72,6 @@ function modify_workspace!(
                 event -> publish_source_event!(workspace, event);
                 cancel_token=get_token(workspace.cancel_source),
             )
-            return workspace
         catch
             workspace.closed = true
             try
@@ -84,6 +81,7 @@ function modify_workspace!(
             rethrow()
         end
     end
+    return nothing
 end
 
 """Stop workers, scan, cache, and source without marking the workspace closed."""
@@ -257,11 +255,11 @@ the publish lock with the scan task's own settlement, so a settled job can never
 """
 function cancel_scan!(workspace::Workspace)::Nothing
     lock(workspace.publish_lock) do
-        job = workspace.scan
-        job.state === :discovering || return
-        token_source = job.cancel_token
+        scan = workspace.scan
+        scan.state === :discovering || return
+        token_source = scan.cancel_token
         token_source !== nothing && cancel(token_source)
-        job.state = :canceling
+        scan.state = :canceling
         workspace.status_dirty[] = true
     end
     return nothing
@@ -674,16 +672,16 @@ function scan_source!(
     rebuild::Bool=false,
 )::Nothing
     cachedb = workspace.cache.db
-    job = workspace.scan
-    # Job setup runs under the publish lock so cancel_scan!'s running check can never interleave
+    scan = workspace.scan
+    # Scan setup runs under the publish lock so cancel_scan!'s running check can never interleave
     # with the transition into :discovering.
-    scan_id, cancel_source = lock(workspace.publish_lock) do
+    scan_epoch, cancel_source = lock(workspace.publish_lock) do
         source_scan_running(workspace) && error("A source scan is already running")
         workspace.closed && error("The workspace is closed")
-        job.id += 1
-        job.state = :discovering
-        job.error = ""
-        job.discovered[] = 0
+        scan.epoch += 1
+        scan.state = :discovering
+        scan.error = ""
+        scan.discovered[] = 0
         workspace.cache_state = :loading
         workspace.cache_error = ""
         workspace.cache.operation = rebuild ? :rebuild : :update
@@ -695,9 +693,9 @@ function scan_source!(
         workspace.index.source = nothing
         empty!(workspace.index.analysis_errors)
         cancel_source = CancellationTokenSource(get_token(workspace.cancel_source))
-        job.cancel_token = cancel_source
+        scan.cancel_token = cancel_source
         workspace.status_dirty[] = true
-        (job.id, cancel_source)
+        (scan.epoch, cancel_source)
     end
     task = Base.Threads.@spawn begin
         scan_token = get_token(cancel_source)
@@ -721,7 +719,7 @@ function scan_source!(
                     nothing
                 end
                 publish_cache_state!(
-                    workspace, scan_id, cached === nothing ? :missing : :ready, cached)
+                    workspace, scan_epoch, cached === nothing ? :missing : :ready, cached)
 
                 write_meta_header!(cachedb)
                 # Fingerprints must be loaded before discovery so upserts can stream during the walk.
@@ -764,7 +762,7 @@ function scan_source!(
                     workspace.source;
                     cancel_token=scan_token,
                     on_progress=count -> begin
-                        job.discovered[] = count
+                        scan.discovered[] = count
                         workspace.status_dirty[] = true
                     end,
                     on_item=item -> begin
@@ -786,7 +784,7 @@ function scan_source!(
                         any_upserts[] = true
                         publish_source_changes!(
                             workspace,
-                            scan_id,
+                            scan_epoch,
                             SourceChanges(batch, String[]; metadata_changed=false),
                         )
                     end
@@ -816,20 +814,20 @@ function scan_source!(
                 # Final batch: removals + deferred metadata reconcile (not on every upsert batch).
                 @timed_dbg publish_source_changes!(
                     workspace,
-                    scan_id,
+                    scan_epoch,
                     SourceChanges(AbstractDataSourceItem[], removals; metadata_changed=true),
                     status,
                 )
                 publish_scan_end!(
-                    workspace, scan_id;
+                    workspace, scan_epoch;
                     cache_hit=!any_upserts[] && isempty(removals),
                 )
             catch error
                 if error isa OperationCanceledException
-                    publish_scan_end!(workspace, scan_id; canceled=true)
+                    publish_scan_end!(workspace, scan_epoch; canceled=true)
                 else
                     publish_scan_end!(
-                        workspace, scan_id; error, backtrace=catch_backtrace())
+                        workspace, scan_epoch; error, backtrace=catch_backtrace())
                 end
             end
         end
@@ -1242,12 +1240,12 @@ end
 """Publish the loaded (or missing) cache index as the instant first view of one scan."""
 function publish_cache_state!(
     workspace::Workspace,
-    scan_id::Int,
+    scan_epoch::Int,
     state::Symbol,
     index::Union{Nothing,ProjectCacheIndex},
 )::Nothing
     lock(workspace.publish_lock) do
-        scan_id == workspace.scan.id || return
+        scan_epoch == workspace.scan.epoch || return
         if index === nothing
             replace_item_index!(
                 workspace,
@@ -1269,12 +1267,12 @@ end
 """Publish one scan's discovered source changes and queue their interpretation."""
 function publish_source_changes!(
     workspace::Workspace,
-    scan_id::Int,
+    scan_epoch::Int,
     changes::SourceChanges,
     status::Union{Nothing,ProjectCacheStatus}=nothing,
 )::Nothing
     lock(workspace.publish_lock) do
-        scan_id == workspace.scan.id || return
+        scan_epoch == workspace.scan.epoch || return
         ingest_source_changes!(workspace, changes, status)
         workspace.cache_state = :ready
         finish_publish!(workspace)
@@ -1318,14 +1316,14 @@ progress publication and this one can never leave the job stuck in `:canceling`.
 """
 function publish_scan_end!(
     workspace::Workspace,
-    scan_id::Int;
+    scan_epoch::Int;
     cache_hit::Bool=false,
     canceled::Bool=false,
     error=nothing,
     backtrace=nothing,
 )::Nothing
     lock(workspace.publish_lock) do
-        scan_id == workspace.scan.id || return
+        scan_epoch == workspace.scan.epoch || return
         # A scan that ends without reaching :ready must settle cache_state, or busy spins forever.
         if canceled
             workspace.scan.state = :canceled

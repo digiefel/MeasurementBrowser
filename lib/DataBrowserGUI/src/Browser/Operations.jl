@@ -8,7 +8,7 @@ using DataBrowserCore.Workspace:
     close_workspace!
 
 """Reload tags and the persisted view when the workspace source identity changes."""
-function _follow_source_identity!(
+function _check_source_identity!(
     state::BrowserState,
     workspace::Workspace.Workspace,
 )::Nothing
@@ -28,7 +28,7 @@ function _follow_source_identity!(
 end
 
 """Open the cache-rebuild modal when a schema error appears; do not reopen it after dismiss."""
-function _follow_disk_error!(
+function _check_cache_error!(
     state::BrowserState,
     workspace::Workspace.Workspace,
 )::Nothing

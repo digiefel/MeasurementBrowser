@@ -256,7 +256,7 @@ function _stage_count_cell(
     return nothing
 end
 
-"""Render project selection and project-specific settings."""
+"""Render the project settings window."""
 function render_project_window(state::BrowserState)::Nothing
     state.show_project_window || return nothing
 
@@ -267,13 +267,6 @@ function render_project_window(state::BrowserState)::Nothing
             ig.Text("Active: $(source_label(workspace.source))")
         else
             ig.TextDisabled("No workspace open")
-        end
-
-        ig.Separator()
-
-        if workspace isa Workspace.Workspace
-            ig.Text("Project: $(project_name(workspace.project))")
-            ig.TextDisabled("Project is fixed for this workspace")
         end
     end
     open_ref[] || (state.show_project_window = false)
@@ -526,8 +519,8 @@ function _run_browser(
                 @timed "refresh_status" begin
                     refresh_status!(workspace)
                 end
-                _follow_source_identity!(state, workspace)
-                _follow_disk_error!(state, workspace)
+                _check_source_identity!(state, workspace)
+                _check_cache_error!(state, workspace)
             end
             if exit_after_frames !== nothing && state.performance.frame >= exit_after_frames
                 _shutdown_background_jobs!(state)

@@ -9,7 +9,7 @@ The first frame that can lock the workspace loads tags and `databrowser.toml` fo
 `wait=false` it returns a `BrowserSession` (`task` + `state`); call `close_browser!`
 to exit. `modify_workspace!` on that same workspace is safe while the GUI runs: the render loop
 `trylock`s `workspace.lifecycle_lock` and skips workspace panels until the rebuild finishes.
-Plot and table caches include `workspace.scan.id`, so a rebuild redraws even when item ids are unchanged. Before the loop starts, the browser asks Julia 1.12+ for a dedicated libuv IO thread
+Plot and table caches include `workspace.scan.epoch`, so a rebuild redraws even when item ids are unchanged. Before the loop starts, the browser asks Julia 1.12+ for a dedicated libuv IO thread
 (`Base.Experimental.make_io_thread`) so file reads from pipeline workers are not stalled by the
 GLFW-sticky UI thread. `state.performance.first_frame_at` is set to `time()` when the first non-blank
 frame is submitted (startup surface or full UI). The first visible frames are a small preparation

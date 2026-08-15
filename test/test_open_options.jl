@@ -28,8 +28,7 @@ const OO_CACHE = DataBrowserCache
             @test cloned.watcher_task === nothing
 
             previous_source = workspace.source
-            modified = DataBrowser.modify_workspace!(workspace)
-            @test modified === workspace
+            DataBrowser.modify_workspace!(workspace)
             @test workspace.source !== previous_source
             @test workspace.source.recursive == false
             @test workspace.source.metadata_file == "custom_meta.txt"
