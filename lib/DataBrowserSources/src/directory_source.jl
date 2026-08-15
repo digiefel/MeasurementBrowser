@@ -67,12 +67,6 @@ function DirectorySource(
     )
 end
 
-function Base.:(==)(left::FileFingerprint, right::FileFingerprint)::Bool
-    return left.path == right.path &&
-        left.size_bytes == right.size_bytes &&
-        left.mtime_ns == right.mtime_ns
-end
-
 """One physical source file discovered inside a directory source."""
 struct SourceFile <: AbstractDataSourceItem
     filepath::String

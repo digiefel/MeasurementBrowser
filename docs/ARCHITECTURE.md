@@ -244,7 +244,6 @@ flowchart TD
         lbldc("label(::DirectoryCollection) → String")
         metadc("metadata(::DirectoryCollection) → Dict")
         recon("reconstruct(::DirectoryCollection) → DirectoryCollection")
-        eqfp("==(::FileFingerprint) → Bool")
     end
 
     extCore["DataBrowserCore"]
@@ -323,7 +322,7 @@ flowchart TD
     extGUI ==> slbl
     extPlots ==> slbl
 
-    wsrc =.=>|"SourceChanges<br/>SourceError"| extCore
+    wsrc -.->|"SourceChanges<br/>SourceError"| extCore
 
     idsf ~~~ lblsf ~~~ fpsf ~~~ sipf ~~~ sitf ~~~ metasf ~~~ sid ~~~ slbl ~~~ snoun ~~~ iddc ~~~ lbldc ~~~ metadc ~~~ recon ~~~ eqfp
 
