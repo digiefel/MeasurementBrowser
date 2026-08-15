@@ -11,7 +11,7 @@ function render_info_window(state::BrowserState)::Nothing
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
         if ig.Begin("Information Panel")
-            ig.TextDisabled("Open a project folder to inspect items")
+            ig.TextDisabled("No workspace open")
         end
         ig.End()
         return nothing
@@ -155,23 +155,16 @@ function render_cache_rebuild_modal(state::BrowserState)::Nothing
 
         if ig.Button("Continue without disk cache")
             opened = false
-            state.cache_rebuild_path = ""
-            state.cache_rebuild_project = nothing
             state.cache_rebuild_error = ""
             ig.CloseCurrentPopup()
         end
         ig.SameLine()
         if ig.Button("Discard cache and rebuild")
-            path = state.cache_rebuild_path
-            project = state.cache_rebuild_project
-            project === nothing && error("Cannot rebuild cache because no project was selected")
             opened = false
             state.cache_rebuild_modal = false
-            state.cache_rebuild_path = ""
-            state.cache_rebuild_project = nothing
             state.cache_rebuild_error = ""
             ig.CloseCurrentPopup()
-            _open_project_path!(state, path; project, rebuild_cache=true)
+            _reopen_workspace!(state; rebuild_cache=true)
         end
         ig.EndPopup()
     end

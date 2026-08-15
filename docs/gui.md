@@ -11,9 +11,8 @@ to exit. Before the loop starts, the browser asks Julia 1.12+ for a dedicated li
 GLFW-sticky UI thread. `state.performance.first_frame_at` is set to `time()` when the first non-blank
 frame is submitted (startup surface or full UI). The first visible frames are a small preparation
 surface while the browser pays one-time GLMakie/ImGui figure warmup runs through the registered
-`PlotsExtension`; the normal docked layout is shown only after extensions report ready. The
-folder-open UI still uses the high-level callback project path internally:
-`open_workspace(project, root_path)`. Docking layout is configured once at startup: left side for
+`PlotsExtension`; the normal docked layout is shown only after extensions report ready.
+Docking layout is configured once at startup: left side for
 navigation and information, right side for plot-oriented work.
 
 ### Whether a window actually appears (macOS)

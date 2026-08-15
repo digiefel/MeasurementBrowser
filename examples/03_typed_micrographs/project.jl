@@ -30,6 +30,7 @@ end
 
 source_id(source::MicrographDirectory)::String = abspath(source.root)
 source_label(source::MicrographDirectory)::String = basename(abspath(source.root))
+Base.copy(source::MicrographDirectory) = MicrographDirectory(source.root)
 
 # The engine scans with `cancel_token`, `on_progress`, and `on_item` keywords so a slow source can
 # stream and be interrupted. A source that discovers everything at once absorbs and ignores them:

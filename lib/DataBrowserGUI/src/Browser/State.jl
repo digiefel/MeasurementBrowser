@@ -2,7 +2,6 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-using DataBrowserAPI: AbstractProject
 using DataBrowserCore: InspectorTable
 
 """Saved tree controls from `databrowser.toml`."""
@@ -137,8 +136,6 @@ Base.@kwdef mutable struct BrowserState
     collection_metadata_modal::Bool = true
     modal_root_path::String = ""
     cache_rebuild_modal::Bool = false
-    cache_rebuild_path::String = ""
-    cache_rebuild_project::Union{Nothing,AbstractProject} = nothing
     cache_rebuild_error::String = ""
     shutdown_complete::Bool = false
     """Set by `close_browser!` so the render loop exits without a GLFW close click."""

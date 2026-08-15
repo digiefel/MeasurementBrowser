@@ -71,6 +71,7 @@ flowchart TB
     prof --> api
 
     core -.->|"read<br/>entries<br/>process<br/>analyze"| projects
+    gui -.->|"copy"| src
     gui -.->|"draw!<br/>menu!<br/>init!"| plots
     cache -.-> prof
     core -.-> prof
@@ -228,7 +229,7 @@ flowchart TD
         osrc("open_source")
         wsrc("watch_source")
         csrc("close_source!")
-        sopts("source_open_options(::DirectorySource) → NamedTuple")
+        cpyds("copy")
     end
 
     subgraph sgContract["contract methods"]
@@ -304,7 +305,6 @@ flowchart TD
     extCore --> isf
     extCore --> dcp
     extCore --> acp
-    extCore --> sopts
     extCore --> sid
     extCore --> snoun
     extCore --> idsf
@@ -323,6 +323,7 @@ flowchart TD
     extAPI --> recon
     extRecipes --> sipf
     extGUI --> slbl
+    extGUI --> cpyds
     extPlots --> slbl
 
     idsf ~~~ lblsf ~~~ fpsf ~~~ sipf ~~~ sitf ~~~ metasf ~~~ sid ~~~ slbl ~~~ snoun ~~~ iddc ~~~ lbldc ~~~ metadc ~~~ recon ~~~ eqfp
@@ -338,7 +339,7 @@ flowchart TD
     classDef plotsC fill:#f2c6d4,stroke:#b0466a,color:#111;
 
     class isf,ffp srcExp;
-    class si,csf,asf,isfn,pts,lcm,lcme,cmfp,pmv,mcm,ocm,np,dcp,al,acp,MD,osrc,wsrc,csrc,sopts,idsf,lblsf,fpsf,sipf,sitf,metasf,sid,slbl,snoun,iddc,lbldc,metadc,recon,eqfp srcInt;
+    class si,csf,asf,isfn,pts,lcm,lcme,cmfp,pmv,ocm,np,dcp,al,acp,MD,osrc,wsrc,csrc,cpyds,idsf,lblsf,fpsf,sipf,sitf,metasf,sid,slbl,snoun,iddc,lbldc,metadc,recon,eqfp srcInt;
     class extCore coreC;
     class extAPI apiC;
     class extCache cacheC;

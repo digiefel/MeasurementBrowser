@@ -1,7 +1,6 @@
 import GLFW
 import CImGui as ig
 import CImGui.CSyntax: @c
-using NativeFileDialog: pick_folder
 
 # ---------------------------------------------------------------------------
 # ImGui ini file — pointer lifetime
@@ -44,7 +43,7 @@ end
 """The workspace status snapshot, or a neutral placeholder when no source is open."""
 current_status(state::BrowserState)::WorkspaceStatus =
     state.workspace isa Workspace.Workspace ? state.workspace.status :
-    WorkspaceStatus(:none, "No Project", "Open a project folder to build a cache.",
+    WorkspaceStatus(:none, "No Project", "No workspace is open.",
         false, nothing, Workspace.WorkspaceStageCounts(), Pair{String,String}[])
 
 """Render the cache status button and its control popup, colored by the workspace status."""
@@ -88,15 +87,6 @@ function render_menu_bar(state::BrowserState)::Nothing
             )
             ig.Separator()
 
-            if ig.MenuItem("Open Folder...")
-                path = pick_folder()
-                if !isnothing(path) && !isempty(path)
-                    @info "Selected path: $path"
-                    _open_project_path!(state, path)
-                end
-            end
-
-            ig.Separator()
             if ig.MenuItem("Project Settings", C_NULL, state.show_project_window)
                 state.show_project_window = !state.show_project_window
             end
@@ -279,7 +269,7 @@ function render_project_window(state::BrowserState)::Nothing
         if workspace isa Workspace.Workspace
             ig.Text("Active: $(source_label(workspace.source))")
         else
-            ig.TextDisabled("No folder loaded yet")
+            ig.TextDisabled("No workspace open")
         end
 
         ig.Separator()
@@ -311,14 +301,11 @@ function render_project_window(state::BrowserState)::Nothing
             end
 
             if changed && workspace isa Workspace.Workspace
-                current_root = hasproperty(workspace.source, :root_path) ?
-                    workspace.source.root_path : ""
-                !isempty(current_root) || error("Cannot reload project preference without an open source root")
                 @info(
                     "Project preference changed to '$(state.project_preference)' - " *
                     "reloading cache",
                 )
-                _open_project_path!(state, current_root)
+                _reopen_workspace!(state)
             end
         end
     end

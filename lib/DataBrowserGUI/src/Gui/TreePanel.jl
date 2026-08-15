@@ -489,7 +489,7 @@ function _render_items_panel(
     ig.SeparatorText("Item Selection")
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
-        ig.TextDisabled("Open a project folder to browse items")
+        ig.TextDisabled("No workspace open")
         ig.EndChild()
         return nothing
     end

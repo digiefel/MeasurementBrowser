@@ -3,7 +3,7 @@ using Test
 
 const OO_CACHE = DataBrowserCache
 
-@testset "workspace open options capture and replay" begin
+@testset "source copy and workspace reopen" begin
     mktempdir() do dir
         project = DataBrowser.define_project("OpenOptions_$(basename(dir))")
         workspace = DataBrowser.open_workspace(
@@ -15,19 +15,30 @@ const OO_CACHE = DataBrowserCache
         )
         reopened = nothing
         try
-            options = workspace.open_options
-            @test options.recursive == false
-            @test options.metadata_file == "custom_meta.txt"
-            @test options.cache == false
-            @test options.background_processing == false
-            # `rebuild` is a one-shot action, never replayed on reopen.
-            @test !haskey(options, :rebuild)
+            @test workspace.source.recursive == false
+            @test workspace.source.metadata_file == "custom_meta.txt"
+            @test workspace.disk_cache == false
+            @test workspace.background_processing == false
 
-            reopened = DataBrowser.open_workspace(project, dir; options...)
+            cloned = copy(workspace.source)
+            @test cloned isa DataBrowser.DirectorySource
+            @test cloned !== workspace.source
+            @test cloned.root_path == workspace.source.root_path
+            @test cloned.recursive == false
+            @test cloned.metadata_file == "custom_meta.txt"
+            @test cloned.watcher_task === nothing
+
+            reopened = DataBrowser.open_workspace(
+                project,
+                cloned;
+                cache=workspace.disk_cache,
+                background_processing=workspace.background_processing,
+            )
             @test reopened.source.recursive == false
             @test reopened.source.metadata_file == "custom_meta.txt"
             @test reopened.cache.db isa OO_CACHE.MemoryCacheDB
-            @test reopened.open_options == options
+            @test reopened.disk_cache == false
+            @test reopened.background_processing == false
         finally
             reopened === nothing || DataBrowser.close_workspace!(reopened)
             DataBrowser.close_workspace!(workspace)
@@ -39,10 +50,9 @@ const OO_CACHE = DataBrowserCache
         source = DataBrowser.DirectorySource(dir; recursive=false, metadata_file=nothing)
         workspace = DataBrowser.open_workspace(project, source; cache=false)
         try
-            # The low-level source entry records the same complete set as the path entry.
-            @test workspace.open_options.recursive == false
-            @test workspace.open_options.metadata_file === nothing
-            @test workspace.open_options.cache == false
+            @test workspace.source.recursive == false
+            @test workspace.source.metadata_file === nothing
+            @test workspace.disk_cache == false
         finally
             DataBrowser.close_workspace!(workspace)
         end

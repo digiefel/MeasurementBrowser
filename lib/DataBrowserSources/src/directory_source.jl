@@ -22,7 +22,6 @@ import DataBrowserAPI:
     source_item_timestamp,
     source_items,
     source_label,
-    source_open_options,
     watch_source
 
 const DEFAULT_DIRECTORY_METADATA_FILE = "metadata.txt"
@@ -452,8 +451,17 @@ function watch_source(
     return task
 end
 
-source_open_options(source::DirectorySource)::NamedTuple =
-    (; recursive=source.recursive, metadata_file=source.metadata_file)
+"""
+    copy(source::DirectorySource) -> DirectorySource
+
+Unopened directory source with the same root, scan depth, and metadata sidecar. Does not copy the
+watcher.
+"""
+Base.copy(source::DirectorySource) = DirectorySource(
+    source.root_path;
+    recursive=source.recursive,
+    metadata_file=source.metadata_file,
+)
 
 function close_source!(source::DirectorySource)::Nothing
     source.watcher_cancel === nothing || cancel(source.watcher_cancel)

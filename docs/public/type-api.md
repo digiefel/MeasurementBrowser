@@ -176,7 +176,6 @@ flowchart TB
 | `open_source(source)` | acquire source resources | the source itself |
 | `close_source!(source)` | release files, connections, tasks, or streams | nothing |
 | `watch_source(source, on_change; cancel_token)` | publish later source changes | static source |
-| `source_open_options(source)` | values needed to reopen an equivalent source | empty named tuple |
 
 The method signatures are:
 
@@ -187,11 +186,14 @@ source_items(source::MySource)::Vector{MySourceItem}
 open_source(source::MySource)::MySource
 close_source!(source::MySource)::Nothing
 watch_source(source::MySource, on_change; cancel_token)::Nothing
-source_open_options(source::MySource)::NamedTuple
 ```
 
 `open_source` returns the opened source because an immutable description may open a different value
 that owns live resources. `close_source!` releases those resources.
+
+The browser reopens a source with `copy(source)` (`Base.copy`). `DirectorySource` implements it so
+the copy has no watcher. A type with no `copy` method raises `MethodError`. An immutable source with
+no live resources can use `copy(source) = source`.
 
 ## Source-item interface
 

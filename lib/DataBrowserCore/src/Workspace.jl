@@ -140,7 +140,6 @@ import DataBrowserAPI:
     source_items,
     source_item_noun,
     source_label,
-    source_open_options,
     watch_source
 
 
@@ -255,9 +254,9 @@ mutable struct Workspace{P<:AbstractProject,S<:AbstractDataSource}
     source_error::String
     work::WorkDependencyGraph
     background_processing::Bool
-    # The effective construction options `open_workspace` was called with, replayed verbatim
-    # (splatted) when the browser reopens an equivalent workspace on the same source root.
-    open_options::NamedTuple
+    # Requested disk cache. Kept even when a schema error falls back to a memory cache, so a
+    # rebuild can open a real disk cache again.
+    disk_cache::Bool
     background_tasks::Vector{Task}
     metrics::BuildMetrics
     publish_lock::ReentrantLock
@@ -302,11 +301,6 @@ function Workspace(
         end
     end
     publish_lock = ReentrantLock()
-    open_options = (;
-        cache,
-        background_processing,
-        source_open_options(source)...,
-    )
     workspace = Workspace(
         project,
         source,
@@ -327,7 +321,7 @@ function Workspace(
         "",
         WorkDependencyGraph(),
         background_processing,
-        open_options,
+        cache,
         Task[],
         metrics,
         publish_lock,

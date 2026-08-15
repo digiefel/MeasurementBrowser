@@ -108,7 +108,6 @@ source_items(source::MySource)::Vector{MySourceItem}
 open_source(source::MySource)::MySource
 close_source!(source::MySource)::Nothing
 watch_source(source::MySource, on_change; cancel_token)::Nothing
-source_open_options(source::MySource)::NamedTuple
 ```
 
 ## Source-item interface

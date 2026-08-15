@@ -19,42 +19,40 @@ function _project_for_preference(pref::AbstractString)::AbstractProject
     error("Unknown project preference '$pref'")
 end
 
-"""Replace the current workspace with the project selected for one source root."""
-function _open_project_path!(
-    state::BrowserState,
-    path::String;
-    project::Union{Nothing,AbstractProject}=nothing,
+"""Project used when the browser reopens a workspace."""
+function _open_project(state::BrowserState)::AbstractProject
+    if state.project_locked
+        workspace = state.workspace
+        workspace isa Workspace.Workspace ||
+            error("Cannot reopen before a workspace exists")
+        return workspace.project
+    end
+    return _project_for_preference(state.project_preference)
+end
+
+"""Open a new workspace for the current source. Used for project change and cache rebuild."""
+function _reopen_workspace!(
+    state::BrowserState;
     rebuild_cache::Bool=false,
 )::Nothing
-    norm_path = _normalize_project_path(path)
-    if project === nothing && state.project_locked
-        workspace = state.workspace
-        if workspace isa Workspace.Workspace
-            project = workspace.project
-        else
-            error("Cannot open a new folder before a project workspace exists")
-        end
-    end
-    if project === nothing
-        project = _project_for_preference(state.project_preference)
-    else
-        state.project_preference = project_name(project)
-    end
-    previous_workspace = state.workspace
-    reopen_options = previous_workspace isa Workspace.Workspace ?
-        previous_workspace.open_options :
-        (;)
+    previous = state.workspace
+    previous isa Workspace.Workspace || error("Cannot reopen before a workspace exists")
     _attach_workspace!(
         state,
-        open_workspace(project, norm_path; reopen_options..., rebuild=rebuild_cache),
+        open_workspace(
+            _open_project(state),
+            copy(previous.source);
+            rebuild=rebuild_cache,
+            cache=previous.disk_cache,
+            background_processing=previous.background_processing,
+        ),
     )
     return nothing
 end
 
 """
 Make an already-opened workspace the browser's current one, loading its saved view, tag state, and
-figure-script context. Shared by `_open_project_path!` (which opens the workspace itself) and
-`open_browser` (which is handed a caller-owned workspace).
+figure-script context. Shared by `_reopen_workspace!` and `open_browser`.
 """
 function _attach_workspace!(
     state::BrowserState,
@@ -76,8 +74,6 @@ function _attach_workspace!(
     state.saved_project_view = view
     if workspace.cache.disk_error isa ProjectCacheSchemaError
         state.cache_rebuild_modal = true
-        state.cache_rebuild_path = source_root
-        state.cache_rebuild_project = workspace.project
         state.cache_rebuild_error = sprint(showerror, workspace.cache.disk_error)
     end
     return nothing
