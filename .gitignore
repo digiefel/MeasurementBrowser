@@ -13,4 +13,5 @@ test/*
 imgui.ini
 
 docs/build/
+docs/generated/
 lib/*/Manifest.toml
