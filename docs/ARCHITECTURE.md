@@ -144,7 +144,7 @@ External calls from other packages are shown as thicker arrows.
 A dashed arrow is data written to or read from storage.
 
 A thick border marks a symbol the package exports.
-A `?` after a field type means the field may be `nothing`.
+`X_or_Nothing` means a field may contain either `X` or `nothing`.
 
 ### DataBrowserSources
 
@@ -153,46 +153,52 @@ A `?` after a field type means the field may be `nothing`.
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'textColor':'#111','lineColor':'#555'}}}%%
 classDiagram
-    direction LR
-    class AbstractDataSource:::api
-    class AbstractDataSourceItem:::api
-    class AbstractCollection:::api
+    direction TB
+    class AbstractDataSource
+    class AbstractDataSourceItem
+    class AbstractCollection
 
-    class DirectorySource:::srcExp {
-        root_path : String
-        recursive : Bool
-        metadata_file : String?
-        collection_metadata_entries : Dict
-        has_metadata : Bool
-        metadata_lock : ReentrantLock
-        watcher_task : Task?
-        watcher_cancel : CancellationTokenSource?
+    class DirectorySource {
+        String root_path
+        Bool recursive
+        String_or_Nothing metadata_file
+        Dict collection_metadata_entries
+        Bool has_metadata
+        ReentrantLock metadata_lock
+        Task_or_Nothing watcher_task
+        CancellationTokenSource_or_Nothing watcher_cancel
     }
-    class SourceFile:::srcExp {
-        filepath : String
-        filename : String
-        relative_path : String
-        timestamp : DateTime?
-        fingerprint : FileFingerprint
+    class SourceFile {
+        String filepath
+        String filename
+        String relative_path
+        DateTime_or_Nothing timestamp
+        FileFingerprint fingerprint
     }
-    class FileFingerprint:::srcExp {
-        path : String
-        size_bytes : Int64
-        mtime_ns : Int64
+    class FileFingerprint {
+        String path
+        Int64 size_bytes
+        Int64 mtime_ns
     }
-    class DirectoryCollection:::srcInt {
-        name : String
-        metadata : Dict
+    class DirectoryCollection {
+        String name
+        Dict metadata
     }
 
     AbstractDataSource <|-- DirectorySource
     AbstractDataSourceItem <|-- SourceFile
     AbstractCollection <|-- DirectoryCollection
+    DirectorySource --> SourceFile : scans
+    DirectorySource --> DirectoryCollection : builds paths
     SourceFile *-- FileFingerprint : fingerprint
 
-    classDef api fill:#cfd8e3,stroke:#5a6b80,stroke-width:1px,color:#111;
-    classDef srcExp fill:#c9e4c5,stroke:#5a9a52,stroke-width:3px,color:#111;
-    classDef srcInt fill:#c9e4c5,stroke:#5a9a52,stroke-width:1px,color:#111;
+    style AbstractDataSource fill:#cfd8e3,stroke:#5a6b80,stroke-width:1px,color:#111
+    style AbstractDataSourceItem fill:#cfd8e3,stroke:#5a6b80,stroke-width:1px,color:#111
+    style AbstractCollection fill:#cfd8e3,stroke:#5a6b80,stroke-width:1px,color:#111
+    style DirectorySource fill:#c9e4c5,stroke:#5a9a52,stroke-width:3px,color:#111
+    style SourceFile fill:#c9e4c5,stroke:#5a9a52,stroke-width:3px,color:#111
+    style FileFingerprint fill:#c9e4c5,stroke:#5a9a52,stroke-width:3px,color:#111
+    style DirectoryCollection fill:#c9e4c5,stroke:#5a9a52,stroke-width:1px,color:#111
 ```
 
 #### Call flow
