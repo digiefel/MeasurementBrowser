@@ -15,13 +15,14 @@
 # Tunables via ENV (counts are per the documented diversity; see DEFAULTS below):
 #   MB_BENCH_KIND1_FILES, MB_BENCH_KIND2_FILES, MB_BENCH_KIND3_FILES, MB_BENCH_KIND3_CYCLES
 #   MB_BENCH_KIND3_ROWS, MB_BENCH_AFTER_BUILD_PLOTS, MB_BENCH_PROCESSED_STRESS_ROWS
-#   MB_BENCH_REQUIRE_SATURATION
-# The benchmark writes throughput, memory, and responsiveness artifacts. Explicit debug timing
-# summaries are separate `DebugTimings` outputs.
+# The benchmark writes throughput, memory, and responsiveness artifacts. Loading
+# DataBrowserProfiling turns on `@timed_dbg`; the run then `reset_debug_timings!` /
+# `take_debug_timings!` (both DataBrowserProfiling) and writes the TimerOutput.
 
-using DataBrowserAPI: define_project, item_data, register_item!
+using DataBrowserAPI: item_data, label
+using DataBrowserRecipes: define_project, register_item!
 using DataBrowserAPI.ItemIndex: ItemRecord, collection_item_ids
-using DataBrowserCore.Workspace
+import DataBrowserCore.Workspace as Workspace
 using DataBrowserCore.Workspace: close_workspace!, open_workspace, select_items!
 using DataBrowserCache
 using DataBrowserPlots:
@@ -61,7 +62,7 @@ const KIND1_ROWS   = 120
 const KIND2_ROWS   = 5_000
 const KIND3_ROWS   = _env_int("MB_BENCH_KIND3_ROWS", 6_000) # rows per cycle
 
-const CACHE_ROW_CEILING = Cache.CACHE_BUFFER_ROW_LIMIT
+const CACHE_ROW_CEILING = DataBrowserCache.CACHE_BUFFER_ROW_LIMIT
 const PROCESSED_STRESS_ROWS = _env_int(
     "MB_BENCH_PROCESSED_STRESS_ROWS",
     2 * CACHE_ROW_CEILING,
@@ -69,10 +70,7 @@ const PROCESSED_STRESS_ROWS = _env_int(
 const AFTER_BUILD_PLOTS = _env_int("MB_BENCH_AFTER_BUILD_PLOTS", 40)
 const BENCH_REPEATS = _env_int("MB_BENCH_REPEATS", 1)
 const MAX_BUILD_SECONDS = 600   # safety cap
-const REQUIRE_SATURATION = Profiling.environment_flag(
-    "MB_BENCH_REQUIRE_SATURATION",
-    scale >= 1.0,
-)
+const REQUIRE_SATURATION = scale >= 1.0
 const ESTIMATED_PAYLOAD_ROWS = Int64(KIND1_FILES) * KIND1_ROWS +
                                Int64(KIND2_FILES) * KIND2_ROWS +
                                Int64(KIND3_FILES) * KIND3_CYCLES * KIND3_ROWS
@@ -87,7 +85,6 @@ const BENCH_ENV_KEYS = (
     "MB_BENCH_AFTER_BUILD_PLOTS",
     "MB_BENCH_PROCESSED_STRESS_ROWS",
     "MB_BENCH_REPEATS",
-    "MB_BENCH_REQUIRE_SATURATION",
 )
 
 function tee_println(args...)::Nothing
@@ -290,15 +287,9 @@ end
 # Driver: poll the workspace while timing interactive reads (selection + plot data load)
 # --------------------------------------------------------------------------------------------------
 
-build_idle(ws) = begin
-    _, _, active = Workspace.work_counts(ws)
-    return active == 0 &&
-        !Workspace.source_scan_running(ws) &&
-        !Workspace.processing_work_running(ws) &&
-        !Workspace.analysis_work_running(ws) &&
-        !Workspace.cache_work_running(ws) &&
+build_idle(ws) =
+    !Workspace.workspace_busy(ws) &&
         ws.scan.state in (:done, :unchanged, :error, :canceled)
-end
 
 function _active_work_count(ws, kinds::Tuple)::Int
     return lock(ws.work.lock) do
@@ -316,13 +307,11 @@ _processing_active(ws)::Bool =
 _analysis_active(ws)::Bool =
     _active_work_count(ws, (Workspace.COLLECTION_ANALYZE,)) > 0
 
-"""Collect up to 64 already-processed item ids of `kind`."""
+"""Collect up to 64 item ids of `kind`."""
 function _ready_ids(ws, kind::Symbol)
     ready = String[]
-    for id in keys(ws.index.item_metadata)
-        rec = get(ws.index.items, id, nothing)
-        rec === nothing && continue
-        rec.kind === kind && push!(ready, id)
+    for (id, rec) in ws.index.items
+        label(rec.type) === kind && push!(ready, id)
         length(ready) >= 64 && break
     end
     return ready
@@ -389,12 +378,13 @@ struct SaturationSample
 end
 
 function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
+    rss_bytes = Profiling.process_rss_bytes()
     return MemorySample(
         elapsed_s,
-        snapshot.rss_bytes,
+        rss_bytes,
         snapshot.gc_live_bytes,
         snapshot.gc_allocated_bytes,
-        snapshot.rss_minus_gc_live_bytes,
+        rss_bytes - snapshot.gc_live_bytes,
         snapshot.index_items,
         snapshot.index_collections,
         snapshot.item_metadata,
@@ -410,7 +400,7 @@ end
 function _records_of_kind(ws, kind::Symbol)::Vector{ItemRecord}
     records = ItemRecord[
         record for record in values(ws.index.items)
-        if record.kind === kind && haskey(ws.index.item_metadata, record.id)
+        if label(record.type) === kind
     ]
     sort!(records; by=record -> record.id)
     return records
@@ -463,6 +453,16 @@ function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
     )
 end
 
+"""Write a taken `TimerOutput` as a readable tree and a Tables.jl CSV."""
+function write_debug_timings(outdir, timings)
+    open(joinpath(outdir, "debug_timings.txt"), "w") do io
+        show(IOContext(io, :displaysize => (typemax(Int), typemax(Int))),
+            MIME("text/plain"), timings)
+    end
+    CSV.write(joinpath(outdir, "debug_timings.csv"), timings)
+    return nothing
+end
+
 function run_benchmark()
     tmp = mktempdir()
     pushfirst!(DEPOT_PATH, tmp)          # cache lands in temp, deleted with everything else
@@ -474,163 +474,160 @@ function run_benchmark()
     log_path = joinpath(outdir, "benchmark.log")
     log_io = open(log_path, "w")
     RUN_LOG[] = log_io
-    timings = Profiling.DebugTimings(start_ns=time_ns())
+    Profiling.reset_debug_timings!()
 
     try
-        result = Profiling.with_debug_timings(timings) do
-            _print_run_header(log_path, outdir)
+        _print_run_header(log_path, outdir)
 
-            tee_println("Generating synthetic data ... (scale=$scale)")
-            gen_t = @elapsed (n_files, n_items) = generate_data(data_root)
-            data_bytes = sum(filesize(joinpath(r, f))
-                             for (r, _, fs) in walkdir(data_root) for f in fs)
-            tee_printf("  %d files, ~%d items, %.1f MB on disk, generated in %.1fs\n",
-                n_files, n_items, data_bytes / 1024^2, gen_t)
+        tee_println("Generating synthetic data ... (scale=$scale)")
+        gen_t = @elapsed (n_files, n_items) = generate_data(data_root)
+        data_bytes = sum(filesize(joinpath(r, f))
+                         for (r, _, fs) in walkdir(data_root) for f in fs)
+        tee_printf("  %d files, ~%d items, %.1f MB on disk, generated in %.1fs\n",
+            n_files, n_items, data_bytes / 1024^2, gen_t)
 
-            project = build_project(; plots=true)
-            kinds = (:kind1, :kind2, :kind3)
-            plot_kinds = Dict(k => first(registered_plot_kinds(project, k)) for k in kinds)
-            samples = Sample[]
+        project = build_project(; plots=true)
+        kinds = (:kind1, :kind2, :kind3)
+        plot_kinds = Dict(k => first(registered_plot_kinds(project, k)) for k in kinds)
+        samples = Sample[]
 
-            tee_println("Building cache + browsing during the scan ...")
-            ws = open_workspace(project, data_root)
-            t_start = time()
-            rss_start_bytes = Profiling.process_rss_bytes()
-            rss_peak_bytes = rss_start_bytes
-            rss_end_bytes = rss_start_bytes
-            build_seconds = 0.0
-            scan_seconds = 0.0
-            processing_started = nothing
-            processing_seconds = 0.0
-            analysis_started = nothing
-            analysis_seconds = 0.0
-            build_stats = nothing
-            saturation_stats = nothing
-            try
-                last_probe = 0.0
-                last_rss_sample = 0.0
-                last_memory_sample = -Inf
-                memory_samples = MemorySample[]
-                kind_cursor = 1
-                while true
-                    now = time() - t_start
-                    if now - last_rss_sample >= 0.1
-                        last_rss_sample = now
-                        rss_peak_bytes = max(rss_peak_bytes, Profiling.process_rss_bytes())
-                    end
-                    if now - last_memory_sample >= 0.5
-                        last_memory_sample = now
-                        snapshot = Workspace.workspace_memory_snapshot(ws)
-                        rss_peak_bytes = max(rss_peak_bytes, snapshot.rss_bytes)
-                        push!(memory_samples, MemorySample(now, snapshot))
-                    end
-                    processing_active = _processing_active(ws)
-                    analysis_active = _analysis_active(ws)
-                    processing_started === nothing && processing_active && (processing_started = now)
-                    scan_seconds == 0 && !Workspace.source_scan_running(ws) &&
-                        ws.scan.state in (:done, :unchanged, :error, :canceled) &&
-                        (scan_seconds = now)
-                    if processing_started !== nothing && processing_seconds == 0 && !processing_active
-                        processing_seconds = now - processing_started
-                        analysis_started === nothing && (analysis_started = now)
-                    end
-                    analysis_started === nothing && analysis_active && (analysis_started = now)
-                    analysis_started !== nothing && analysis_seconds == 0 &&
-                        !analysis_active &&
-                        (analysis_seconds = now - analysis_started)
-                    # Probe responsiveness ~6×/s, rotating across kinds, once items exist. Each probe is the
-                    # full select → load → plot probe a user performs while the build is still running.
-                    if now - last_probe >= 0.16
-                        last_probe = now
-                        kind = kinds[kind_cursor]; kind_cursor = mod1(kind_cursor + 1, length(kinds))
-                        probe = timed_plot!(ws, plot_kinds, kind, 3)
-                        probe === nothing || push!(samples, Sample(now, :during_build, kind, probe.n,
-                            probe.plot_ms, probe.bytes, probe.ready))
-                    end
-                    if build_idle(ws)
-                        build_seconds = now
-                        break
-                    end
-                    (now > MAX_BUILD_SECONDS) && (build_seconds = now;
-                        @warn("hit MAX_BUILD_SECONDS"); break)
-                    sleep(0.004)
+        tee_println("Building cache + browsing during the scan ...")
+        ws = open_workspace(project, data_root)
+        t_start = time()
+        rss_start_bytes = Profiling.process_rss_bytes()
+        rss_peak_bytes = rss_start_bytes
+        rss_end_bytes = rss_start_bytes
+        build_seconds = 0.0
+        scan_seconds = 0.0
+        processing_started = nothing
+        processing_seconds = 0.0
+        analysis_started = nothing
+        analysis_seconds = 0.0
+        build_stats = nothing
+        saturation_stats = nothing
+        try
+            last_probe = 0.0
+            last_rss_sample = 0.0
+            last_memory_sample = -Inf
+            memory_samples = MemorySample[]
+            kind_cursor = 1
+            while true
+                now = time() - t_start
+                if now - last_rss_sample >= 0.1
+                    last_rss_sample = now
+                    rss_peak_bytes = max(rss_peak_bytes, Profiling.process_rss_bytes())
                 end
-                final_memory = Workspace.workspace_memory_snapshot(ws)
-                rss_end_bytes = final_memory.rss_bytes
-                push!(memory_samples, MemorySample(time() - t_start, final_memory))
-
-                tee_println("Saturating processed-payload writer ...")
-                saturation_stats = saturate_processed_writes!(ws, :kind3)
-
-                # Steady-state sweep: random plot probes per kind on the finished cache.
-                rng = MersenneTwister(1)
-                for kind in kinds, _ in 1:AFTER_BUILD_PLOTS
-                    ids = [
-                        id for id in keys(ws.index.item_metadata)
-                        if (record = get(ws.index.items, id, nothing);
-                            record !== nothing && record.kind === kind)
-                    ]
-                    isempty(ids) && continue
-                    k = rand(rng, 1:min(4, length(ids)))
-                    records = ItemRecord[ws.index.items[id] for id in rand(rng, ids, k)]
-                    probe = timed_plot!(ws, plot_kinds, kind, k; records)
-                    probe === nothing || push!(samples, Sample(
-                        time() - t_start,
-                        :after_build,
-                        kind,
-                        probe.n,
-                        probe.plot_ms,
-                        probe.bytes,
-                        probe.ready,
-                    ))
+                if now - last_memory_sample >= 0.5
+                    last_memory_sample = now
+                    sample = MemorySample(now, Workspace.workspace_memory_snapshot(ws))
+                    rss_peak_bytes = max(rss_peak_bytes, sample.rss_bytes)
+                    push!(memory_samples, sample)
                 end
-                completed, total, active = Workspace.work_counts(ws)
-                collections = ws.index.collections
-                collection_nodes = count(keys(collections.records)) do collection_key
-                    member_ids = collection_item_ids(collections, collection_key)
-                    isempty(member_ids) && return false
-                    key = Workspace.WorkKey(Workspace.COLLECTION_ANALYZE, collection_key)
-                    return Workspace.cache_work_status(ws, key) === :ready
+                processing_active = _processing_active(ws)
+                analysis_active = _analysis_active(ws)
+                processing_started === nothing && processing_active && (processing_started = now)
+                scan_seconds == 0 && !Workspace.source_scan_running(ws) &&
+                    ws.scan.state in (:done, :unchanged, :error, :canceled) &&
+                    (scan_seconds = now)
+                if processing_started !== nothing && processing_seconds == 0 && !processing_active
+                    processing_seconds = now - processing_started
+                    analysis_started === nothing && (analysis_started = now)
                 end
-                metrics = ws.metrics
-                build_stats = (
-                    scan_seconds,
-                    processing_seconds,
-                    analysis_seconds,
-                    processed_items=length(ws.index.items),
-                    completed_jobs=completed,
-                    total_jobs=total,
-                    active_jobs=active,
-                    collection_nodes=collection_nodes,
-                    interpreted_write_ns=metrics.interpreted_write_ns[],
-                    interpreted_writes=metrics.interpreted_writes[],
-                    processed_write_ns=metrics.processed_write_ns[],
-                    processed_writes=metrics.processed_writes[],
-                    metadata_write_ns=metrics.metadata_write_ns[],
-                    metadata_writes=metrics.metadata_writes[],
-                    rss_start_bytes,
-                    rss_peak_bytes,
-                    rss_end_bytes,
-                    memory_samples,
-                )
-            finally
-                close_workspace!(ws)
+                analysis_started === nothing && analysis_active && (analysis_started = now)
+                analysis_started !== nothing && analysis_seconds == 0 &&
+                    !analysis_active &&
+                    (analysis_seconds = now - analysis_started)
+                # Probe responsiveness ~6×/s, rotating across kinds, once items exist. Each probe is the
+                # full select → load → plot probe a user performs while the build is still running.
+                if now - last_probe >= 0.16
+                    last_probe = now
+                    kind = kinds[kind_cursor]; kind_cursor = mod1(kind_cursor + 1, length(kinds))
+                    probe = timed_plot!(ws, plot_kinds, kind, 3)
+                    probe === nothing || push!(samples, Sample(now, :during_build, kind, probe.n,
+                        probe.plot_ms, probe.bytes, probe.ready))
+                end
+                if build_idle(ws)
+                    build_seconds = now
+                    break
+                end
+                (now > MAX_BUILD_SECONDS) && (build_seconds = now;
+                    @warn("hit MAX_BUILD_SECONDS"); break)
+                sleep(0.004)
             end
+            final_sample = MemorySample(time() - t_start, Workspace.workspace_memory_snapshot(ws))
+            rss_end_bytes = final_sample.rss_bytes
+            push!(memory_samples, final_sample)
 
-            # Warm reopen on the same cache: the incremental rescan finds every fingerprint unchanged and
-            # reuses the cached index. Surfaces the true warm-reopen cost (rescan + cached-index handling +
-            # any re-processing the post-scan readiness probe triggers).
-            reopen_stats = measure_reopen(project, data_root, plot_kinds, kinds)
+            tee_println("Saturating processed-payload writer ...")
+            saturation_stats = saturate_processed_writes!(ws, :kind3)
 
-            report(samples, build_stats, saturation_stats, reopen_stats, outdir,
-                n_files, n_items, data_bytes, build_seconds)
-
-            tee_println("\nResults kept in: $outdir")
-            tee_println("Log kept in: $log_path")
-            outdir
+            # Steady-state sweep: random plot probes per kind on the finished cache.
+            rng = MersenneTwister(1)
+            for kind in kinds, _ in 1:AFTER_BUILD_PLOTS
+                ids = [
+                    id for (id, record) in ws.index.items
+                    if label(record.type) === kind
+                ]
+                isempty(ids) && continue
+                k = rand(rng, 1:min(4, length(ids)))
+                records = ItemRecord[ws.index.items[id] for id in rand(rng, ids, k)]
+                probe = timed_plot!(ws, plot_kinds, kind, k; records)
+                probe === nothing || push!(samples, Sample(
+                    time() - t_start,
+                    :after_build,
+                    kind,
+                    probe.n,
+                    probe.plot_ms,
+                    probe.bytes,
+                    probe.ready,
+                ))
+            end
+            completed, total, active = Workspace.work_counts(ws)
+            collections = ws.index.collections
+            collection_nodes = count(keys(collections.records)) do collection_key
+                member_ids = collection_item_ids(collections, collection_key)
+                isempty(member_ids) && return false
+                key = Workspace.WorkKey(Workspace.COLLECTION_ANALYZE, collection_key)
+                return Workspace.cache_work_status(ws, key) === :ready
+            end
+            metrics = ws.metrics
+            build_stats = (
+                scan_seconds,
+                processing_seconds,
+                analysis_seconds,
+                processed_items=length(ws.index.items),
+                completed_jobs=completed,
+                total_jobs=total,
+                active_jobs=active,
+                collection_nodes=collection_nodes,
+                interpreted_write_ns=metrics.interpreted_write_ns[],
+                interpreted_writes=metrics.interpreted_writes[],
+                processed_write_ns=metrics.processed_write_ns[],
+                processed_writes=metrics.processed_writes[],
+                metadata_write_ns=metrics.metadata_write_ns[],
+                metadata_writes=metrics.metadata_writes[],
+                rss_start_bytes,
+                rss_peak_bytes,
+                rss_end_bytes,
+                memory_samples,
+            )
+        finally
+            close_workspace!(ws)
         end
-        Profiling.write_debug_timings(outdir, timings)
-        return result
+
+        # Warm reopen on the same cache: the incremental rescan finds every fingerprint unchanged and
+        # reuses the cached index. Surfaces the true warm-reopen cost (rescan + cached-index handling +
+        # any re-processing the post-scan readiness probe triggers).
+        reopen_stats = measure_reopen(project, data_root, plot_kinds, kinds)
+
+        report(samples, build_stats, saturation_stats, reopen_stats, outdir,
+            n_files, n_items, data_bytes, build_seconds)
+
+        tee_println("\nResults kept in: $outdir")
+        tee_println("Log kept in: $log_path")
+        timings = Profiling.take_debug_timings!()
+        write_debug_timings(outdir, timings)
+        return outdir
     finally
         RUN_LOG[] = nothing
         close(log_io)

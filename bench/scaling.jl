@@ -20,7 +20,7 @@
 #
 # Results land in bench/results/<timestamp>-scaling/scaling.csv.
 
-using DataBrowserAPI: Project, define_project, register_item!
+using DataBrowserRecipes: Project, define_project, register_item!
 using DataBrowserCore.Workspace:
     close_workspace!,
     open_workspace,

@@ -44,9 +44,10 @@ publish × N publishes during scan).
 
 ## Debug timings
 
-Benchmark code can wrap a selected phase in `with_debug_timings(timings) do ... end` and save the
-result with `write_debug_timings(outdir, timings)`. The output is a readable timing table and CSV;
-it aggregates task-owned timers after the benchmark reaches its intended idle point. Use Julia
+Loading `DataBrowserProfiling` turns on `@timed_dbg` in the engine. A benchmark clears the
+accumulator with `DataBrowserProfiling.reset_debug_timings!()` before the measured work, then
+calls `DataBrowserProfiling.take_debug_timings!()` to get a `TimerOutputs.TimerOutput` for that interval.
+The realistic harness writes that tree as `debug_timings.txt` and `debug_timings.csv`. Use Julia
 sampling profiles and pprof for call-path attribution.
 
 ## Realistic browsing
