@@ -65,4 +65,4 @@ Use `bench/` for performance work (`julia --project=bench`). Results persist und
 Work in small reviewable items. Always clear up confusion. Do not assume. Ask the user whenever there's decisions,
 proposing various options to stimulate ideas. Asking is always better than assuming.
 Conversations are always preferred to long outputs. A question mark is worth 1000 words.
-After a turn, propose a small commit title.
+After a turn with changes still pending, propose a small commit title.
