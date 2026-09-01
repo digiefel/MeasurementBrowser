@@ -56,7 +56,7 @@ workspace internals.
 - [x] Remove the registration-only `item isa RegisteredDataItem` payload-cache gate, and the
   item-level `cacheable` predicate with it. Persistence becomes the payload's supported shape
   alone; rehydration into a user type becomes `reconstruct` dispatch, keeping cached payload
-  delivery distinct from rebuilding a typed item for multiple dispatch. (Moved up from 0.5.0: the
+  delivery distinct from rebuilding a typed item for multiple dispatch. (Moved up from the engine consolidation release: the
   `DataBrowserRecipes` extraction below cannot leave Cache registration-free while this gate
   stands.)
 - [x] Replace `HierarchyNode` and the hierarchy-owned object graph with a package-owned
@@ -79,9 +79,203 @@ workspace internals.
   `AbstractProject`, with the stage contract in `stage_contract.jl`.
 - [x] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling. ([#11])
 - [ ] Run every example entirely through the documented public APIs and remove any remaining public
-  callback dependency on cache, index, scheduler, or browser values.
+  callback dependency on cache, index, scheduler, or browser values. (Deferred until after 0.2.0,
+  which decides which names are public.)
 
-## 0.2.0 — Tags
+## 0.2.0 — Engine consolidation
+
+Pause feature expansion for a bounded technical-debt pass. The September 2026 audit found the debt
+concentrated in three places: Core reading Cache internals, a duplicated memory cache backend, and
+GUI state that mirrors workspace state. Phases are ordered by dependency. Each phase ends with a
+green test suite; engine phases also end with a benchmark run compared against the committed
+baseline.
+
+Decisions taken during the audit:
+
+- The memory-only cache backend (`MemoryCacheDB`, `AbstractCacheDB`) is removed. `cache=false`
+  opens an in-memory DuckDB through the one remaining code path. Granular caching (per stage, per
+  kind), non-replayable streaming sources, and disk-budget control are payload *policies* consulted
+  by that one backend; they are designed when pipeline inspection (0.14.0) needs them, not before.
+- `query_items(workspace, sql)` becomes internal until the query model of 0.5.0 replaces it.
+- Two timing systems stay, on purpose: `Browser.@timed` is always-on GUI frame diagnostics;
+  `DataBrowserProfiling` is opt-in pipeline profiling.
+- Files a user may want to inspect with other tools — tags, notes, layout, later the project file —
+  live in the project root. Only the cache lives in the depot (and that may change too).
+- The public API has two tiers, both public and both documented: **project authors** use
+  `define_project`, `register_*!`, and the workspace operations; **extension authors** use the stage
+  contract, the source/item/collection contracts, `reconstruct`, GUI extension hooks, and plot kinds.
+  Every exported name belongs to exactly one tier.
+
+### 0.2.1 Repairs
+
+- [ ] Make both benchmarks run again. `bench/scaling.jl` and `bench/realistic_browse.jl` import
+  `Project`/`define_project`/`register_item!` from `DataBrowserAPI` (moved to Recipes), use an
+  undefined `Cache` alias, and call `Profiling.environment_flag`, `DebugTimings`,
+  `with_debug_timings`, `write_debug_timings` (removed in #11). Replace the timing artifacts with
+  `reset_debug_timings!`/`take_debug_timings!`; fix `bench/README.md` to match.
+- [ ] Run a bench smoke (`realistic_browse.jl 0.05`, `scaling.jl 50`) inside `Pkg.test()` so a
+  refactor that breaks bench fails the suite.
+- [ ] Commit one baseline `scorecard.csv` under `bench/baselines/` before Phase 1 starts.
+- [ ] Delete dead code: `Workspace.jl` imports of the nonexistent `resolve_type`/`type_name` (two
+  precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
+  `publish_work_success!` and its unused `collections`/`refresh_hierarchy` keywords;
+  `rebuild_workspace_hierarchy!`, `cancel_analysis!`, `cancel_cache!`, `reset_work_graph!`,
+  `start_cache!`, `stop_cache!`, `_flush_operation`, `_flush_rows`, `_callback_name`,
+  `plot_kind_symbol`, `BrowserState.project_locked`, `BrowserState.project_preference`, Core's
+  unused `using DataBrowserAnnotations`; the unread `effective` argument of
+  `store_interpreted_records!`. Drop unused declared deps (`Statistics`, `Tables` in GUI;
+  `DataFrames` in Plots) after verifying.
+- [ ] Fix docstrings that describe behavior the code does not have: `set_cache_memory_limit!`
+  (workspace) is not live; `load_cache_index` overlays uncommitted buffers; `cache_stage_summary`
+  counts queued, not persisted; `query_items` exposes item columns too; `close_cache_db!` ordering;
+  `finish_debug_timings!` still records in-flight sections. Remove or create the missing
+  `docs/cache.md` and `docs/profiling.md` targets.
+
+### 0.2.2 Cache boundary and one backend
+
+- [ ] Core stops reading Cache fields. `cache_work_status` (`Processing.jl`) and
+  `_cache_knows_source_item` (`Operations.jl`) read `cachedb.lock`, `.failures`, `.source_items`,
+  `.result_states`, `.collection_result_states`, `.stage_ledger` and branch on
+  `cachedb isa CacheDB`. Replace with `work_state(db, kind, entity)` and `knows_source_item(db, key)`
+  owned by Cache. Move `wait_condition_deadline` to Core. Shrink the 45-name import list.
+- [ ] Delete `MemoryCacheDB` and `AbstractCacheDB`; `cache=false` opens DuckDB `":memory:"`. Removes
+  roughly ten duplicated method families whose semantics had already diverged (memory recorded
+  result failures in `failures`, disk did not).
+- [ ] Fix the concurrency issues this exposes: `query_view_signature` is recreated without a lock;
+  `cache_pending_counts` locks ten stores separately and returns an incoherent snapshot;
+  `open_cache_db` does not stop already-started stores and flush tasks when a later constructor
+  fails; `close_cache_db!` keeps only the first exception.
+- [ ] Evaluate the work graph against cancellation, invalidation, priority, streaming, and
+  collection edge cases; finish with a bounded tuning pass or an explicit redesign.
+- [ ] Audit source fingerprinting and document exactly what each change token invalidates across
+  live updates and workspace reopen.
+
+### 0.2.3 One index, one status
+
+- [ ] Remove `WorkspaceIndex.source`. It is a full `SourceScan` snapshot rebuilt by
+  `refresh_workspace_source!` (copies the whole collection index and sorts every item per batch),
+  and its only two readers ask `isa SourceScan`. Derive that boolean from the scan state.
+  `SourceScan` remains the Cache load result only.
+- [ ] Add `WorkspaceIndex(source_id)`; delete the two hand-built seven-argument constructions.
+- [ ] Name item metadata layers after the pipeline stages on `ItemRecord` and remove the parallel
+  `WorkspaceIndex.item_metadata` dict, so each item's interpret and analyze layers live in one place.
+- [ ] One status model. `scan.state` (7 symbols), `cache_state` (8), `cache.operation` (4), and the
+  `status.label in ("Fresh", "Loaded", "Errors")` check in `workspace_status` collapse into one
+  enum and one `busy` derivation; `source_scan_running`, `cache_work_running`,
+  `engine_work_running`, `workspace_busy` become one function. `analysis_errors` becomes a typed
+  collection, not `Dict{Union{String,Int64},String}`.
+- [ ] Small Core cleanups: `indexed_collection_path` and `collection_value` drop the `Workspace`
+  argument they ignore; the `ItemRecord` copy constructor stops `deepcopy`ing metadata by default;
+  the scan's `current::Dict{String,Any}` fingerprint map gets a type; `InspectorTable` and
+  `merge_item_tables` move out of Core (only GUI and Plots use them).
+- [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining
+  stable logical item identities at the project boundary.
+
+### 0.2.4 Public API tiers
+
+- [ ] Sort every exported name into the project-author or extension-author tier and stop exporting
+  the rest: `items_for_file`, `SourceFile`, the concrete `Project`, `gui_timings`,
+  `reset_timings!`, `plot_kinds`, `CollectionRecipe`, `ItemRecipe`, `NoMatch`,
+  `RegisteredReadResult`. Export what extension authors need and cannot reach today:
+  `GuiExtension`, `register_gui_extension!`, `NamedCollection`.
+- [ ] Generate the umbrella's `using`/`export` lists from one table instead of two hand-kept blocks.
+- [ ] One selector concept — `ItemRecord`, id, or current selection — implemented once and shared by
+  `select_items!`, `materialize_items`, `read_item_data`; delete the runtime-typed
+  `select_items!(::AbstractVector)` fallback. Rename the Cache-side `read_item_data` to
+  `read_payload` (it reads a stage payload; the workspace one materializes processed items).
+  `query_items(ws)` becomes `item_ids(ws)`; `query_items(ws, sql)` becomes internal.
+- [ ] Add the workspace accessors the GUI currently reaches for by field: `items(ws)`,
+  `item(ws, id)`, `collections(ws)`, `selection(ws)`, `errors(ws)`, and an `on_change(ws, f)`
+  subscription replacing the `status_dirty` poll.
+- [ ] Recipes: rename `register_collection_analysis!` to `register_collection!` (it registers
+  `process` too); look the recipe up once per stage chain instead of three linear scans.
+- [ ] Strengthen internal module boundaries and import hygiene across the package family.
+
+### 0.2.5 GUI as one caller of the API
+
+- [ ] Move the 58 `workspace.<field>` reads across ten GUI and Plots files onto the Phase 3
+  functions. This is the first concrete step toward the shared command layer of 0.6.0.
+- [ ] One shared helper for selected-item table materialization; `TableInspector.jl:19-106` and
+  `TablePlotPanel.jl:67-113` are the same code.
+- [ ] One hierarchy projection per frame. `_render_hierarchy_tree_panel` is 347 lines and walks the
+  collection tree five times per frame; cache the prepared projection between invalidations and
+  rebuild item-panel rows only when selection, visibility, tags, or item state change.
+- [ ] Remove duplicated GUI state: filters held both as Julia strings and ImGui pointers and synced
+  every frame; the main plot window special-cased instead of being a `PlotViewState`;
+  `PlotState.kind_by_item` beside `PlotViewState.plot_kind`; `PROJECT_PLOT_RECIPES` with no removal
+  path; `PlotsExtension.reset!` not clearing `MAKIE_CONTEXT`.
+- [ ] Tighten the extension boundary: `PlotsExtension` calls `Browser._project_visible_selection`
+  and `Browser._items_for_ids`; make those tier-B functions. Reduce the twelve-hook protocol to
+  what the one extension uses; type `save_view`/`load_view!` instead of `Dict{String,Any}`.
+- [ ] Split `BrowserState` (40 fields) into selection/filter, windows, diagnostics, persistence,
+  and lifecycle state. Last, because the items above shrink it first.
+
+### 0.2.6 Cache internals
+
+- [ ] One `MetaVType` registry replacing the six parallel type maps (`_meta_vtype`,
+  `_vtype_julia`, `_meta_vtype_sql`, `_encode_wide_value`, `_decode_wide_value`,
+  `_duckdb_sql_type_maybe`).
+- [ ] A `with_connection(db) do … end` helper replacing thirteen hand-written connect/try/finally
+  sites.
+- [ ] Group `CacheDB` (25 fields) into index stores, metadata stores, payload store, and runtime
+  state. Inline `load_cache_index_body` and `_report_loaded_cache_index`.
+- [ ] Name result kinds after the stages (`PROCESSED_RESULT`, not `PROCESSING_RESULT`); settle on one
+  of `cache`/`cachedb`/`cache_db`.
+- [ ] Cache identity gains a project fingerprint. Vision §12 requires project definition + data +
+  parameters; today it is project *name* + source id, so editing project code reuses stale results.
+  Decide what is fingerprinted and whether a mismatch rebuilds or warns.
+- [ ] Define and test persistence at every expensive pipeline boundary (discovery, read, entries,
+  item and collection process/analyze). A valid persisted stage satisfies downstream work without
+  rerunning earlier user code.
+- [ ] Support expensive or non-repeatable sources (simulations, compressed inputs, streams) through
+  source-owned durable handles or persisted interpreted outputs; add `replayable(::AbstractDataSource)`
+  when the first such source arrives.
+- [ ] Profile the DuckDB flush path at millions of rows and remove the dominant avoidable cost.
+- [ ] Write `docs/cache.md`.
+
+### 0.2.7 Sources, Annotations, Recipes
+
+- [ ] Split `DirectorySource` into scan, `metadata.txt`, and watcher files. The watcher rescans
+  the whole tree and fingerprints every file three times on each event; `.git` is skipped by the
+  watcher but traversed by the scan; `readdir` order is not sorted; `metadata_lock` is held while
+  calling user `reconstruct`; two concurrent `watch_source` calls race and a crashed watcher task is
+  reported as "already watching".
+- [ ] `metadata.txt`: decide whether values may be quoted; validate metadata value types at parse
+  time instead of failing downstream.
+- [ ] Annotations live in the project root. The GUI currently derives the annotation root from the
+  cache path under `DEPOT_PATH` (`Browser/Operations.jl:23-26`), against the vision. The GUI uses
+  `item_annotation_key`/`ancestor_annotation_keys` instead of rebuilding keys; enforce or drop the
+  "item ids and collection paths never overlap" claim; one parse-error type for the three stores.
+- [ ] Profiling: delete or test the sampling profiler API (`start_sampling!`, `stop_sampling!`,
+  `cancel_sampling!`; no callers).
+
+### 0.2.8 Tests
+
+- [ ] Inventory the eighteen test files by what they lock in: contract tests stay; tests of
+  internal helpers (`insert_item!`, `_update_multi_selection!`, `DataGridState`, …) are deleted or
+  rewritten against public functions after Phase 3; GUI-state tests are rewritten after Phase 4.
+- [ ] Target shape: one public-API suite per tier; one engine suite (work graph, invalidation,
+  reopen, live source); one cache suite that exercises the real DuckDB path (memory mode now does);
+  one GUI suite.
+- [ ] Automated GUI testing: choose the harness (scripted `BrowserState` operations against the
+  Phase 4 surface, or the ImGui test engine) and cover open, select, plot, close.
+
+### 0.2.9 Benchmarks
+
+- [ ] Smoke run in `Pkg.test()` and committed baseline (Phase 0).
+- [ ] After Phase 4, add a GUI frame-time probe (tree panel, items panel) to `scaling.jl`; nothing
+  measures per-frame cost today.
+
+### 0.2.10 Documentation
+
+- [ ] `ARCHITECTURE.md` promises two diagrams per package and has them for Sources only. Add Core
+  and Cache after Phases 1–2, GUI after Phase 4.
+- [ ] `docs/api.md`: the two tiers from Phase 3, one line per name.
+- [ ] `vision.md` links to `cache.md`, `plans/plotting-api-design.md`, `plans/spatial-browser.md`,
+  `plans/project-persistence.md`; none exist. Fix or remove.
+- [ ] `AGENTS.md`: require a bench smoke before committing engine changes.
+
+## 0.3.0 — Tags
 
 Make tags a dependable, machine-interpretable way to classify items and collections. Start by
 checking the current `tags.txt` loading path and the state of existing files, then complete the API
@@ -96,7 +290,7 @@ Every change keeps `tags.txt` human-readable and recoverable independently of th
 - [ ] Provide GUI controls for the same operations, including multi-selection.
 - [ ] Apply tags consistently to colours, visibility, and the selected item set.
 
-## 0.3.0 — Notes
+## 0.4.0 — Notes
 
 Make notes a complete human-facing memory and context feature, separate from tags and plotting.
 Notes belong to items and collections, remain readable as plain text, and are edited primarily
@@ -109,7 +303,7 @@ through the API and GUI.
 - [ ] Add GUI views for reading and editing notes in the context of the current item or collection.
 - [ ] Preserve notes across workspace reopen and source refresh.
 
-## 0.4.0 — Find, filter, and view items
+## 0.5.0 — Find, filter, and view items
 
 Turn the current hierarchy-only browser into several coordinated views over the same item set. Julia
 code gets concrete database queries; GUI filtering produces live selections without exposing query
@@ -125,39 +319,6 @@ selection model.
 - [ ] Support flattening, grouping, sorting, and filtering without copying item state into the GUI.
 - [ ] Show when computed statistics used by a filter are still being populated.
 - [ ] Persist useful item-view and filter state with the project.
-
-## 0.5.0 — Engine consolidation and scale
-
-Pause feature expansion for a bounded architecture and performance pass. Measure current behavior,
-make explicit decisions about the work graph and layer boundaries, and remove recurring per-frame or
-per-row costs before the application API and plotting surface grow substantially.
-
-- [ ] Evaluate again whether TimerOutputs v1.0 can be leveraged better: getting rid of our macros, replacing the level kwarg with multiple timers, dropping MAIN_TIMER and moving timers to be session-based. Move from DataBrowserAPI to DataBrowserCore?
-- [ ] Evaluate the current work graph against cancellation, invalidation, priority, streaming, and
-  collection edge cases; finish with either a bounded tuning pass or an explicit redesign.
-- [ ] Clarify ownership between the workspace, index, project cache, database, and write buffers;
-  remove duplicated state and layer-skipping call paths.
-- [ ] Name item metadata layers after the pipeline stages (`metadata_entries`, `metadata_analyze`) on
-  `ItemRecord`, and remove the parallel `WorkspaceIndex.item_metadata` dict so each item’s interpret
-  and analyze layers live in one place.
-- [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining stable
-  logical item identities at the project boundary.
-- [ ] Audit source fingerprinting and document exactly what each source-provided change token
-  invalidates across live updates and workspace reopen.
-- [ ] Define and test persistence at every expensive pipeline boundary: source discovery, read,
-  entries, item processing and analysis, and collection processing and analysis. A valid persisted
-  stage must satisfy downstream work without rerunning earlier user code; supported core payload
-  shapes cache automatically, while custom typed values may opt into rehydration with a
-  `reconstruct` method.
-- [ ] Support expensive or non-repeatable sources such as simulations, compressed inputs, and
-  streams through source-owned durable handles/snapshots or persisted interpreted outputs. Memory
-  eviction must not rerun a simulation or consume a stream again when a valid durable result exists.
-- [ ] Collapse workspace busy and idle decisions into one engine model and one watcher snapshot.
-- [ ] Rebuild item-panel rows only when selection, visibility, tags, or relevant item state changes.
-- [ ] Cache hierarchy preparation and visible-collection results between invalidations.
-- [ ] Profile the DuckDB flush path at millions of rows and remove the dominant avoidable cost.
-- [ ] Strengthen internal Julia module boundaries and explicit import hygiene inside the package
-  family.
 
 ## 0.6.0 — Shared application API
 

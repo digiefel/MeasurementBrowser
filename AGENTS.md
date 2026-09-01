@@ -16,7 +16,7 @@ Avoid overusing internal jargon. Reduce cognitive load by explaining jargon when
 
 IMPORTANT: before planning multi-package changes, and whenever broad context is needed, read the north-star document: [docs/vision.md](docs/vision.md).
 For the full architectural model, when needed, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-When making a change or looking to add a feature, read the roadmap: [docs/plans/roadmap.md](docs/plans/roadmap.md).
+When making a change or looking to add a feature, read the roadmap: [docs/roadmap.md](docs/roadmap.md).
 Benchmark details: [bench/README.md](bench/README.md).
 
 Use docstrings when useful, and ALWAYS have docstrings on public APIs. 
@@ -36,10 +36,10 @@ julia --project=docs docs/make.jl
 ```
 
 ## Architecture
-Project scripts describe how to recognize files, parse them into items, and draw plots. The package
-handles directory scanning, background processing, DuckDB caching, the item tree, selection, and the
-browser UI.
-Project code should not touch cache files, background jobs, or UI state. It is user code: a black box,
+Project scripts describe how to recognize files, parse them into items, and draw plots. The package  
+handles directory scanning, background processing, DuckDB caching, the item tree, selection, and the  
+browser UI.  
+Project code should not touch cache files, background jobs, or UI state. It is user code: a black box,  
 never to be thought about or optimized.
 
 When a workspace opens, the package works through a dependency graph with multiple stages: 
@@ -47,21 +47,22 @@ interpret source items, process each item, analyze each item, then process and a
 If the user selects items that are still processing, that work gets higher priority. 
 Full detail: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-`docs/*.md` describes current behavior. `docs/plans/` is for designs not yet built. When you change
-behavior that affects the model, update the relevant doc in the same commit — do not copy
-architecture into this file.
+Planned work lives in `docs/roadmap.md`.
 
 ## Testing
+
 Before a commit, run the full suite once:
 `julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
 harmless local edits. Fixtures in `test/fixtures/`; the inline project lives in
 `test/test_project.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
 
 ## Benchmarks
+
 Use `bench/` for performance work (`julia --project=bench`). Results persist under
 `bench/results/` (gitignored). See [bench/README.md](bench/README.md).
 
 ## Work style
+
 Work in small reviewable items. Always clear up confusion. Do not assume. Ask the user whenever there's decisions,
 proposing various options to stimulate ideas. Asking is always better than assuming.
 Conversations are always preferred to long outputs. A question mark is worth 1000 words.
