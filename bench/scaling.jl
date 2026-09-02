@@ -18,6 +18,8 @@
 # catches cumulative publication costs: exponent ~0 means stable throughput, while exponent ~1
 # means total build time is quadratic.
 #
+# Each size is N aliases of bench/templates/kind1.csv. Peak RAM: bench/run.sh scaling.jl
+#
 # Results land in bench/results/<timestamp>-scaling/scaling.csv.
 
 using DataBrowserRecipes: Project, define_project, register_item!
@@ -35,7 +37,10 @@ using Dates: format, now
 using Printf: @printf, @sprintf
 using Statistics: mean
 
+include(joinpath(@__DIR__, "custom_data_source.jl"))
+
 const SIZES = isempty(ARGS) ? [500, 1000, 2000, 4000] : parse.(Int, split(ARGS[1], ","))
+const TEMPLATE = joinpath(@__DIR__, "templates", "kind1.csv")
 
 """One collection, one trivial item per file — the smallest project that still exercises the scan."""
 function scaling_project(name::AbstractString)::Project
@@ -53,23 +58,22 @@ end
 
 """Open a settled `n`-item workspace, run `probe(ws, build_seconds)`, and clean up."""
 function with_workspace(probe::Function, n::Int)
-    dir = mktempdir()
-    for index in 1:n
-        write(joinpath(dir, "item_$index.csv"), "v\n1\n")
-    end
-    name = "scaling_" * basename(dir)  # unique; the cache is keyed by project name
+    name = "scaling_" * string(n) * "_" * string(time_ns())
     cache_dir = joinpath(first(DEPOT_PATH), "databrowser", name)
+    source = BenchSource(
+        abspath(TEMPLATE) * "_" * name,
+        alias_file(TEMPLATE, n, i -> "item_$i.csv"),
+    )
     try
         workspace = nothing
         build_seconds = @elapsed begin
-            workspace = open_workspace(scaling_project(name), dir)
+            workspace = open_workspace(scaling_project(name), source)
             wait_workspace_idle!(workspace; timeout=600)
         end
         result = probe(workspace, build_seconds)
         close_workspace!(workspace)
         return result
     finally
-        rm(dir; force=true, recursive=true)
         rm(cache_dir; force=true, recursive=true)
     end
 end
@@ -122,7 +126,8 @@ function main()
             1e3 * times["items_panel"], 1e3 * times["metadata_publish"])
     end
 
-    outdir = joinpath(@__DIR__, "results", format(now(), "yyyymmdd-HHMMSS") * "-scaling")
+    default_outdir = joinpath(@__DIR__, "results", format(now(), "yyyymmdd-HHMMSS") * "-scaling")
+    outdir = get(ENV, "MB_BENCH_OUTDIR", default_outdir)
     mkpath(outdir)
     csv = joinpath(outdir, "scaling.csv")
     open(csv, "w") do io

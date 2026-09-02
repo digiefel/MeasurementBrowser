@@ -16,10 +16,25 @@ The `bench/` environment is separate from the package (`julia --project=bench`) 
 julia --project=bench -e 'using Pkg; Pkg.instantiate()'
 ```
 
-Every run writes a timestamped directory under `bench/results/` (gitignored). Synthetic data and
-DuckDB caches live in temp dirs and are deleted on exit; only the result files are kept. Compare
-runs by diffing the summary artifacts below against `benchmark.log` (realistic) or the printed
-git context in the terminal (scaling).
+Source data is three static CSVs under `bench/templates/` (`kind1.csv`, `kind2.csv`, `kind3.csv`).
+`bench/custom_data_source.jl` presents each file as many source items (same bytes, distinct ids).
+`scale` / the item-count list only changes how many aliases are advertised.
+
+Every run writes a timestamped directory under `bench/results/` (gitignored). The DuckDB cache lives
+in a temp depot and is deleted on exit; only the result files are kept. Compare runs by diffing the
+summary artifacts below against `benchmark.log` (realistic) or the printed git context in the
+terminal (scaling).
+
+Peak RAM is not sampled inside Julia. Wrap a harness so `ps` records the high-water mark (kilobytes
+on macOS and Linux):
+
+```bash
+bench/run.sh realistic_browse.jl [scale]
+bench/run.sh scaling.jl [n1,n2,...]
+```
+
+That writes `peak_rss_kb.txt` in the result directory. If the number jumps by a large factor between
+similar runs, RAM usage exploded. Running the `.jl` files directly skips that file.
 
 ## Scaling sweep
 
@@ -56,14 +71,11 @@ sampling profiles and pprof for call-path attribution.
 julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
 ```
 
-The single benchmark harness. It builds a deterministic three-kind project with compact file count
-but beyond-RuO2 fatigue pressure: each synthetic big file expands into more cycles and rows per cycle
-than the typical real fatigue file. It does what a user does — selects items and **renders real
-plots** (GLMakie figures built from the cached data) while the cache is still being built, and again
-after it settles. The default scale models 636 files and about 2,156 items, but still crosses the
-cache buffer row ceiling; smaller scales are useful for iteration. The `bench/` environment is
-separate from the package so its dev tools (BenchmarkTools, CairoMakie, …) don't become runtime
-dependencies.
+The single benchmark harness. It builds a three-kind project against the static templates: compact
+alias counts, fatigue-style row volume in `kind3.csv`. It does what a user does — selects items and
+**renders real plots** (GLMakie figures built from the cached data) while the cache is still being
+built, and again after it settles. The default scale models 636 aliases and about 2,156 items, and
+crosses the cache buffer row ceiling; smaller scales are useful for iteration.
 
 It measures, on real functions and real data:
 
@@ -72,19 +84,17 @@ It measures, on real functions and real data:
    sampled during the build and after it settles, per item kind;
 3. **cache writes** — interpreted/processed/stats call counts, mean latency, writer occupancy
    (busy vs queued-wait), and an explicit processed-payload saturation pass;
-4. **normalized averages** — rows per file/item, milliseconds per file/item, write nanoseconds per
-   payload row, and memory per item so scale sweeps are comparable;
-5. **process memory** — RSS, GC-live, and index/queue counts sampled across the build;
-6. **warm reopen** — closing and reopening on the same cache, timing the incremental rescan and the
-   first plot, with the allocation it costs (the cached-index handling path);
-7. **database aggregation query latency** — one `sum/avg` query per processed payload schema.
+4. **normalized averages** — rows per alias/item, milliseconds per alias/item, write nanoseconds per
+   payload row so scale sweeps are comparable;
+5. **warm reopen** — closing and reopening on the same cache, timing the incremental rescan and the
+   first plot, with the allocation it costs (the cached-index handling path).
 
 Outputs land under `bench/results/realistic-<timestamp>/`: `benchmark.log` (git branch, commit,
 Julia version, threads, env), `scorecard.csv` (the one-line summary),
-`responsiveness.csv` (every interactive sample), `memory_samples.csv`, `saturation.csv`,
-`database_aggregation_queries.csv`, `reopen.csv`, `benchmark.log`, and explicit timing summaries
-in `debug_timings.txt` and `debug_timings.csv`.
+`responsiveness.csv` (every interactive sample), `saturation.csv`,
+`reopen.csv`, and explicit timing summaries in `debug_timings.txt` and `debug_timings.csv`.
+`bench/run.sh realistic_browse.jl` also writes `peak_rss_kb.txt`.
 
 **Compare:** `scorecard.csv` is the primary before/after line — build throughput, normalized
-ms/file and ms/item, plot latencies, memory, and warm reopen. Use `debug_timings.csv` to compare
+ms/file and ms/item, plot latencies, and warm reopen. Use `debug_timings.csv` to compare
 instrumented operation totals. `benchmark.log` records the exact git commit and tunables for each run.

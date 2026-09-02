@@ -2,22 +2,23 @@
 #
 # Models the pressure profile of a real project (the RuO2 v2 project): fewer source files than the
 # full data set, but realistic fatigue-style row volume. The important scale is staged DataFrame rows:
-# the real run crosses the cache buffer row ceiling and forces the writer/backpressure path. The
-# default workload exceeds the real per-source/item burst shape and adds a processed-payload stress
-# pass, while staying small enough for routine engine checks.
+# the real run crosses the cache buffer row ceiling and forces the writer/backpressure path.
+#
+# Source bytes are three static CSVs under bench/templates/. BenchSource presents each file as many
+# source items (scale multiplies alias counts, not rows per file).
+#
+# Peak RAM: bench/run.sh realistic_browse.jl [scale]
 #
 #   julia --project=bench --threads=auto bench/realistic_browse.jl [scale]
 #
-# `scale` (default 1.0) multiplies file/item counts, not rows per item. Synthetic data and the cache
-# live in a temp dir that is deleted on exit, so the drive is not filled; only the small result files
-# (CSVs + PNG) are kept under bench/results/.
+# `scale` (default 1.0) multiplies alias counts. The DuckDB cache lives in a temp depot deleted on
+# exit; only the small result files are kept under bench/results/.
 #
-# Tunables via ENV (counts are per the documented diversity; see DEFAULTS below):
-#   MB_BENCH_KIND1_FILES, MB_BENCH_KIND2_FILES, MB_BENCH_KIND3_FILES, MB_BENCH_KIND3_CYCLES
-#   MB_BENCH_KIND3_ROWS, MB_BENCH_AFTER_BUILD_PLOTS, MB_BENCH_PROCESSED_STRESS_ROWS
-# The benchmark writes throughput, memory, and responsiveness artifacts. Loading
-# DataBrowserProfiling turns on `@timed_dbg`; the run then `reset_debug_timings!` /
-# `take_debug_timings!` (both DataBrowserProfiling) and writes the TimerOutput.
+# Tunables via ENV (alias counts; see DEFAULTS below):
+#   MB_BENCH_KIND1_FILES, MB_BENCH_KIND2_FILES, MB_BENCH_KIND3_FILES
+#   MB_BENCH_AFTER_BUILD_PLOTS, MB_BENCH_PROCESSED_STRESS_ROWS, MB_BENCH_REPEATS
+# Loading DataBrowserProfiling turns on `@timed_dbg`; the run then `reset_debug_timings!` /
+# `take_debug_timings!` and writes the TimerOutput.
 
 using DataBrowserAPI: item_data, label
 using DataBrowserRecipes: define_project, register_item!
@@ -30,7 +31,6 @@ using DataBrowserPlots:
     registered_plot_kinds,
     setup_plot,
     plot_data!
-using DataBrowserSources
 import DataBrowserProfiling as Profiling
 using CSV
 using DataFrames
@@ -40,27 +40,27 @@ using Printf
 using Statistics: mean, median, quantile
 import GLMakie: Figure, Axis, lines!, contents
 
+include(joinpath(@__DIR__, "custom_data_source.jl"))
+
 # --------------------------------------------------------------------------------------------------
-# Sizing (downscaled from the real RuO2 project, preserving row-pressure shape)
+# Sizing (alias counts; row layout is the templates)
 # --------------------------------------------------------------------------------------------------
 
 scale = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 1.0
 _env_int(key, default) = parse(Int, get(ENV, key, string(default)))
 _scaled(n) = max(1, round(Int, n * scale))
 
-# kind1: tiny files, one item each (IV-style, ~120 rows).      many small records
-# kind2: medium files, one item each (CV-style, ~5000 rows).   mid-size table writes
-# kind3: big files, one item PER CYCLE (fatigue-style).        few files, many rows/items
-# Defaults target a short run while exceeding the real fatigue burst: one synthetic big file expands
-# into more cycles and rows per cycle than the typical RuO2 fatigue file, but there are far fewer
-# physical files.
-const KIND1_FILES  = _scaled(_env_int("MB_BENCH_KIND1_FILES", 500))
-const KIND2_FILES  = _scaled(_env_int("MB_BENCH_KIND2_FILES", 120))
-const KIND3_FILES  = _scaled(_env_int("MB_BENCH_KIND3_FILES", 16))
-const KIND3_CYCLES = _env_int("MB_BENCH_KIND3_CYCLES", 96)   # items per big file
-const KIND1_ROWS   = 120
-const KIND2_ROWS   = 5_000
-const KIND3_ROWS   = _env_int("MB_BENCH_KIND3_ROWS", 6_000) # rows per cycle
+# kind1: tiny files, one item each (IV-style).      many small records
+# kind2: medium files, one item each (CV-style).    mid-size table writes
+# kind3: big files, one item PER CYCLE (fatigue).   few aliases, many rows/items
+const KIND1_FILES = _scaled(_env_int("MB_BENCH_KIND1_FILES", 500))
+const KIND2_FILES = _scaled(_env_int("MB_BENCH_KIND2_FILES", 120))
+const KIND3_FILES = _scaled(_env_int("MB_BENCH_KIND3_FILES", 16))
+# Rows / cycles in bench/templates/*.csv (kind3: one item per cycle).
+const KIND1_ROWS = 120
+const KIND2_ROWS = 5_000
+const KIND3_CYCLES = 96
+const KIND3_ROWS = 6_000
 
 const CACHE_ROW_CEILING = DataBrowserCache.CACHE_BUFFER_ROW_LIMIT
 const PROCESSED_STRESS_ROWS = _env_int(
@@ -80,11 +80,10 @@ const BENCH_ENV_KEYS = (
     "MB_BENCH_KIND1_FILES",
     "MB_BENCH_KIND2_FILES",
     "MB_BENCH_KIND3_FILES",
-    "MB_BENCH_KIND3_CYCLES",
-    "MB_BENCH_KIND3_ROWS",
     "MB_BENCH_AFTER_BUILD_PLOTS",
     "MB_BENCH_PROCESSED_STRESS_ROWS",
     "MB_BENCH_REPEATS",
+    "MB_BENCH_OUTDIR",
 )
 
 function tee_println(args...)::Nothing
@@ -116,7 +115,9 @@ function _print_run_header(log_path::String, outdir::String)::Nothing
     tee_println("log_file:   ", log_path)
     tee_println("branch:     ", _repo_command(["git", "rev-parse", "--abbrev-ref", "HEAD"]))
     tee_println("commit:     ", _repo_command(["git", "rev-parse", "HEAD"]))
-    status = _repo_command(["git", "status", "--short", "--", "bench/realistic_browse.jl", "bench/README.md"])
+    status = _repo_command(["git", "status", "--short", "--",
+        "bench/realistic_browse.jl", "bench/custom_data_source.jl", "bench/README.md",
+        "bench/run.sh"])
     tee_println("benchmark_file_status:")
     if isempty(status)
         tee_println("  <clean>")
@@ -136,80 +137,27 @@ function _print_run_header(log_path::String, outdir::String)::Nothing
     return nothing
 end
 
-# --------------------------------------------------------------------------------------------------
-# Synthetic data generation (deterministic; written as raw CSV for speed)
-# --------------------------------------------------------------------------------------------------
+_template(name) = joinpath(@__DIR__, "templates", name)
 
-"""Write `n` rows of `cols` (name => generator(i)) as CSV to `path`, fast."""
-function _write_csv(path::String, header::String, body::String)
-    open(path, "w") do io
-        write(io, header)
-        write(io, body)
-    end
-    return nothing
+function _aliases(name, n, kind)
+    alias_file(_template(name), n, i -> joinpath(
+        "W$(mod1(i, 6))", kind, string("dev", lpad(i, 4, '0'), "_", kind, ".csv")))
 end
 
-function _kind1_body(rng)
-    io = IOBuffer()
-    for i in 1:KIND1_ROWS
-        @printf(io, "%.4f,%.6e\n", -2 + 4i / KIND1_ROWS, (1e-9) * sinpi(i / 40) + 1e-11 * randn(rng))
-    end
-    return String(take!(io))
-end
-
-function _kind2_body(rng)
-    io = IOBuffer()
-    for i in 1:KIND2_ROWS
-        @printf(io, "%.4f,%.6e,%.1f\n", -3 + 6i / KIND2_ROWS,
-            1e-12 * (1 + cospi(i / 500)) + 1e-14 * randn(rng), 1.0e6)
-    end
-    return String(take!(io))
-end
-
-function _kind3_body(rng)
-    io = IOBuffer()
-    for c in 1:KIND3_CYCLES, r in 1:KIND3_ROWS
-        @printf(io, "%d,%.6e,%.4f,%.6e\n", c, r * 1e-7,
-            3 * sinpi(r / (KIND3_ROWS / 2)), (1e-6) * cospi(r / (KIND3_ROWS / 2)) + 1e-8 * randn(rng))
-    end
-    return String(take!(io))
-end
-
-"""Generate the whole synthetic tree under `root`; return (file_count, approx_item_count)."""
-function generate_data(root::String)
-    rng = MersenneTwister(20260624)
-    mkpath(root)
-    files = 0
-    # Spread files across a few wafers/sites so the hierarchy has real structure.
-    wafers = ["W$(i)" for i in 1:6]
-    for n in 1:KIND1_FILES
-        w = wafers[mod1(n, length(wafers))]
-        dir = joinpath(root, w, "kind1"); mkpath(dir)
-        _write_csv(joinpath(dir, @sprintf("dev%04d_kind1.csv", n)),
-            "voltage,current\n", _kind1_body(rng)); files += 1
-    end
-    for n in 1:KIND2_FILES
-        w = wafers[mod1(n, length(wafers))]
-        dir = joinpath(root, w, "kind2"); mkpath(dir)
-        _write_csv(joinpath(dir, @sprintf("dev%04d_kind2.csv", n)),
-            "voltage,cap,freq\n", _kind2_body(rng)); files += 1
-    end
-    for n in 1:KIND3_FILES
-        w = wafers[mod1(n, length(wafers))]
-        dir = joinpath(root, w, "kind3"); mkpath(dir)
-        _write_csv(joinpath(dir, @sprintf("dev%04d_kind3.csv", n)),
-            "cycle,time,voltage,current\n", _kind3_body(rng)); files += 1
-    end
-    items = KIND1_FILES + KIND2_FILES + KIND3_FILES * KIND3_CYCLES
-    return files, items
-end
+_bench_source() = BenchSource(abspath(_template("")), vcat(
+    _aliases("kind1.csv", KIND1_FILES, "kind1"),
+    _aliases("kind2.csv", KIND2_FILES, "kind2"),
+    _aliases("kind3.csv", KIND3_FILES, "kind3"),
+))
 
 # --------------------------------------------------------------------------------------------------
 # Project: three kinds mirroring the real read/entries/process/analyze/plot shape
 # --------------------------------------------------------------------------------------------------
 
+# Load the shared template at `filepath`. Wafer and kind come from the alias path
+# (`W2/kind1/dev0042_kind1.csv`), not from the template's real folder.
 function _read_table(file)
-    parts = splitpath(dirname(file.filepath))
+    parts = splitpath(dirname(file.relative_path))
     return (
         data=DataFrame(CSV.File(file.filepath; ntasks=1)),
         metadata=Dict{Symbol,Any}(
@@ -349,23 +297,6 @@ mutable struct Sample
     ready::Int
 end
 
-mutable struct MemorySample
-    elapsed_s::Float64
-    rss_bytes::Int64
-    gc_live_bytes::Int64
-    gc_allocated_bytes::Int64
-    rss_minus_gc_live_bytes::Int64
-    index_items::Int64
-    index_collections::Int64
-    item_metadata::Int64
-    analysis_errors::Int64
-    processing_jobs::Int64
-    pending_writes::Int64
-    pending_write_rows::Int64
-    selected_queue::Int64
-    background_waiting::Int64
-end
-
 struct SaturationSample
     kind::Symbol
     requested_items::Int
@@ -375,26 +306,6 @@ struct SaturationSample
     flush_ms::Float64
     peak_pending_rows::Int64
     processed_writes::Int
-end
-
-function MemorySample(elapsed_s::Float64, snapshot)::MemorySample
-    rss_bytes = Profiling.process_rss_bytes()
-    return MemorySample(
-        elapsed_s,
-        rss_bytes,
-        snapshot.gc_live_bytes,
-        snapshot.gc_allocated_bytes,
-        rss_bytes - snapshot.gc_live_bytes,
-        snapshot.index_items,
-        snapshot.index_collections,
-        snapshot.item_metadata,
-        snapshot.analysis_errors,
-        snapshot.processing_jobs,
-        snapshot.pending_writes,
-        snapshot.pending_write_rows,
-        snapshot.selected_queue,
-        snapshot.background_waiting,
-    )
 end
 
 function _records_of_kind(ws, kind::Symbol)::Vector{ItemRecord}
@@ -426,7 +337,7 @@ function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
         error(
             "Processed-writer stress is too small: selected $stress_items $kind item(s) " *
             "for about $estimated_rows rows, below the cache row ceiling $CACHE_ROW_CEILING. " *
-            "Increase MB_BENCH_KIND3_FILES, MB_BENCH_KIND3_CYCLES, or MB_BENCH_KIND3_ROWS.",
+            "Increase MB_BENCH_KIND3_FILES, or rewrite the kind3 template with more rows.",
         )
     end
 
@@ -466,10 +377,16 @@ end
 function run_benchmark()
     tmp = mktempdir()
     pushfirst!(DEPOT_PATH, tmp)          # cache lands in temp, deleted with everything else
-    data_root = joinpath(tmp, "data")
+    source = _bench_source()
+    n_files = length(source.files)
+    n_items = KIND1_FILES + KIND2_FILES + KIND3_FILES * KIND3_CYCLES
+    data_bytes = filesize(_template("kind1.csv")) +
+        filesize(_template("kind2.csv")) +
+        filesize(_template("kind3.csv"))
 
-    outdir = joinpath(@__DIR__, "results",
+    default_outdir = joinpath(@__DIR__, "results",
         "realistic-" * replace(string(round(Int, time())), r"\D" => ""))
+    outdir = get(ENV, "MB_BENCH_OUTDIR", default_outdir)
     mkpath(outdir)
     log_path = joinpath(outdir, "benchmark.log")
     log_io = open(log_path, "w")
@@ -479,12 +396,8 @@ function run_benchmark()
     try
         _print_run_header(log_path, outdir)
 
-        tee_println("Generating synthetic data ... (scale=$scale)")
-        gen_t = @elapsed (n_files, n_items) = generate_data(data_root)
-        data_bytes = sum(filesize(joinpath(r, f))
-                         for (r, _, fs) in walkdir(data_root) for f in fs)
-        tee_printf("  %d files, ~%d items, %.1f MB on disk, generated in %.1fs\n",
-            n_files, n_items, data_bytes / 1024^2, gen_t)
+        tee_printf("Templates: 3 files, %.1f MB on disk; %d aliases, ~%d items (scale=%s)\n",
+            data_bytes / 1024^2, n_files, n_items, string(scale))
 
         project = build_project(; plots=true)
         kinds = (:kind1, :kind2, :kind3)
@@ -492,11 +405,8 @@ function run_benchmark()
         samples = Sample[]
 
         tee_println("Building cache + browsing during the scan ...")
-        ws = open_workspace(project, data_root)
+        ws = open_workspace(project, source)
         t_start = time()
-        rss_start_bytes = Profiling.process_rss_bytes()
-        rss_peak_bytes = rss_start_bytes
-        rss_end_bytes = rss_start_bytes
         build_seconds = 0.0
         scan_seconds = 0.0
         processing_started = nothing
@@ -507,22 +417,9 @@ function run_benchmark()
         saturation_stats = nothing
         try
             last_probe = 0.0
-            last_rss_sample = 0.0
-            last_memory_sample = -Inf
-            memory_samples = MemorySample[]
             kind_cursor = 1
             while true
                 now = time() - t_start
-                if now - last_rss_sample >= 0.1
-                    last_rss_sample = now
-                    rss_peak_bytes = max(rss_peak_bytes, Profiling.process_rss_bytes())
-                end
-                if now - last_memory_sample >= 0.5
-                    last_memory_sample = now
-                    sample = MemorySample(now, Workspace.workspace_memory_snapshot(ws))
-                    rss_peak_bytes = max(rss_peak_bytes, sample.rss_bytes)
-                    push!(memory_samples, sample)
-                end
                 processing_active = _processing_active(ws)
                 analysis_active = _analysis_active(ws)
                 processing_started === nothing && processing_active && (processing_started = now)
@@ -554,9 +451,6 @@ function run_benchmark()
                     @warn("hit MAX_BUILD_SECONDS"); break)
                 sleep(0.004)
             end
-            final_sample = MemorySample(time() - t_start, Workspace.workspace_memory_snapshot(ws))
-            rss_end_bytes = final_sample.rss_bytes
-            push!(memory_samples, final_sample)
 
             tee_println("Saturating processed-payload writer ...")
             saturation_stats = saturate_processed_writes!(ws, :kind3)
@@ -606,10 +500,6 @@ function run_benchmark()
                 processed_writes=metrics.processed_writes[],
                 metadata_write_ns=metrics.metadata_write_ns[],
                 metadata_writes=metrics.metadata_writes[],
-                rss_start_bytes,
-                rss_peak_bytes,
-                rss_end_bytes,
-                memory_samples,
             )
         finally
             close_workspace!(ws)
@@ -618,7 +508,7 @@ function run_benchmark()
         # Warm reopen on the same cache: the incremental rescan finds every fingerprint unchanged and
         # reuses the cached index. Surfaces the true warm-reopen cost (rescan + cached-index handling +
         # any re-processing the post-scan readiness probe triggers).
-        reopen_stats = measure_reopen(project, data_root, plot_kinds, kinds)
+        reopen_stats = measure_reopen(project, source, plot_kinds, kinds)
 
         report(samples, build_stats, saturation_stats, reopen_stats, outdir,
             n_files, n_items, data_bytes, build_seconds)
@@ -641,11 +531,11 @@ end
 # --------------------------------------------------------------------------------------------------
 
 """One close-and-reopen on the warm cache: time to first view and idle, allocation, first plots."""
-function _reopen_once(project, data_root, plot_kinds, kinds)
+function _reopen_once(project, source, plot_kinds, kinds)
     GC.gc()
     t0 = time()
     bytes0 = Base.gc_bytes()
-    ws = open_workspace(project, data_root)
+    ws = open_workspace(project, source)
     first_view_s = 0.0
     idle_s = 0.0
     deadline = time() + MAX_BUILD_SECONDS
@@ -684,50 +574,24 @@ the wall time to first cached view and to idle, the total bytes allocated gettin
 warm-reopen cost — rescan, cached-index handling, and any re-processing the readiness probe triggers),
 and the first warm plot per kind (its data is read from disk, never the staged buffer).
 """
-function measure_reopen(project, data_root, plot_kinds, kinds)
-    _reopen_once(project, data_root, plot_kinds, kinds)   # warm up JIT, discard
-    return _reopen_once(project, data_root, plot_kinds, kinds)
+function measure_reopen(project, source, plot_kinds, kinds)
+    _reopen_once(project, source, plot_kinds, kinds)   # warm up JIT, discard
+    return _reopen_once(project, source, plot_kinds, kinds)
 end
 
 # --------------------------------------------------------------------------------------------------
 # Reporting
 # --------------------------------------------------------------------------------------------------
 
-_stat(v, f) = isempty(v) ? NaN : f(v)
-
 function report(samples, stats, saturation, reopen, outdir,
     n_files, n_items, data_bytes, build_seconds)
     saturation === nothing && error("Missing processed-writer saturation sample")
-    # responsiveness CSV
     open(joinpath(outdir, "responsiveness.csv"), "w") do io
         println(io, "elapsed_s,phase,kind,n_items,plot_ms,allocated_bytes,ready_items")
         for s in samples
             @printf(io, "%.3f,%s,%s,%d,%.3f,%d,%d\n",
                 s.elapsed_s, s.phase, s.kind, s.n, s.plot_ms,
                 s.allocated_bytes, s.ready)
-        end
-    end
-
-    open(joinpath(outdir, "memory_samples.csv"), "w") do io
-        println(io, "elapsed_s,rss_bytes,gc_live_bytes,gc_allocated_bytes," *
-            "rss_minus_gc_live_bytes,index_items,index_collections,item_metadata,analysis_errors," *
-            "processing_jobs,pending_writes,pending_write_rows,selected_queue,background_waiting")
-        for sample in stats.memory_samples
-            @printf(io, "%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d\n",
-                sample.elapsed_s,
-                sample.rss_bytes,
-                sample.gc_live_bytes,
-                sample.gc_allocated_bytes,
-                sample.rss_minus_gc_live_bytes,
-                sample.index_items,
-                sample.index_collections,
-                sample.item_metadata,
-                sample.analysis_errors,
-                sample.processing_jobs,
-                sample.pending_writes,
-                sample.pending_write_rows,
-                sample.selected_queue,
-                sample.background_waiting)
         end
     end
 
@@ -787,11 +651,6 @@ function report(samples, stats, saturation, reopen, outdir,
     write_ms_per_file = write_ns / 1e6 / source_files
     write_ms_per_item = write_ns / 1e6 / indexed_items
     write_ns_per_payload_row = write_ns / payload_rows
-    peak_rss_kib_per_item = stats.rss_peak_bytes / 1024 / indexed_items
-    peak_gc_live_kib_per_item = maximum(
-        (sample.gc_live_bytes for sample in stats.memory_samples);
-        init=0,
-    ) / 1024 / indexed_items
     open(joinpath(outdir, "scorecard.csv"), "w") do io
         println(io, "source_files,items,estimated_payload_rows,data_mib," *
             "rows_per_file,rows_per_item,build_s,scan_s,processing_s,analysis_s," *
@@ -801,10 +660,8 @@ function report(samples, stats, saturation, reopen, outdir,
             "saturation_items,saturation_rows,saturation_load_ms,saturation_flush_ms," *
             "saturation_peak_pending_rows,saturation_processed_writes," *
             "during_plot_median_ms,during_plot_p90_ms,during_plot_p99_ms,during_plot_max_ms," *
-            "after_plot_median_ms,after_plot_p90_ms,after_plot_p99_ms,after_plot_max_ms," *
-            "rss_start_mib,rss_peak_mib,rss_end_mib,peak_rss_kib_per_item," *
-            "peak_gc_live_kib_per_item")
-        @printf(io, "%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.3f,%.3f\n",
+            "after_plot_median_ms,after_plot_p90_ms,after_plot_p99_ms,after_plot_max_ms")
+        @printf(io, "%d,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%d,%d,%.3f,%.3f,%d,%d,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f\n",
             n_files,
             stats.processed_items,
             ESTIMATED_PAYLOAD_ROWS,
@@ -831,16 +688,11 @@ function report(samples, stats, saturation, reopen, outdir,
             read_stat(during, median), read_stat(during, values -> quantile(values, 0.9)),
             read_stat(during, values -> quantile(values, 0.99)), read_stat(during, maximum),
             read_stat(after, median), read_stat(after, values -> quantile(values, 0.9)),
-            read_stat(after, values -> quantile(values, 0.99)), read_stat(after, maximum),
-            stats.rss_start_bytes / 1024^2,
-            stats.rss_peak_bytes / 1024^2,
-            stats.rss_end_bytes / 1024^2,
-            peak_rss_kib_per_item,
-            peak_gc_live_kib_per_item)
+            read_stat(after, values -> quantile(values, 0.99)), read_stat(after, maximum))
     end
 
     tee_println("\n==================== REALISTIC BROWSE BENCHMARK ====================")
-    tee_printf("dataset:  %d files · ~%d items · %d estimated rows · %.1f MB\n",
+    tee_printf("dataset:  %d aliases · ~%d items · %d estimated rows · %.1f MB templates\n",
         n_files, n_items, ESTIMATED_PAYLOAD_ROWS, data_bytes / 1024^2)
     tee_printf("build:    %.1f s wall (scan + processing + collection analysis)\n", build_seconds)
     n_during = count(s -> s.phase === :during_build, samples)
@@ -872,8 +724,6 @@ function report(samples, stats, saturation, reopen, outdir,
         scan_ms_per_file, processing_ms_per_item)
     tee_printf("  writes              %8.2f ms/file    %8.2f ms/item  %8.1f ns/row\n",
         write_ms_per_file, write_ms_per_item, write_ns_per_payload_row)
-    tee_printf("  memory              %8.1f KiB RSS/item  %8.1f KiB GC-live/item\n",
-        peak_rss_kib_per_item, peak_gc_live_kib_per_item)
 
     tee_println("\nWrites:")
     tee_printf("  interpreted %6d calls  mean %7.2f ms\n", stats.interpreted_writes,
@@ -893,30 +743,6 @@ function report(samples, stats, saturation, reopen, outdir,
     tee_printf("  materialize %.1f ms  flush %.1f ms  peak pending rows %d  processed writes %d\n",
         saturation.load_ms, saturation.flush_ms, saturation.peak_pending_rows,
         saturation.processed_writes)
-
-    tee_println("\nProcess memory:")
-    tee_printf("  RSS start %.1f MiB  peak %.1f MiB  end %.1f MiB\n",
-        stats.rss_start_bytes / 1024^2,
-        stats.rss_peak_bytes / 1024^2,
-        stats.rss_end_bytes / 1024^2)
-    if !isempty(stats.memory_samples)
-        peak_sample = stats.memory_samples[argmax(
-            [sample.rss_bytes for sample in stats.memory_samples])]
-        tee_printf("  peak sample: GC live %.1f MiB  RSS-GC-live %.1f MiB\n",
-            peak_sample.gc_live_bytes / 1024^2,
-            peak_sample.rss_minus_gc_live_bytes / 1024^2)
-        tee_printf("  index counts: items %d  metadata %d  collections %d  errors %d\n",
-            peak_sample.index_items,
-            peak_sample.item_metadata,
-            peak_sample.index_collections,
-            peak_sample.analysis_errors)
-        tee_printf("  queue counts: jobs %d  pending writes %d (%d rows)  selected %d  background waiting %d\n",
-            peak_sample.processing_jobs,
-            peak_sample.pending_writes,
-            peak_sample.pending_write_rows,
-            peak_sample.selected_queue,
-            peak_sample.background_waiting)
-    end
 
     tee_println("\nWarm reopen (same cache, every fingerprint unchanged):")
     tee_printf("  first cached view %.0f ms  ·  idle %.2f s  ·  allocated %.1f MiB  ·  %d items%s\n",
