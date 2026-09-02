@@ -1,4 +1,4 @@
 interface:
   display_name: "DataBrowser Profiling"
-  short_description: "Revise profiling with debug timings, ProfileView, and pprof"
-  default_prompt: "Use $databrowser-profiling in one Revise session. Profile the requested DataBrowser behavior, save the timing and pprof files, and link the inspectable outputs with a short plain-language explanation."
+  short_description: "Revise profiling with TimerOutputs"
+  default_prompt: "Use $databrowser-profiling in one Revise session. Profile the requested DataBrowser behavior, inspect the TimerOutputs tree, and explain where time went in plain language."
