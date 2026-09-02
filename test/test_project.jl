@@ -19,7 +19,3 @@ end
 function test_source(_project::Project, root_path::AbstractString)
     return DataBrowser.DirectorySource(root_path)
 end
-
-"""Block until source and graph work settle, then return the workspace."""
-wait_workspace_idle!(workspace; timeout::Real=15) =
-    DataBrowserCore.Workspace.wait_workspace_idle!(workspace; timeout)

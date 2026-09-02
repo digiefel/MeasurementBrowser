@@ -20,7 +20,6 @@ using DataBrowserCore.Workspace:
     open_workspace,
     reconcile_source_metadata_cache!,
     refresh_status!,
-    wait_workspace_idle!,
     workspace_busy
 using DataBrowserGUI.Browser: BrowserState, _items_of_selected_collections
 using DataFrames: DataFrame
@@ -93,7 +92,7 @@ function with_workspace(probe::Function, n::Int)
         workspace = nothing
         build_seconds = @elapsed begin
             workspace = open_workspace(scaling_project(name), source)
-            wait_workspace_idle!(workspace; timeout=600)
+            DataBrowserCore.Workspace.wait_workspace_idle!(workspace; timeout=600)
         end
         result = probe(workspace, build_seconds)
         close_workspace!(workspace)

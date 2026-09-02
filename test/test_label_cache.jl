@@ -1,6 +1,5 @@
 using DataBrowser
 using Test
-using DataBrowserCore.Workspace: wait_workspace_idle!
 
 # Labels are resolved once from live values during interpretation and persisted on the records.
 # A warm reopen must deliver them without running any project label code; a changed source item
