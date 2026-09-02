@@ -68,7 +68,9 @@ end
             DBInterface.close!(db)
         end
 
-        workspace = DataBrowser.open_workspace(project, source)
+        workspace = @test_logs (:warn, r"Generated project cache is unavailable") begin
+            DataBrowser.open_workspace(project, source)
+        end
         try
             @test workspace.cache.db isa CACHE.MemoryCacheDB
             @test workspace.cache.disk_error isa CACHE.ProjectCacheSchemaError
