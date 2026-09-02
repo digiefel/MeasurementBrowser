@@ -28,8 +28,8 @@ When code and docs disagree, fix the doc in the same commit.
 ## Commands
 
 ```bash
-# Run tests (when validation is needed — skip for doc-only / trivial edits)
-julia --project --threads=4 -e 'using Pkg; Pkg.test()'
+# Run tests and write bench/status.txt (skip for doc-only / trivial edits; time consuming)
+julia --project=bench --threads=auto test/runtests.jl
 
 # Generate public docs
 julia --project=docs docs/make.jl
@@ -52,18 +52,21 @@ Planned work lives in `docs/roadmap.md`.
 ## Testing
 
 Before a commit, run the full suite once:
-`julia --project --threads=4 -e 'using Pkg; Pkg.test()'`. Skip for doc-only, inspection-only, or
-harmless local edits. Fixtures in `test/fixtures/`; the inline project lives in
-`test/test_project.jl`. Plot/GUI tests: metadata, labels, figure creation — not pixels.
+`julia --project=bench --threads=auto test/runtests.jl` (or `bench/run.sh` if you want peak RSS in
+`status.txt`). That command uses the `bench/` environment for unit tests and then writes
+`bench/status.txt`. Skip for doc-only, inspection-only, or harmless local edits. Fixtures in
+`test/fixtures/`; the inline project lives in `test/test_project.jl`. Plot/GUI tests: metadata,
+labels, figure creation — not pixels.
 
 ## Benchmarks
 
-Use `bench/` for performance work. `bench/run.sh` writes `bench/status.txt`. See
-[bench/README.md](bench/README.md).
+The performance run is the last step of the test command above. See [bench/README.md](bench/README.md).
 
 ## Work style
 
 Work in small reviewable items. Always clear up confusion. Do not assume. Ask the user whenever there's decisions,
 proposing various options to stimulate ideas. Asking is always better than assuming.
 Conversations are always preferred to long outputs. A question mark is worth 1000 words.
-After a turn with changes still pending, propose a small commit title.
+
+After a turn with changes still pending, propose a series of one or more commits with a simple title.
+Remember to advise the user when a commit or more are due, or overdue.

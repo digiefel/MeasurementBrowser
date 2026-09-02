@@ -1,6 +1,8 @@
-# Combined performance run. Included from test/runtests.jl after the unit tests.
-# Writes bench/status.txt on success. Leaves it empty on failure so a bad run is not committed
-# as a baseline. Tunables: MB_BENCH_SCALE (default 0.05), MB_BENCH_SCALING_SIZES (250,500,1000).
+# Combined performance run. Writes bench/status.txt only on success, and otherwise clears the file.
+#   julia --project=bench --threads=auto bench/run.jl     # this file only
+#   bench/run.sh                                          # this file + peak RSS at 0.1 scale, prints status.txt
+# test/runtests.jl includes this after the unit tests (stdout discarded).
+# Tunables: MB_BENCH_SCALE (default 0.05 here, 0.1 in run.sh), MB_BENCH_SCALING_SIZES (250,500,1000).
 
 using Printf
 using Statistics: median, var
@@ -153,8 +155,6 @@ function write_status(realistic, scaling; startup_s)
         _line(io, "scaling_metadata_publish_ms", scaling.ms_by_op["metadata_publish"],
             "Median milliseconds for one reconcile_source_metadata_cache!(refresh_hierarchy=true) at each scaling_sizes.")
     end
-    println("Wrote ", STATUS_PATH)
-    print(read(STATUS_PATH, String))
     return nothing
 end
 
@@ -168,6 +168,7 @@ const STARTUP_S = @elapsed begin
 end
 
 function run_performance()
+    println("performance snapshot: realistic browse, then scaling")
     write(STATUS_PATH, "")
     try
         realistic = run_benchmark()
@@ -178,4 +179,8 @@ function run_performance()
         write(STATUS_PATH, "")
         rethrow()
     end
+end
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    run_performance()
 end

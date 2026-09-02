@@ -200,7 +200,7 @@ function timed_plot!(ws, plot_kinds, kind::Symbol, k::Int; records=nothing)
         records = ItemRecord[ws.index.items[id] for id in ready[1:k]]
     end
     n_ready = records === nothing ? 0 : length(records)
-    result = @timed begin
+    result = Base.@timed begin
         select_items!(ws, records)             # mirror the GUI selecting them
         items = Workspace.materialize_items(ws, records)
         plot_kind = plot_kinds[kind]
@@ -266,7 +266,7 @@ function saturate_processed_writes!(ws, kind::Symbol)::SaturationSample
 
     select_items!(ws, selected)
     processed_writes_before = ws.metrics.processed_writes[]
-    load = @timed Workspace.materialize_items(ws, selected)
+    load = Base.@timed Workspace.materialize_items(ws, selected)
     peak_pending_rows = Int64(0)
     flush_started = time()
     while Workspace.cache_has_pending_writes(ws.cache.db)
