@@ -113,8 +113,7 @@ Decisions taken during the audit:
   undefined `Cache` alias, and call `Profiling.environment_flag`, `DebugTimings`,
   `with_debug_timings`, `write_debug_timings` (removed in #11). Replace the timing artifacts with
   `reset_debug_timings!`/`take_debug_timings!`; fix `bench/README.md` to match.
-- [ ] Run a bench smoke (`realistic_browse.jl 0.05`, `scaling.jl 50`) inside `Pkg.test()` so a
-  refactor that breaks bench fails the suite.
+- [x] Run the performance snapshot at the end of `test/runtests.jl` in the `bench/` environment.
 - [x] Commit `bench/status.txt` after a default-scale realistic run.
 - [ ] Delete dead code: `Workspace.jl` imports of the nonexistent `resolve_type`/`type_name` (two
   precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
@@ -262,7 +261,7 @@ Decisions taken during the audit:
 
 ### 0.2.9 Benchmarks
 
-- [ ] Smoke run in `Pkg.test()` and committed baseline (Phase 0).
+- [x] Performance snapshot runs at the end of `test/runtests.jl` in the `bench/` environment (Phase 0).
 - [ ] After Phase 4, add a GUI frame-time probe (tree panel, items panel) to `scaling.jl`; nothing
   measures per-frame cost today.
 
