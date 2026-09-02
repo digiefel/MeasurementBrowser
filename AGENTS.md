@@ -58,8 +58,8 @@ harmless local edits. Fixtures in `test/fixtures/`; the inline project lives in
 
 ## Benchmarks
 
-Use `bench/` for performance work (`julia --project=bench`). Results persist under
-`bench/results/` (gitignored). See [bench/README.md](bench/README.md).
+Use `bench/` for performance work. `bench/run.sh` writes `bench/status.txt`. See
+[bench/README.md](bench/README.md).
 
 ## Work style
 

@@ -115,7 +115,7 @@ Decisions taken during the audit:
   `reset_debug_timings!`/`take_debug_timings!`; fix `bench/README.md` to match.
 - [ ] Run a bench smoke (`realistic_browse.jl 0.05`, `scaling.jl 50`) inside `Pkg.test()` so a
   refactor that breaks bench fails the suite.
-- [ ] Commit one baseline `scorecard.csv` under `bench/baselines/` before Phase 1 starts.
+- [x] Commit `bench/status.txt` after a default-scale realistic run.
 - [ ] Delete dead code: `Workspace.jl` imports of the nonexistent `resolve_type`/`type_name` (two
   precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
   `publish_work_success!` and its unused `collections`/`refresh_hierarchy` keywords;
