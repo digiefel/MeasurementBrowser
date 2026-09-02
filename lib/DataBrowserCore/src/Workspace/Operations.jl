@@ -993,6 +993,10 @@ function enqueue_collection_work!(
             if haskey(workspace.index.items, id)
         ]
         isempty(members) && continue
+        # Collection process reads processed payloads. Do not queue until every current member
+        # has one; this function runs again when the next member finishes.
+        all(record -> cache_work_status(
+                workspace, WorkKey(ITEM_PROCESS, record.id)) === :ready, members) || continue
         member_analyze = WorkKey[
             WorkKey(ITEM_ANALYZE, record.id) for record in members]
         process_key = WorkKey(COLLECTION_PROCESS, collection_key)
