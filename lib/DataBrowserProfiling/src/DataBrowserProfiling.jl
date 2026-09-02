@@ -18,13 +18,9 @@ analysis are delegated to TimerOutputs (show, flatten, merge, Tables.jl, ...):
     take_debug_timings!()      # like snapshot, but also resets the master
     finish_debug_timings!()    # stop recording and return the final timings
     reset_debug_timings!()     # clear the master and (re)enable recording
-
-The Julia sampling-profiler helpers and the process-RSS helper also live here but
-share no state with the collector above.
 """
 module DataBrowserProfiling
 
-using Profile
 using TimerOutputs
 import DataBrowserAPI
 
@@ -164,115 +160,7 @@ function __init__()
     return nothing
 end
 
-# ===========================================================================
-# Julia sampling profiler (dev-only; shares no state with the collector above)
-# ===========================================================================
-
-const SAMPLING_TOTAL_BUFFER_SIZE = 2_000_000
-const SAMPLING_DELAY_SECONDS = 0.01
-
-struct MachTaskBasicInfo
-    virtual_size::UInt64
-    resident_size::UInt64
-    resident_size_max::UInt64
-    user_seconds::Int32
-    user_microseconds::Int32
-    system_seconds::Int32
-    system_microseconds::Int32
-    policy::Int32
-    suspend_count::Int32
-end
-
-"""One reduced source line from Julia's sampling profiler."""
-struct SamplingProfileRow
-    samples::Int
-    self_samples::Int
-    function_name::String
-    file::String
-    line::Int
-end
-
-"""Saved Julia sampling result used by diagnostic tooling."""
-struct SamplingProfile
-    total_samples::Int
-    delay_seconds::Float64
-    truncated::Bool
-    rows::Vector{SamplingProfileRow}
-end
-
-"""Start Julia's bounded all-thread CPU sampling profiler."""
-function start_sampling!()::Nothing
-    Profile.is_running() && error("Julia's CPU profiler is already running")
-    Profile.init(n=max(50_000, cld(SAMPLING_TOTAL_BUFFER_SIZE, Base.Threads.nthreads())),
-        delay=SAMPLING_DELAY_SECONDS)
-    Profile.clear()
-    Profile.start_timer()
-    return nothing
-end
-
-function stop_sampling!()::SamplingProfile
-    running = Profile.is_running()
-    truncated = Profile.is_buffer_full()
-    (running || truncated) || error("Julia's CPU profiler is not running")
-    running && Profile.stop_timer()
-    data, info = Profile.retrieve(include_meta=false, limitwarn=false)
-    flat, flat_info = Profile.flatten(data, info)
-    counts = Dict{Tuple{String,String,Int},Int}()
-    self_counts = Dict{Tuple{String,String,Int},Int}()
-    frames = Tuple{String,String,Int}[]
-    total_samples = 0
-    for ip in flat
-        if ip == 0
-            isempty(frames) && continue
-            total_samples += 1
-            for frame in unique(frames)
-                counts[frame] = get(counts, frame, 0) + 1
-            end
-            self_counts[frames[1]] = get(self_counts, frames[1], 0) + 1
-            empty!(frames)
-        else
-            frame = flat_info[ip]
-            frame.from_c || push!(
-                frames,
-                (String(frame.func), String(frame.file), frame.line),
-            )
-        end
-    end
-    rows = SamplingProfileRow[
-        SamplingProfileRow(samples, get(self_counts, frame, 0), frame...)
-        for (frame, samples) in counts
-    ]
-    sort!(rows; by=row -> (row.self_samples, row.samples), rev=true)
-    Profile.clear()
-    return SamplingProfile(total_samples, SAMPLING_DELAY_SECONDS, truncated, rows)
-end
-
-function cancel_sampling!()::Nothing
-    Profile.is_running() && Profile.stop_timer()
-    Profile.clear()
-    return nothing
-end
-
-"""Return current process resident bytes."""
-function process_rss_bytes()::Int64
-    if Sys.isapple()
-        info = Ref(MachTaskBasicInfo(0, 0, 0, 0, 0, 0, 0, 0, 0))
-        count = Ref{UInt32}(UInt32(div(sizeof(MachTaskBasicInfo), sizeof(Int32))))
-        task = ccall(:mach_task_self, UInt32, ())
-        result = ccall(:task_info, Int32,
-            (UInt32, Int32, Ref{MachTaskBasicInfo}, Ref{UInt32}), task, 20, info, count)
-        result == 0 || error("mach task_info failed while sampling RSS with code $result")
-        return Int64(info[].resident_size)
-    elseif Sys.islinux()
-        fields = split(read("/proc/self/statm", String))
-        return parse(Int64, fields[2]) * Int64(Sys.page_size())
-    end
-    error("Current RSS sampling is unsupported on $(Sys.KERNEL)")
-end
-
 export snapshot_debug_timings, take_debug_timings!, finish_debug_timings!,
-    reset_debug_timings!,
-    SamplingProfile, SamplingProfileRow, start_sampling!, stop_sampling!,
-    cancel_sampling!, process_rss_bytes
+    reset_debug_timings!
 
 end # module

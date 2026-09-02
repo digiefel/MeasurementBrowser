@@ -1,7 +1,7 @@
 using Test
 using DataBrowserProfiling
 using DataBrowserProfiling: snapshot_debug_timings, take_debug_timings!,
-    finish_debug_timings!, reset_debug_timings!, process_rss_bytes
+    finish_debug_timings!, reset_debug_timings!
 using DataBrowserAPI: @timed_dbg
 import DataBrowserAPI
 import TimerOutputs
@@ -65,9 +65,5 @@ using TimerOutputs: TimerOutput
         fetch(Threads.@spawn (@timed_dbg "after" sum(1:10)))
         @test isempty(snapshot_debug_timings().inner_timers)            # not recorded
         reset_debug_timings!()                                          # re-enable
-    end
-
-    @testset "process_rss_bytes reports a positive size" begin
-        @test process_rss_bytes() > 0
     end
 end

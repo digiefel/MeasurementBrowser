@@ -245,8 +245,7 @@ Decisions taken during the audit:
   cache path under `DEPOT_PATH` (`Browser/Operations.jl:23-26`), against the vision. The GUI uses
   `item_annotation_key`/`ancestor_annotation_keys` instead of rebuilding keys; enforce or drop the
   "item ids and collection paths never overlap" claim; one parse-error type for the three stores.
-- [ ] Profiling: delete or test the sampling profiler API (`start_sampling!`, `stop_sampling!`,
-  `cancel_sampling!`; no callers).
+- [x] Profiling: sampling profiler API and `process_rss_bytes` removed; TimerOutputs is the profiler.
 
 ### 0.2.8 Tests
 
