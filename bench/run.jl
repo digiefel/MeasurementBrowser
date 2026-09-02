@@ -1,8 +1,4 @@
-# Combined performance run. One Julia process, one status.txt.
-#
-#   julia --project=bench --threads=auto bench/run.jl
-#   bench/run.sh
-#
+# Combined performance run. Included from test/runtests.jl after the unit tests.
 # Writes bench/status.txt on success. Leaves it empty on failure so a bad run is not committed
 # as a baseline. Tunables: MB_BENCH_SCALE (default 0.05), MB_BENCH_SCALING_SIZES (250,500,1000).
 
@@ -165,17 +161,21 @@ end
 empty!(ARGS)
 get!(ENV, "MB_BENCH_SCALE", "0.05")
 get!(ENV, "MB_BENCH_SCALING_SIZES", "250,500,1000")
-write(STATUS_PATH, "") # clear status file
 
-try
-    startup_s = @elapsed begin
-        include(joinpath(@__DIR__, "realistic_browse.jl"))
-        include(joinpath(@__DIR__, "scaling.jl"))
+const STARTUP_S = @elapsed begin
+    include(joinpath(@__DIR__, "realistic_browse.jl"))
+    include(joinpath(@__DIR__, "scaling.jl"))
+end
+
+function run_performance()
+    write(STATUS_PATH, "")
+    try
+        realistic = run_benchmark()
+        scaling = run_scaling()
+        write_status(realistic, scaling; startup_s=STARTUP_S)
+        return nothing
+    catch
+        write(STATUS_PATH, "")
+        rethrow()
     end
-    realistic = run_benchmark()
-    scaling = run_scaling()
-    write_status(realistic, scaling; startup_s)
-catch
-    write(STATUS_PATH, "") # clear status file
-    rethrow()
 end

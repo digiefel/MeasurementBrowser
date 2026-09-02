@@ -1,21 +1,11 @@
 #!/bin/sh
-# Peak RSS of a Julia bench, in kilobytes. `ps -o rss=` is kB on macOS and Linux.
-#   bench/run.sh                         # combined harness (writes status.txt)
-#   bench/run.sh run.jl
-#   bench/run.sh realistic_browse.jl [scale]
-#   bench/run.sh scaling.jl [n1,n2,...]
+# Peak RSS of the test suite, in kilobytes. `ps -o rss=` is kB on macOS and Linux.
 # After a successful run that wrote status.txt, appends peak_rss_kb.
 set -eu
 BENCH=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+ROOT=$(CDPATH= cd -- "$BENCH/.." && pwd)
 
-if [ $# -eq 0 ]; then
-    script=run.jl
-else
-    script=$1
-    shift
-fi
-
-julia --project="$BENCH" --threads=auto "$BENCH/$script" "$@" &
+julia --project="$BENCH" --threads=auto "$ROOT/test/runtests.jl" &
 pid=$!
 peak=0
 while kill -0 "$pid" 2>/dev/null; do
