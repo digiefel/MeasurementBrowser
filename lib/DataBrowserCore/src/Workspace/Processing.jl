@@ -25,13 +25,6 @@ function _dropped_work_result()::ProcessingResult
     )
 end
 
-"""Map one work key to its cache `result_states` kind."""
-function _work_key_cache_kind(key::WorkKey)::CacheResultKind
-    return key.kind === ITEM_PROCESS ? PROCESSING_RESULT :
-        key.kind === ITEM_ANALYZE ? ITEM_ANALYSIS_RESULT :
-        key.kind === COLLECTION_PROCESS ? COLLECTION_PROCESS_RESULT : COLLECTION_ANALYSIS_RESULT
-end
-
 """
 Return `:ready`, `:failed`, or `:absent` for one finished work key.
 
@@ -55,14 +48,14 @@ function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
             DataBrowserCache.source_item_id(cachedb, source_key),
         ) ? :ready : :absent
     end
-    kind = _work_key_cache_kind(key)
+    kind = key.kind
     entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
         key.entity::Int64 : key.entity::String
     state = cached_result_state(cachedb, kind, entity)
-    if kind === PROCESSING_RESULT
+    if kind === ITEM_PROCESS
         state !== nothing && CacheResultStatus(state.status) === RESULT_FAILED && return :failed
         state === nothing && return :absent
-        return has_payload(cachedb, entity::String; stage=PAYLOAD_STAGE_PROCESSED) ? :ready : :absent
+        return has_payload(cachedb, entity::String; stage=ITEM_PROCESS) ? :ready : :absent
     end
     state === nothing && return :absent
     return CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
@@ -77,7 +70,7 @@ function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     end
     cache_entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
         key.entity::Int64 : key.entity::String
-    clear_cached_result_state!(cachedb, _work_key_cache_kind(key), cache_entity)
+    clear_cached_result_state!(cachedb, key.kind, cache_entity)
     return nothing
 end
 
@@ -347,7 +340,7 @@ function reprocess_item(
 )::AbstractDataItem
     upstream_record = get(workspace.index.items, record.id, record)
     cached = only(read_payload(
-        workspace.cache.db, [upstream_record]; stage=PAYLOAD_STAGE_INTERPRETED))
+        workspace.cache.db, [upstream_record]; stage=SOURCE_INTERPRET))
     input = interpreted_item(workspace, collections, upstream_record, cached)
     processed = process(workspace.project, input)
     processed isa AbstractDataItem || error(
@@ -385,7 +378,7 @@ function run_processing(
     record::ItemRecord,
 )::NamedTuple
     cached = only(read_payload(
-        workspace.cache.db, [record]; stage=PAYLOAD_STAGE_INTERPRETED))
+        workspace.cache.db, [record]; stage=SOURCE_INTERPRET))
     materialized_record = effective_record(collections, record)
     input = interpreted_item(workspace, collections, record, cached)
     processed = @timed_dbg process(workspace.project, input)
@@ -431,7 +424,7 @@ function run_item_analysis(
     delivered_record = ItemRecord(
         record; metadata=delivered_metadata(workspace, record, collections))
     processed = only(read_payload(
-        workspace.cache.db, [delivered_record]; stage=PAYLOAD_STAGE_PROCESSED))
+        workspace.cache.db, [delivered_record]; stage=ITEM_PROCESS))
     processed === nothing && error(
         "Cannot analyze item '$(record.id)': processed data is missing",
     )
@@ -463,7 +456,7 @@ function run_collection_process(workspace::Workspace, collection_key::Int64)::Na
         ]
     end
     delivered = delivered_records(workspace, collections, records)
-    payloads = read_payload(workspace.cache.db, delivered; stage=PAYLOAD_STAGE_PROCESSED)
+    payloads = read_payload(workspace.cache.db, delivered; stage=ITEM_PROCESS)
     any(isnothing, payloads) && error(
         "Cannot process collection '$collection_key': one or more processed members are missing",
     )
@@ -507,9 +500,9 @@ function run_collection_analysis(workspace::Workspace, collection_key::Int64)::M
     # A member has a collection-processed payload only when a fold rewrote it; everyone else
     # analyzes from their own processed payload.
     payloads = read_payload(
-        workspace.cache.db, delivered; stage=PAYLOAD_STAGE_COLLECTION_PROCESSED)
+        workspace.cache.db, delivered; stage=COLLECTION_PROCESS)
     remaining = [index for index in eachindex(records) if payloads[index] === nothing]
-    base = read_payload(workspace.cache.db, delivered[remaining]; stage=PAYLOAD_STAGE_PROCESSED)
+    base = read_payload(workspace.cache.db, delivered[remaining]; stage=ITEM_PROCESS)
     for (position, index) in pairs(remaining)
         payloads[index] = base[position]
     end
@@ -564,7 +557,7 @@ function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
                         workspace.cache.db,
                         processing.records[position],
                         item_data(processing.outputs[position]);
-                        stage=PAYLOAD_STAGE_COLLECTION_PROCESSED)
+                        stage=COLLECTION_PROCESS)
                 end
                 store_collection_process_result!(
                     workspace.cache.db,
@@ -630,9 +623,9 @@ function _delivered_payload(
     delivered = ItemRecord(
         record; metadata=delivered_metadata(workspace, record, collections))
     folded = only(read_payload(
-        workspace.cache.db, [delivered]; stage=PAYLOAD_STAGE_COLLECTION_PROCESSED))
+        workspace.cache.db, [delivered]; stage=COLLECTION_PROCESS))
     folded === nothing || return folded
-    return only(read_payload(workspace.cache.db, [delivered]; stage=PAYLOAD_STAGE_PROCESSED))
+    return only(read_payload(workspace.cache.db, [delivered]; stage=ITEM_PROCESS))
 end
 
 """

@@ -54,26 +54,13 @@ struct ProjectCacheIdentity
     cache_path::String
 end
 
-"""
-The pipeline stage whose completion or failure is recorded in the cache ledger.
-
-This includes analysis stages that produce metadata rather than item payloads. Interpretation is
-tracked separately in the source-item rows. Values follow pipeline order.
-"""
-@enum CacheResultKind::Int8 begin
-    PROCESSING_RESULT = 1
-    ITEM_ANALYSIS_RESULT = 2
-    COLLECTION_PROCESS_RESULT = 3
-    COLLECTION_ANALYSIS_RESULT = 4
-end
-
 @enum CacheResultStatus::Int8 begin
     RESULT_READY = 1
     RESULT_FAILED = 2
 end
 
 struct CacheResultKey
-    kind::CacheResultKind
+    kind::PipelineStage
     entity::Union{String,Int64}
 end
 
@@ -179,7 +166,7 @@ CacheStageLedger()::CacheStageLedger = CacheStageLedger(
 function CacheStageLedger(source_items, items, failures, states...)::CacheStageLedger
     result_states = Dict{CacheResultKey,AnyCachedResultState}()
     for store in states, state in values(store)
-        result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+        result_states[CacheResultKey(PipelineStage(state.kind), state.entity)] = state
     end
     return CacheStageLedger(
         _cache_stage_summary(source_items, items, failures, states...),
@@ -224,23 +211,23 @@ function _stage_result_delta(
     state::AnyCachedResultState,
     sign::Int,
 )::CacheStageSummary
-    kind = CacheResultKind(state.kind)
+    kind = PipelineStage(state.kind)
     status = CacheResultStatus(state.status)
     if status === RESULT_READY
-        kind === PROCESSING_RESULT &&
+        kind === ITEM_PROCESS &&
             return _stage_summary_delta(summary; processed=sign)
-        kind === ITEM_ANALYSIS_RESULT &&
+        kind === ITEM_ANALYZE &&
             return _stage_summary_delta(summary; analyzed=sign)
-        kind === COLLECTION_PROCESS_RESULT &&
+        kind === COLLECTION_PROCESS &&
             return _stage_summary_delta(summary; collection_processed=sign)
-        kind === COLLECTION_ANALYSIS_RESULT &&
+        kind === COLLECTION_ANALYZE &&
             return _stage_summary_delta(summary; collection_analyzed=sign)
     elseif status === RESULT_FAILED
-        kind === PROCESSING_RESULT &&
+        kind === ITEM_PROCESS &&
             return _stage_summary_delta(summary; failed_process=sign)
-        kind === ITEM_ANALYSIS_RESULT &&
+        kind === ITEM_ANALYZE &&
             return _stage_summary_delta(summary; failed_analyze=sign)
-        kind in (COLLECTION_PROCESS_RESULT, COLLECTION_ANALYSIS_RESULT) &&
+        kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) &&
             return _stage_summary_delta(summary; failed_collection=sign)
     end
     return summary
@@ -324,7 +311,7 @@ function _stage_ledger_result!(
 )::Nothing where {T<:Union{AbstractString,Integer}}
     entity = key[2] isa AbstractString ? String(key[2]) : Int64(key[2])
     return _stage_ledger_result!(
-        ledger, CacheResultKey(CacheResultKind(key[1]), entity), state)
+        ledger, CacheResultKey(PipelineStage(key[1]), entity), state)
 end
 
 function _reset_stage_ledger!(ledger::CacheStageLedger)::Nothing
@@ -906,19 +893,17 @@ function store_interpreted_records!(
 end
 
 """
-Store one processed payload for a record at `PAYLOAD_STAGE_PROCESSED` or
-`PAYLOAD_STAGE_COLLECTION_PROCESSED`.
+Store one processed payload for a record at `ITEM_PROCESS` or `COLLECTION_PROCESS`.
 
 The cache passes every payload to its payload store. That store defines the accepted Tables.jl
-shape and column types and reports unsupported values through its normal write errors. Only the
-`PAYLOAD_STAGE_PROCESSED` stage tracks the `PROCESSING_RESULT` ledger after the payload append
-succeeds.
+shape and column types and reports unsupported values through its normal write errors. Item
+processing also records its completion after the payload append succeeds.
 """
 function store_processed!(
     cache::CacheDB,
     record::ItemRecord,
     payload;
-    stage::PayloadStage=PAYLOAD_STAGE_PROCESSED,
+    stage::PipelineStage=ITEM_PROCESS,
 )::Nothing
     key = item_key!(cache, record.id)
     started = time_ns()
@@ -928,17 +913,17 @@ function store_processed!(
         cache.metrics.processed_writes,
         started,
     )
-    if stage === PAYLOAD_STAGE_PROCESSED
+    if stage === ITEM_PROCESS
         state = CachedResultState(
-            Int8(PROCESSING_RESULT),
+            Int8(ITEM_PROCESS),
             record.id,
             Int8(RESULT_READY),
             record.source_item_key,
             nothing,
         )
-        edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id), state)
+        edit!(cache.result_states, (Int8(ITEM_PROCESS), record.id), state)
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
+            cache.stage_ledger, (Int8(ITEM_PROCESS), record.id), state)
     end
     return nothing
 end
@@ -947,30 +932,30 @@ function store_processed!(
     cache::MemoryCacheDB,
     record::ItemRecord,
     payload;
-    stage::PayloadStage=PAYLOAD_STAGE_PROCESSED,
+    stage::PipelineStage=ITEM_PROCESS,
 )::Nothing
-    if stage === PAYLOAD_STAGE_PROCESSED
+    if stage === ITEM_PROCESS
         append!(cache.processed_memory, record.id, payload)
         lock(cache.lock) do
             state = CachedResultState(
-                Int8(PROCESSING_RESULT),
+                Int8(ITEM_PROCESS),
                 record.id,
                 Int8(RESULT_READY),
                 record.source_item_key,
                 nothing,
             )
-            cache.result_states[(Int8(PROCESSING_RESULT), record.id)] = state
+            cache.result_states[(Int8(ITEM_PROCESS), record.id)] = state
             _stage_ledger_result!(
-                cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
+                cache.stage_ledger, (Int8(ITEM_PROCESS), record.id), state)
         end
-    elseif stage === PAYLOAD_STAGE_COLLECTION_PROCESSED
+    elseif stage === COLLECTION_PROCESS
         append!(cache.collection_processed_memory, record.id, payload)
     end
     return nothing
 end
 
 """Persist one independent failed work result."""
-function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
+function store_result_failure!(cache::CacheDB, kind::PipelineStage,
         entity::AbstractString, source_item_key::Integer,
         message::AbstractString)::Nothing
     entity_value = String(entity)
@@ -981,7 +966,7 @@ function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
     return nothing
 end
 
-function store_result_failure!(cache::CacheDB, kind::CacheResultKind,
+function store_result_failure!(cache::CacheDB, kind::PipelineStage,
         entity::Integer, source_item_key::Integer,
         message::AbstractString)::Nothing
     entity_value = Int64(entity)
@@ -1040,11 +1025,11 @@ function store_item_metadata!(
     cache::CacheDB, record::ItemRecord, effective::AbstractDict,
 )::Vector{String}
     dropped = store_item_metadata_layer!(cache, record, effective)
-    state = CachedResultState(Int8(ITEM_ANALYSIS_RESULT), record.id, Int8(RESULT_READY),
+    state = CachedResultState(Int8(ITEM_ANALYZE), record.id, Int8(RESULT_READY),
         record.source_item_key, nothing)
-    edit!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+    edit!(cache.result_states, (Int8(ITEM_ANALYZE), record.id), state)
     _stage_ledger_result!(
-        cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+        cache.stage_ledger, (Int8(ITEM_ANALYZE), record.id), state)
     return dropped
 end
 
@@ -1055,10 +1040,10 @@ function store_collection_metadata!(
     entity = Int64(collection_key)
     dropped = edit!(cache.analyzed_collection_metadata, entity, metadata_dict(analysis))
     state = CachedCollectionResultState(
-        Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), 0, nothing)
-    edit!(cache.collection_result_states, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
+        Int8(COLLECTION_ANALYZE), entity, Int8(RESULT_READY), 0, nothing)
+    edit!(cache.collection_result_states, (Int8(COLLECTION_ANALYZE), entity), state)
     _stage_ledger_result!(
-        cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
+        cache.stage_ledger, (Int8(COLLECTION_ANALYZE), entity), state)
     return _conflict_messages(dropped)
 end
 
@@ -1068,16 +1053,16 @@ function store_collection_process_result!(
 )::Nothing
     entity = Int64(collection_key)
     state = CachedCollectionResultState(
-        Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), 0, nothing)
-    edit!(cache.collection_result_states, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
+        Int8(COLLECTION_PROCESS), entity, Int8(RESULT_READY), 0, nothing)
+    edit!(cache.collection_result_states, (Int8(COLLECTION_PROCESS), entity), state)
     _stage_ledger_result!(
-        cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
+        cache.stage_ledger, (Int8(COLLECTION_PROCESS), entity), state)
     return nothing
 end
 
 function store_result_failure!(
     cache::MemoryCacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::AbstractString,
     source_item_key::Integer,
     message::AbstractString,
@@ -1097,7 +1082,7 @@ end
 
 function store_result_failure!(
     cache::MemoryCacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::Integer,
     source_item_key::Integer,
     message::AbstractString,
@@ -1132,15 +1117,15 @@ end
 function store_item_metadata!(cache::MemoryCacheDB, record::ItemRecord, ::AbstractDict)::Vector{String}
     lock(cache.lock) do
         state = CachedResultState(
-            Int8(ITEM_ANALYSIS_RESULT),
+            Int8(ITEM_ANALYZE),
             record.id,
             Int8(RESULT_READY),
             record.source_item_key,
             nothing,
         )
-        cache.result_states[(Int8(ITEM_ANALYSIS_RESULT), record.id)] = state
+        cache.result_states[(Int8(ITEM_ANALYZE), record.id)] = state
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+            cache.stage_ledger, (Int8(ITEM_ANALYZE), record.id), state)
     end
     return String[]
 end
@@ -1152,10 +1137,10 @@ function store_collection_metadata!(cache::MemoryCacheDB, collection_key::Intege
     entity = Int64(collection_key)
     lock(cache.lock) do
         state = CachedCollectionResultState(
-            Int8(COLLECTION_ANALYSIS_RESULT), entity, Int8(RESULT_READY), 0, nothing)
-        cache.collection_result_states[(Int8(COLLECTION_ANALYSIS_RESULT), entity)] = state
+            Int8(COLLECTION_ANALYZE), entity, Int8(RESULT_READY), 0, nothing)
+        cache.collection_result_states[(Int8(COLLECTION_ANALYZE), entity)] = state
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), entity), state)
+            cache.stage_ledger, (Int8(COLLECTION_ANALYZE), entity), state)
     end
     return String[]
 end
@@ -1164,10 +1149,10 @@ function store_collection_process_result!(cache::MemoryCacheDB, collection_key::
     entity = Int64(collection_key)
     lock(cache.lock) do
         state = CachedCollectionResultState(
-            Int8(COLLECTION_PROCESS_RESULT), entity, Int8(RESULT_READY), 0, nothing)
-        cache.collection_result_states[(Int8(COLLECTION_PROCESS_RESULT), entity)] = state
+            Int8(COLLECTION_PROCESS), entity, Int8(RESULT_READY), 0, nothing)
+        cache.collection_result_states[(Int8(COLLECTION_PROCESS), entity)] = state
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), entity), state)
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS), entity), state)
     end
     return nothing
 end
@@ -1195,17 +1180,17 @@ function delete_source_item!(
         _stage_ledger_item!(cache.stage_ledger, record.id, false)
         delete!(cache.source_item_metadata, key)
         delete!(cache.analyzed_item_metadata, key)
-        delete!(cache.payload, (key, PAYLOAD_STAGE_PROCESSED))
-        delete!(cache.payload, (key, PAYLOAD_STAGE_COLLECTION_PROCESSED))
+        delete!(cache.payload, (key, ITEM_PROCESS))
+        delete!(cache.payload, (key, COLLECTION_PROCESS))
         delete!(cache.interpreted, record.id)
         delete!(cache.failures, (record.id, source_key))
         _stage_ledger_failure!(cache.stage_ledger, (record.id, source_key), false)
-        delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
+        delete!(cache.result_states, (Int8(ITEM_PROCESS), record.id))
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), nothing)
-        delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+            cache.stage_ledger, (Int8(ITEM_PROCESS), record.id), nothing)
+        delete!(cache.result_states, (Int8(ITEM_ANALYZE), record.id))
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), nothing)
+            cache.stage_ledger, (Int8(ITEM_ANALYZE), record.id), nothing)
     end
     delete!(cache.failures, ("", source_key))
     _stage_ledger_failure!(cache.stage_ledger, ("", source_key), false)
@@ -1231,15 +1216,15 @@ function delete_source_item!(
         lock(cache.lock) do
             delete!(cache.items, record.id)
             delete!(cache.failures, (record.id, source_key))
-            delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
-            delete!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id))
+            delete!(cache.result_states, (Int8(ITEM_PROCESS), record.id))
+            delete!(cache.result_states, (Int8(ITEM_ANALYZE), record.id))
         end
         _stage_ledger_item!(cache.stage_ledger, record.id, false)
         _stage_ledger_failure!(cache.stage_ledger, (record.id, source_key), false)
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), nothing)
+            cache.stage_ledger, (Int8(ITEM_PROCESS), record.id), nothing)
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), nothing)
+            cache.stage_ledger, (Int8(ITEM_ANALYZE), record.id), nothing)
     end
     return nothing
 end
@@ -1267,12 +1252,12 @@ function delete_collection_metadata!(
 )::Nothing
     for collection_key in unique(collection_keys)
         delete!(cache.analyzed_collection_metadata, collection_key)
-        delete!(cache.collection_result_states, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
+        delete!(cache.collection_result_states, (Int8(COLLECTION_ANALYZE), collection_key))
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key), nothing)
-        delete!(cache.collection_result_states, (Int8(COLLECTION_PROCESS_RESULT), collection_key))
+            cache.stage_ledger, (Int8(COLLECTION_ANALYZE), collection_key), nothing)
+        delete!(cache.collection_result_states, (Int8(COLLECTION_PROCESS), collection_key))
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), collection_key), nothing)
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS), collection_key), nothing)
     end
     return nothing
 end
@@ -1284,14 +1269,14 @@ function delete_collection_metadata!(
     for collection_key in unique(collection_keys)
         lock(cache.lock) do
             delete!(cache.collection_result_states,
-                (Int8(COLLECTION_ANALYSIS_RESULT), collection_key))
+                (Int8(COLLECTION_ANALYZE), collection_key))
             delete!(cache.collection_result_states,
-                (Int8(COLLECTION_PROCESS_RESULT), collection_key))
+                (Int8(COLLECTION_PROCESS), collection_key))
         end
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_ANALYSIS_RESULT), collection_key), nothing)
+            cache.stage_ledger, (Int8(COLLECTION_ANALYZE), collection_key), nothing)
         _stage_ledger_result!(
-            cache.stage_ledger, (Int8(COLLECTION_PROCESS_RESULT), collection_key), nothing)
+            cache.stage_ledger, (Int8(COLLECTION_PROCESS), collection_key), nothing)
     end
     return nothing
 end
@@ -1347,7 +1332,7 @@ end
 """Drop one cached work-result ledger row."""
 function clear_cached_result_state!(
     cache::CacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::AbstractString,
 )::Nothing
     key = (Int8(kind), String(entity))
@@ -1358,7 +1343,7 @@ end
 
 function clear_cached_result_state!(
     cache::MemoryCacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::AbstractString,
 )::Nothing
     key = (Int8(kind), String(entity))
@@ -1371,7 +1356,7 @@ end
 
 function clear_cached_result_state!(
     cache::CacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::Integer,
 )::Nothing
     key = (Int8(kind), Int64(entity))
@@ -1382,7 +1367,7 @@ end
 
 function clear_cached_result_state!(
     cache::MemoryCacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::Integer,
 )::Nothing
     key = (Int8(kind), Int64(entity))
@@ -1394,13 +1379,13 @@ function clear_cached_result_state!(
 end
 
 function _cache_stage_summary(source_items, items, failures, state_stores...)::CacheStageSummary
-    ready(kind::CacheResultKind)::Int = count(
-        state -> CacheResultKind(state.kind) === kind &&
+    ready(kind::PipelineStage)::Int = count(
+        state -> PipelineStage(state.kind) === kind &&
             CacheResultStatus(state.status) === RESULT_READY,
         Iterators.flatten(values(store) for store in state_stores),
     )
-    failed(kind::CacheResultKind)::Int = count(
-        state -> CacheResultKind(state.kind) === kind &&
+    failed(kind::PipelineStage)::Int = count(
+        state -> PipelineStage(state.kind) === kind &&
             CacheResultStatus(state.status) === RESULT_FAILED,
         Iterators.flatten(values(store) for store in state_stores),
     )
@@ -1408,14 +1393,14 @@ function _cache_stage_summary(source_items, items, failures, state_stores...)::C
     return CacheStageSummary(
         length(source_items),
         length(items),
-        ready(PROCESSING_RESULT),
-        ready(ITEM_ANALYSIS_RESULT),
-        ready(COLLECTION_PROCESS_RESULT),
-        ready(COLLECTION_ANALYSIS_RESULT),
+        ready(ITEM_PROCESS),
+        ready(ITEM_ANALYZE),
+        ready(COLLECTION_PROCESS),
+        ready(COLLECTION_ANALYZE),
         failed_interpret,
-        failed(PROCESSING_RESULT),
-        failed(ITEM_ANALYSIS_RESULT),
-        failed(COLLECTION_PROCESS_RESULT) + failed(COLLECTION_ANALYSIS_RESULT),
+        failed(ITEM_PROCESS),
+        failed(ITEM_ANALYZE),
+        failed(COLLECTION_PROCESS) + failed(COLLECTION_ANALYZE),
     )
 end
 
@@ -1428,7 +1413,7 @@ end
 """Return the current result-ledger entry for one item or collection stage, or `nothing`."""
 function cached_result_state(
     cache::AbstractCacheDB,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::Union{AbstractString,Integer},
 )
     key_entity = entity isa AbstractString ? String(entity) : Int64(entity)
@@ -1444,9 +1429,9 @@ Return whether an item has a cached payload at `stage` without loading the paylo
 For a disk cache, interpreted payloads are resident and processed payloads use the payload store.
 The payload-store check covers queued and committed writes.
 """
-function has_payload(cache::CacheDB, item_id::AbstractString; stage::PayloadStage)::Bool
+function has_payload(cache::CacheDB, item_id::AbstractString; stage::PipelineStage)::Bool
     id_value = String(item_id)
-    stage === PAYLOAD_STAGE_INTERPRETED && return haskey(cache.interpreted, id_value)
+    stage === SOURCE_INTERPRET && return haskey(cache.interpreted, id_value)
     key = lock(cache.key_lock) do
         get(cache.item_keys, id_value, nothing)
     end
@@ -1454,15 +1439,15 @@ function has_payload(cache::CacheDB, item_id::AbstractString; stage::PayloadStag
     return haskey(cache.payload, (key, stage))
 end
 
-function has_payload(cache::MemoryCacheDB, item_id::AbstractString; stage::PayloadStage)::Bool
-    store = stage === PAYLOAD_STAGE_INTERPRETED ? cache.interpreted :
-        stage === PAYLOAD_STAGE_PROCESSED ? cache.processed_memory :
+function has_payload(cache::MemoryCacheDB, item_id::AbstractString; stage::PipelineStage)::Bool
+    store = stage === SOURCE_INTERPRET ? cache.interpreted :
+        stage === ITEM_PROCESS ? cache.processed_memory :
         cache.collection_processed_memory
     return haskey(store, String(item_id))
 end
 
 """
-Read cached item payloads for a `PayloadStage`.
+Read cached item payloads for a `PipelineStage`.
 
 The returned vector aligns with `records`. Each entry is `Some(payload)` on a hit and `nothing` on
 a miss, so `nothing` remains a valid payload value. Interpreted payloads are resident only;
@@ -1471,11 +1456,11 @@ processed payloads come from the DuckDB-backed payload store.
 function read_payload(
     cache::CacheDB,
     records::Vector{ItemRecord};
-    stage::PayloadStage,
+    stage::PipelineStage,
 )::Vector{Any}
     isempty(records) && return Any[]
 
-    if stage === PAYLOAD_STAGE_INTERPRETED
+    if stage === SOURCE_INTERPRET
         return Any[read_hit(cache.interpreted, record.id) for record in records]
     end
 
@@ -1492,11 +1477,11 @@ end
 function read_payload(
     cache::MemoryCacheDB,
     records::Vector{ItemRecord};
-    stage::PayloadStage,
+    stage::PipelineStage,
 )::Vector{Any}
-    store = if stage === PAYLOAD_STAGE_INTERPRETED
+    store = if stage === SOURCE_INTERPRET
         cache.interpreted
-    elseif stage === PAYLOAD_STAGE_COLLECTION_PROCESSED
+    elseif stage === COLLECTION_PROCESS
         cache.collection_processed_memory
     else
         cache.processed_memory
@@ -1873,15 +1858,15 @@ function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
     )
     result_states = Dict{CacheResultKey,AnyCachedResultState}()
     for state in values(read(cachedb.result_states))
-        if CacheResultKind(state.kind) === PROCESSING_RESULT &&
+        if PipelineStage(state.kind) === ITEM_PROCESS &&
                 CacheResultStatus(state.status) === RESULT_READY &&
-                !has_payload(cachedb, state.entity; stage=PAYLOAD_STAGE_PROCESSED)
+                !has_payload(cachedb, state.entity; stage=ITEM_PROCESS)
             continue
         end
-        result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+        result_states[CacheResultKey(PipelineStage(state.kind), state.entity)] = state
     end
     for state in values(read(cachedb.collection_result_states))
-        result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
+        result_states[CacheResultKey(PipelineStage(state.kind), state.entity)] = state
     end
     return ProjectCacheIndex(
         base.identity,

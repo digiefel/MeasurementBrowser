@@ -894,10 +894,10 @@ end
 """Whether one loaded cache row is `RESULT_READY`."""
 function cache_index_ready(
     index::ProjectCacheIndex,
-    kind::CacheResultKind,
+    kind::PipelineStage,
     entity::Union{String,Int64},
 )::Bool
-    key_entity = kind in (COLLECTION_PROCESS_RESULT, COLLECTION_ANALYSIS_RESULT) ?
+    key_entity = kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
         entity::Int64 : entity::String
     state = get(index.result_states, CacheResultKey(kind, key_entity), nothing)
     state !== nothing && CacheResultStatus(state.status) === RESULT_READY
@@ -933,9 +933,9 @@ function apply_cache_index!(
     end
     if workspace.background_processing
         for record in values(workspace.index.items)
-            cache_index_ready(index, PROCESSING_RESULT, record.id) ||
+            cache_index_ready(index, ITEM_PROCESS, record.id) ||
                 enqueue_processing!(workspace, record)
-            cache_index_ready(index, ITEM_ANALYSIS_RESULT, record.id) ||
+            cache_index_ready(index, ITEM_ANALYZE, record.id) ||
                 enqueue_item_analysis!(workspace, record)
         end
         for collection_key_value in keys(workspace.index.collections.records)
@@ -946,8 +946,8 @@ function apply_cache_index!(
                 if haskey(workspace.index.items, id)
             ]
             collection_key = collection_key_value
-            if !cache_index_ready(index, COLLECTION_PROCESS_RESULT, collection_key) ||
-                    !cache_index_ready(index, COLLECTION_ANALYSIS_RESULT, collection_key)
+            if !cache_index_ready(index, COLLECTION_PROCESS, collection_key) ||
+                    !cache_index_ready(index, COLLECTION_ANALYZE, collection_key)
                 enqueue_collection_work!(workspace, [collection_key]; supersede=false)
             end
         end
@@ -1198,7 +1198,7 @@ function publish_work_failure!(
             key.entity::Int64 : key.entity::String
         store_result_failure!(
             workspace.cache.db,
-            _work_key_cache_kind(key),
+            key.kind,
             cache_entity,
             source_item_key_value,
             message,

@@ -28,6 +28,21 @@ value is a private handoff between two stages of the same project; the type disc
 by the concrete signature on the receiving end.
 """
 
+"""
+    PipelineStage
+
+The stage identified by a scheduled job, cached payload, or cached completion record.
+Values follow pipeline order. `SOURCE_INTERPRET` runs `read` and `entries`; analysis stages
+produce metadata rather than item payloads.
+"""
+@enum PipelineStage::Int8 begin
+    SOURCE_INTERPRET = 0
+    ITEM_PROCESS = 1
+    ITEM_ANALYZE = 2
+    COLLECTION_PROCESS = 3
+    COLLECTION_ANALYZE = 4
+end
+
 # ---------------------------------------------------------------------------
 # read
 # ---------------------------------------------------------------------------

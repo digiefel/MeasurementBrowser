@@ -14,7 +14,6 @@ using CancellationTokens:
 using ..WorkGraph:
     WorkDependencyGraph,
     WorkKey,
-    WorkKind,
     WorkNode,
     bump_revision!,
     current_revision,
@@ -25,7 +24,8 @@ using ..WorkGraph:
     seed_node_dependencies!,
     take_work!,
     wake_ready_dependents!
-import ..WorkGraph:
+using DataBrowserAPI:
+    PipelineStage,
     COLLECTION_ANALYZE,
     COLLECTION_PROCESS,
     ITEM_ANALYZE,
@@ -36,17 +36,9 @@ using DataBrowserCache:
     AbstractCacheDB,
     BuildMetrics,
     CacheResultKey,
-    CacheResultKind,
     CacheResultStatus,
     CacheDB,
     CacheStageSummary,
-    COLLECTION_ANALYSIS_RESULT,
-    COLLECTION_PROCESS_RESULT,
-    ITEM_ANALYSIS_RESULT,
-    PROCESSING_RESULT,
-    PAYLOAD_STAGE_INTERPRETED,
-    PAYLOAD_STAGE_PROCESSED,
-    PAYLOAD_STAGE_COLLECTION_PROCESSED,
     ProjectCacheSchemaError,
     ProjectCacheDataError,
     ProjectCacheIdentity,

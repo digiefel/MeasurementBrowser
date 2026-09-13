@@ -577,25 +577,8 @@ end
 
 # Disk-backed tabular table family
 
-"""
-    PayloadStage
-
-The cache stage that owns a stored item payload:
-
-- `PAYLOAD_STAGE_INTERPRETED` is the resident input to item processing.
-- `PAYLOAD_STAGE_PROCESSED` is the result of item processing.
-- `PAYLOAD_STAGE_COLLECTION_PROCESSED` is the result of collection processing.
-
-Values follow pipeline order. Item analysis occupies position 2 but produces metadata, not a payload.
-"""
-@enum PayloadStage::Int8 begin
-    PAYLOAD_STAGE_INTERPRETED = 0
-    PAYLOAD_STAGE_PROCESSED = 1
-    PAYLOAD_STAGE_COLLECTION_PROCESSED = 3
-end
-
 """One item's payload key: its integer surrogate and the payload stage it belongs to."""
-const PayloadKey = Tuple{Int64,PayloadStage}
+const PayloadKey = Tuple{Int64,PipelineStage}
 
 # `body` is the caller's original Tables.jl container; pending reads hand it back untouched, and
 # the flush loop reads it only through the interface. `container` is the hex-serialized container
@@ -603,7 +586,7 @@ const PayloadKey = Tuple{Int64,PayloadStage}
 # while its append is still being flushed.
 struct TabularBodyBatch
     item_key::Int64
-    stage::PayloadStage
+    stage::PipelineStage
     body::Any
     container::String
 end
@@ -645,7 +628,7 @@ function TabularFamilyStore(
     for row in DBInterface.execute(
         read_connection, "SELECT item_key, stage, storage_id, seq, container FROM item_data")
         location = (UInt16(row.storage_id), UInt32(row.seq))
-        locations[(Int64(row.item_key), PayloadStage(row.stage))] = location
+        locations[(Int64(row.item_key), PipelineStage(row.stage))] = location
         containers[location] = String(row.container)
     end
     schemas = Dict{PayloadShape,UInt16}()

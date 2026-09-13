@@ -70,8 +70,8 @@ end
                 plot_kind = only(registered_plot_kinds(project, :iv))
                 figure = setup_plot(workspace, plot_kind, items)
                 plot_data!(workspace, plot_kind, items, figure)
-                Cache.read_payload(workspace.cache.db, records; stage=Cache.PAYLOAD_STAGE_INTERPRETED)
-                Cache.read_payload(workspace.cache.db, records; stage=Cache.PAYLOAD_STAGE_PROCESSED)
+                Cache.read_payload(workspace.cache.db, records; stage=DataBrowserAPI.SOURCE_INTERPRET)
+                Cache.read_payload(workspace.cache.db, records; stage=DataBrowserAPI.ITEM_PROCESS)
             end
             Workspace.workspace_memory_snapshot(workspace)
             Cache.cache_built(workspace.cache.db) && Cache.load_cache_index(workspace.cache.db)

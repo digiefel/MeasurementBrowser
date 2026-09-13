@@ -1,4 +1,5 @@
 using DataBrowser
+using DataBrowserAPI: COLLECTION_ANALYZE
 using Test
 using DBInterface
 using DuckDB
@@ -130,7 +131,7 @@ end
             @test read(cache.analyzed_collection_metadata)[Int64(1)][:mean] == 1.0
             @test haskey(
                 read(cache.collection_result_states),
-                (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), Int64(1)),
+                (Int8(COLLECTION_ANALYZE), Int64(1)),
             )
 
             CACHE.delete_collection_metadata!(cache, Int64[1])
@@ -138,7 +139,7 @@ end
             @test !haskey(read(cache.analyzed_collection_metadata), Int64(1))
             @test !haskey(
                 read(cache.collection_result_states),
-                (Int8(CACHE.COLLECTION_ANALYSIS_RESULT), Int64(1)),
+                (Int8(COLLECTION_ANALYZE), Int64(1)),
             )
         finally
             CACHE.close_cache_db!(cache)

@@ -1,5 +1,6 @@
 using DataBrowser
 using DataBrowserAPI
+using DataBrowserAPI: COLLECTION_PROCESS
 using DataBrowserCache
 using DataBrowserRecipes
 using DataBrowserSources
@@ -61,7 +62,7 @@ DataBrowserAPI.reconstruct(::Type{CacheCollectionLevel}, identity::AbstractStrin
             @test restored_collection.own_metadata == Dict(:value => 2)
             @test restored_collection.analysis[:mean] == 2.5
             @test haskey(index.result_states,
-                CacheResultKey(COLLECTION_PROCESS_RESULT, leaf_key))
+                CacheResultKey(COLLECTION_PROCESS, leaf_key))
         finally
             close_cache_db!(reopened)
         end

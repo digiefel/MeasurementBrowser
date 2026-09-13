@@ -1,5 +1,6 @@
 using DataBrowser
 using DataBrowserAPI
+using DataBrowserAPI: ITEM_PROCESS, COLLECTION_PROCESS
 using DataBrowserCache
 using Test
 
@@ -223,25 +224,25 @@ _payload_value(item::PayloadContractItem) = item.payload
             @test counters.collection_processes[] == 1
             record = workspace.index.items[item_id]
             @test DataBrowserCache.has_payload(
-                workspace.cache.db, item_id; stage=PAYLOAD_STAGE_PROCESSED)
+                workspace.cache.db, item_id; stage=ITEM_PROCESS)
             @test !DataBrowserCache.has_payload(
-                workspace.cache.db, "missing-item"; stage=PAYLOAD_STAGE_PROCESSED)
+                workspace.cache.db, "missing-item"; stage=ITEM_PROCESS)
             hit = only(DataBrowserCache.read_payload(
-                workspace.cache.db, [record]; stage=PAYLOAD_STAGE_PROCESSED))
+                workspace.cache.db, [record]; stage=ITEM_PROCESS))
             @test hit isa Some
             @test something(hit) == PAYLOAD_API.item_data(item)
             @test only(DataBrowserCache.read_payload(
-                workspace.cache.db, [record]; stage=PAYLOAD_STAGE_COLLECTION_PROCESSED)) === nothing
+                workspace.cache.db, [record]; stage=COLLECTION_PROCESS)) === nothing
 
             if mode === :array && !disk_cache
                 processes_before = counters.processes[]
                 DataBrowserCache.clear_cached_result_state!(
-                    workspace.cache.db, DataBrowserCache.PROCESSING_RESULT, item_id)
+                    workspace.cache.db, ITEM_PROCESS, item_id)
                 @test DataBrowserCache.has_payload(
-                    workspace.cache.db, item_id; stage=PAYLOAD_STAGE_PROCESSED)
+                    workspace.cache.db, item_id; stage=ITEM_PROCESS)
                 @test DataBrowserCache.cached_result_state(
                     workspace.cache.db,
-                    DataBrowserCache.PROCESSING_RESULT,
+                    ITEM_PROCESS,
                     item_id,
                 ) === nothing
                 only(DataBrowser.materialize_items(workspace, [item_id]))
@@ -250,7 +251,7 @@ _payload_value(item::PayloadContractItem) = item.payload
                 processes_before = counters.processes[]
                 delete!(workspace.cache.db.processed_memory, item_id)
                 @test !DataBrowserCache.has_payload(
-                    workspace.cache.db, item_id; stage=PAYLOAD_STAGE_PROCESSED)
+                    workspace.cache.db, item_id; stage=ITEM_PROCESS)
                 only(DataBrowser.materialize_items(workspace, [item_id]))
                 @test counters.processes[] == processes_before + 1
             end

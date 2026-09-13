@@ -1,19 +1,11 @@
 """Live background job graph and priority scheduling queue."""
 module WorkGraph
 
-import DataBrowserAPI: AbstractDataSourceItem
-
-@enum WorkKind begin
-    SOURCE_INTERPRET
-    ITEM_PROCESS
-    ITEM_ANALYZE
-    COLLECTION_PROCESS
-    COLLECTION_ANALYZE
-end
+import DataBrowserAPI: AbstractDataSourceItem, PipelineStage
 
 """One operation key: item work uses String IDs; source and collection work uses Int64 keys."""
 struct WorkKey
-    kind::WorkKind
+    kind::PipelineStage
     entity::Union{String,Int64}
 end
 

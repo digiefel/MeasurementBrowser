@@ -1,0 +1,55 @@
+# inputs
+scale                                     0.05                      # Multiplier on how many aliases of each template file are advertised. Does not change rows per file.
+kind1_files                               25                        # Kind1 aliases (tiny IV-style tables, one item per file).
+kind2_files                               6                         # Kind2 aliases (medium CV-style tables, one item per file).
+kind3_files                               1                         # Kind3 aliases (large fatigue-style tables; one item per cycle).
+kind1_rows                                120                       # Row count of bench/templates/kind1.csv.
+kind2_rows                                5000                      # Row count of bench/templates/kind2.csv.
+kind3_cycles                              96                        # Distinct cycle values in bench/templates/kind3.csv. Each cycle becomes one item.
+kind3_rows                                6000                      # Row count per cycle in bench/templates/kind3.csv.
+processed_stress_rows                     4000000                   # Requested row budget for the processed-payload flush probe. The probe takes min(available kind3 items, this budget / kind3_rows).
+after_build_plots                         40                        # How many plot probes to run per kind after the workspace is idle.
+scaling_sizes                             250  500  1000            # Item counts N for the scaling sweep. Each scaling_*_ms row has one value per size, in this order.
+threads                                   8                         # Julia thread count (Threads.nthreads()).
+julia                                     1.12.6                    # Julia version.
+
+# outputs
+startup_s                                 1.674                     # Wall seconds to load packages and include the two harness scripts. On a warm pkgimage cache this is load time; if packages were invalidated it includes precompile.
+aliases                                   32                        # Source items the bench source advertised (kind1_files + kind2_files + kind3_files).
+items                                     127                       # Data items in the index when the cold build finished. Kind3 contributes one item per cycle.
+build_s                                   4.184                     # Wall seconds from open_workspace until the workspace is idle (scan done, workers idle, no pending cache writes). Plot probes run during this wait, so first-plot compilation is inside this number.
+scan_s                                    0.4015                    # Wall seconds from open until the source scan reports done, unchanged, error, or canceled.
+processing_s                              3.569                     # Wall seconds during which item process/analyze workers were busy or the cache still had pending writes. This is a busy-window, not CPU time of process().
+analysis_s                                0                         # Wall seconds during which collection-analyze workers were busy. Failed collection jobs still count as busy until they settle.
+interpreted_writes                        32                        # Interpreted-payload cache writes during the cold build.
+processed_writes                          126                       # Processed-payload cache writes during the cold build.
+metadata_writes                           252                       # Metadata cache writes during the cold build.
+#                                        median                    variance
+plot_during_ms                            21.35  6.27e+04           # Plot round-trip (select + materialize + setup + draw) sampled every ~160 ms while the cold build is still running, in milliseconds. The first samples include Julia compiling the plot path, which inflates variance.
+plot_after_ms                             10.18  89.57              # The same plot round-trip after the workspace is idle, in milliseconds.
+saturation_peak_pending_rows              558000                    # High-water mark of rows sitting in the cache write buffer while flushing the processed-payload stress selection.
+saturation_processed_writes               93                        # Processed-payload writes created by that stress selection. Zero means the payloads were already in cache, so this was a read rather than a writer-saturation probe.
+saturation_load_ms                        164.3                     # Milliseconds to materialize the stress selection.
+saturation_flush_ms                       2221                      # Milliseconds to wait until the cache write buffer is empty after that materialize.
+reopen_first_view_s                       0.03355                   # Seconds from open until the first item appears in the index on the second close-and-reopen. The first reopen is discarded as JIT warmup.
+reopen_idle_s                             2.024                     # Seconds from open until the workspace is idle on that second reopen.
+reopen_alloc_mib                          4.898                     # MiB allocated according to Base.gc_bytes() during that second reopen. This is Julia GC accounting, not process RSS (see peak_rss_kb).
+reopen_unchanged                          1                         # 1 if that second open reused the cache (scan state :unchanged), 0 if it rebuilt.
+reopen_plot_kind1_ms                      20.54                     # Milliseconds for one plot round-trip of kind1 after the second reopen.
+reopen_plot_kind2_ms                      18.21                     # Milliseconds for one plot round-trip of kind2 after the second reopen.
+reopen_plot_kind3_ms                      14.6                      # Milliseconds for one plot round-trip of kind3 after the second reopen.
+scaling_scan_build_per_item_exponent      -0.2439                   # Slope of log(scan_build_per_item time) versus log(N). 0 means the cost does not grow with item count, 1 means linear in N, 2 means quadratic.
+scaling_scan_build_per_item_r2            0.9551                    # R² of the log(scan_build_per_item time) versus log(N) fit. 1 means the times lie on a clean power law; a low value means the exponent is not a trustworthy summary.
+scaling_scan_build_per_item_ms            0.2807  0.2225  0.2002    # Milliseconds of cold open_workspace + wait-until-idle, divided by N, at each scaling_sizes. One shot per N, not a median of repeats.
+scaling_status_refresh_exponent           -0.03114                  # Slope of log(status_refresh time) versus log(N). 0 means the cost does not grow with item count, 1 means linear in N, 2 means quadratic.
+scaling_status_refresh_r2                 0.7801                    # R² of the log(status_refresh time) versus log(N) fit. 1 means the times lie on a clean power law; a low value means the exponent is not a trustworthy summary.
+scaling_status_refresh_ms                 5.938e-06  5.927e-06  5.687e-06  # Median milliseconds per refresh_status! call (the per-frame GUI status rebuild) at each scaling_sizes.
+scaling_workspace_busy_exponent           0.05278                   # Slope of log(workspace_busy time) versus log(N). 0 means the cost does not grow with item count, 1 means linear in N, 2 means quadratic.
+scaling_workspace_busy_r2                 0.8203                    # R² of the log(workspace_busy time) versus log(N) fit. 1 means the times lie on a clean power law; a low value means the exponent is not a trustworthy summary.
+scaling_workspace_busy_ms                 0.003472  0.00371  0.003736  # Median milliseconds per workspace_busy call at each scaling_sizes.
+scaling_items_panel_exponent              1.002                     # Slope of log(items_panel time) versus log(N). 0 means the cost does not grow with item count, 1 means linear in N, 2 means quadratic.
+scaling_items_panel_r2                    0.9979                    # R² of the log(items_panel time) versus log(N) fit. 1 means the times lie on a clean power law; a low value means the exponent is not a trustworthy summary.
+scaling_items_panel_ms                    0.01003  0.02122  0.04024  # Median milliseconds to gather and sort the items of the selected collection (what the items panel does each frame) at each scaling_sizes.
+scaling_metadata_publish_exponent         0.9541                    # Slope of log(metadata_publish time) versus log(N). 0 means the cost does not grow with item count, 1 means linear in N, 2 means quadratic.
+scaling_metadata_publish_r2               0.9995                    # R² of the log(metadata_publish time) versus log(N) fit. 1 means the times lie on a clean power law; a low value means the exponent is not a trustworthy summary.
+scaling_metadata_publish_ms               8.934  16.88  33.53       # Median milliseconds for one reconcile_source_metadata_cache!(refresh_hierarchy=true) at each scaling_sizes.
