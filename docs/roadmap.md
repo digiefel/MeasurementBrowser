@@ -47,12 +47,10 @@ workspace internals.
   `label(record)` return it without materializing a payload or running project code in the UI.
 - [x] Make typed materialization explicit: reopening restores records, not arbitrary user-defined
   instances; a valid cached processed payload is delivered without rerunning `process`, and an
-  opt-in `reconstruct(::Type{T}, data, metadata)` method rebuilds a concrete item from the stored
-  payload alone. Identity is not rederived there: `reconstruct` sees no record, and `attach_record`
-  restores the minted id, label, and collection path immediately afterwards. A type that declines
-  to rebuild — the default `reconstruct` returning `nothing` — is recreated through `read` →
-  `entries` → `process`. Obtain a typed collection value from `collection(item)` only after
-  materializing its owning item. (No test covers the decline-to-rebuild path; see #14.)
+  `reconstruct(::Type{T}, id, data, metadata)` method rebuilds a concrete item from stored values.
+  The default returns data already of type `T`; otherwise it declines reconstruction and the
+  engine reruns the required source stages. Collections reconstruct from their stored type, id,
+  and metadata. The internal `attach_record` hook remains separate debt tracked below.
 - [x] Remove the registration-only `item isa RegisteredDataItem` payload-cache gate, and the
   item-level `cacheable` predicate with it. Persistence becomes the payload's supported shape
   alone; rehydration into a user type becomes `reconstruct` dispatch, keeping cached payload
@@ -78,9 +76,6 @@ workspace internals.
   declarations were the project contract and now sit in `project_contract.jl` beside
   `AbstractProject`, with the stage contract in `stage_contract.jl`.
 - [x] Remove the custom internal tracing system; keep workspace diagnostics and use Julia's standard tools for scoped profiling. ([#11])
-- [ ] Run every example entirely through the documented public APIs and remove any remaining public
-  callback dependency on cache, index, scheduler, or browser values. (Deferred until after 0.2.0,
-  which decides which names are public.)
 
 ## 0.2.0 — Engine consolidation
 
@@ -105,6 +100,9 @@ Decisions taken during the audit:
   `define_project`, `register_*!`, and the workspace operations; **extension authors** use the stage
   contract, the source/item/collection contracts, `reconstruct`, GUI extension hooks, and plot kinds.
   Every exported name belongs to exactly one tier.
+- Recipes consumes the same public type API as other extensions. Its convenience must not depend
+  on privileged engine access. Keep the type API small and usable on its own; consolidate duplicate
+  representations and execution paths rather than adding abstractions to conceal their differences.
 
 ### 0.2.1 Repairs
 
@@ -121,8 +119,7 @@ Decisions taken during the audit:
   `rebuild_workspace_hierarchy!`, `cancel_analysis!`, `cancel_cache!`, `reset_work_graph!`,
   `start_cache!`, `stop_cache!`, `_flush_operation`, `_flush_rows`, `_callback_name`,
   `plot_kind_symbol`, `BrowserState.project_locked`, `BrowserState.project_preference`, Core's
-  unused `using DataBrowserAnnotations`; the unread `effective` argument of
-  `store_interpreted_records!`. Drop unused declared deps (`Statistics`, `Tables` in GUI;
+  unused `using DataBrowserAnnotations`. Drop unused declared deps (`Statistics`, `Tables` in GUI;
   `DataFrames` in Plots) after verifying.
 - [ ] Fix docstrings that describe behavior the code does not have: `set_cache_memory_limit!`
   (workspace) is not live; `load_cache_index` overlays uncommitted buffers; `cache_stage_summary`
@@ -132,11 +129,17 @@ Decisions taken during the audit:
 
 ### 0.2.2 Cache boundary and one backend
 
-- [ ] Core stops reading Cache fields. `cache_work_status` (`Processing.jl`) and
-  `_cache_knows_source_item` (`Operations.jl`) read `cachedb.lock`, `.failures`, `.source_items`,
-  `.result_states`, `.collection_result_states`, `.stage_ledger` and branch on
-  `cachedb isa CacheDB`. Replace with `work_state(db, kind, entity)` and `knows_source_item(db, key)`
-  owned by Cache. Move `wait_condition_deadline` to Core. Shrink the 45-name import list.
+- [x] Unify the cache payload and item reconstruction contract. Core extracts item data; Cache
+  stores that payload with the same meaning in memory and on disk. Distinguish a cache miss from
+  a stored `nothing`, and check payload availability without loading large tables. Disk writes go
+  directly to the payload store, without eligibility predicates or a memory fallback. Always call
+  the public reconstruction method with current item metadata, including metadata produced by
+  item process and analyze. Preserve the explicit source fallback without running process twice.
+- [ ] Finish removing Core's reads of Cache fields. Item and collection stage lookups now use
+  `cached_result_state` and `has_payload`. Source lookups in `cache_work_status` (`Processing.jl`)
+  and `_cache_knows_source_item` (`Operations.jl`) still read Cache fields and branch on
+  `cachedb isa CacheDB`. Move these behind a Cache-owned source-state interface. Move
+  `wait_condition_deadline` to Core and reduce the import list.
 - [ ] Delete `MemoryCacheDB` and `AbstractCacheDB`; `cache=false` opens DuckDB `":memory:"`. Removes
   roughly ten duplicated method families whose semantics had already diverged (memory recorded
   result failures in `failures`, disk did not).
@@ -172,6 +175,17 @@ Decisions taken during the audit:
 
 ### 0.2.4 Public API tiers
 
+- [ ] Extend the common reconstruction contract to collection analysis metadata. Collection
+  reconstruction currently receives only `own_metadata`, without analysis results. User types
+  decide which results to retain and how to represent them. Remove the registration adapter's
+  reliance on the internal `attach_record`/`ItemRecord` path for labels and collection paths;
+  it must consume the same public contract as any other extension. Item payload and metadata
+  delivery belongs to 0.2.2.
+- [ ] Preserve member metadata changes returned by collection `process`, including changes with
+  unchanged payloads. `run_collection_process` currently selects outputs only when `item_data`
+  changes by identity, and collection completion publishes no member metadata. Cover cumulative
+  device history: successive measurements need different wakeup/fatigue counts even when their
+  waveform payloads are unchanged.
 - [ ] Sort every exported name into the project-author or extension-author tier and stop exporting
   the rest: `items_for_file`, `SourceFile`, the concrete `Project`, `gui_timings`,
   `reset_timings!`, `plot_kinds`, `CollectionRecipe`, `ItemRecipe`, `NoMatch`,
@@ -180,8 +194,8 @@ Decisions taken during the audit:
 - [ ] Generate the umbrella's `using`/`export` lists from one table instead of two hand-kept blocks.
 - [ ] One selector concept — `ItemRecord`, id, or current selection — implemented once and shared by
   `select_items!`, `materialize_items`, `read_item_data`; delete the runtime-typed
-  `select_items!(::AbstractVector)` fallback. Rename the Cache-side `read_item_data` to
-  `read_payload` (it reads a stage payload; the workspace one materializes processed items).
+  `select_items!(::AbstractVector)` fallback. The Cache-side `read_payload` name is handled by
+  the payload contract work in 0.2.2.
   `query_items(ws)` becomes `item_ids(ws)`; `query_items(ws, sql)` becomes internal.
 - [ ] Add the workspace accessors the GUI currently reaches for by field: `items(ws)`,
   `item(ws, id)`, `collections(ws)`, `selection(ws)`, `errors(ws)`, and an `on_change(ws, f)`
@@ -189,6 +203,8 @@ Decisions taken during the audit:
 - [ ] Recipes: rename `register_collection_analysis!` to `register_collection!` (it registers
   `process` too); look the recipe up once per stage chain instead of three linear scans.
 - [ ] Strengthen internal module boundaries and import hygiene across the package family.
+- [ ] Run every example entirely through the documented public APIs and remove any remaining public
+  callback dependency on cache, index, scheduler, or browser values.
 
 ### 0.2.5 GUI as one caller of the API
 
@@ -230,7 +246,7 @@ Decisions taken during the audit:
   source-owned durable handles or persisted interpreted outputs; add `replayable(::AbstractDataSource)`
   when the first such source arrives.
 - [ ] Profile the DuckDB flush path at millions of rows and remove the dominant avoidable cost.
-- [ ] Write `docs/cache.md`.
+- [ ] Document cache contracts in source docstrings and the generated public documentation.
 
 ### 0.2.7 Sources, Annotations, Recipes
 

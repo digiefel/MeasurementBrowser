@@ -10,7 +10,6 @@ module DataBrowserAPI
 
 using Dates
 using SHA
-import Tables
 
 # `read` is the pipeline's source-touching stage, and that is exactly what `Base.read` means.
 # Extending it keeps `using DataBrowser` from shadowing a function every Julia user already knows.

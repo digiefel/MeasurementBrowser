@@ -1,8 +1,9 @@
 """
 Materialize processed items for selected records through the workspace work graph.
 
-Committed processed data comes from DuckDB. Missing results promote the existing background job or
-create one whose interpreted-data dependency may use DuckDB or the normal source fallback.
+A disk cache reads processed payloads from DuckDB. A memory-only cache keeps them resident. Missing
+results promote the existing background job or create one whose interpreted-payload dependency
+uses the resident cache or the source fallback.
 """
 function materialize_items(
     workspace::Workspace,
@@ -32,7 +33,7 @@ materialize_items(workspace::Workspace)::Vector{AbstractDataItem} =
     materialize_items(workspace, workspace.selection.item_ids)
 
 """
-Return loaded item data for callers that inspect raw tabular values.
+Return processed item payloads for the requested records.
 """
 function read_item_data(
     workspace::Workspace,

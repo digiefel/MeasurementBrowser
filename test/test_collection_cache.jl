@@ -42,11 +42,8 @@ DataBrowserAPI.reconstruct(::Type{CacheCollectionLevel}, identity::AbstractStrin
         DataBrowserAPI.ItemIndex.insert_item!(collections, record.id, leaf_key)
         try
             write_meta_header!(cache)
-            item = DataBrowserRecipes.RegisteredDataItem{:test}(
-                record.id, record.label, DataBrowser.AbstractCollection[], nothing,
-                record.metadata)
             DataBrowserCache.store_interpreted_records!(
-                cache, source_item, "item file", [record], [item])
+                cache, source_item, "item file", [record])
             store_collection_index!(cache, collections, [record])
             store_collection_metadata!(cache, leaf_key, Dict(:mean => 2.5))
             store_collection_process_result!(cache, leaf_key)

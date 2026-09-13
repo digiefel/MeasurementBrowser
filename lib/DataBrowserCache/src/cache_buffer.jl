@@ -108,20 +108,6 @@ function _payload_shape(data)::PayloadShape
     )
 end
 
-"""
-Whether a payload can land in the columnar payload store: it implements Tables.jl and every
-column's element type maps to a DuckDB column type. Anything else stays memory-only.
-"""
-function _storable_table(payload)::Bool
-    Tables.istable(payload) || return false
-    columns = Tables.columns(payload)
-    column_names = Tables.columnnames(columns)
-    isempty(column_names) && return false
-    return all(
-        _duckdb_sql_type_maybe(eltype(Tables.getcolumn(columns, name))) !== nothing
-        for name in column_names)
-end
-
 """Number of rows in one tabular payload."""
 _payload_rows(data)::Int = Tables.rowcount(Tables.columns(data))
 
@@ -525,8 +511,9 @@ end
 function Base.append!(store::MemoryStore{K,R}, key::K, row::R)::Bool where {K,R}
     lock(store.lock) do
         store.closed && error("memory store is closed")
+        present = haskey(store.entries, key)
         previous = pop!(store.entries, key, nothing)
-        if previous !== nothing
+        if present
             store.rows -= _buffer_rows(previous)
             deleteat!(store.order, something(findfirst(isequal(key), store.order)))
         end
@@ -544,18 +531,26 @@ end
 function Base.delete!(store::MemoryStore{K}, key::K)::Nothing where {K}
     lock(store.lock) do
         store.closed && error("memory store is closed")
+        haskey(store.entries, key) || return
         previous = pop!(store.entries, key, nothing)
-        previous === nothing && return
         store.rows -= _buffer_rows(previous)
         deleteat!(store.order, something(findfirst(isequal(key), store.order)))
     end
     return nothing
 end
 
-function Base.read(store::MemoryStore{K,R}, key::K)::Union{Nothing,R} where {K,R}
+"""Return a cache hit marker and its value atomically, or `nothing` on a miss."""
+function read_hit(store::MemoryStore{K,R}, key::K)::Union{Nothing,Some} where {K,R}
     return lock(store.lock) do
         store.closed && error("memory store is closed")
-        get(store.entries, key, nothing)
+        haskey(store.entries, key) ? Some(store.entries[key]) : nothing
+    end
+end
+
+function Base.haskey(store::MemoryStore{K}, key::K)::Bool where {K}
+    return lock(store.lock) do
+        store.closed && error("memory store is closed")
+        haskey(store.entries, key)
     end
 end
 
@@ -582,16 +577,23 @@ end
 
 # Disk-backed tabular table family
 
-const PAYLOAD_STAGE_PROCESSED = Int8(0)
-const PAYLOAD_STAGE_COLLECTION_PROCESSED = Int8(1)
+"""
+    PayloadStage
 
-_payload_stage_code(stage::Symbol)::Int8 =
-    stage === :processed ? PAYLOAD_STAGE_PROCESSED :
-    stage === :collection_processed ? PAYLOAD_STAGE_COLLECTION_PROCESSED :
-    throw(ArgumentError("unknown payload stage '$stage'"))
+The cache stage that owns a stored item payload:
+
+- `PAYLOAD_STAGE_PROCESSED` is the result of item processing.
+- `PAYLOAD_STAGE_COLLECTION_PROCESSED` is the result of collection processing.
+- `PAYLOAD_STAGE_INTERPRETED` is the resident input to item processing.
+"""
+@enum PayloadStage::Int8 begin
+    PAYLOAD_STAGE_PROCESSED = 0
+    PAYLOAD_STAGE_COLLECTION_PROCESSED = 1
+    PAYLOAD_STAGE_INTERPRETED = 2
+end
 
 """One item's payload key: its integer surrogate and the payload stage it belongs to."""
-const PayloadKey = Tuple{Int64,Int8}
+const PayloadKey = Tuple{Int64,PayloadStage}
 
 # `body` is the caller's original Tables.jl container; pending reads hand it back untouched, and
 # the flush loop reads it only through the interface. `container` is the hex-serialized container
@@ -599,7 +601,7 @@ const PayloadKey = Tuple{Int64,Int8}
 # while its append is still being flushed.
 struct TabularBodyBatch
     item_key::Int64
-    stage::Int8
+    stage::PayloadStage
     body::Any
     container::String
 end
@@ -641,7 +643,7 @@ function TabularFamilyStore(
     for row in DBInterface.execute(
         read_connection, "SELECT item_key, stage, storage_id, seq, container FROM item_data")
         location = (UInt16(row.storage_id), UInt32(row.seq))
-        locations[(Int64(row.item_key), Int8(row.stage))] = location
+        locations[(Int64(row.item_key), PayloadStage(row.stage))] = location
         containers[location] = String(row.container)
     end
     schemas = Dict{PayloadShape,UInt16}()
@@ -877,6 +879,13 @@ function Base.delete!(store::TabularFamilyStore, payload_key::PayloadKey)::Nothi
         location === nothing || _queue_delete_location!(store, location)
     end
     return nothing
+end
+
+function Base.haskey(store::TabularFamilyStore, payload_key::PayloadKey)::Bool
+    return lock(store.flush_condition) do
+        _require_open(store)
+        haskey(store.item_locations, payload_key)
+    end
 end
 
 """Wait on a held condition, waking no later than `deadline`; whether the deadline is still ahead."""
@@ -1374,7 +1383,7 @@ function _flush_to_db!(
             _append_table!(store.write_connection, "item_data") do appender
                 for (location, entry) in appends
                     DuckDB.append(appender, entry.item_key)
-                    DuckDB.append(appender, entry.stage)
+                    DuckDB.append(appender, Int8(entry.stage))
                     DuckDB.append(appender, location[1])
                     DuckDB.append(appender, location[2])
                     DuckDB.append(appender, entry.container)

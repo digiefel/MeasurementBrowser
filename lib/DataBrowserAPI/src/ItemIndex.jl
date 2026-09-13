@@ -11,7 +11,6 @@ import ..DataBrowserAPI:
     AbstractProject,
     MetadataValue,
     attach_record,
-    cacheable_data,
     collection,
     collection_record_id,
     collection_path_label,

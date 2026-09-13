@@ -44,6 +44,9 @@ using DataBrowserCache:
     COLLECTION_PROCESS_RESULT,
     ITEM_ANALYSIS_RESULT,
     PROCESSING_RESULT,
+    PAYLOAD_STAGE_INTERPRETED,
+    PAYLOAD_STAGE_PROCESSED,
+    PAYLOAD_STAGE_COLLECTION_PROCESSED,
     ProjectCacheSchemaError,
     ProjectCacheDataError,
     ProjectCacheIdentity,
@@ -55,6 +58,7 @@ using DataBrowserCache:
     cache_built,
     cache_has_pending_writes,
     cache_pending_counts,
+    cached_result_state,
     clear_cache_index!,
     clear_cached_result_state!,
     clear_cached_source_state!,
@@ -62,13 +66,14 @@ using DataBrowserCache:
     delete_collection_records!,
     delete_collection_metadata!,
     delete_source_item!,
+    has_payload,
     load_cache_index,
     _load_source_item_fingerprints,
     open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
     query_items,
-    read_item_data,
+    read_payload,
     record_cache_phase!,
     reset_build_metrics!,
     set_cache_memory_limit!,
@@ -79,6 +84,7 @@ using DataBrowserCache:
     store_collection_process_result!,
     store_interpreted!,
     store_item_metadata!,
+    store_item_metadata_layer!,
     store_processed!,
     store_result_failure!,
     store_source_item_failure!,
@@ -87,7 +93,7 @@ using DataBrowserCache:
     wait_condition_deadline,
     write_meta_header!
 import DataBrowserCache
-import DataBrowserCache: query_items, read_item_data, set_cache_memory_limit!
+import DataBrowserCache: query_items, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
     CollectionIndex,
     CollectionInput,

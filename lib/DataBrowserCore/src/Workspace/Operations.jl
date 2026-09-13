@@ -1048,7 +1048,7 @@ function publish_work_success!(
             result.source_item,
             interpretation.source_item_label,
             resolved,
-            interpretation.interpreted_items,
+            item_data.(interpretation.interpreted_items),
         )
         store_collection_index!(workspace.cache.db, workspace.index.collections, resolved)
         delete_collection_metadata!(workspace.cache.db, invalidated)
@@ -1061,6 +1061,7 @@ function publish_work_success!(
         # runnable the moment this node finishes and late joiners reading the cache find the data.
         record = get(workspace.index.items, key.entity, nothing)
         if record !== nothing
+            publish_processed_metadata_layer!(workspace, record, result.record)
             clear_work_result_state!(workspace, WorkKey(ITEM_ANALYZE, record.id))
             enqueue_item_analysis!(workspace, record)
         end
@@ -1091,6 +1092,34 @@ function publish_work_success!(
 end
 
 """
+Replace one item's computed metadata with the layer produced by its latest `process` call.
+
+Replacement removes obsolete analysis values when processing is retried. The cache row stores the
+complete delivered metadata but does not mark item analysis complete.
+"""
+function publish_processed_metadata_layer!(
+    workspace::Workspace,
+    record::ItemRecord,
+    processed_record::ItemRecord,
+)::Nothing
+    base = effective_metadata(workspace.index.collections, record)
+    computed = MetadataDict(
+        name => value
+        for (name, value) in processed_record.metadata
+        if !haskey(base, name) || !isequal(base[name], value)
+    )
+    if isempty(computed)
+        delete!(workspace.index.item_metadata, record.id)
+    else
+        workspace.index.item_metadata[record.id] = computed
+    end
+    dropped = store_item_metadata_layer!(
+        workspace.cache.db, record, processed_record.metadata)
+    publish_metadata_conflicts!(workspace, record.id, ITEM_PROCESS, dropped)
+    return nothing
+end
+
+"""
 Publish one item's computed metadata layer to the index and cache, surfacing any wide-cache type
 conflict through the analysis-error channel.
 """
@@ -1099,7 +1128,8 @@ function publish_item_metadata_layer!(
     record::ItemRecord,
     computed,
 )::Nothing
-    workspace.index.item_metadata[record.id] = Dict{Symbol,Any}(computed)
+    layer = get!(() -> MetadataDict(), workspace.index.item_metadata, record.id)
+    merge!(layer, metadata_dict(computed))
     dropped = store_item_metadata!(
         workspace.cache.db,
         record,

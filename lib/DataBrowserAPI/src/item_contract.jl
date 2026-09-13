@@ -58,13 +58,6 @@ process(item::AbstractDataItem) = item
 """Analyze a processed item into additional metadata. Optional; default empty `Dict`."""
 analyze(::AbstractDataItem)::Dict = Dict()
 
-"""
-Whether a payload value can be stored natively by the data cache. Tables are first-class: by
-default anything implementing the Tables.jl interface is cacheable, and the cache still requires
-storable column types at write time. A type can opt out (or a non-tabular type opt in) by dispatch.
-"""
-cacheable_data(data)::Bool = Tables.istable(data)
-
 # ---------------------------------------------------------------------------
 # Internal workspace hooks
 # ---------------------------------------------------------------------------

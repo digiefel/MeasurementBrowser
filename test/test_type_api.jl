@@ -100,7 +100,7 @@ MB.entries(source_item::PhotoSourceItem, ::PhotoSourceItem) = [Photo(
     workspace = MB.open_workspace(
         project,
         PhotoSource("typed photos");
-        cache=true,
+        cache=false,
         background_processing=true,
     )
     try

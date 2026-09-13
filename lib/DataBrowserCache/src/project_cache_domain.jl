@@ -118,7 +118,7 @@ struct ProjectCacheIndex
     identity::ProjectCacheIdentity
     source::SourceScan
     analysis_errors::Dict{String,String}
-    # The computed layers (analyze output + collection-process overwrite) per item, restored for
+    # The computed layers (item process + item analysis) per item, restored for
     # items whose governing result is valid: delivered effective minus the entries layer.
     item_metadata::Dict{String,MetadataDict}
     result_states::Dict{CacheResultKey,AnyCachedResultState}
@@ -431,7 +431,11 @@ end
 
 abstract type AbstractCacheDB end
 
-"""One open DuckDB cache file for a workspace: typed `RowStore`/`TabularFamilyStore` owners plus memory-only payload buffers. Only schema, meta-header, and checkpoint work open short-lived connections."""
+"""
+One open DuckDB cache file: typed row stores, one processed-payload store, and one resident
+interpreted-payload buffer. Only schema, meta-header, and checkpoint work open short-lived
+connections.
+"""
 mutable struct CacheDB <: AbstractCacheDB
     identity::ProjectCacheIdentity
     db::DuckDB.DB
@@ -446,9 +450,7 @@ mutable struct CacheDB <: AbstractCacheDB
     result_states::RowStore{Tuple{Int8,String},CachedResultState}
     collection_result_states::RowStore{Tuple{Int8,Int64},CachedCollectionResultState}
     payload::TabularFamilyStore
-    interpreted::MemoryStore{String,AbstractDataItem}
-    processed_memory::MemoryStore{String,AbstractDataItem}
-    collection_processed_memory::MemoryStore{String,AbstractDataItem}
+    interpreted::MemoryStore{String,Any}
     # One integer surrogate per item id, shared with the payload store; minted at interpretation.
     item_keys::Dict{String,Int64}
     next_item_key::Int64
@@ -468,9 +470,9 @@ end
 mutable struct MemoryCacheDB <: AbstractCacheDB
     identity::ProjectCacheIdentity
     metrics::BuildMetrics
-    interpreted::MemoryStore{String,AbstractDataItem}
-    processed_memory::MemoryStore{String,AbstractDataItem}
-    collection_processed_memory::MemoryStore{String,AbstractDataItem}
+    interpreted::MemoryStore{String,Any}
+    processed_memory::MemoryStore{String,Any}
+    collection_processed_memory::MemoryStore{String,Any}
     source_items::Set{Int64}
     items::Set{String}
     failures::Dict{Tuple{String,Int64},String}
@@ -569,9 +571,7 @@ function open_cache_db(
             result_states,
             collection_result_states,
             payload,
-            MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
-            MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
-            MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+            MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
             item_keys,
             next_item_key,
             source_item_keys,
@@ -681,9 +681,9 @@ function open_memory_cache_db(
     return MemoryCacheDB(
         identity,
         metrics,
-        MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
-        MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
-        MemoryStore{String,AbstractDataItem}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
         Set{Int64}(),
         Set{String}(),
         Dict{Tuple{String,Int64},String}(),
@@ -707,10 +707,7 @@ stop_cache!(::MemoryCacheDB)::Nothing = nothing
 set_cache_memory_limit!(::AbstractCacheDB, mib::Integer)::Int =
     set_cache_memory_limit!(mib)
 
-function _buffer_rows(item::AbstractDataItem)::Int
-    data = item_data(item)
-    return Tables.istable(data) ? _payload_rows(data) : 1
-end
+_buffer_rows(data)::Int = Tables.istable(data) ? _payload_rows(data) : 1
 
 """Create the cache tables if they do not already exist."""
 function ensure_schema!(connection)::Nothing
@@ -777,7 +774,6 @@ function store_interpreted_records!(
     source_item::AbstractDataSourceItem,
     source_item_label::AbstractString,
     records::Vector{ItemRecord},
-    effective::Vector{<:AbstractDataItem},
 )::Vector{String}
     started = time_ns()
     source_item_id_value = id(source_item)
@@ -788,7 +784,7 @@ function store_interpreted_records!(
         source_item_path(source_item), source_item_timestamp(source_item)))
     _stage_ledger_source!(cache.stage_ledger, source_key, true)
     dropped = WideConflict[]
-    for (record, _) in zip(records, effective)
+    for record in records
         key = item_key!(cache, record.id; mint=true)
         append!(cache.items, record.id,
             ItemRow(record.id, key, record.source_item_key, record.label,
@@ -856,14 +852,14 @@ store_collection_index!(::MemoryCacheDB, ::CollectionIndex, ::Vector{ItemRecord}
 function store_interpreted_data!(
     cache::AbstractCacheDB,
     records::Vector{ItemRecord},
-    data::Vector{<:AbstractDataItem},
+    payloads::AbstractVector,
 )::Nothing
-    length(records) == length(data) || throw(ArgumentError(
+    length(records) == length(payloads) || throw(ArgumentError(
         "Cannot store interpreted data: received $(length(records)) records and " *
-        "$(length(data)) items; the vectors must align one-to-one",
+        "$(length(payloads)) payloads; the vectors must align one-to-one",
     ))
-    for (record, item) in zip(records, data)
-        append!(cache.interpreted, record.id, item)
+    for (record, payload) in zip(records, payloads)
+        append!(cache.interpreted, record.id, payload)
     end
     return nothing
 end
@@ -871,15 +867,15 @@ end
 """
 Store one source item's interpreted result: records to disk-backed buffers, payloads to memory.
 
-`data` carries each record's interpreted payload; entries land in `source_item_metadata`. Returns the
+`payloads` carries each record's interpreted payload; entries land in `source_item_metadata`. Returns the
 interpretation-time type-conflict messages.
 """
 function store_interpreted!(cache::AbstractCacheDB, source_item::AbstractDataSourceItem,
         source_item_label::AbstractString, records::Vector{ItemRecord},
-        data::Vector{<:AbstractDataItem})::Vector{String}
+        payloads::AbstractVector)::Vector{String}
     conflicts = store_interpreted_records!(
-        cache, source_item, source_item_label, records, data)
-    store_interpreted_data!(cache, records, data)
+        cache, source_item, source_item_label, records)
+    store_interpreted_data!(cache, records, payloads)
     return conflicts
 end
 
@@ -888,7 +884,6 @@ function store_interpreted_records!(
     source_item::AbstractDataSourceItem,
     ::AbstractString,
     records::Vector{ItemRecord},
-    ::Vector{<:AbstractDataItem},
 )::Vector{String}
     source_key = source_item_key!(cache, id(source_item); mint=true)
     lock(cache.lock) do
@@ -905,58 +900,39 @@ function store_interpreted_records!(
 end
 
 """
-Store one processed payload for a record at a payload stage (`:processed` or `:collection_processed`).
+Store one processed payload for a record at `PAYLOAD_STAGE_PROCESSED` or
+`PAYLOAD_STAGE_COLLECTION_PROCESSED`.
 
-Cacheable tabular payloads with DuckDB-storable columns land in the payload family; everything
-else stays in the memory-only processed buffer. Only the `:processed` stage tracks the
-`PROCESSING_RESULT` ledger.
+The cache passes every payload to its payload store. That store defines the accepted Tables.jl
+shape and column types and reports unsupported values through its normal write errors. Only the
+`PAYLOAD_STAGE_PROCESSED` stage tracks the `PROCESSING_RESULT` ledger after the payload append
+succeeds.
 """
 function store_processed!(
     cache::CacheDB,
     record::ItemRecord,
-    item::AbstractDataItem;
-    stage::Symbol=:processed,
+    payload;
+    stage::PayloadStage=PAYLOAD_STAGE_PROCESSED,
 )::Nothing
     key = item_key!(cache, record.id)
-    payload = item_data(item)
-    disk = _storable_table(payload)
-    if disk
-        started = time_ns()
-        if stage === :processed
-            delete!(cache.processed_memory, record.id)
-        else
-            delete!(cache.collection_processed_memory, record.id)
-        end
-        append!(cache.payload, (key, _payload_stage_code(stage)), payload)
-        record_cache_phase!(
-            cache.metrics.processed_write_ns,
-            cache.metrics.processed_writes,
-            started,
+    started = time_ns()
+    append!(cache.payload, (key, stage), payload)
+    record_cache_phase!(
+        cache.metrics.processed_write_ns,
+        cache.metrics.processed_writes,
+        started,
+    )
+    if stage === PAYLOAD_STAGE_PROCESSED
+        state = CachedResultState(
+            Int8(PROCESSING_RESULT),
+            record.id,
+            Int8(RESULT_READY),
+            record.source_item_key,
+            nothing,
         )
-        if stage === :processed
-            state = CachedResultState(
-                Int8(PROCESSING_RESULT),
-                record.id,
-                Int8(RESULT_READY),
-                record.source_item_key,
-                nothing,
-            )
-            edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id), state)
-            _stage_ledger_result!(
-                cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
-        end
-    else
-        delete!(cache.payload, (key, _payload_stage_code(stage)))
-        if stage === :processed
-            append!(cache.processed_memory, record.id, item)
-        else
-            append!(cache.collection_processed_memory, record.id, item)
-        end
-        if stage === :processed
-            delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
-            _stage_ledger_result!(
-                cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), nothing)
-        end
+        edit!(cache.result_states, (Int8(PROCESSING_RESULT), record.id), state)
+        _stage_ledger_result!(
+            cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
     end
     return nothing
 end
@@ -964,11 +940,11 @@ end
 function store_processed!(
     cache::MemoryCacheDB,
     record::ItemRecord,
-    item::AbstractDataItem;
-    stage::Symbol=:processed,
+    payload;
+    stage::PayloadStage=PAYLOAD_STAGE_PROCESSED,
 )::Nothing
-    if stage === :processed
-        append!(cache.processed_memory, record.id, item)
+    if stage === PAYLOAD_STAGE_PROCESSED
+        append!(cache.processed_memory, record.id, payload)
         lock(cache.lock) do
             state = CachedResultState(
                 Int8(PROCESSING_RESULT),
@@ -981,8 +957,8 @@ function store_processed!(
             _stage_ledger_result!(
                 cache.stage_ledger, (Int8(PROCESSING_RESULT), record.id), state)
         end
-    elseif stage === :collection_processed
-        append!(cache.collection_processed_memory, record.id, item)
+    elseif stage === PAYLOAD_STAGE_COLLECTION_PROCESSED
+        append!(cache.collection_processed_memory, record.id, payload)
     end
     return nothing
 end
@@ -1033,24 +1009,37 @@ _conflict_messages(dropped::Vector{WideConflict})::Vector{String} = String[
     for (name, registered, incoming) in dropped
 ]
 
-"""Persist one item's delivered metadata. Returns type-conflict messages for dropped keys."""
-function store_item_metadata!(
+"""
+Persist one item's delivered metadata without completing its analysis stage.
+
+This records metadata produced by item processing so reconstruction of the processed payload sees
+the same input in later stages. Returns type-conflict messages for dropped keys.
+"""
+function store_item_metadata_layer!(
     cache::CacheDB, record::ItemRecord, effective::AbstractDict,
 )::Vector{String}
     started = time_ns()
     key = item_key!(cache, record.id)
     dropped = edit!(cache.analyzed_item_metadata, key, metadata_dict(effective))
-    state = CachedResultState(Int8(ITEM_ANALYSIS_RESULT), record.id, Int8(RESULT_READY),
-        record.source_item_key, nothing)
-    edit!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
-    _stage_ledger_result!(
-        cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
     record_cache_phase!(
         cache.metrics.metadata_write_ns,
         cache.metrics.metadata_writes,
         started,
     )
     return _conflict_messages(dropped)
+end
+
+"""Persist one item's delivered metadata and mark its analysis stage complete."""
+function store_item_metadata!(
+    cache::CacheDB, record::ItemRecord, effective::AbstractDict,
+)::Vector{String}
+    dropped = store_item_metadata_layer!(cache, record, effective)
+    state = CachedResultState(Int8(ITEM_ANALYSIS_RESULT), record.id, Int8(RESULT_READY),
+        record.source_item_key, nothing)
+    edit!(cache.result_states, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+    _stage_ledger_result!(
+        cache.stage_ledger, (Int8(ITEM_ANALYSIS_RESULT), record.id), state)
+    return dropped
 end
 
 """Persist one collection's analyze output. Returns type-conflict messages for dropped keys."""
@@ -1150,6 +1139,9 @@ function store_item_metadata!(cache::MemoryCacheDB, record::ItemRecord, ::Abstra
     return String[]
 end
 
+"""Keep processed metadata in the live index; a memory-only cache has no metadata rows."""
+store_item_metadata_layer!(::MemoryCacheDB, ::ItemRecord, ::AbstractDict)::Vector{String} = String[]
+
 function store_collection_metadata!(cache::MemoryCacheDB, collection_key::Integer, ::AbstractDict)::Vector{String}
     entity = Int64(collection_key)
     lock(cache.lock) do
@@ -1200,8 +1192,6 @@ function delete_source_item!(
         delete!(cache.payload, (key, PAYLOAD_STAGE_PROCESSED))
         delete!(cache.payload, (key, PAYLOAD_STAGE_COLLECTION_PROCESSED))
         delete!(cache.interpreted, record.id)
-        delete!(cache.processed_memory, record.id)
-        delete!(cache.collection_processed_memory, record.id)
         delete!(cache.failures, (record.id, source_key))
         _stage_ledger_failure!(cache.stage_ledger, (record.id, source_key), false)
         delete!(cache.result_states, (Int8(PROCESSING_RESULT), record.id))
@@ -1429,60 +1419,83 @@ function cache_has_pending_writes(cache::AbstractCacheDB)::Bool
     return pending.items > 0 || pending.rows > 0
 end
 
+"""Return the current result-ledger entry for one item or collection stage, or `nothing`."""
+function cached_result_state(
+    cache::AbstractCacheDB,
+    kind::CacheResultKind,
+    entity::Union{AbstractString,Integer},
+)
+    key_entity = entity isa AbstractString ? String(entity) : Int64(entity)
+    key = CacheResultKey(kind, key_entity)
+    return lock(cache.stage_ledger.lock) do
+        get(cache.stage_ledger.result_states, key, nothing)
+    end
+end
+
 """
-Read item data through the buffer for a stage (`:interpreted`, `:processed`, or
-`:collection_processed`). Returns a vector aligned to `records` of loaded items or `nothing` on a
-miss; the caller falls back to the source. Interpreted payloads are memory-only, so a memory miss is
-final. `:collection_processed` is disk-backed on `CacheDB` and memory-backed on `MemoryCacheDB`.
+Return whether an item has a cached payload at `stage` without loading the payload.
+
+For a disk cache, interpreted payloads are resident and processed payloads use the payload store.
+The payload-store check covers queued and committed writes.
 """
-function read_item_data(cache::CacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
-    stage in (:interpreted, :processed, :collection_processed) ||
-        throw(ArgumentError("unknown item-data cache stage '$stage'"))
+function has_payload(cache::CacheDB, item_id::AbstractString; stage::PayloadStage)::Bool
+    id_value = String(item_id)
+    stage === PAYLOAD_STAGE_INTERPRETED && return haskey(cache.interpreted, id_value)
+    key = lock(cache.key_lock) do
+        get(cache.item_keys, id_value, nothing)
+    end
+    key === nothing && return false
+    return haskey(cache.payload, (key, stage))
+end
+
+function has_payload(cache::MemoryCacheDB, item_id::AbstractString; stage::PayloadStage)::Bool
+    store = stage === PAYLOAD_STAGE_INTERPRETED ? cache.interpreted :
+        stage === PAYLOAD_STAGE_PROCESSED ? cache.processed_memory :
+        cache.collection_processed_memory
+    return haskey(store, String(item_id))
+end
+
+"""
+Read cached item payloads for a `PayloadStage`.
+
+The returned vector aligns with `records`. Each entry is `Some(payload)` on a hit and `nothing` on
+a miss, so `nothing` remains a valid payload value. Interpreted payloads are resident only;
+processed payloads come from the DuckDB-backed payload store.
+"""
+function read_payload(
+    cache::CacheDB,
+    records::Vector{ItemRecord};
+    stage::PayloadStage,
+)::Vector{Any}
     isempty(records) && return Any[]
 
-    if stage === :interpreted
-        return Any[read(cache.interpreted, record.id) for record in records]
+    if stage === PAYLOAD_STAGE_INTERPRETED
+        return Any[read_hit(cache.interpreted, record.id) for record in records]
     end
 
-    # Raw payload reads: at runtime delivery consults the live graph, then reads committed payloads.
-    # The `result_states` ledger is authoritative for finished work between sessions.
-    stage_code = _payload_stage_code(stage)
+    keys = PayloadKey[(item_key!(cache, record.id), stage) for record in records]
+    disk_data = read(cache.payload, unique(keys))
     loaded = Vector{Any}(undef, length(records))
-    disk_keys = Tuple{Int64,Int8}[]
-    for (index, record) in pairs(records)
-        held = stage === :processed ?
-            read(cache.processed_memory, record.id) :
-            read(cache.collection_processed_memory, record.id)
-        if held !== nothing
-            loaded[index] = held
-            continue
-        end
-        push!(disk_keys, (item_key!(cache, record.id), stage_code))
-        loaded[index] = nothing
-    end
-
-    disk_data = isempty(disk_keys) ?
-        Dict{Tuple{Int64,Int8},Any}() :
-        read(cache.payload, unique(disk_keys))
-    for (index, record) in pairs(records)
-        loaded[index] !== nothing && continue
-        data = get(disk_data, (item_key!(cache, record.id), stage_code), nothing)
-        loaded[index] = data
+    for (index, key) in pairs(keys)
+        data = get(disk_data, key, nothing)
+        loaded[index] = data === nothing ? nothing : Some(data)
     end
     return loaded
 end
 
-function read_item_data(cache::MemoryCacheDB, records::Vector{ItemRecord}; stage::Symbol)::Vector{Any}
-    stage in (:interpreted, :processed, :collection_processed) ||
-        throw(ArgumentError("unknown item-data cache stage '$stage'"))
-    store = if stage === :interpreted
+function read_payload(
+    cache::MemoryCacheDB,
+    records::Vector{ItemRecord};
+    stage::PayloadStage,
+)::Vector{Any}
+    store = if stage === PAYLOAD_STAGE_INTERPRETED
         cache.interpreted
-    elseif stage === :collection_processed
+    elseif stage === PAYLOAD_STAGE_COLLECTION_PROCESSED
         cache.collection_processed_memory
     else
         cache.processed_memory
     end
-    return Any[read(store, record.id) for record in records]
+    return Any[read_hit(store, record.id) for record in records]
 end
 
 """Close a workspace cache's database file, checkpointing first."""
@@ -1493,8 +1506,7 @@ function close_cache_db!(cachedb::CacheDB)::Nothing
          cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
          cachedb.result_states, cachedb.collection_result_states, cachedb.payload,
-         cachedb.interpreted,
-         cachedb.processed_memory, cachedb.collection_processed_memory)
+         cachedb.interpreted)
         try
             close!(buffer)
         catch error
@@ -1576,8 +1588,7 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
          cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
          cachedb.result_states, cachedb.collection_result_states, cachedb.payload,
-         cachedb.interpreted,
-         cachedb.processed_memory, cachedb.collection_processed_memory)
+         cachedb.interpreted)
         clear!(buffer)
     end
     lock(cachedb.key_lock) do
@@ -1835,8 +1846,8 @@ function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
     key_to_id = Dict{Int64,String}(
         row.item_key => row.id for row in values(read(cachedb.items))
     )
-    # The computed layer is the delivered effective minus the entries layer: what analyze and
-    # collection-process added, restored per item id.
+    # The computed layer is the delivered effective minus the entries layer: what item process and
+    # item analysis added, restored per item id.
     item_metadata = Dict{String,MetadataDict}()
     for (key, analyzed) in analyzed_by_key
         item_id = get(key_to_id, key, nothing)
@@ -1844,7 +1855,9 @@ function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
         entries = get(entries_by_key, key, MetadataDict())
         computed = MetadataDict()
         for (name, value) in analyzed
-            get(entries, name, nothing) == value || (computed[name] = value)
+            if !haskey(entries, name) || !isequal(entries[name], value)
+                computed[name] = value
+            end
         end
         isempty(computed) || (item_metadata[item_id] = computed)
     end
@@ -1854,6 +1867,11 @@ function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
     )
     result_states = Dict{CacheResultKey,AnyCachedResultState}()
     for state in values(read(cachedb.result_states))
+        if CacheResultKind(state.kind) === PROCESSING_RESULT &&
+                CacheResultStatus(state.status) === RESULT_READY &&
+                !has_payload(cachedb, state.entity; stage=PAYLOAD_STAGE_PROCESSED)
+            continue
+        end
         result_states[CacheResultKey(CacheResultKind(state.kind), state.entity)] = state
     end
     for state in values(read(cachedb.collection_result_states))

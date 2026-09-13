@@ -74,13 +74,18 @@ entries(::AbstractDataSourceItem, loaded) = [loaded]
     process(project, item) -> AbstractDataItem
 
 Process one interpreted item. The default forwards to the context-free `process(item)`.
+
+Metadata returned by `metadata(processed_item)` is merged over the interpreted metadata. The merged
+metadata is supplied to later reconstruction and analysis.
 """
 process(project::AbstractProject, item::AbstractDataItem) = process(item)
 
 """
     analyze(project, item) -> Dict
 
-Analyze one processed item into additional metadata. The default forwards to `analyze(item)`.
+Analyze one processed item into additional metadata. The returned metadata is merged over the
+processed item's metadata and supplied to later reconstruction. The default forwards to
+`analyze(item)`.
 """
 analyze(project::AbstractProject, item::AbstractDataItem) = analyze(item)
 
@@ -115,15 +120,24 @@ analyze(::AbstractCollection, items::AbstractVector)::Dict = Dict()
 """
     reconstruct(::Type{T}, id, data, metadata::Dict) -> Union{Nothing,T}
 
-Rebuild one concrete item from its stored id, cached payload, and metadata. The default returns
-`nothing`; the engine then reruns `read` → `entries` → `process`, which is always correct and only
-slower. Cached payloads are still delivered to views either way; this is needed only to run further
+Rebuild one concrete item from its stored id, cached payload, and the metadata available at the
+calling stage. The engine can call this method before item analysis, after item analysis, or while
+preparing collection input. The item id, payload, and metadata must therefore contain everything
+the method needs at that point.
+
+The default returns the payload when it is already a `T`, preserving the identity of custom items
+whose `item_data(item)` is the item itself. Otherwise it returns `nothing`. While preparing an
+interpreted input, the engine then reruns `read` → `entries`; while preparing a processed input, it
+also reruns `process`. The fallback restores those stage outputs, but it cannot add later metadata
+to a custom item. A type that needs later metadata must retain it in its `reconstruct` result.
+Cached payloads remain available for views either way; reconstruction is needed to run further
 project dispatch on a cached item.
 
 Rehydration must be a pure function of cached content. Anything a type needs to rebuild itself
-belongs in its id or metadata, never in live workspace state.
+belongs in its id, data, or metadata, never in live workspace state.
 """
-reconstruct(::Type, id::AbstractString, data, metadata::Dict) = nothing
+reconstruct(::Type{T}, id::AbstractString, data, metadata::Dict) where {T} =
+    data isa T ? data : nothing
 
 """
     reconstruct(::Type{T}, id, metadata::Dict) -> T

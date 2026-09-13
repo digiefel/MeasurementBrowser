@@ -15,6 +15,7 @@ const UNIT_TEST_FILES = (
     "test_project_view_state.jl",
     "test_work_graph.jl",
     "test_collection_cache.jl",
+    "test_payload_reconstruction.jl",
     "test_hierarchy_edit.jl",
     "test_open_options.jl",
     "test_label_cache.jl",

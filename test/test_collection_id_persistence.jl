@@ -75,7 +75,7 @@ const DURABLE_SECOND_ID = "durable-2"
         project,
         DurableCollectionSource(root_path, "before");
         cache=true,
-        background_processing=true,
+        background_processing=false,
     )
 
     cache_path = first.cache.identity.cache_path
@@ -126,7 +126,7 @@ const DURABLE_SECOND_ID = "durable-2"
         DurableCollectionSource(root_path, "after");
         rebuild=true,
         cache=true,
-        background_processing=true,
+        background_processing=false,
     )
     try
         DataBrowserCore.Workspace.wait_workspace_idle!(reopened)
