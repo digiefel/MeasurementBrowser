@@ -582,14 +582,16 @@ end
 
 The cache stage that owns a stored item payload:
 
+- `PAYLOAD_STAGE_INTERPRETED` is the resident input to item processing.
 - `PAYLOAD_STAGE_PROCESSED` is the result of item processing.
 - `PAYLOAD_STAGE_COLLECTION_PROCESSED` is the result of collection processing.
-- `PAYLOAD_STAGE_INTERPRETED` is the resident input to item processing.
+
+Values follow pipeline order. Item analysis occupies position 2 but produces metadata, not a payload.
 """
 @enum PayloadStage::Int8 begin
-    PAYLOAD_STAGE_PROCESSED = 0
-    PAYLOAD_STAGE_COLLECTION_PROCESSED = 1
-    PAYLOAD_STAGE_INTERPRETED = 2
+    PAYLOAD_STAGE_INTERPRETED = 0
+    PAYLOAD_STAGE_PROCESSED = 1
+    PAYLOAD_STAGE_COLLECTION_PROCESSED = 3
 end
 
 """One item's payload key: its integer surrogate and the payload stage it belongs to."""

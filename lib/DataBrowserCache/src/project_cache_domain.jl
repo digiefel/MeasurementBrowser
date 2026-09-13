@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 22
+const PROJECT_CACHE_SCHEMA_VERSION = 23
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -54,11 +54,17 @@ struct ProjectCacheIdentity
     cache_path::String
 end
 
+"""
+The pipeline stage whose completion or failure is recorded in the cache ledger.
+
+This includes analysis stages that produce metadata rather than item payloads. Interpretation is
+tracked separately in the source-item rows. Values follow pipeline order.
+"""
 @enum CacheResultKind::Int8 begin
     PROCESSING_RESULT = 1
     ITEM_ANALYSIS_RESULT = 2
-    COLLECTION_ANALYSIS_RESULT = 3
-    COLLECTION_PROCESS_RESULT = 4
+    COLLECTION_PROCESS_RESULT = 3
+    COLLECTION_ANALYSIS_RESULT = 4
 end
 
 @enum CacheResultStatus::Int8 begin
