@@ -206,7 +206,9 @@ function _render_stage_counts!(status::WorkspaceStatus)::Nothing
     ig.TableNextRow()
     _stage_count_cell("$(counts.sources_found) Sources", [
         "$(counts.sources_found) $(counts.source_noun) found",
-        "$(counts.sources_pending) pending interpretation",
+        "$(cache.read_sources) read",
+        "$(cache.cached_sources) interpreted",
+        "$(counts.sources_pending) pending source work",
     ]; align=:center)
     _stage_count_cell("$(cache.interpreted_items) entries", [
         "$(cache.interpreted_items) items interpreted and cached",
@@ -217,14 +219,15 @@ function _render_stage_counts!(status::WorkspaceStatus)::Nothing
         # processing is off; the cache reports each stage independently.
         "$(cache.analyzed) analyzed",
     ]; align=:center)
-    stage_failures = cache.failed_interpret + cache.failed_process +
+    stage_failures = cache.failed_read + cache.failed_interpret + cache.failed_process +
         cache.failed_analyze + cache.failed_collection
     extra_analyze_issues = max(length(status.errors) - stage_failures, 0)
     analyze_issues = cache.failed_analyze + extra_analyze_issues
-    issues = cache.failed_interpret + cache.failed_process + analyze_issues +
+    issues = cache.failed_read + cache.failed_interpret + cache.failed_process + analyze_issues +
         cache.failed_collection
     issue_word = issues == 1 ? "issue" : "issues"
     _stage_count_cell("$(issues) $issue_word", [
+        "$(cache.failed_read) read",
         "$(cache.failed_interpret) interpret",
         "$(cache.failed_process) process",
         "$analyze_issues analyze",

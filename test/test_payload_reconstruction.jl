@@ -323,7 +323,7 @@ end
             item = only(DataBrowser.materialize_items(workspace, [item_id]))
             @test item.payload.x == [2, 4]
             @test counters.processes[] == processes_before + 1
-            @test counters.reads[] == reads_before + 1
+            @test counters.reads[] == reads_before
         finally
             DataBrowser.close_workspace!(workspace)
         end

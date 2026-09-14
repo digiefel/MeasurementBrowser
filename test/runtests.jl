@@ -14,6 +14,7 @@ include(joinpath(@__DIR__, "test_project.jl"))
 const UNIT_TEST_FILES = (
     "test_project_view_state.jl",
     "test_work_graph.jl",
+    "test_source_stages.jl",
     "test_collection_cache.jl",
     "test_payload_reconstruction.jl",
     "test_hierarchy_edit.jl",

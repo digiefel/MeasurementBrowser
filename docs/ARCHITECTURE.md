@@ -105,9 +105,10 @@ flowchart TB
 ## Core Flow
 
 ```
-source item → interpret → logical data → process → analyze → collection process/analyze → views
-                 │             │             │
-                 └─ index      └─ DuckDB     └─ DuckDB + item metadata
+source item → read → interpret → process → analyze → collection process/analyze → views
+               │         │          │         │
+               │         └─ index   └─ DuckDB  └─ DuckDB + item metadata
+               └─ memory cache
 ```
 
 A project/source implementation defines:

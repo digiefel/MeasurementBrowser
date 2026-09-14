@@ -12,12 +12,12 @@ projects usually implement. The project-aware defaults forward to the context-fr
 project that owns its own source and item types never mentions the project, while a project reusing
 a shared source (`DirectorySource`) dispatches on its own project type instead.
 
-**The source appears exactly once, at `read`.** Every later stage is a pure function of values: the
-source item (an address — fingerprintable, recordable), the loaded payload, the items. That rule is
-what makes a cached stage result sufficient on its own: rerunning `entries` without rereading,
-warm reopen, eviction recovery, and cross-machine rehydration are sound by construction rather than
-by discipline. A `read` returning a live handle (an HDF5 group, a database cursor) is legitimate
-but uncacheable; that project's durable boundary is `process` instead.
+`read` obtains the source content; `entries` turns that content into items. The workspace runs
+these as separate stages. Read results are cached in memory by default and may be evicted. A
+scheduled interpretation retains its input until it finishes. After eviction or reopening, reading
+runs again only if a consumer needs the missing input; valid downstream results remain usable.
+Source changes invalidate both stages. A failure belongs to the stage that raised it and remains
+cached until that stage is invalidated.
 
 `entries` still receives the source item because identity is not payload: the loaded value stays
 purely the expensive data, while ids, labels, and collection placement derive from the source item —
@@ -32,15 +32,16 @@ by the concrete signature on the receiving end.
     PipelineStage
 
 The stage identified by a scheduled job, cached payload, or cached completion record.
-Values follow pipeline order. `SOURCE_INTERPRET` runs `read` and `entries`; analysis stages
-produce metadata rather than item payloads.
+Values follow pipeline order. `SOURCE_READ` runs `read`; `SOURCE_INTERPRET` runs `entries`
+and assigns item identity and collection placement. Analysis stages produce metadata.
 """
 @enum PipelineStage::Int8 begin
-    SOURCE_INTERPRET = 0
-    ITEM_PROCESS = 1
-    ITEM_ANALYZE = 2
-    COLLECTION_PROCESS = 3
-    COLLECTION_ANALYZE = 4
+    SOURCE_READ = 0
+    SOURCE_INTERPRET = 1
+    ITEM_PROCESS = 2
+    ITEM_ANALYZE = 3
+    COLLECTION_PROCESS = 4
+    COLLECTION_ANALYZE = 5
 end
 
 # ---------------------------------------------------------------------------
@@ -75,7 +76,8 @@ read(source::AbstractDataSource, item::AbstractDataSourceItem) = error(
 
 Expand one loaded value into zero, one, or many concrete data items without rereading the source.
 
-The default treats the loaded value as a single item.
+The default treats the loaded value as a single item. The workspace may call `entries` again with
+the same cached `loaded` value. Preserve that value for reuse; copy data that needs modification.
 """
 entries(project::AbstractProject, item::AbstractDataSourceItem, loaded) = entries(item, loaded)
 
@@ -142,8 +144,8 @@ the method needs at that point.
 
 The default returns the payload when it is already a `T`, preserving the identity of custom items
 whose `item_data(item)` is the item itself. Otherwise it returns `nothing`. While preparing an
-interpreted input, the engine then reruns `read` → `entries`; while preparing a processed input, it
-also reruns `process`. The fallback restores those stage outputs, but it cannot add later metadata
+interpreted input, the engine reruns `entries`, reusing its cached read input or calling `read` if
+that input is absent. While preparing a processed input, it also reruns `process`. The fallback restores those stage outputs, but it cannot add later metadata
 to a custom item. A type that needs later metadata must retain it in its `reconstruct` result.
 Cached payloads remain available for views either way; reconstruction is needed to run further
 project dispatch on a cached item.

@@ -1,5 +1,5 @@
 """
-Source-item interpretation: run `read` then `entries` for one source item and normalize the result.
+Source-item interpretation: expand an already-read value through `entries` and normalize its items.
 
 This is the only place the source and the item pipeline meet. Identity minting and collection
 placement happen here, once, for every project alike — the stages themselves never see the source
@@ -62,9 +62,8 @@ end
 """
 One completed source-item pass.
 
-`records` are retained by the index. `interpreted_items` carry effective item data only on direct
-interpretation paths; workspace workers put that data in the memory cache before publishing a
-lightweight completion.
+`records` are retained by the index. `interpreted_items` carry transient user values; workspace
+publication extracts their payloads into the memory cache. These values do not become index records.
 """
 struct SourceItemInterpretation
     records::Vector{ItemRecord}
@@ -90,13 +89,13 @@ leave it at 0.
 function interpret_source_item(
     project::AbstractProject,
     source::AbstractDataSource,
-    source_item::AbstractDataSourceItem;
+    source_item::AbstractDataSourceItem,
+    loaded;
     source_item_key::Int64=Int64(0),
 )::SourceItemInterpretation
     source_item_id_value = id(source_item)
     source_item_path_value = source_item_path(source_item)
     source_item_label_value = label(source_item)
-    loaded = read(project, source, source_item)
     handles = entries(project, source_item, loaded)
     handles isa AbstractVector || error(
         "entries(::$(typeof(project)), ::$(typeof(source_item)), ::$(typeof(loaded))) must " *
@@ -146,11 +145,9 @@ function items_for_file(
         source.collection_metadata_entries = meta
         source.has_metadata = true
     end
-    interpretation = interpret_source_item(
-        project,
-        source,
-        index_source_file(filepath, dirname(filepath)),
-    )
+    source_item = index_source_file(filepath, dirname(filepath))
+    loaded = read(project, source, source_item)
+    interpretation = interpret_source_item(project, source, source_item, loaded)
     collections = CollectionIndex(source_id(source))
     records = ItemRecord[
         ItemRecord(record; collection_key=resolve_collection_path!(collections, path))

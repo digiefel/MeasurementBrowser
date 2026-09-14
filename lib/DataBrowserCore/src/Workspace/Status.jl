@@ -92,9 +92,9 @@ function workspace_stage_counts(workspace::Workspace)::WorkspaceStageCounts
     cache_counts = cache_stage_summary(workspace.cache.db)
     status = workspace.cache.status
     found = status isa ProjectCacheStatus ? status.total_source_items :
-        cache_counts.cached_sources + cache_counts.failed_interpret
+        cache_counts.cached_sources + cache_counts.failed_read + cache_counts.failed_interpret
     workspace.scan.state === :discovering && (found = max(found, workspace.scan.discovered[]))
-    done = cache_counts.cached_sources + cache_counts.failed_interpret
+    done = cache_counts.cached_sources + cache_counts.failed_read + cache_counts.failed_interpret
     return WorkspaceStageCounts(
         source_item_noun(workspace.source),
         found,

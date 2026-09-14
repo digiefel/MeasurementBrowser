@@ -32,30 +32,13 @@ Finished work lives in the cache ledger; live jobs are detected via `haskey(work
 """
 function cache_work_status(workspace::Workspace, key::WorkKey)::Symbol
     cachedb = workspace.cache.db
-    memory = !(cachedb isa CacheDB)
-    if key.kind === SOURCE_INTERPRET
-        source_key = key.entity::Int64
-        if memory
-            return lock(cachedb.lock) do
-                haskey(cachedb.failures, ("", source_key)) && return :failed
-                source_key in cachedb.source_items ? :ready : :absent
-            end
-        end
-        failures = read(cachedb.failures)
-        haskey(failures, ("", source_key)) && return :failed
-        return haskey(
-            read(cachedb.source_items),
-            DataBrowserCache.source_item_id(cachedb, source_key),
-        ) ? :ready : :absent
-    end
     kind = key.kind
-    entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
-        key.entity::Int64 : key.entity::String
+    entity = key.entity
     state = cached_result_state(cachedb, kind, entity)
-    if kind === ITEM_PROCESS
+    if kind in (SOURCE_READ, ITEM_PROCESS)
         state !== nothing && CacheResultStatus(state.status) === RESULT_FAILED && return :failed
         state === nothing && return :absent
-        return has_payload(cachedb, entity::String; stage=ITEM_PROCESS) ? :ready : :absent
+        return has_payload(cachedb, entity; stage=kind) ? :ready : :absent
     end
     state === nothing && return :absent
     return CacheResultStatus(state.status) === RESULT_READY ? :ready : :failed
@@ -64,14 +47,37 @@ end
 """Drop one work key's finished-state ledger row so invalidation must rerun it."""
 function clear_work_result_state!(workspace::Workspace, key::WorkKey)::Nothing
     cachedb = workspace.cache.db
-    if key.kind === SOURCE_INTERPRET
-        clear_cached_source_state!(cachedb, key.entity::Int64)
-        return nothing
-    end
-    cache_entity = key.kind in (COLLECTION_PROCESS, COLLECTION_ANALYZE) ?
-        key.entity::Int64 : key.entity::String
-    clear_cached_result_state!(cachedb, key.kind, cache_entity)
+    clear_cached_result_state!(cachedb, key.kind, key.entity)
     return nothing
+end
+
+"""
+Pull a source interpretation's read dependency, reusing a resident read result when available.
+
+Interpretation has higher priority than reading so completed reads are consumed promptly instead
+of accumulating inputs behind the remaining source reads. The dependent pins its input until it
+finishes; the cache independently retains the value for later replay.
+"""
+function enqueue_source_interpretation!(workspace::Workspace, source_key::Int64;
+        priority::Int=3, waiter::Union{Nothing,Channel{Any}}=nothing, supersede::Bool=false)
+    return lock(workspace.work.lock) do
+        revision(key) = supersede ? bump_revision!(workspace.work, key) :
+            current_revision(workspace.work, key)
+        read_key = WorkKey(SOURCE_READ, source_key)
+        interpret_key = WorkKey(SOURCE_INTERPRET, source_key)
+        cached = cache_work_status(workspace, read_key) === :ready ?
+            read_payload(workspace.cache.db, source_key) : nothing
+        dependencies = WorkKey[]
+        if haskey(workspace.work.nodes, read_key) || cached === nothing
+            enqueue_work!(workspace, read_key, revision(read_key); priority)
+            push!(dependencies, read_key)
+        end
+        node = enqueue_work!(workspace, interpret_key,
+            revision(interpret_key);
+            priority=priority + 1, dependencies, waiter)
+        node === nothing || isempty(dependencies) && (node.input = cached)
+        return node
+    end
 end
 
 """Start one work-conserving worker pool shared by every work kind."""
@@ -207,6 +213,7 @@ function enqueue_work!(
                 UInt64(0),
                 previous_waiters,
                 time_ns(),
+                nothing,
             )
             graph.nodes[key] = node
             seed_node_dependencies!(graph, node, dependencies)
@@ -238,6 +245,25 @@ function source_fallback_lock(
     end
 end
 
+"""
+Obtain the read input during source replay, with the caller holding the source fallback lock.
+
+Replay runs inline because an item worker must not block waiting for another job in the same pool.
+It uses the same cache boundary as scheduled source work and never reruns a saved read failure.
+"""
+function read_source_input!(workspace::Workspace, source_item::AbstractDataSourceItem,
+        source_key::Int64)
+    state = cached_result_state(workspace.cache.db, SOURCE_READ, source_key)
+    if state !== nothing && CacheResultStatus(state.status) === RESULT_FAILED
+        error(something(state.message, "Source read failed"))
+    end
+    cached = state === nothing ? nothing : read_payload(workspace.cache.db, source_key)
+    cached === nothing || return something(cached)
+    loaded = read(workspace.project, workspace.source, source_item)
+    store_source_read!(workspace.cache.db, source_key, loaded)
+    return loaded
+end
+
 """Interpret one source item and return the requested logical item."""
 function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractDataItem
     fallback_lock = source_fallback_lock(workspace.work, record.source_item_key)
@@ -261,23 +287,13 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
             )
             source_item = discovered[position]
         end
+        loaded = read_source_input!(workspace, source_item, record.source_item_key)
         interpretation = interpret_source_item(
-            workspace.project,
-            workspace.source,
-            source_item;
-            source_item_key=record.source_item_key,
-        )
-        resolved_records = ItemRecord[
-            get(workspace.index.items, candidate.id, candidate)
-            for candidate in interpretation.records
-        ]
-        store_interpreted!(
-            workspace.cache.db,
-            source_item,
-            interpretation.source_item_label,
-            resolved_records,
-            item_data.(interpretation.interpreted_items),
-        )
+            workspace.project, workspace.source, source_item, loaded;
+            source_item_key=record.source_item_key)
+        DataBrowserCache.store_interpreted_data!(
+            workspace.cache.db, interpretation.records,
+            item_data.(interpretation.interpreted_items))
         requested = findfirst(item -> item.id == record.id, interpretation.records)
         requested === nothing && error(
             "Source item '$source_ref' no longer produces item '$(record.id)'",
@@ -290,8 +306,8 @@ end
 Prepare one interpreted item for `process`.
 
 A cached payload is reconstructed with interpretation-time metadata. When reconstruction declines
-or the resident payload is missing, the source fallback reruns only `read` and `entries`; the caller
-still runs `process` exactly once.
+or the resident payload is missing, source fallback reruns `entries` with the cached read input.
+It calls `read` only if that input is missing. The caller still runs `process` exactly once.
 """
 function interpreted_item(
     workspace::Workspace,
@@ -332,7 +348,7 @@ function collection_value(
     return last(path)
 end
 
-"""Rebuild one item by rerunning `read` → `entries` → `process` when `reconstruct` is unavailable."""
+"""Rebuild an item through `entries` and `process`, obtaining the read input from cache or source."""
 function reprocess_item(
     workspace::Workspace,
     collections::CollectionIndex,
@@ -354,8 +370,8 @@ end
 Turn one cached payload into an item ready for the next project stage.
 
 Every payload is rebuilt through `reconstruct` on the record's own concrete type, including a
-payload that is itself an `AbstractDataItem`. When that method declines, the engine reruns `read` →
-`entries` → `process`. A rebuilt item then adopts its record and the index's collection path, so
+payload that is itself an `AbstractDataItem`. When that method declines, the engine reruns
+`entries` and `process`, reading the source only if the read input is no longer cached. A rebuilt item then adopts its record and the index's collection path, so
 identity comes from the engine and never from stale cached state.
 """
 function materialized_item(
@@ -521,19 +537,21 @@ end
 function execute_work!(workspace::Workspace, node::WorkNode)::Nothing
     key = node.key
     result = try
-        if key.kind === SOURCE_INTERPRET
+        if key.kind in (SOURCE_READ, SOURCE_INTERPRET)
             source_item = lock(workspace.work.lock) do
                 get(workspace.work.source_items, key.entity, nothing)
             end
-            source_item === nothing &&
-                error("Cannot interpret removed source item '$(key.entity)'")
-            interpretation = interpret_source_item(
-                workspace.project, workspace.source, source_item;
-                source_item_key=key.entity::Int64)
-            (
-                source_item=source_item,
-                interpretation=interpretation,
-            )
+            source_item === nothing && error("Cannot load removed source item '$(key.entity)'")
+            if key.kind === SOURCE_READ
+                (loaded=read(workspace.project, workspace.source, source_item),)
+            else
+                loaded = something(node.input)
+                node.input = nothing
+                interpretation = interpret_source_item(
+                    workspace.project, workspace.source, source_item, loaded;
+                    source_item_key=key.entity::Int64)
+                (source_item=source_item, interpretation=interpretation)
+            end
         elseif key.kind === ITEM_PROCESS
             index = workspace.index
             record = get(index.items, key.entity, nothing)
@@ -657,14 +675,17 @@ function ensure_uptodate!(
             Any[],
         ),
     )
-    enqueue_work!(
-        workspace,
-        key,
-        current_revision(workspace.work, key);
-        priority,
-        dependencies,
-        waiter,
-    )
+    if key.kind === SOURCE_INTERPRET
+        upstream = cached_result_state(workspace.cache.db, SOURCE_READ, key.entity)
+        if upstream !== nothing && CacheResultStatus(upstream.status) === RESULT_FAILED
+            return ProcessingResult(nothing, CapturedException(
+                ErrorException(something(upstream.message, "Source read failed")), Any[]))
+        end
+        enqueue_source_interpretation!(workspace, key.entity; priority, waiter)
+    else
+        enqueue_work!(workspace, key, current_revision(workspace.work, key);
+            priority, dependencies, waiter)
+    end
     return take!(waiter)::ProcessingResult
 end
 

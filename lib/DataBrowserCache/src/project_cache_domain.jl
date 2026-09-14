@@ -1,4 +1,4 @@
-const PROJECT_CACHE_SCHEMA_VERSION = 23
+const PROJECT_CACHE_SCHEMA_VERSION = 24
 
 """
 DuckDB buffer-pool limit (MiB) for cache connections.
@@ -87,8 +87,8 @@ CachedResultState(row)::CachedResultState = CachedResultState(
     _null_to_nothing(row.message),
 )
 
-"""One persisted collection result-state row, keyed by the private collection-record key."""
-struct CachedCollectionResultState
+"""One persisted source or collection result, identified by its stage and private integer key."""
+struct CachedKeyedResultState
     kind::Int8
     entity::Int64
     status::Int8
@@ -96,7 +96,7 @@ struct CachedCollectionResultState
     message::Union{Nothing,String}
 end
 
-CachedCollectionResultState(row)::CachedCollectionResultState = CachedCollectionResultState(
+CachedKeyedResultState(row)::CachedKeyedResultState = CachedKeyedResultState(
     Int8(row.kind),
     Int64(row.entity),
     Int8(row.status),
@@ -104,7 +104,7 @@ CachedCollectionResultState(row)::CachedCollectionResultState = CachedCollection
     _null_to_nothing(row.message),
 )
 
-const AnyCachedResultState = Union{CachedResultState,CachedCollectionResultState}
+const AnyCachedResultState = Union{CachedResultState,CachedKeyedResultState}
 
 """All data-less content needed to restore and compare a project cache."""
 struct ProjectCacheIndex
@@ -131,11 +131,13 @@ end
 """Persisted cache counts surfaced through workspace status."""
 struct CacheStageSummary
     cached_sources::Int
+    read_sources::Int
     interpreted_items::Int
     processed::Int
     analyzed::Int
     collection_processed::Int
     collection_analyzed::Int
+    failed_read::Int
     failed_interpret::Int
     failed_process::Int
     failed_analyze::Int
@@ -143,7 +145,7 @@ struct CacheStageSummary
 end
 
 CacheStageSummary()::CacheStageSummary =
-    CacheStageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    CacheStageSummary(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
 mutable struct CacheStageLedger
     summary::CacheStageSummary
@@ -182,11 +184,13 @@ end
 function _stage_summary_delta(
     summary::CacheStageSummary;
     cached_sources::Int=0,
+    read_sources::Int=0,
     interpreted_items::Int=0,
     processed::Int=0,
     analyzed::Int=0,
     collection_processed::Int=0,
     collection_analyzed::Int=0,
+    failed_read::Int=0,
     failed_interpret::Int=0,
     failed_process::Int=0,
     failed_analyze::Int=0,
@@ -194,11 +198,13 @@ function _stage_summary_delta(
 )::CacheStageSummary
     return CacheStageSummary(
         summary.cached_sources + cached_sources,
+        summary.read_sources + read_sources,
         summary.interpreted_items + interpreted_items,
         summary.processed + processed,
         summary.analyzed + analyzed,
         summary.collection_processed + collection_processed,
         summary.collection_analyzed + collection_analyzed,
+        summary.failed_read + failed_read,
         summary.failed_interpret + failed_interpret,
         summary.failed_process + failed_process,
         summary.failed_analyze + failed_analyze,
@@ -214,6 +220,8 @@ function _stage_result_delta(
     kind = PipelineStage(state.kind)
     status = CacheResultStatus(state.status)
     if status === RESULT_READY
+        kind === SOURCE_READ && return _stage_summary_delta(summary; read_sources=sign)
+        kind === SOURCE_INTERPRET && return _stage_summary_delta(summary; cached_sources=sign)
         kind === ITEM_PROCESS &&
             return _stage_summary_delta(summary; processed=sign)
         kind === ITEM_ANALYZE &&
@@ -223,6 +231,8 @@ function _stage_result_delta(
         kind === COLLECTION_ANALYZE &&
             return _stage_summary_delta(summary; collection_analyzed=sign)
     elseif status === RESULT_FAILED
+        kind === SOURCE_READ && return _stage_summary_delta(summary; failed_read=sign)
+        kind === SOURCE_INTERPRET && return _stage_summary_delta(summary; failed_interpret=sign)
         kind === ITEM_PROCESS &&
             return _stage_summary_delta(summary; failed_process=sign)
         kind === ITEM_ANALYZE &&
@@ -239,10 +249,8 @@ function _stage_ledger_source!(ledger::CacheStageLedger, key::Integer, present::
         exists = source_key in ledger.source_items
         if present && !exists
             push!(ledger.source_items, source_key)
-            ledger.summary = _stage_summary_delta(ledger.summary; cached_sources=1)
         elseif !present && exists
             delete!(ledger.source_items, source_key)
-            ledger.summary = _stage_summary_delta(ledger.summary; cached_sources=-1)
         end
     end
     return nothing
@@ -441,8 +449,9 @@ mutable struct CacheDB <: AbstractCacheDB
     analyzed_collection_metadata::WideRowStore{Int64}
     failures::RowStore{Tuple{String,Int64},FailureRow}
     result_states::RowStore{Tuple{Int8,String},CachedResultState}
-    collection_result_states::RowStore{Tuple{Int8,Int64},CachedCollectionResultState}
+    keyed_result_states::RowStore{Tuple{Int8,Int64},CachedKeyedResultState}
     payload::TabularFamilyStore
+    source_reads::MemoryStore{Int64,Any}
     interpreted::MemoryStore{String,Any}
     # One integer surrogate per item id, shared with the payload store; minted at interpretation.
     item_keys::Dict{String,Int64}
@@ -463,6 +472,7 @@ end
 mutable struct MemoryCacheDB <: AbstractCacheDB
     identity::ProjectCacheIdentity
     metrics::BuildMetrics
+    source_reads::MemoryStore{Int64,Any}
     interpreted::MemoryStore{String,Any}
     processed_memory::MemoryStore{String,Any}
     collection_processed_memory::MemoryStore{String,Any}
@@ -470,7 +480,7 @@ mutable struct MemoryCacheDB <: AbstractCacheDB
     items::Set{String}
     failures::Dict{Tuple{String,Int64},String}
     result_states::Dict{Tuple{Int8,String},CachedResultState}
-    collection_result_states::Dict{Tuple{Int8,Int64},CachedCollectionResultState}
+    keyed_result_states::Dict{Tuple{Int8,Int64},CachedKeyedResultState}
     # Session-only source-item surrogates; nothing persists in a memory cache.
     source_item_keys::Dict{String,Int64}
     source_item_ids::Dict{Int64,String}
@@ -538,8 +548,8 @@ function open_cache_db(
             db, "item_failures", ("item_id", "source_item_key"))
         result_states = RowStore{Tuple{Int8,String},CachedResultState}(
             db, "result_states", ("kind", "entity"))
-        collection_result_states = RowStore{Tuple{Int8,Int64},CachedCollectionResultState}(
-            db, "collection_result_states", ("kind", "entity"))
+        keyed_result_states = RowStore{Tuple{Int8,Int64},CachedKeyedResultState}(
+            db, "keyed_result_states", ("kind", "entity"))
         payload = TabularFamilyStore(db; row_limit=CACHE_BUFFER_ROW_LIMIT)
         item_keys, next_item_key = _load_item_keys(db)
         source_item_keys, source_item_ids, next_source_item_key = _load_source_item_keys(db)
@@ -548,7 +558,7 @@ function open_cache_db(
             read(items),
             read(failures),
             read(result_states),
-            read(collection_result_states),
+            read(keyed_result_states),
         )
         return CacheDB(
             identity,
@@ -562,9 +572,10 @@ function open_cache_db(
             WideRowStore{Int64}(db, "analyzed_collection_metadata", "collection_key"),
             failures,
             result_states,
-            collection_result_states,
+            keyed_result_states,
             payload,
-            MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+            MemoryStore{Int64,Any}(; capacity=256 * 1024^2, weight=Base.summarysize),
+            MemoryStore{String,Any}(; capacity=CACHE_BUFFER_ROW_LIMIT),
             item_keys,
             next_item_key,
             source_item_keys,
@@ -674,14 +685,15 @@ function open_memory_cache_db(
     return MemoryCacheDB(
         identity,
         metrics,
-        MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
-        MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
-        MemoryStore{String,Any}(; row_limit=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{Int64,Any}(; capacity=256 * 1024^2, weight=Base.summarysize),
+        MemoryStore{String,Any}(; capacity=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,Any}(; capacity=CACHE_BUFFER_ROW_LIMIT),
+        MemoryStore{String,Any}(; capacity=CACHE_BUFFER_ROW_LIMIT),
         Set{Int64}(),
         Set{String}(),
         Dict{Tuple{String,Int64},String}(),
         Dict{Tuple{Int8,String},CachedResultState}(),
-        Dict{Tuple{Int8,Int64},CachedCollectionResultState}(),
+        Dict{Tuple{Int8,Int64},CachedKeyedResultState}(),
         Dict{String,Int64}(),
         Dict{Int64,String}(),
         Int64(1),
@@ -716,7 +728,7 @@ function ensure_schema!(connection)::Nothing
     DBInterface.execute(connection, create_table_sql(FailureRow, "item_failures", (:item_id, :source_item_key)))
     DBInterface.execute(connection, create_table_sql(CachedResultState, "result_states", (:kind, :entity)))
     DBInterface.execute(connection, create_table_sql(
-        CachedCollectionResultState, "collection_result_states", (:kind, :entity)))
+        CachedKeyedResultState, "keyed_result_states", (:kind, :entity)))
     DBInterface.execute(connection, """
         CREATE TABLE IF NOT EXISTS wide_columns(
             table_name TEXT,
@@ -758,9 +770,9 @@ end
 """
 Store one source item's interpretation index rows: its identity row plus each record's rows.
 
-The identity row belongs to the interpretation, not to its records: a source item that interprets
-into zero records still persists its fingerprint, so a reopen recognizes it as unchanged instead of
-rediscovering it as new. Returns type-conflict messages for keys dropped from the metadata rows.
+Source identity is retained even when interpretation produces zero records. This function writes
+records only; `store_interpreted!` completes the stage after storing its payloads. Returns
+type-conflict messages for keys dropped from the metadata rows.
 """
 function store_interpreted_records!(
     cache::CacheDB,
@@ -769,13 +781,7 @@ function store_interpreted_records!(
     records::Vector{ItemRecord},
 )::Vector{String}
     started = time_ns()
-    source_item_id_value = id(source_item)
-    source_key = source_item_key!(cache, source_item_id_value; mint=true)
-    hex = _serialize_hex(fingerprint(source_item))
-    append!(cache.source_items, source_item_id_value, SourceItemRow(
-        source_item_id_value, source_key, String(source_item_label), hex,
-        source_item_path(source_item), source_item_timestamp(source_item)))
-    _stage_ledger_source!(cache.stage_ledger, source_key, true)
+    store_source_identity!(cache, source_item, source_item_label)
     dropped = WideConflict[]
     for record in records
         key = item_key!(cache, record.id; mint=true)
@@ -869,6 +875,8 @@ function store_interpreted!(cache::AbstractCacheDB, source_item::AbstractDataSou
     conflicts = store_interpreted_records!(
         cache, source_item, source_item_label, records)
     store_interpreted_data!(cache, records, payloads)
+    source_key = source_item_key!(cache, id(source_item))
+    store_source_result!(cache, SOURCE_INTERPRET, source_key)
     return conflicts
 end
 
@@ -970,26 +978,10 @@ function store_result_failure!(cache::CacheDB, kind::PipelineStage,
         entity::Integer, source_item_key::Integer,
         message::AbstractString)::Nothing
     entity_value = Int64(entity)
-    state = CachedCollectionResultState(Int8(kind), entity_value, Int8(RESULT_FAILED),
+    state = CachedKeyedResultState(Int8(kind), entity_value, Int8(RESULT_FAILED),
         Int64(source_item_key), String(message))
-    edit!(cache.collection_result_states, (Int8(kind), entity_value), state)
+    edit!(cache.keyed_result_states, (Int8(kind), entity_value), state)
     _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
-    return nothing
-end
-
-"""Persist one failed source interpretation. The row carries an empty item id."""
-function store_source_item_failure!(
-    cache::CacheDB,
-    source_item_key::Integer,
-    message::AbstractString,
-)::Nothing
-    source_key = Int64(source_item_key)
-    append!(
-        cache.failures,
-        ("", source_key),
-        FailureRow("", source_key, String(message)),
-    )
-    _stage_ledger_failure!(cache.stage_ledger, ("", source_key), true)
     return nothing
 end
 
@@ -1039,9 +1031,9 @@ function store_collection_metadata!(
 )::Vector{String}
     entity = Int64(collection_key)
     dropped = edit!(cache.analyzed_collection_metadata, entity, metadata_dict(analysis))
-    state = CachedCollectionResultState(
+    state = CachedKeyedResultState(
         Int8(COLLECTION_ANALYZE), entity, Int8(RESULT_READY), 0, nothing)
-    edit!(cache.collection_result_states, (Int8(COLLECTION_ANALYZE), entity), state)
+    edit!(cache.keyed_result_states, (Int8(COLLECTION_ANALYZE), entity), state)
     _stage_ledger_result!(
         cache.stage_ledger, (Int8(COLLECTION_ANALYZE), entity), state)
     return _conflict_messages(dropped)
@@ -1052,9 +1044,9 @@ function store_collection_process_result!(
     cache::CacheDB, collection_key::Integer,
 )::Nothing
     entity = Int64(collection_key)
-    state = CachedCollectionResultState(
+    state = CachedKeyedResultState(
         Int8(COLLECTION_PROCESS), entity, Int8(RESULT_READY), 0, nothing)
-    edit!(cache.collection_result_states, (Int8(COLLECTION_PROCESS), entity), state)
+    edit!(cache.keyed_result_states, (Int8(COLLECTION_PROCESS), entity), state)
     _stage_ledger_result!(
         cache.stage_ledger, (Int8(COLLECTION_PROCESS), entity), state)
     return nothing
@@ -1091,26 +1083,13 @@ function store_result_failure!(
     source_key = Int64(source_item_key)
     lock(cache.lock) do
         cache.failures[(string(entity_value), source_key)] = String(message)
-        state = CachedCollectionResultState(
+        state = CachedKeyedResultState(
             Int8(kind), entity_value, Int8(RESULT_FAILED), source_key, String(message))
-        cache.collection_result_states[(Int8(kind), entity_value)] = state
+        cache.keyed_result_states[(Int8(kind), entity_value)] = state
         _stage_ledger_failure!(
             cache.stage_ledger, (string(entity_value), source_key), true)
         _stage_ledger_result!(cache.stage_ledger, (Int8(kind), entity_value), state)
     end
-    return nothing
-end
-
-function store_source_item_failure!(
-    cache::MemoryCacheDB,
-    source_item_key::Integer,
-    message::AbstractString,
-)::Nothing
-    source_key = Int64(source_item_key)
-    lock(cache.lock) do
-        cache.failures[("", source_key)] = String(message)
-    end
-    _stage_ledger_failure!(cache.stage_ledger, ("", source_key), true)
     return nothing
 end
 
@@ -1136,9 +1115,9 @@ store_item_metadata_layer!(::MemoryCacheDB, ::ItemRecord, ::AbstractDict)::Vecto
 function store_collection_metadata!(cache::MemoryCacheDB, collection_key::Integer, ::AbstractDict)::Vector{String}
     entity = Int64(collection_key)
     lock(cache.lock) do
-        state = CachedCollectionResultState(
+        state = CachedKeyedResultState(
             Int8(COLLECTION_ANALYZE), entity, Int8(RESULT_READY), 0, nothing)
-        cache.collection_result_states[(Int8(COLLECTION_ANALYZE), entity)] = state
+        cache.keyed_result_states[(Int8(COLLECTION_ANALYZE), entity)] = state
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_ANALYZE), entity), state)
     end
@@ -1148,9 +1127,9 @@ end
 function store_collection_process_result!(cache::MemoryCacheDB, collection_key::Integer)::Nothing
     entity = Int64(collection_key)
     lock(cache.lock) do
-        state = CachedCollectionResultState(
+        state = CachedKeyedResultState(
             Int8(COLLECTION_PROCESS), entity, Int8(RESULT_READY), 0, nothing)
-        cache.collection_result_states[(Int8(COLLECTION_PROCESS), entity)] = state
+        cache.keyed_result_states[(Int8(COLLECTION_PROCESS), entity)] = state
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_PROCESS), entity), state)
     end
@@ -1165,15 +1144,14 @@ end
 
 edit_source_item_metadata!(::MemoryCacheDB, ::Int64, ::AbstractDict)::Nothing = nothing
 
-"""Delete every cached result owned by one published source item, keyed by item surrogate."""
-function delete_source_item!(
+"""Delete interpreted items and downstream results, preserving source identity and the read result."""
+function delete_source_output!(
     cache::CacheDB,
     source_item_key_value::Integer,
     old_records::Vector{ItemRecord},
 )::Nothing
     source_key = Int64(source_item_key_value)
-    delete!(cache.source_items, source_item_id(cache, source_key))
-    _stage_ledger_source!(cache.stage_ledger, source_key, false)
+    clear_cached_result_state!(cache, SOURCE_INTERPRET, source_key)
     for record in old_records
         key = item_key!(cache, record.id)
         delete!(cache.items, record.id)
@@ -1197,17 +1175,16 @@ function delete_source_item!(
     return nothing
 end
 
-function delete_source_item!(
+function delete_source_output!(
     cache::MemoryCacheDB,
     source_item_key_value::Integer,
     old_records::Vector{ItemRecord},
 )::Nothing
     source_key = Int64(source_item_key_value)
+    clear_cached_result_state!(cache, SOURCE_INTERPRET, source_key)
     lock(cache.lock) do
-        delete!(cache.source_items, source_key)
         delete!(cache.failures, ("", source_key))
     end
-    _stage_ledger_source!(cache.stage_ledger, source_key, false)
     _stage_ledger_failure!(cache.stage_ledger, ("", source_key), false)
     for record in old_records
         delete!(cache.interpreted, record.id)
@@ -1252,10 +1229,10 @@ function delete_collection_metadata!(
 )::Nothing
     for collection_key in unique(collection_keys)
         delete!(cache.analyzed_collection_metadata, collection_key)
-        delete!(cache.collection_result_states, (Int8(COLLECTION_ANALYZE), collection_key))
+        delete!(cache.keyed_result_states, (Int8(COLLECTION_ANALYZE), collection_key))
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_ANALYZE), collection_key), nothing)
-        delete!(cache.collection_result_states, (Int8(COLLECTION_PROCESS), collection_key))
+        delete!(cache.keyed_result_states, (Int8(COLLECTION_PROCESS), collection_key))
         _stage_ledger_result!(
             cache.stage_ledger, (Int8(COLLECTION_PROCESS), collection_key), nothing)
     end
@@ -1268,9 +1245,9 @@ function delete_collection_metadata!(
 )::Nothing
     for collection_key in unique(collection_keys)
         lock(cache.lock) do
-            delete!(cache.collection_result_states,
+            delete!(cache.keyed_result_states,
                 (Int8(COLLECTION_ANALYZE), collection_key))
-            delete!(cache.collection_result_states,
+            delete!(cache.keyed_result_states,
                 (Int8(COLLECTION_PROCESS), collection_key))
         end
         _stage_ledger_result!(
@@ -1289,7 +1266,7 @@ function cache_pending_counts(cache::CacheDB)::NamedTuple{(:items, :rows),Tuple{
         (cache.source_items, cache.collections, cache.items, cache.source_item_metadata,
          cache.analyzed_item_metadata,
          cache.analyzed_collection_metadata, cache.failures, cache.result_states,
-         cache.collection_result_states, cache.payload)
+         cache.keyed_result_states, cache.payload)
         lock(buffer.flush_condition) do
             items += length(buffer.queued) + length(buffer.writing)
             rows += buffer.queued_rows + buffer.writing_rows
@@ -1306,27 +1283,6 @@ function cache_stage_summary(cache::AbstractCacheDB)::CacheStageSummary
     return lock(cache.stage_ledger.lock) do
         cache.stage_ledger.summary
     end
-end
-
-"""Drop the cached interpretation ledger for one source item."""
-function clear_cached_source_state!(cache::CacheDB, source_item_key_value::Integer)::Nothing
-    source_key = Int64(source_item_key_value)
-    delete!(cache.source_items, source_item_id(cache, source_key))
-    delete!(cache.failures, ("", source_key))
-    _stage_ledger_source!(cache.stage_ledger, source_key, false)
-    _stage_ledger_failure!(cache.stage_ledger, ("", source_key), false)
-    return nothing
-end
-
-function clear_cached_source_state!(cache::MemoryCacheDB, source_item_key_value::Integer)::Nothing
-    source_key = Int64(source_item_key_value)
-    lock(cache.lock) do
-        delete!(cache.source_items, source_key)
-        delete!(cache.failures, ("", source_key))
-    end
-    _stage_ledger_source!(cache.stage_ledger, source_key, false)
-    _stage_ledger_failure!(cache.stage_ledger, ("", source_key), false)
-    return nothing
 end
 
 """Drop one cached work-result ledger row."""
@@ -1360,7 +1316,7 @@ function clear_cached_result_state!(
     entity::Integer,
 )::Nothing
     key = (Int8(kind), Int64(entity))
-    delete!(cache.collection_result_states, key)
+    delete!(cache.keyed_result_states, key)
     _stage_ledger_result!(cache.stage_ledger, key, nothing)
     return nothing
 end
@@ -1372,7 +1328,7 @@ function clear_cached_result_state!(
 )::Nothing
     key = (Int8(kind), Int64(entity))
     lock(cache.lock) do
-        delete!(cache.collection_result_states, key)
+        delete!(cache.keyed_result_states, key)
     end
     _stage_ledger_result!(cache.stage_ledger, key, nothing)
     return nothing
@@ -1389,15 +1345,16 @@ function _cache_stage_summary(source_items, items, failures, state_stores...)::C
             CacheResultStatus(state.status) === RESULT_FAILED,
         Iterators.flatten(values(store) for store in state_stores),
     )
-    failed_interpret = count(key -> isempty(first(key)), keys(failures))
     return CacheStageSummary(
-        length(source_items),
+        ready(SOURCE_INTERPRET),
+        ready(SOURCE_READ),
         length(items),
         ready(ITEM_PROCESS),
         ready(ITEM_ANALYZE),
         ready(COLLECTION_PROCESS),
         ready(COLLECTION_ANALYZE),
-        failed_interpret,
+        failed(SOURCE_READ),
+        failed(SOURCE_INTERPRET),
         failed(ITEM_PROCESS),
         failed(ITEM_ANALYZE),
         failed(COLLECTION_PROCESS) + failed(COLLECTION_ANALYZE),
@@ -1410,7 +1367,7 @@ function cache_has_pending_writes(cache::AbstractCacheDB)::Bool
     return pending.items > 0 || pending.rows > 0
 end
 
-"""Return the current result-ledger entry for one item or collection stage, or `nothing`."""
+"""Return the current result-ledger entry for one pipeline stage, or `nothing`."""
 function cached_result_state(
     cache::AbstractCacheDB,
     kind::PipelineStage,
@@ -1496,8 +1453,8 @@ function close_cache_db!(cachedb::CacheDB)::Nothing
         (cachedb.source_items, cachedb.collections, cachedb.items, cachedb.source_item_metadata,
          cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
-         cachedb.result_states, cachedb.collection_result_states, cachedb.payload,
-         cachedb.interpreted)
+         cachedb.result_states, cachedb.keyed_result_states, cachedb.payload,
+         cachedb.interpreted, cachedb.source_reads)
         try
             close!(buffer)
         catch error
@@ -1578,8 +1535,8 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
         (cachedb.source_items, cachedb.collections, cachedb.items, cachedb.source_item_metadata,
          cachedb.analyzed_item_metadata,
          cachedb.analyzed_collection_metadata, cachedb.failures,
-         cachedb.result_states, cachedb.collection_result_states, cachedb.payload,
-         cachedb.interpreted)
+         cachedb.result_states, cachedb.keyed_result_states, cachedb.payload,
+         cachedb.interpreted, cachedb.source_reads)
         clear!(buffer)
     end
     lock(cachedb.key_lock) do
@@ -1611,7 +1568,7 @@ function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
         empty!(cachedb.items)
         empty!(cachedb.failures)
         empty!(cachedb.result_states)
-        empty!(cachedb.collection_result_states)
+        empty!(cachedb.keyed_result_states)
         empty!(cachedb.source_item_keys)
         empty!(cachedb.source_item_ids)
         cachedb.next_source_item_key = Int64(1)
@@ -1783,6 +1740,14 @@ function _load_source_scan(
             get(source_ids_by_key, row.source_item_key, ""), row.item_id, row.message))
     end
 
+    for state in values(read(cache.keyed_result_states))
+        PipelineStage(state.kind) in (SOURCE_READ, SOURCE_INTERPRET) || continue
+        CacheResultStatus(state.status) === RESULT_FAILED || continue
+        push!(failures, ItemFailure(
+            get(source_ids_by_key, state.entity, ""), "",
+            "$(PipelineStage(state.kind)): $(state.message)"))
+    end
+
     records = ItemRecord[]
     for row in values(item_rows)
         path, timestamp = get(locations, row.source_item_key, (nothing, nothing))
@@ -1865,7 +1830,7 @@ function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
         end
         result_states[CacheResultKey(PipelineStage(state.kind), state.entity)] = state
     end
-    for state in values(read(cachedb.collection_result_states))
+    for state in values(read(cachedb.keyed_result_states))
         result_states[CacheResultKey(PipelineStage(state.kind), state.entity)] = state
     end
     return ProjectCacheIndex(

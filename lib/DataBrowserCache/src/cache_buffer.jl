@@ -494,35 +494,46 @@ _reset_memory!(::WideRowStore)::Nothing = nothing
 
 # Memory-only FIFO
 
+"""
+A memory-only FIFO cache. `weight(value)` measures each entry against `capacity`.
+
+Weights are recorded on insertion so later mutation cannot corrupt eviction accounting. One value
+larger than the capacity remains usable until another value arrives. Cache eviction only releases
+its reference; values held by running consumers remain alive.
+"""
 mutable struct MemoryStore{K,R}
     lock::ReentrantLock
     entries::Dict{K,R}
+    weights::Dict{K,Int}
     order::Vector{K}
-    rows::Int
-    row_limit::Int
+    size::Int
+    capacity::Int
+    weight::Function
     closed::Bool
 end
 
-function MemoryStore{K,R}(; row_limit::Int)::MemoryStore{K,R} where {K,R}
-    row_limit > 0 || throw(ArgumentError("memory store row limit must be positive"))
-    return MemoryStore{K,R}(ReentrantLock(), Dict{K,R}(), K[], 0, row_limit, false)
+function MemoryStore{K,R}(; capacity::Int, weight::Function=_buffer_rows)::MemoryStore{K,R} where {K,R}
+    capacity > 0 || throw(ArgumentError("memory cache capacity must be positive"))
+    return MemoryStore{K,R}(ReentrantLock(), Dict{K,R}(), Dict{K,Int}(), K[],
+        0, capacity, weight, false)
 end
 
 function Base.append!(store::MemoryStore{K,R}, key::K, row::R)::Bool where {K,R}
+    cost = max(1, store.weight(row))
     lock(store.lock) do
         store.closed && error("memory store is closed")
-        present = haskey(store.entries, key)
-        previous = pop!(store.entries, key, nothing)
-        if present
-            store.rows -= _buffer_rows(previous)
+        if haskey(store.entries, key)
+            store.size -= pop!(store.weights, key)
             deleteat!(store.order, something(findfirst(isequal(key), store.order)))
         end
         store.entries[key] = row
+        store.weights[key] = cost
         push!(store.order, key)
-        store.rows += _buffer_rows(row)
-        while store.rows > store.row_limit && length(store.order) > 1
+        store.size += cost
+        while store.size > store.capacity && length(store.order) > 1
             evicted_key = popfirst!(store.order)
-            store.rows -= _buffer_rows(pop!(store.entries, evicted_key))
+            delete!(store.entries, evicted_key)
+            store.size -= pop!(store.weights, evicted_key)
         end
     end
     return true
@@ -532,8 +543,8 @@ function Base.delete!(store::MemoryStore{K}, key::K)::Nothing where {K}
     lock(store.lock) do
         store.closed && error("memory store is closed")
         haskey(store.entries, key) || return
-        previous = pop!(store.entries, key, nothing)
-        store.rows -= _buffer_rows(previous)
+        delete!(store.entries, key)
+        store.size -= pop!(store.weights, key)
         deleteat!(store.order, something(findfirst(isequal(key), store.order)))
     end
     return nothing
@@ -558,8 +569,9 @@ function clear!(store::MemoryStore)::Nothing
     lock(store.lock) do
         store.closed && error("memory store is closed")
         empty!(store.entries)
+        empty!(store.weights)
         empty!(store.order)
-        store.rows = 0
+        store.size = 0
     end
     return nothing
 end
@@ -569,8 +581,9 @@ function close!(store::MemoryStore)::Nothing
         store.closed && error("memory store is already closed")
         store.closed = true
         empty!(store.entries)
+        empty!(store.weights)
         empty!(store.order)
-        store.rows = 0
+        store.size = 0
     end
     return nothing
 end

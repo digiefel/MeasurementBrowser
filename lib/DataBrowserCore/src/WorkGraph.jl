@@ -19,6 +19,7 @@ mutable struct WorkNode
     pending::UInt64
     waiters::Vector{Channel{Any}}
     queued_ns::UInt64
+    input::Union{Nothing,Some}
 end
 
 """Workspace-owned live job graph and scheduling queue (FIFO buckets keyed by priority)."""

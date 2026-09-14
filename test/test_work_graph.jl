@@ -130,7 +130,7 @@ end
             )
             @test read(cache.analyzed_collection_metadata)[Int64(1)][:mean] == 1.0
             @test haskey(
-                read(cache.collection_result_states),
+                read(cache.keyed_result_states),
                 (Int8(COLLECTION_ANALYZE), Int64(1)),
             )
 
@@ -138,7 +138,7 @@ end
 
             @test !haskey(read(cache.analyzed_collection_metadata), Int64(1))
             @test !haskey(
-                read(cache.collection_result_states),
+                read(cache.keyed_result_states),
                 (Int8(COLLECTION_ANALYZE), Int64(1)),
             )
         finally

@@ -135,11 +135,14 @@ Decisions taken during the audit:
   directly to the payload store, without eligibility predicates or a memory fallback. Always call
   the public reconstruction method with current item metadata, including metadata produced by
   item process and analyze. Preserve the explicit source fallback without running process twice.
-- [ ] Finish removing Core's reads of Cache fields. Item and collection stage lookups now use
-  `cached_result_state` and `has_payload`. Source lookups in `cache_work_status` (`Processing.jl`)
-  and `_cache_knows_source_item` (`Operations.jl`) still read Cache fields and branch on
-  `cachedb isa CacheDB`. Move these behind a Cache-owned source-state interface. Move
-  `wait_condition_deadline` to Core and reduce the import list.
+- [x] Separate `SOURCE_READ` and `SOURCE_INTERPRET` execution and cache results. Retain read
+  results in a bounded memory cache, reuse them during interpretation replay, and distinguish source
+  failures, invalidation, and progress by stage. Persist source fingerprints for failed and empty
+  interpretations as well as successful ones.
+- [ ] Finish removing Core's reads of Cache fields. All stage lookups now use
+  `cached_result_state`, `has_payload`, and Cache-owned source-state functions. Move the remaining
+  fingerprint-loading and metadata access behind Cache's interface, move `wait_condition_deadline`
+  to Core, and reduce the import list.
 - [ ] Delete `MemoryCacheDB` and `AbstractCacheDB`; `cache=false` opens DuckDB `":memory:"`. Removes
   roughly ten duplicated method families whose semantics had already diverged (memory recorded
   result failures in `failures`, disk did not).
