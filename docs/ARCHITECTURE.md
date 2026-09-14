@@ -104,16 +104,58 @@ flowchart TB
 
 ## Core Flow
 
-```
-source item → read → interpret → process → analyze → collection process/analyze → views
-               │         │          │         │
-               │         └─ index   └─ DuckDB  └─ DuckDB + item metadata
-               └─ memory cache
+```mermaid
+flowchart LR
+    source["source item"]
+    read["read"]
+    read_cache[("read input<br/>memory cache")]
+    entries["entries"]
+    index[("item and collection<br/>index")]
+    interpreted[("interpreted payload<br/>memory cache")]
+    item_process["item process"]
+    processed[("processed payload<br/>cache store")]
+    item_analyze["item analyze"]
+    item_metadata[("item metadata<br/>cache store")]
+    collection_process["collection process"]
+    collection_payload[("collection-processed<br/>payload cache")]
+    collection_analyze["collection analyze"]
+    collection_metadata[("collection metadata<br/>cache store")]
+    views["views and inspectors"]
+
+    source --> read
+    read -->|"loaded value"| entries
+    read --> read_cache
+    read_cache -.->|"reused input"| entries
+    entries -->|"items and identities"| index
+    entries --> interpreted
+    interpreted --> item_process
+    item_process --> processed
+    processed --> item_analyze
+    item_analyze --> item_metadata
+    processed --> collection_process
+    collection_process --> collection_payload
+    collection_payload --> collection_analyze
+    processed -.->|"when no collection rewrite"| collection_analyze
+    collection_analyze --> collection_metadata
+    processed --> views
+    collection_payload --> views
+
+    classDef stage fill:#bcd4f0,stroke:#3f6fb0,color:#111
+    classDef state fill:#f5d6a8,stroke:#c08a3f,color:#111
+    classDef output fill:#c9e4c5,stroke:#5a9a52,color:#111
+    class source,read,entries,item_process,item_analyze,collection_process,collection_analyze,views stage
+    class read_cache,interpreted,processed,item_metadata,collection_payload,collection_metadata state
+    class index output
 ```
 
-A project/source implementation defines:
+A project/source implementation defines the callbacks behind the stages. `read` is the only stage
+that receives the source; `entries` expands its loaded value into logical data items and may run
+again with the cached read input.
 
-- interpreting each source item into logical data items
+It defines:
+
+- reading each source item
+- expanding the loaded value into logical data items
 - processing one interpreted item
 - computing per-item and per-collection metadata (item/collection `analyze`, collection `process`)
 - defining project-specific visualizers when generic ones are not enough
@@ -132,6 +174,43 @@ user-authored tags, notes, and other user-authored metadata. Other package modul
 visualizers, workflow persistence, and figure composition. User code should not know whether data
 came from memory, cache, or the source. Package code does not know the meaning of a source item
 beyond the contract methods it calls.
+
+## Core–Cache boundary
+
+Core owns the workspace, index, scan, and work graph. Cache owns cache storage and returns data
+snapshots or payloads through its exported interface. Core does not inspect Cache stores or use its
+private buffer helpers.
+
+```mermaid
+flowchart LR
+    core["DataBrowserCore<br/>workspace and work graph"]
+    scan["source scan"]
+    cache["DataBrowserCache<br/>storage and cache buffers"]
+    snapshot[("ProjectCacheIndex<br/>restoration snapshot")]
+    fingerprints[("cached source<br/>fingerprints")]
+    payloads[("stage payloads<br/>and completion state")]
+    source["project callbacks"]
+
+    core -->|"load_cache_index"| cache
+    cache -->|"ProjectCacheIndex"| snapshot
+    snapshot --> core
+    scan -->|"cached_source_fingerprints"| cache
+    cache -->|"Dict of source ids and fingerprints"| fingerprints
+    fingerprints --> scan
+    core -->|"read_payload / has_payload"| cache
+    core -->|"cached_result_state"| cache
+    cache -->|"payloads and stage state"| payloads
+    payloads --> core
+    core -->|"store_source_read!<br/>store_interpreted!<br/>store_processed!"| cache
+    source -->|"read / entries / process / analyze"| core
+
+    classDef coreC fill:#bcd4f0,stroke:#3f6fb0,color:#111
+    classDef cacheC fill:#f5d6a8,stroke:#c08a3f,color:#111
+    classDef stateC fill:#c9e4c5,stroke:#5a9a52,color:#111
+    class core,scan,source coreC
+    class cache cacheC
+    class snapshot,fingerprints,payloads stateC
+```
 
 ## Subpackages
 

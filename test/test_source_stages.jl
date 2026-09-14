@@ -270,3 +270,33 @@ end
     @test cache.size == 0 # Mutation did not change the recorded insertion weight.
     SOURCE_CACHE.close!(cache)
 end
+
+@testset "workspace idle waits own their timeout" begin
+    project = SplitSourceProject()
+    project.blocked_stage = :read
+    workspace = DataBrowser.open_workspace(project, SplitSource(project.name, 1); cache=false)
+    waiter = nothing
+    try
+        @test timedwait(() -> isready(project.entered), 20) === :ok
+        @test DataBrowser.wait_workspace_idle!(workspace; timeout=0) === workspace
+        waiter = Threads.@spawn DataBrowser.wait_workspace_idle!(workspace; timeout=0.05)
+        finished = timedwait(() -> istaskdone(waiter), 5)
+        @test finished === :ok
+        if finished === :ok
+            @test fetch(waiter) === workspace
+        end
+        @test SOURCE_WORK.engine_work_running(workspace) # Timing out does not cancel work.
+        waiter = Threads.@spawn DataBrowser.wait_workspace_idle!(workspace; timeout=20)
+        put!(project.release, nothing)
+        finished = timedwait(() -> istaskdone(waiter), 5)
+        @test finished === :ok
+        if finished === :ok
+            @test fetch(waiter) === workspace
+            @test !SOURCE_WORK.engine_work_running(workspace)
+        end
+    finally
+        isready(project.release) || put!(project.release, nothing)
+        DataBrowser.close_workspace!(workspace)
+        waiter === nothing || wait(waiter)
+    end
+end

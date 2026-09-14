@@ -709,10 +709,9 @@ function scan_source!(
                     workspace, scan_epoch, cached === nothing ? :missing : :ready, cached)
 
                 write_meta_header!(cachedb)
-                # Fingerprints must be loaded before discovery so upserts can stream during the walk.
-                # The cache's `source_items` table is the sole home of previous-session fingerprints;
-                # a memory-only cache holds nothing, so every discovered item re-interprets.
-                previous = _load_source_item_fingerprints(cachedb)
+                # Read previous fingerprints before discovery so new and changed source items can
+                # stream into the work queue during the walk.
+                previous = cached_source_fingerprints(cachedb)
                 current = Dict{String,Any}()
                 seen = Set{String}()
                 pending_upserts = Ref{Vector{AbstractDataSourceItem}}(AbstractDataSourceItem[])
@@ -1271,8 +1270,19 @@ workspace drains it.
 function wait_workspace_idle!(workspace::Workspace; timeout::Real=60)::Workspace
     deadline = time() + Float64(timeout)
     lock(workspace.publish_lock) do
-        while engine_work_running(workspace)
-            wait_condition_deadline(workspace.idle_condition, deadline) || break
+        remaining = deadline - time()
+        (!engine_work_running(workspace) || remaining <= 0) && return
+        timer = Timer(remaining) do _
+            lock(workspace.publish_lock) do
+                notify(workspace.idle_condition; all=true)
+            end
+        end
+        try
+            while engine_work_running(workspace) && time() < deadline
+                wait(workspace.idle_condition)
+            end
+        finally
+            close(timer)
         end
     end
     return workspace

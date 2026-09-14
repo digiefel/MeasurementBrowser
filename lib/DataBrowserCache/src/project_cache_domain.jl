@@ -106,7 +106,12 @@ CachedKeyedResultState(row)::CachedKeyedResultState = CachedKeyedResultState(
 
 const AnyCachedResultState = Union{CachedResultState,CachedKeyedResultState}
 
-"""All data-less content needed to restore and compare a project cache."""
+"""
+Snapshot returned by `load_cache_index` for workspace restoration.
+
+Contains indexed records, computed metadata, stage results, and errors. Payloads are obtained
+separately through `read_payload`; the snapshot exposes no live cache stores or connections.
+"""
 struct ProjectCacheIndex
     identity::ProjectCacheIdentity
     source::SourceScan
@@ -1652,11 +1657,15 @@ function cache_built(cache::CacheDB)::Bool
 end
 
 """
-Load the previously persisted source-item fingerprints from the `source_items` table, keyed by
-source-item id. A memory-only cache holds nothing across sessions, so every discovered item
-re-interprets.
+    cached_source_fingerprints(cache) -> Dict{String,Any}
+
+Return a snapshot of recorded source fingerprints, keyed by public source-item id. Values have
+the same meaning as `fingerprint(source_item)`; callers can compare them without knowing the
+cache's storage format. The returned dictionary belongs to the caller.
+
+The session-only backend returns an empty snapshot, so scanning treats each source item as new.
 """
-function _load_source_item_fingerprints(cache::CacheDB)::Dict{String,Any}
+function cached_source_fingerprints(cache::CacheDB)::Dict{String,Any}
     fingerprints = Dict{String,Any}()
     for row in values(read(cache.source_items))
         fingerprints[row.id] = _deserialize_hex(row.fingerprint_hex)
@@ -1664,7 +1673,7 @@ function _load_source_item_fingerprints(cache::CacheDB)::Dict{String,Any}
     return fingerprints
 end
 
-_load_source_item_fingerprints(::MemoryCacheDB)::Dict{String,Any} = Dict{String,Any}()
+cached_source_fingerprints(::MemoryCacheDB)::Dict{String,Any} = Dict{String,Any}()
 
 """Rebuild the flat collection index from package-owned persisted records."""
 function _load_collection_index(

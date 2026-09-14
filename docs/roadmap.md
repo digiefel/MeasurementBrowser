@@ -139,24 +139,49 @@ Decisions taken during the audit:
   results in a bounded memory cache, reuse them during interpretation replay, and distinguish source
   failures, invalidation, and progress by stage. Persist source fingerprints for failed and empty
   interpretations as well as successful ones.
-- [ ] Finish removing Core's reads of Cache fields. All stage lookups now use
-  `cached_result_state`, `has_payload`, and Cache-owned source-state functions. Move the remaining
-  fingerprint-loading and metadata access behind Cache's interface, move `wait_condition_deadline`
-  to Core, and reduce the import list.
+- [x] Finish removing Core's reads of Cache fields. Stage, fingerprint, metadata, and payload
+  access uses Cache's exported interface. Core owns its workspace idle deadline; Cache keeps its
+  flush-deadline helper private. Remove unused imports, including the concrete cache backend.
+- [ ] Let Cache own lifecycle setup: remove no-op start/stop calls and internalize identity/header
+  writes. Keep open, close, explicit flush and storage diagnostics meaningful.
 - [ ] Delete `MemoryCacheDB` and `AbstractCacheDB`; `cache=false` opens DuckDB `":memory:"`. Removes
   roughly ten duplicated method families whose semantics had already diverged (memory recorded
   result failures in `failures`, disk did not).
+- [ ] Give stage outputs exact publication references and preserve metadata by producing stage.
+  Separate recorded outcome from payload availability. Reuse valid downstream results after
+  upstream eviction; reconstruct resident and restored values with the same metadata.
+- [ ] Publish payloads, metadata and completion as one accepted update across all stages. Coordinate
+  buffered overlays and transactional flush, check revisions at acceptance, and validate output
+  publications on restore. Include metadata-only collection-process output; remove the split
+  stage-specific storage/completion calls.
+- [ ] Replace one source's output and membership changes through one Cache operation. Core supplies
+  replacements and invalidations; Cache retires storage. Cover fewer/empty outputs, moved members,
+  shared collections and selection preservation for surviving public IDs.
 - [ ] Fix the concurrency issues this exposes: `query_view_signature` is recreated without a lock;
   `cache_pending_counts` locks ten stores separately and returns an incoherent snapshot;
   `open_cache_db` does not stop already-started stores and flush tasks when a later constructor
   fails; `close_cache_db!` keeps only the first exception.
-- [ ] Evaluate the work graph against cancellation, invalidation, priority, streaming, and
-  collection edge cases; finish with a bounded tuning pass or an explicit redesign.
-- [ ] Audit source fingerprinting and document exactly what each change token invalidates across
-  live updates and workspace reopen.
+
+Target interface for the remaining cache work: lifecycle/flush and storage diagnostics; bulk restore;
+exact-reference payload reads/checks; complete result writes; source identity, removal and output
+replacement; and explicit invalidation supplied by Core. Core normalizes records and extracts
+payloads. Cache receives storage data, never a live workspace or user source object. Cache owns
+encoding, buffering and persistence, not dependency discovery or recomputation policy. Prepare
+expensive encoding outside the workspace lock, then check the existing job revision and accept the
+prepared update during publication. Discovery, successful empty interpretation and deletion remain
+separate operations. Outcome validity and payload availability remain separate facts.
+
+The order is lifecycle cleanup, one backend, output references, coordinated result publication,
+then source replacement. These steps use the current index and scheduler; the workspace-graph
+redesign is independent and is not a prerequisite. Source metadata work belongs to 0.2.7 and code
+fingerprinting to 0.2.6. Establish the benchmark coverage in 0.2.9 before changing backend/buffering;
+the lifecycle cleanup can proceed with existing tests and the performance smoke run.
 
 ### 0.2.3 One index, one status
 
+- [ ] Evaluate the work graph against cancellation, invalidation, priority, streaming, and
+  collection edge cases; finish with a bounded tuning pass or an explicit redesign. This is
+  separate from the Cache interface work and is not a prerequisite for it.
 - [ ] Remove `WorkspaceIndex.source`. It is a full `SourceScan` snapshot rebuilt by
   `refresh_workspace_source!` (copies the whole collection index and sorts every item per batch),
   and its only two readers ask `isa SourceScan`. Derive that boolean from the scan state.
@@ -237,11 +262,14 @@ Decisions taken during the audit:
   sites.
 - [ ] Group `CacheDB` (25 fields) into index stores, metadata stores, payload store, and runtime
   state. Inline `load_cache_index_body` and `_report_loaded_cache_index`.
-- [ ] Name result kinds after the stages (`PROCESSED_RESULT`, not `PROCESSING_RESULT`); settle on one
-  of `cache`/`cachedb`/`cache_db`.
+- [x] Use one `PipelineStage` for scheduling and cache results, ordered from source read through
+  collection analyze. Source read and interpretation have independent outcomes.
+- [ ] Settle on one of `cache`/`cachedb`/`cache_db` during the interface changes.
 - [ ] Cache identity gains a project fingerprint. Vision §12 requires project definition + data +
   parameters; today it is project *name* + source id, so editing project code reuses stale results.
-  Decide what is fingerprinted and whether a mismatch rebuilds or warns.
+  Changed code must invalidate success and failure automatically. Investigate Revise integration
+  and a stable persisted code/environment fingerprint; begin conservatively at project scope.
+  Mismatch follows eager/requested recomputation policy, not a warning-only path.
 - [ ] Define and test persistence at every expensive pipeline boundary (discovery, read, entries,
   item and collection process/analyze). A valid persisted stage satisfies downstream work without
   rerunning earlier user code.
@@ -253,6 +281,15 @@ Decisions taken during the audit:
 
 ### 0.2.7 Sources, Annotations, Recipes
 
+- [ ] Audit source fingerprinting and document exactly what each change token invalidates across
+  live updates and workspace reopen.
+- [ ] Keep `default_collection_path(source, source_item)` source-owned. Replace
+  `annotate_collection_path` with `source_collection_metadata(source, paths)`: a batch of public
+  collection-identity paths in, owned metadata dictionaries per path level out. DirectorySource
+  owns sidecar parsing and matching; Core owns composition and invalidation. Store declared and
+  source metadata separately and replace the source contribution on interpretation, refresh and
+  reopen, so removed keys reveal the declared values beneath them. Snapshot source metadata under
+  its lock without calling user reconstruction there. Test both DirectorySource and another source.
 - [ ] Split `DirectorySource` into scan, `metadata.txt`, and watcher files. The watcher rescans
   the whole tree and fingerprints every file three times on each event; `.git` is skipped by the
   watcher but traversed by the scan; `readdir` order is not sorted; `metadata_lock` is held while
@@ -281,6 +318,12 @@ Decisions taken during the audit:
 ### 0.2.9 Benchmarks
 
 - [x] Performance snapshot runs at the end of `test/runtests.jl` in the `bench/` environment (Phase 0).
+- [ ] Make the cache benchmark a dependable baseline before changing backend/buffering: use fixed
+  selections and explicit stage completion, separate preparation/acceptance/flush timing, measure
+  reads independently of plotting, and exercise writes beyond the configured capacity. Record
+  actual rows/bytes, outcome checks, repeated samples and run configuration. Cover warm restore,
+  source-output replacement and metadata refresh, plus consistent memory measurements. The current
+  status snapshot is a smoke run; see `bench/README.md` for the per-field assessment.
 - [ ] After Phase 4, add a GUI frame-time probe (tree panel, items panel) to `scaling.jl`; nothing
   measures per-frame cost today.
 

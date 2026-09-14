@@ -291,7 +291,7 @@ function source_fallback(workspace::Workspace, record::ItemRecord)::AbstractData
         interpretation = interpret_source_item(
             workspace.project, workspace.source, source_item, loaded;
             source_item_key=record.source_item_key)
-        DataBrowserCache.store_interpreted_data!(
+        store_interpreted_data!(
             workspace.cache.db, interpretation.records,
             item_data.(interpretation.interpreted_items))
         requested = findfirst(item -> item.id == record.id, interpretation.records)
@@ -407,16 +407,21 @@ function run_processing(
     return (item=processed, record=ItemRecord(materialized_record; metadata=processed_metadata))
 end
 
-"""Return the delivered metadata for one record: inherited ⊕ entries ⊕ computed layers."""
+"""
+Return an owned snapshot of inherited, entries and computed metadata under the publication lock.
+Callers can reconstruct user values after releasing the lock while other items publish analysis.
+"""
 function delivered_metadata(
     workspace::Workspace,
     record::ItemRecord,
     collections::CollectionIndex,
 )::MetadataDict
-    effective = effective_metadata(collections, record)
-    computed = get(workspace.index.item_metadata, record.id, nothing)
-    computed === nothing || merge!(effective, metadata_dict(computed))
-    return effective
+    return lock(workspace.publish_lock) do
+        effective = effective_metadata(collections, record)
+        computed = get(workspace.index.item_metadata, record.id, nothing)
+        computed === nothing || merge!(effective, metadata_dict(computed))
+        effective
+    end
 end
 
 """Return records carrying their delivered metadata, for materializing a collection's members."""

@@ -887,7 +887,7 @@ function Base.haskey(store::TabularFamilyStore, payload_key::PayloadKey)::Bool
 end
 
 """Wait on a held condition, waking no later than `deadline`; whether the deadline is still ahead."""
-function wait_condition_deadline(condition::Base.Threads.Condition, deadline::Float64)::Bool
+function _wait_condition_deadline(condition::Base.Threads.Condition, deadline::Float64)::Bool
     remaining = deadline - time()
     remaining <= 0 && return false
     timer = Timer(remaining) do _
@@ -946,7 +946,7 @@ function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
                     # No queued rows means no flush deadline; sleep until an append notifies.
                     wait(store.flush_condition)
                 else
-                    wait_condition_deadline(
+                    _wait_condition_deadline(
                         store.flush_condition,
                         store.last_flush + CACHE_BUFFER_FLUSH_INTERVAL,
                     )
