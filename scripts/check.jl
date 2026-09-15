@@ -1,5 +1,7 @@
 # Package isolation and resolution belong to Pkg. This runner only chooses workloads.
 using Pkg, SHA, TOML, Dates
+include(joinpath(@__DIR__, "..", "bench", "run.jl"))
+include(joinpath(@__DIR__, "..", "bench", "report.jl"))
 
 const ROOT = dirname(@__DIR__)
 const BENCH = joinpath(ROOT, "bench")
@@ -19,12 +21,13 @@ function hash_files(io, path)
 end
 
 """Fingerprint resolved dependencies and local source contents, including uncommitted edits."""
-function fingerprint(names; tests=false, workload=nothing)
+function fingerprint(names, command; tests=false, workload=nothing)
     dependencies = Pkg.dependencies()
     byname = Dict(info.name => uuid for (uuid, info) in dependencies)
     visited = Set()
     io = IOBuffer()
     println(io, VERSION, Sys.MACHINE, Sys.CPU_NAME, Threads.nthreads())
+    println(io, command.exec)
     hash_files(io, joinpath(BENCH, "LocalPreferences.toml"))
     hash_files(io, joinpath(ROOT, "LocalPreferences.toml"))
     function visit(uuid)
@@ -45,7 +48,6 @@ function fingerprint(names; tests=false, workload=nothing)
         visit(byname[name])
         tests && hash_files(io, joinpath(dependencies[byname[name]].source, "test"))
     end
-    (tests || workload !== nothing) && hash_files(io, @__FILE__)
     if workload !== nothing
         for file in workload
             hash_files(io, joinpath(ROOT, file))
@@ -108,28 +110,28 @@ function check(args=ARGS)
     full || benchmark || precompile_only || package in PACKAGES || error("Unknown package: $(first(selected))")
     records = isfile(RECORD_FILE) ? TOML.parsefile(RECORD_FILE) : Dict{String,Any}()
     depot = measurement_depot()
-    code = fingerprint(vcat(PACKAGES, ["DataBrowser"]))
-    if full || benchmark || precompile_only
+    if full || precompile_only
+        command = julia_command(["-e", "using Pkg; Pkg.precompile($(repr(vcat(PACKAGES, ["DataBrowser"]))); strict=true)"]; depot)
+        code = fingerprint(vcat(PACKAGES, ["DataBrowser"]), command)
         checked(records, "precompile", code; force=force && precompile_only) do
             # Only this runner-owned compiled directory is removed. Sources/artifacts are retained.
             rm(joinpath(depot, "compiled"); recursive=true, force=true)
-            command = julia_command(["-e", "using Pkg; Pkg.precompile($(repr(vcat(PACKAGES, ["DataBrowser"]))); strict=true)"]; depot)
             seconds = @elapsed run(command)
-            fingerprint(vcat(PACKAGES, ["DataBrowser"])) == code || error("Package code changed during precompilation")
+            fingerprint(vcat(PACKAGES, ["DataBrowser"]), command) == code || error("Package code changed during precompilation")
             Dict("seconds" => seconds)
         end
     end
     if full || (!benchmark && !precompile_only)
         for name in (full ? PACKAGES : [package])
             files = full ? String[] : selected[2:end]
-            key = fingerprint([name]; tests=true)
             # A selected file is an explicit diagnostic run, not a pass for the whole package.
             test_code = "using Pkg; Pkg.test($(repr(name)); allow_reresolve=false, julia_args=[\"--check-bounds=auto\"], test_args=$(repr(files)))"
             command = julia_command(["-e", test_code]; depot)
+            key = fingerprint([name], command; tests=true)
             if isempty(files)
                 checked(records, name, key; force) do
                     run(command)
-                    fingerprint([name]; tests=true) == key || error("$name changed while its tests ran")
+                    fingerprint([name], command; tests=true) == key || error("$name changed while its tests ran")
                     nothing
                 end
             else
@@ -141,21 +143,18 @@ function check(args=ARGS)
         workloads = full || length(selected) == 1 ? ["engine", "browser"] : selected[2:end]
         for workload in workloads
             workload in ("engine", "browser") || error("Unknown benchmark: $workload")
-            files = workload == "engine" ? ["bench/run.jl", "bench/workloads.jl"] :
-                ["bench/run.jl", "bench/browser.jl", "bench/smoke_project.jl", "test/fixtures/public_api", "test/fixtures/public_api_variants"]
-            key = fingerprint(["DataBrowser"]; workload=files)
-            checked(records, workload, key; force) do
-                run(julia_command([joinpath(BENCH, "run.jl"), workload]; depot))
-                fingerprint(["DataBrowser"]; workload=files) == key || error("Benchmark inputs changed during the run")
-                Dict("result" => TOML.parsefile(joinpath(RESULTS, workload * ".toml")))
+            files = workload == "engine" ? ["bench/run.jl", "bench/worker.jl", "bench/workloads.jl"] :
+                ["bench/run.jl", "bench/worker.jl", "bench/browser.jl", "bench/smoke_project.jl", "test/fixtures/public_api", "test/fixtures/public_api_variants"]
+            command = julia_command(String[]; depot)
+            key = fingerprint(["DataBrowser"], command; workload=files)
+            record = checked(records, workload, key; force) do
+                result = measure_benchmark(workload, command)
+                fingerprint(["DataBrowser"], command; workload=files) == key || error("Benchmark inputs changed during the run")
+                Dict("result" => result)
             end
+            TOML.print(stdout, record["result"]; sorted=true)
         end
-        if workloads == ["engine", "browser"]
-            include(joinpath(BENCH, "report.jl"))
-            Base.invokelatest() do
-                write_report(records)
-            end
-        end
+        full && write_report(records)
     end
     return nothing
 end

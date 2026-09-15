@@ -1,10 +1,7 @@
-using TOML, Statistics
-
-const RESULTS_DIR = joinpath(@__DIR__, "results")
+using TOML
 
 """Run a worker and sample its resident memory, including native allocations, every 100 ms."""
-function run_worker(arguments)
-    command = `$(Base.julia_cmd()) --startup-file=no --project=$(@__DIR__) --threads=$(Threads.nthreads()) $(@__FILE__) --worker $arguments`
+function run_worker(command::Cmd)
     process = run(pipeline(command; stdout=stdout, stderr=stderr); wait=false)
     peak_kib = 0
     try
@@ -28,68 +25,33 @@ function run_worker(arguments)
     return peak_kib / 1024
 end
 
-function benchmark_main(workload)
-    mkpath(RESULTS_DIR)
-    output = joinpath(RESULTS_DIR, workload * ".toml")
-    rm(output; force=true)
-    if workload == "engine"
-        rss = run_worker(["engine", output])
-        result = TOML.parsefile(output)
-        result["peak_rss_mib"] = rss
-    elseif workload == "browser"
-        result = mktempdir() do dir
+"""Measure one workload in fresh Julia processes using the supplied Julia command."""
+function measure_benchmark(workload, julia::Cmd)
+    worker = joinpath(@__DIR__, "worker.jl")
+    return mktempdir() do dir
+        output = joinpath(dir, "result.toml")
+        if workload == "engine"
+            rss = run_worker(`$julia $worker engine $output`)
+            result = TOML.parsefile(output)
+        elseif workload == "browser"
             root = joinpath(dir, "project")
             cp(joinpath(@__DIR__, "..", "test", "fixtures", "public_api"), root)
-            depot = joinpath(dir, "data-cache")
-            mkpath(depot)
-            peaks = Float64[]
-            measurements = Dict{String,Any}()
+            depot = mkpath(joinpath(dir, "data-cache"))
+            rss = 0.0
+            result = Dict{String,Any}()
             for opening in ("open", "reopen")
-                part = joinpath(dir, opening * ".toml")
-                push!(peaks, run_worker(["browser", part, root, depot, opening, string(time_ns())]))
-                merge!(measurements, TOML.parsefile(part))
+                peak = run_worker(`$julia $worker browser $output $root $depot $opening $(time_ns())`)
+                rss = max(rss, peak)
+                measurements = TOML.parsefile(output)
+                # Import and frame time refer to the initial opening; reopen has its own latency.
+                opening == "reopen" && delete!(measurements, "import_s")
+                opening == "reopen" && delete!(measurements, "frame_ui_ms")
+                merge!(result, measurements)
             end
-            measurements["peak_rss_mib"] = maximum(peaks)
-            measurements
+        else
+            error("Unknown benchmark: $workload")
         end
-    else
-        error("Unknown benchmark: $workload")
-    end
-    open(io -> TOML.print(io, result; sorted=true), output, "w")
-end
-
-function benchmark_worker(args)
-    workload, output = args[1:2]
-    import_s = @elapsed @eval using DataBrowser
-    if workload == "engine"
-        include("workloads.jl")
-        result = Base.invokelatest() do
-            repeats = parse(Int, get(ENV, "MB_BENCH_REPEATS", "3"))
-            repeats > 0 || error("MB_BENCH_REPEATS must be positive")
-            samples = run_benchmark(repeats)
-            Dict(String(name) => median(getproperty.(samples, name)) for name in keys(first(samples)))
-        end
-    else
-        include("browser.jl")
-        root, depot, opening, started_ns = args[3:6]
-        # Packages are loaded before the temporary application-cache depot is installed.
-        pushfirst!(DEPOT_PATH, depot)
-        result = try
-            Base.invokelatest() do
-                browser_workload(root, opening, parse(UInt64, started_ns))
-            end
-        finally
-            popfirst!(DEPOT_PATH)
-        end
-        result["import_s"] = import_s
-    end
-    open(io -> TOML.print(io, result; sorted=true), output, "w")
-end
-
-if abspath(PROGRAM_FILE) == @__FILE__
-    if !isempty(ARGS) && first(ARGS) == "--worker"
-        benchmark_worker(ARGS[2:end])
-    else
-        foreach(benchmark_main, isempty(ARGS) ? ["engine", "browser"] : ARGS)
+        result["peak_rss_mib"] = rss
+        return result
     end
 end

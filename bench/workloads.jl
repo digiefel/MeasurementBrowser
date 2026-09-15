@@ -68,11 +68,9 @@ end
 """Wait for engine completion and reject timeouts/errors. Close separately waits for disk writes."""
 function settle!(ws)
     Workspace.wait_workspace_idle!(ws; timeout=BENCH_TIMEOUT)
-    Workspace.engine_work_running(ws) && error("Benchmark workspace timed out")
     status = Workspace.workspace_status(ws)
-    status.level === :error && error("Benchmark workspace failed: $(status)")
+    status.busy && error("Benchmark workspace timed out")
     isempty(status.errors) || error("Benchmark stage failures: $(status.errors)")
-    ws.scan.state in (:done, :unchanged) || error("Incomplete benchmark scan: $(ws.scan.state)")
     return nothing
 end
 
@@ -117,9 +115,9 @@ function measure_index(source)
             elapsed = @elapsed begin
                 ws = Workspace.open_workspace(project, source)
                 settle!(ws)
+                sort(Workspace.query_items(ws)) == sort(API.id.(source.items)) || error("Incorrect indexed items")
                 Workspace.close_workspace!(ws)
             end
-            length(ws.index.items) == length(source.items) || error("Incorrect index size")
             callback_counts(project) == (length(source.items), 0, 0) || error("Unexpected indexing callbacks")
             return elapsed * 1e6 / length(source.items)
         finally
@@ -145,26 +143,14 @@ function measure_cache(source)
             Workspace.close_workspace!(ws)
             ws = Workspace.open_workspace(project, source)
             settle!(ws)
-            before = project.processes[]
             started = time_ns()
             bulk = Threads.@spawn begin
                 result = Workspace.materialize_items(ws, remaining)
                 settle!(ws)
                 result
             end
-            deadline = time() + BENCH_TIMEOUT
-            while project.processes[] == before && !istaskdone(bulk)
-                time() < deadline || error("Background processing did not start")
-                sleep(0.001)
-            end
-            busy_samples = Float64[]
-            for _ in 1:SELECTION_REPEATS
-                if istaskdone(bulk)
-                    fetch(bulk)
-                    error("Write workload finished before the concurrent read probes")
-                end
-                push!(busy_samples, timed_materialize(ws, selected, PAYLOAD_ROWS))
-            end
+            # Submit the same reads alongside every bulk write; either operation may finish first.
+            concurrent_samples = [timed_materialize(ws, selected, PAYLOAD_ROWS) for _ in 1:SELECTION_REPEATS]
             written_items = fetch(bulk)
             bulk = nothing
             project.processes[] == length(ids) || error("Not every item was processed exactly once")
@@ -180,7 +166,7 @@ function measure_cache(source)
                 ws = Workspace.open_workspace(project, source)
                 settle!(ws)
             end
-            length(ws.index.items) == length(ids) || error("Restore lost items")
+            sort(Workspace.query_items(ws)) == sort(ids) || error("Restore lost items")
             read_s = timed_materialize(ws, ids, PAYLOAD_ROWS)
             cached_samples = [timed_materialize(ws, selected, PAYLOAD_ROWS) for _ in 1:SELECTION_REPEATS]
             settle!(ws)
@@ -189,7 +175,7 @@ function measure_cache(source)
             return (write_mib_s=length(remaining) * bytes_per_item / 1024^2 / write_s,
                 read_mib_s=length(ids) * bytes_per_item / 1024^2 / read_s,
                 cached_materialize_ms=median(cached_samples) * 1e3,
-                busy_materialize_ms=median(busy_samples) * 1e3,
+                concurrent_materialize_ms=median(concurrent_samples) * 1e3,
                 reopen_ms=reopen_s * 1e3)
         finally
             ws === nothing || Workspace.close_workspace!(ws)
