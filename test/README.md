@@ -58,6 +58,7 @@ Julia's bundled resources remain available. The measured command precompiles all
 packages, the umbrella and their dependencies. Subsequent tests and benchmarks use that compiled
 cache. Test-only and documentation edits do not trigger clean compilation.
 
+All runner workloads use `bench/results/depot`; Julia builds missing compiled caches there normally.
 Ordinary package/file test runs never request clean compilation. Use those while editing. Run full
 verification once when the change is ready. The full command reuses successful unaffected workloads.
 

@@ -92,9 +92,9 @@ function measurement_depot()
     return depot
 end
 
-function julia_command(arguments; depot=nothing)
+function julia_command(arguments; depot)
     command = `$(Base.julia_cmd()) --startup-file=no --project=$BENCH --threads=$(Threads.nthreads()) $arguments`
-    return depot === nothing ? command : addenv(command, "JULIA_DEPOT_PATH" => depot * string(Sys.iswindows() ? ';' : ':'))
+    return addenv(command, "JULIA_DEPOT_PATH" => depot * string(Sys.iswindows() ? ';' : ':'))
 end
 
 """Run selected package tests; the full selection also runs clean compilation and smoke benchmarks."""
@@ -125,7 +125,7 @@ function check(args=ARGS)
             key = fingerprint([name]; tests=true)
             # A selected file is an explicit diagnostic run, not a pass for the whole package.
             test_code = "using Pkg; Pkg.test($(repr(name)); allow_reresolve=false, julia_args=[\"--check-bounds=auto\"], test_args=$(repr(files)))"
-            command = julia_command(["-e", test_code]; depot=isdir(joinpath(depot, "compiled")) ? depot : nothing)
+            command = julia_command(["-e", test_code]; depot)
             if isempty(files)
                 checked(records, name, key; force) do
                     run(command)
