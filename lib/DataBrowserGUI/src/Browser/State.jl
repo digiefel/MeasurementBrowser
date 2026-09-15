@@ -84,8 +84,6 @@ end
 """Frame counters and item-throughput history gathered during the render loop."""
 Base.@kwdef mutable struct PerformanceState
     frame::Int = 0
-    """Monotonic `time()` when the first non-blank frame was submitted, or `NaN` until then."""
-    first_frame_at::Float64 = NaN
     """Whether a full browser frame has passed through the renderer, after extension warmup."""
     ready::Bool = false
     gl_info::Dict{Symbol,String} = Dict{Symbol,String}()

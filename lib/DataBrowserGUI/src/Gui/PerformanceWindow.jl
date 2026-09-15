@@ -103,7 +103,7 @@ function _render_timings_tab(state::BrowserState)::Nothing
         ig.SetClipboardText(_timer_text(:unicode))
     end
     ig.SameLine()
-    ig.TextDisabled("Cumulative since the first frame; ncalls counts frames.")
+    ig.TextDisabled("Cumulative since browser readiness or the last reset; ncalls counts frames.")
     ig.Spacing()
 
     if isempty(MAIN_TIMER.inner_timers)

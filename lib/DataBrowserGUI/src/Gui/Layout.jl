@@ -319,16 +319,6 @@ function _window_close_requested(state::BrowserState)::Bool
     return GLFW.WindowShouldClose(window)
 end
 
-"""Record the first painted frame once, and wake any waiter."""
-function _mark_first_frame!(state::BrowserState)::Nothing
-    isnan(state.performance.first_frame_at) || return nothing
-    state.performance.first_frame_at = time()
-    # Discard warmup-frame timings so the section tree's avg/call and ncalls==frames
-    # reflect steady-state rendering, not first-frame compilation and setup.
-    TimerOutputs.reset_timer!(MAIN_TIMER)
-    return nothing
-end
-
 """Create the ImGui context with the docking/viewport configuration the browser needs."""
 function _init_browser_context!()
     ig.set_backend(:GlfwOpenGL3)
@@ -501,19 +491,19 @@ function _run_browser(
             @debug sprint(show, MAIN_TIMER)
         end,
     ) do
-        # The backend renders and swaps the previous frame before calling us again.
-        state.performance.ready |= full_frame_submitted[]
         if _window_close_requested(state)
             _shutdown_background_jobs!(state)
             return :imgui_exit_loop
         end
         state.performance.frame += 1
-        if state.performance.reset_main_timer
-            # Safe here: the previous frame's @timed sections have all closed, so the section
-            # stack is empty. Resetting mid-frame would underflow it when the open sections pop.
+        # The backend renders and swaps the previous frame before calling us again.
+        # Discard startup timings once the first full frame has been presented, or on request.
+        # No timed section is open at frame top, so resetting the section stack is safe.
+        if state.performance.reset_main_timer || (full_frame_submitted[] && !state.performance.ready)
             TimerOutputs.reset_timer!(MAIN_TIMER)
             state.performance.reset_main_timer = false
         end
+        state.performance.ready |= full_frame_submitted[]
         workspace = state.workspace
         held = workspace isa Workspace.Workspace && trylock(workspace.lifecycle_lock)
         try
@@ -549,11 +539,9 @@ function _run_browser(
                     end
                 else
                     startup_presented[] = true
-                    _mark_first_frame!(state)
                 end
                 return nothing
             end
-            _mark_first_frame!(state)
             @timed "frame_ui" begin
                 dockspace_id = ig.DockSpaceOverViewport(0, ig.GetMainViewport())
                 if setup_layout[]
@@ -604,8 +592,8 @@ until the window closes in non-interactive sessions (`julia script.jl`) and retu
 in the REPL so it stays interactive.
 
 With `wait=false`, returns a [`BrowserSession`](@ref) (`task` + `state`). Use
-[`close_browser!`](@ref) to exit the loop cleanly. `state.performance.first_frame_at` is set to
-`time()` when the first non-blank frame is submitted (startup surface or full UI).
+[`wait_browser_ready`](@ref) to wait until extension initialization is complete and the first
+full browser frame has been presented. Use [`close_browser!`](@ref) to exit the loop cleanly.
 """
 function open_browser(
     workspace::Workspace.Workspace;
