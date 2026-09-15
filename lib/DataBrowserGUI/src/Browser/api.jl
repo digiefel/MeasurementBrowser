@@ -21,3 +21,23 @@ function reset_timings!(session::BrowserSession)::Nothing
     session.state.performance.reset_main_timer = true
     return nothing
 end
+
+"""
+    wait_browser_ready(session; timeout_s=120) -> session
+
+Wait until the browser has presented a full frame after extension initialization. The preparation
+screen does not count. This waits for the GUI, not for all background workspace processing.
+Propagate render-task failures; throw if the browser closes or the deadline expires before readiness.
+"""
+function wait_browser_ready(session::BrowserSession; timeout_s::Real=120)
+    deadline = time() + timeout_s
+    while !session.state.performance.ready
+        if istaskdone(session.task)
+            fetch(session.task)
+            error("Browser closed before becoming ready")
+        end
+        time() < deadline || error("Browser did not become ready within $(timeout_s) seconds")
+        sleep(0.01)
+    end
+    return session
+end

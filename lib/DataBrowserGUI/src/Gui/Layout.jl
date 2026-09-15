@@ -483,6 +483,7 @@ function _run_browser(
     first_frame       = Ref(true)
     setup_layout      = Ref(true)
     startup_presented = Ref(false)
+    full_frame_submitted = Ref(false)
     return ig.render(
         ctx;
         engine,
@@ -500,6 +501,8 @@ function _run_browser(
             @debug sprint(show, MAIN_TIMER)
         end,
     ) do
+        # The backend renders and swaps the previous frame before calling us again.
+        state.performance.ready |= full_frame_submitted[]
         if _window_close_requested(state)
             _shutdown_background_jobs!(state)
             return :imgui_exit_loop
@@ -588,6 +591,7 @@ function _run_browser(
                     render_collection_metadata_modal(state)
                 end
             end
+            full_frame_submitted[] = true
         finally
             held && unlock(workspace.lifecycle_lock)
         end

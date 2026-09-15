@@ -65,6 +65,8 @@ using DataBrowserCore.Workspace:
     wait_workspace_idle!,
     workspace_status
 using DataBrowserGUI: open_browser, close_browser!, BrowserSession, gui_timings, reset_timings!
+using DataBrowserGUI: wait_browser_ready
+export wait_browser_ready
 
 export open_browser,
     close_browser!,
