@@ -1268,6 +1268,7 @@ writes still flushing do not delay idleness — reads overlay the write buffer, 
 workspace drains it.
 """
 function wait_workspace_idle!(workspace::Workspace; timeout::Real=60)::Workspace
+    # TODO: Surface timeout through the public API instead of returning an unfinished workspace.
     deadline = time() + Float64(timeout)
     lock(workspace.publish_lock) do
         remaining = deadline - time()

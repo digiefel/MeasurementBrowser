@@ -1,3 +1,4 @@
+# TODO: Move executable collection indexing out of the shared API package.
 module ItemIndex
 
 using Dates

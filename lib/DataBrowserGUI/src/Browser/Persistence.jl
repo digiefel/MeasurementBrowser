@@ -150,6 +150,7 @@ function _persisted_extensions(state::BrowserState)::Dict{String,Dict{String,Any
 end
 
 """Apply loaded project-local state to browser controls and workspace selection."""
+# TODO: Expose selection and view restoration through the browser session API.
 function _apply_project_view!(
     state::BrowserState,
     view::PersistedProjectView,
