@@ -106,13 +106,7 @@ Decisions taken during the audit:
 
 ### 0.2.1 Repairs
 
-- [ ] Make both benchmarks run again. `bench/scaling.jl` and `bench/realistic_browse.jl` import
-  `Project`/`define_project`/`register_item!` from `DataBrowserAPI` (moved to Recipes), use an
-  undefined `Cache` alias, and call `Profiling.environment_flag`, `DebugTimings`,
-  `with_debug_timings`, `write_debug_timings` (removed in #11). Replace the timing artifacts with
-  `reset_debug_timings!`/`take_debug_timings!`; fix `bench/README.md` to match.
-- [x] Run the performance snapshot at the end of `test/runtests.jl` in the `bench/` environment.
-- [x] Commit `bench/status.txt` after a default-scale realistic run.
+- [ ] Run the validated performance benchmark after unit tests and write `bench/status.txt`.
 - [ ] Delete dead code: `Workspace.jl` imports of the nonexistent `resolve_type`/`type_name` (two
   precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
   `publish_work_success!` and its unused `collections`/`refresh_hierarchy` keywords;
@@ -172,16 +166,14 @@ prepared update during publication. Discovery, successful empty interpretation a
 separate operations. Outcome validity and payload availability remain separate facts.
 
 The order is lifecycle cleanup, one backend, output references, coordinated result publication,
-then source replacement. These steps use the current index and scheduler; the workspace-graph
-redesign is independent and is not a prerequisite. Source metadata work belongs to 0.2.7 and code
-fingerprinting to 0.2.6. Establish the benchmark coverage in 0.2.9 before changing backend/buffering;
-the lifecycle cleanup can proceed with existing tests and the performance smoke run.
+then source replacement. Retain the existing index and scheduler interfaces. Source metadata belongs
+to Sources; code fingerprinting belongs to cache identity. Validate storage changes with fixed
+workloads, completed disk writes, cache reads and process memory measurements.
 
 ### 0.2.3 One index, one status
 
 - [ ] Evaluate the work graph against cancellation, invalidation, priority, streaming, and
-  collection edge cases; finish with a bounded tuning pass or an explicit redesign. This is
-  separate from the Cache interface work and is not a prerequisite for it.
+  collection edge cases; finish with a bounded tuning pass or an explicit redesign.
 - [ ] Remove `WorkspaceIndex.source`. It is a full `SourceScan` snapshot rebuilt by
   `refresh_workspace_source!` (copies the whole collection index and sorts every item per batch),
   and its only two readers ask `isa SourceScan`. Derive that boolean from the scan state.
@@ -306,26 +298,18 @@ the lifecycle cleanup can proceed with existing tests and the performance smoke 
 
 ### 0.2.8 Tests
 
-- [ ] Inventory the eighteen test files by what they lock in: contract tests stay; tests of
-  internal helpers (`insert_item!`, `_update_multi_selection!`, `DataGridState`, …) are deleted or
-  rewritten against public functions after Phase 3; GUI-state tests are rewritten after Phase 4.
-- [ ] Target shape: one public-API suite per tier; one engine suite (work graph, invalidation,
-  reopen, live source); one cache suite that exercises the real DuckDB path (memory mode now does);
-  one GUI suite.
-- [ ] Automated GUI testing: choose the harness (scripted `BrowserState` operations against the
-  Phase 4 surface, or the ImGui test engine) and cover open, select, plot, close.
+- [x] Package-owned contract suites using only each package's dependencies; individually selectable
+  files, with unchanged successful dependency closures reused.
+- [ ] Full verification includes all subpackages and the umbrella benchmark as an application smoke
+  test. Commands and metric definitions live in `test/README.md`.
 
 ### 0.2.9 Benchmarks
 
-- [x] Performance snapshot runs at the end of `test/runtests.jl` in the `bench/` environment (Phase 0).
-- [ ] Make the cache benchmark a dependable baseline before changing backend/buffering: use fixed
-  selections and explicit stage completion, separate preparation/acceptance/flush timing, measure
-  reads independently of plotting, and exercise writes beyond the configured capacity. Record
-  actual rows/bytes, outcome checks, repeated samples and run configuration. Cover warm restore,
-  source-output replacement and metadata refresh, plus consistent memory measurements. The current
-  status snapshot is a smoke run; see `bench/README.md` for the per-field assessment.
-- [ ] After Phase 4, add a GUI frame-time probe (tree panel, items panel) to `scaling.jl`; nothing
-  measures per-frame cost today.
+- [ ] Measure clean package precompilation when source dependencies change; reuse its compiled
+  output for tests and application workloads.
+- [ ] Measure process-to-browser startup and saved-cache reopen with a real GUI and default plots.
+- [x] Measure engine indexing overhead, cache throughput, materialization latency and process memory
+  using prepared type-API inputs.
 
 ### 0.2.10 Documentation
 

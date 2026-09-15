@@ -17,7 +17,7 @@ Avoid overusing internal jargon. Reduce cognitive load by explaining jargon when
 IMPORTANT: before planning multi-package changes, and whenever broad context is needed, read the north-star document: [docs/vision.md](docs/vision.md).
 For the full architectural model, when needed, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 When making a change or looking to add a feature, read the roadmap: [docs/roadmap.md](docs/roadmap.md).
-Benchmark details: [bench/README.md](bench/README.md).
+Testing and benchmark instructions: [test/README.md](test/README.md).
 
 Use docstrings when useful, and ALWAYS have docstrings on public APIs. 
 
@@ -28,9 +28,6 @@ When code and docs disagree, fix the doc in the same commit.
 ## Commands
 
 ```bash
-# Run tests and write bench/status.txt (skip for doc-only / trivial edits; time consuming)
-julia --project=bench --threads=auto test/runtests.jl
-
 # Generate public docs
 julia --project=docs docs/make.jl
 ```
@@ -51,16 +48,9 @@ Planned work lives in `docs/roadmap.md`.
 
 ## Testing
 
-Before a commit, run the full suite once:
-`julia --project=bench --threads=auto test/runtests.jl` (or `bench/run.sh` if you want peak RSS in
-`status.txt`). That command uses the `bench/` environment for unit tests and then writes
-`bench/status.txt`. Skip for doc-only, inspection-only, or harmless local edits. Fixtures in
-`test/fixtures/`; the inline project lives in `test/test_project.jl`. Plot/GUI tests: metadata,
-labels, figure creation — not pixels.
-
-## Benchmarks
-
-The performance run is the last step of the test command above. See [bench/README.md](bench/README.md).
+Use [test/README.md](test/README.md) as the authority for package tests, individual workloads and
+full verification. While editing, run only relevant tests. Before committing, run full verification
+once; unchanged successful workloads are reused. Skip execution for documentation-only changes.
 
 ## Work style
 
