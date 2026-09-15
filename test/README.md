@@ -6,16 +6,15 @@ each package test process only that package's dependencies and `Test`.
 ## Design constraints
 
 - Each package owns its tests and fixtures, using only its declared dependencies and `Test`.
-- Tests check public behavior and fundamental invariants. Benchmarks may read internal counters
-  for measurements. Missing interfaces belong in concise TODOs, not test-only workarounds.
+- Tests check public behavior and fundamental invariants. Missing interfaces belong in concise TODOs,
+  not test-only workarounds. On the other hand, benchmarks may read internal counters for measurements.
 - Pkg handles dependency resolution and compilation. The runner selects work and records results;
   it must remain simpler than the system being measured.
 - Reuse unchanged successful workloads and compiled code during development. Full verification
   measures clean precompilation when package inputs change, then reuses that compilation.
 - Measure package overhead with fixed inputs and minimal user callbacks. Include import time,
   process-to-browser readiness, throughput, latency and memory. Faster execution must not fail a test.
-- Stop on failure. Publish `status.txt` only after full verification succeeds; test failures do not
-  prevent Git commits. This workflow installs no commit hook or GitHub Action.
+- Test failures do not prevent Git commits.
 
 ## Commands
 
@@ -38,11 +37,6 @@ julia --project=bench --threads=auto test/runtests.jl bench engine --force
 # Measure clean precompilation again, regardless of previous results.
 julia --project=bench --threads=auto test/runtests.jl precompile --force
 ```
-
-`Pkg.test("DataBrowserCore"; julia_args=["--check-bounds=auto"], test_args=["test_workspace.jl"])` in the bench environment is the
-standard alternative to the runner. It always runs. The runner uses normal Julia bounds checking
-for both tests and benchmarks so Pkg does not compile a second set of package images. Package tests never import the umbrella or
-another package's tests. No test-only runtime dependencies are added to make a suite pass.
 
 | Package selector | Test files and behavior |
 | --- | --- |
@@ -81,22 +75,7 @@ verification once when the change is ready. The full command reuses successful u
 A successful full run writes `bench/status.txt`. Partial runs print their results and record them
 in ignored `bench/results/checks.toml`; they do not update the snapshot.
 The snapshot identifies measurement dates and input fingerprints. Review its diff with the code.
-Compare timings on the same machine, Julia version, thread count and workload. Measurements are
-regression evidence; noisy timing differences are not automatic test failures.
-
-| Metric | Meaning |
-| --- | --- |
-| `precompile_s` | Wall time of the clean precompile command, including Julia/Pkg startup. No package compiled images from the user depot are available. |
-| `import_s` | `using DataBrowser` in the fresh process for the initial browser opening, with valid compiled caches. |
-| `browser_open_s` | Process launch through a presented full browser frame after extension warmup, including import and workspace opening. Preparation screens do not count. |
-| `browser_reopen_s` | Same boundary with a saved data cache, again in a fresh process. |
-| `frame_ui_ms` | Mean CPU wall time building 60 or more browser frames after the first plot; excludes renderer/vsync time. |
-| `index_us_per_item` | Open, index, query IDs and save 10,000 one-row items, including cache close, divided by item count. |
-| `write_mib_s` | Process and store 390 payloads, including completed disk writes at close and five concurrent read probes. |
-| `read_mib_s` | Materialize all 400 saved payloads after reopen, with the OS file cache warm. |
-| `cached_materialize_ms` / `concurrent_materialize_ms` | Materialize ten saved items, idle / submitted alongside bulk materialization. Five fixed read probes run; either reads or writes may finish first. |
-| `reopen_ms` | Restore and validate the 400-item workspace index; payload loading is measured separately. |
-| `peak_rss_mib` / `browser_peak_rss_mib` | Highest resident-memory sample of engine / browser workers, including Julia and native allocations. Sampling is every 100 ms; shorter peaks may be missed. |
+Compare timings on the same machine, Julia version, thread count and workload.
 
 The engine workload uses prepared type-API values: 400 items × 10,000 rows × four Float64 columns.
 Throughput uses logical uncompressed payload bytes. User callbacks return prepared values; no
