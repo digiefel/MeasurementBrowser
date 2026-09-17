@@ -62,7 +62,16 @@ function select_source_item!(
         if item.source_item_key == key
     ]
     isempty(items) && return false
+    Workspace.select_items!(workspace, items)
+    _reveal_selected_items!(state)
+    return true
+end
 
+"""Reveal the current workspace selection in the tree and item panel."""
+function _reveal_selected_items!(state::BrowserState)::Nothing
+    workspace = state.workspace::Workspace.Workspace
+    items = [workspace.index.items[id] for id in workspace.selection.item_ids]
+    isempty(items) && return nothing
     collections = workspace.index.collections
     collection_ids = unique(String[
         item.collection_key === nothing ?
@@ -82,10 +91,9 @@ function select_source_item!(
 
     state.expanded_collection_ids = expanded_ids
     workspace.selection.collection_ids = collection_ids
-    workspace.selection.item_ids = [item.id for item in items]
     state.scroll_to_collection_id = isempty(collection_ids) ? nothing : first(collection_ids)
     state.scroll_to_item_id = first(items).id
-    return true
+    return nothing
 end
 
 """Stop browser and workspace work before the render loop exits."""

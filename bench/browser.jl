@@ -1,5 +1,4 @@
 include("smoke_project.jl")
-using Statistics: mean
 using DataBrowserGUI.Browser: TimerOutputs
 
 function wait_for(predicate, session; timeout=120)
@@ -15,12 +14,13 @@ end
 function finish_work(ws)
     wait_workspace_idle!(ws; timeout=30)
     status = workspace_status(ws)
-    !status.busy && isempty(status.errors) || error("Workspace did not complete successfully: $status")
+    !status.busy && status.level !== :error && isempty(status.errors) ||
+        error("Workspace did not complete successfully: $status")
 end
 
-function check_items(ws, expected_peaks)
+function check_items(ws, session, expected_peaks)
     ids = sort(query_items(ws))
-    select_items!(ws, ids)
+    select_items!(session, ids)
     items = materialize_items(ws)
     sort([metadata(item)[:peak] for item in items]) == expected_peaks || error("Incorrect analysis results")
     read_item_data(ws) == item_data.(items) || error("Selection did not deliver the selected payloads")
@@ -38,7 +38,7 @@ function browser_workload(root, opening, started_ns)
         wait_browser_ready(session)
         opening_s = (time_ns() - started_ns) / 1e9
         finish_work(workspace)
-        items = check_items(workspace, [4.0, 6.0, 9.0])
+        items = check_items(workspace, session, [4.0, 6.0, 9.0])
         sort([first(item_data(item).members) for item in items]) == [1, 2, 2] ||
             error("Collection processing did not reach the selected items")
         # The normal plot panel must invoke the registered drawing callback.
@@ -60,21 +60,24 @@ function browser_workload(root, opening, started_ns)
             cp(joinpath(PUBLIC_VARIANTS, "a_changed.dbitem"), joinpath(root, "a.dbitem"); force=true)
             wait_for(() -> counters.reads["a.dbitem"][] == 1, session)
             finish_work(workspace)
-            check_items(workspace, [9.0, 40.0, 42.0])
+            check_items(workspace, session, [9.0, 40.0, 42.0])
             reads_before = Dict(name => count[] for (name, count) in counters.reads)
             processed_before = counters.processes[]
             cp(joinpath(PUBLIC_VARIANTS, "metadata_changed.txt"), joinpath(root, "metadata.txt"); force=true)
             wait_for(() -> counters.processes[] >= processed_before + 2, session)
             finish_work(workspace)
-            check_items(workspace, [9.0, 80.0, 84.0])
+            check_items(workspace, session, [9.0, 80.0, 84.0])
             Dict(name => count[] for (name, count) in counters.reads) == reads_before ||
                 error("Metadata updates reread unchanged source files")
             extra = joinpath(root, "extra.dbitem")
             cp(joinpath(PUBLIC_VARIANTS, "extra.dbitem"), extra)
             wait_for(() -> length(query_items(workspace)) == 4, session)
+            finish_work(workspace)
+            check_items(workspace, session, [9.0, 20.0, 80.0, 84.0])
             rm(extra)
             wait_for(() -> length(query_items(workspace)) == 3, session)
             finish_work(workspace)
+            check_items(workspace, session, [9.0, 80.0, 84.0])
         end
         return Dict("browser_$(opening)_s" => opening_s, "frame_ui_ms" => frame_ms)
     finally

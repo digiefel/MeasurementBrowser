@@ -1,9 +1,28 @@
-# Public REPL API for a running browser GUI. Each function takes the `BrowserSession` returned by
-# `open_browser`, so the REPL and the GUI act on the same session. (These are the first of these;
-# further GUI-facing API belongs here.)
-#
-# There is one render loop per process, so the always-on timer is a single global (`MAIN_TIMER`);
-# the session identifies the GUI and carries the deferred-reset flag.
+# Workspace actions operate on shared data state without depending on the GUI. Session actions
+# extend the same generic function, call its workspace method, and synchronize the browser view.
+# Keep view updates in this package and workspace behavior in Core. GUI-only actions take a session.
+# Both the REPL and GUI can act on the BrowserSession returned by open_browser.
+
+import DataBrowserCore.Workspace: select_items!
+
+"""
+    select_items!(session::BrowserSession, items)
+
+Select indexed items by ID, record or data item and reveal their collections in the browser.
+Expand their parent collections and scroll to the first selected item. An empty selection clears
+the selected items while keeping the current collection view. Tag visibility filters still apply.
+
+This session action calls `select_items!(workspace, items)` and updates the browser view under the
+render loop's workspace lock. The workspace action alone selects data without revealing it.
+"""
+function select_items!(session::BrowserSession, items::AbstractVector)::Nothing
+    workspace = session.state.workspace::Workspace.Workspace
+    lock(workspace.lifecycle_lock) do
+        Workspace.select_items!(workspace, items)
+        _reveal_selected_items!(session.state)
+    end
+    return nothing
+end
 
 """
 The always-on main-task timing tree recorded by `@timed` during the render loop. Returns the live

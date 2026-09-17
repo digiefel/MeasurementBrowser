@@ -193,6 +193,12 @@ save_workflow("pund_review.dbflow", fig)
 The GUI issues the same kinds of actions when the user clicks, drags, or edits plot options. The saved
 workflow stores those actions in package-owned terms, not private widget state.
 
+Workspace actions, such as `select_items!(workspace, items)`, operate on shared data state and work
+without a GUI. Session actions, such as `select_items!(browser, items)`, call the corresponding
+workspace action and synchronize the browser view: selection also expands and reveals the items.
+Session methods extend the same Julia generic function in the GUI package; Core has no GUI
+dependency. REPL code and GUI controls share the workspace rather than copying its state.
+
 A script that calls `define_project(project_file; config)` creates or reopens the project file, then
 registers callbacks and plots. Rerunning the script points at the same project file. If the file
 already exists and the passed config disagrees with it, `define_project` should fail unless the caller

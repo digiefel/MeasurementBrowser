@@ -1,5 +1,5 @@
 using DataBrowser
-using GLMakie: Figure, Axis, lines!
+using GLMakie: Figure, Axis, lines!, content
 using TOML
 
 const PUBLIC_FIXTURE = joinpath(@__DIR__, "..", "test", "fixtures", "public_api")
@@ -71,7 +71,7 @@ function toy_project(name::AbstractString, counters::ToyCounters)::Project
         draw=function (_workspace, items, _figure)
             all(item -> label(typeof(item)) === :trace && haskey(metadata(item), :peak), items) ||
                 error("plot did not receive analyzed trace items")
-            axis = _figure[1, 1][]
+            axis = content(_figure[1, 1])
             empty!(axis)
             for item in items
                 lines!(axis, item_data(item).x, item_data(item).y)

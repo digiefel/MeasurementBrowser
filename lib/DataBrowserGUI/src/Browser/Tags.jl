@@ -144,7 +144,6 @@ The persisted selection ids are left untouched; this returns only the currently 
 function _project_visible_selection(
     state::BrowserState,
 )::Tuple{Vector{CollectionRecord},Vector{ItemRecord},Vector{String}}
-    # TODO: Let public item selection reach the GUI without private collection-selection updates.
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
         return CollectionRecord[], ItemRecord[], String[]
