@@ -23,7 +23,8 @@ struct EngineItem <: AbstractDataItem
 end
 DataBrowserAPI.source_id(s::EngineSource) = s.name
 DataBrowserAPI.source_label(s::EngineSource) = s.name
-DataBrowserAPI.source_items(s::EngineSource; kwargs...) = [EngineSourceItem(s.version, s.fail)]
+DataBrowserAPI.source_items(s::EngineSource; kwargs...) =
+    s.version == 0 ? EngineSourceItem[] : [EngineSourceItem(s.version, s.fail)]
 DataBrowserAPI.id(::EngineSourceItem) = "source"
 DataBrowserAPI.label(::EngineSourceItem) = "source"
 DataBrowserAPI.fingerprint(s::EngineSourceItem) = (s.version, s.fail)
@@ -69,6 +70,11 @@ end
                 settled(ws)
                 @test W.query_items(ws) == ["1"]
                 @test item_data(only(W.materialize_items(ws, ["1"]))).x == [2]
+                W.modify_workspace!(ws; source=EngineSource("source", 0, false))
+                settled(ws)
+                @test isempty(W.query_items(ws))
+                @test W.workspace_status(ws).level !== :error
+                @test isempty(W.workspace_status(ws).errors)
             finally
                 W.close_workspace!(ws)
             end

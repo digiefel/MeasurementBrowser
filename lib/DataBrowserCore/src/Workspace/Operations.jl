@@ -396,8 +396,8 @@ end
 Invalidate one record's process/analyze steps and every affected collection step, scheduling their
 recomputation only when background processing is enabled.
 
-Invalidation, source removal, and interpret failure all fan out through this helper. The stale cache
-result-state is always cleared so the next read (on-demand or background) recomputes; the fresh work
+Pass only surviving records; source removal and interpret failure pass their affected collection
+keys with no item records. The stale cache result-state is cleared so the next read recomputes; fresh work
 is only enqueued when `background_processing` is on. Without it, processing stays selection-driven and
 a live scan interprets the tree without eagerly processing or analyzing every item.
 """
@@ -604,7 +604,7 @@ function ingest_source_changes!(
         delete_source_item!(workspace.cache.db, removed_key, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
         delete_pruned_collection_records!(workspace, invalidated)
-        enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
+        enqueue_dependent_subtree!(workspace, ItemRecord[]; collection_keys=invalidated)
         lock(workspace.work.lock) do
             delete!(workspace.work.source_items, removed_key)
         end
@@ -1193,7 +1193,7 @@ function publish_work_failure!(
         delete_source_output!(workspace.cache.db, source_key, old_records)
         delete_collection_metadata!(workspace.cache.db, invalidated)
         delete_pruned_collection_records!(workspace, invalidated)
-        enqueue_dependent_subtree!(workspace, old_records; collection_keys=invalidated)
+        enqueue_dependent_subtree!(workspace, ItemRecord[]; collection_keys=invalidated)
         workspace.index.analysis_errors[source_ref] = "$(key.kind): " * message
         store_result_failure!(workspace.cache.db, key.kind, source_key, source_key, message)
         @error("Source stage failed", source_item=source_ref, stage=key.kind,
