@@ -70,6 +70,7 @@ function settle!(ws)
     Workspace.wait_workspace_idle!(ws; timeout=BENCH_TIMEOUT)
     status = Workspace.workspace_status(ws)
     status.busy && error("Benchmark workspace timed out")
+    status.level === :error && error("Benchmark workspace failed: $status")
     isempty(status.errors) || error("Benchmark stage failures: $(status.errors)")
     return nothing
 end

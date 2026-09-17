@@ -118,6 +118,10 @@ function check(args=ARGS)
             rm(joinpath(depot, "compiled"); recursive=true, force=true)
             seconds = @elapsed run(command)
             fingerprint(vcat(PACKAGES, ["DataBrowser"]), command) == code || error("Package code changed during precompilation")
+            # Development measurements may include automatic compilation during import.
+            # Measure again with the newly completed compiled cache, including on a later run.
+            delete!(records, "engine")
+            delete!(records, "browser")
             Dict("seconds" => seconds)
         end
     end

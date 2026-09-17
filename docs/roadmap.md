@@ -106,7 +106,7 @@ Decisions taken during the audit:
 
 ### 0.2.1 Repairs
 
-- [ ] Run the validated performance benchmark after unit tests and write `bench/status.txt`.
+- [x] Run the validated performance benchmark after unit tests and write `bench/status.txt`.
 - [ ] Delete dead code: `Workspace.jl` imports of the nonexistent `resolve_type`/`type_name` (two
   precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
   `publish_work_success!` and its unused `collections`/`refresh_hierarchy` keywords;
@@ -300,14 +300,14 @@ workloads, completed disk writes, cache reads and process memory measurements.
 
 - [x] Package-owned contract suites using only each package's dependencies; individually selectable
   files, with unchanged successful dependency closures reused.
-- [ ] Full verification includes all subpackages and the umbrella benchmark as an application smoke
-  test. Commands and metric definitions live in `test/README.md`.
+- [x] Full verification includes all subpackages and the umbrella benchmark as an application smoke
+  test. Commands live in `test/README.md`; measurements are defined in the benchmark code.
 
 ### 0.2.9 Benchmarks
 
-- [ ] Measure clean package precompilation when source dependencies change; reuse its compiled
+- [x] Measure clean package precompilation when source dependencies change; reuse its compiled
   output for tests and application workloads.
-- [ ] Measure process-to-browser startup and saved-cache reopen with a real GUI and default plots.
+- [x] Measure process-to-browser startup and saved-cache reopen with a real GUI and default plots.
 - [x] Measure engine indexing overhead, cache throughput, materialization latency and process memory
   using prepared type-API inputs.
 
