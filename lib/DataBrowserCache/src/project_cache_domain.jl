@@ -503,7 +503,11 @@ function _remove_cache_files!(path::AbstractString)::Nothing
     return nothing
 end
 
-"""Open one generated cache. `rebuild=true` first discards the old generated file."""
+"""
+Open a ready-to-use cache, initializing its schema and identity or validating the existing identity.
+A different project or source is rejected before cache stores start. `rebuild=true` first discards
+all generated data in the file and binds the new cache to the supplied identity.
+"""
 function open_cache_db(
     identity::ProjectCacheIdentity,
     metrics::BuildMetrics=BuildMetrics(),
@@ -525,23 +529,10 @@ function open_cache_db(
                     "WHERE table_schema = 'main' AND table_name = 'meta'",
                 )
             ]) > 0
-            if has_meta
-                schema_versions = String[
-                    String(row.value)
-                    for row in DBInterface.execute(
-                        connection,
-                        "SELECT value FROM meta WHERE key = 'schema_version'",
-                    )
-                ]
-                if !isempty(schema_versions) &&
-                   only(schema_versions) != string(PROJECT_CACHE_SCHEMA_VERSION)
-                    throw(ProjectCacheSchemaError(
-                        identity.cache_path,
-                        "cache schema is out of date; pass rebuild=true to discard and rebuild it",
-                    ))
-                end
-            end
+            meta = has_meta ? _load_meta(connection) : Dict{String,String}()
+            isempty(meta) || _validate_meta(meta, identity)
             ensure_schema!(connection)
+            isempty(meta) && _write_meta_header!(connection, identity)
         finally
             DBInterface.close!(connection)
         end
@@ -706,13 +697,6 @@ function open_memory_cache_db(
         ReentrantLock(),
     )
 end
-
-"""Cache stores are live when opened; this keeps Workspace on a semantic lifecycle call."""
-start_cache!(::AbstractCacheDB)::Nothing = nothing
-
-"""Cache stores close with `close_cache_db!`; this keeps Workspace on a semantic lifecycle call."""
-stop_cache!(::CacheDB)::Nothing = nothing
-stop_cache!(::MemoryCacheDB)::Nothing = nothing
 
 set_cache_memory_limit!(::AbstractCacheDB, mib::Integer)::Int =
     set_cache_memory_limit!(mib)
@@ -1451,7 +1435,7 @@ function read_payload(
     return Any[read_hit(store, record.id) for record in records]
 end
 
-"""Close a workspace cache's database file, checkpointing first."""
+"""Flush and close cache stores, then checkpoint and close the database."""
 function close_cache_db!(cachedb::CacheDB)::Nothing
     failure::Union{Nothing,Exception} = nothing
     for buffer in
@@ -1534,7 +1518,7 @@ function ProjectCacheIndex(
     )
 end
 
-"""Delete every index and item-data row and reset the item-key map, leaving a schema-valid cache."""
+"""Delete cached results and reset item keys while preserving the cache identity and schema."""
 function clear_cache_index!(cachedb::CacheDB)::Nothing
     for buffer in
         (cachedb.source_items, cachedb.collections, cachedb.items, cachedb.source_item_metadata,
@@ -1553,12 +1537,6 @@ function clear_cache_index!(cachedb::CacheDB)::Nothing
         empty!(cachedb.persisted_collection_keys)
     end
     _reset_stage_ledger!(cachedb.stage_ledger)
-    connection = DBInterface.connect(cachedb.db)
-    try
-        DBInterface.execute(connection, "DELETE FROM meta")
-    finally
-        DBInterface.close!(connection)
-    end
     return nothing
 end
 
@@ -1582,13 +1560,10 @@ function clear_cache_index!(cachedb::MemoryCacheDB)::Nothing
     return nothing
 end
 
-"""Stamp the identity `meta` rows so a scan's incremental writes are loadable before it finishes. Without them [`load_cache_index`](@ref) treats the cache as unbuilt. Scan-wide summaries are derived on load, not stored."""
-function write_meta_header!(cachedb::CacheDB)::Nothing
-    identity = cachedb.identity
-    connection = DBInterface.connect(cachedb.db)
-    try
-        statement = DBInterface.prepare(connection,
-            "INSERT INTO meta VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+"""Initialize all identity fields together before opening cache stores."""
+function _write_meta_header!(connection, identity::ProjectCacheIdentity)::Nothing
+    _transaction(connection) do
+        statement = DBInterface.prepare(connection, "INSERT INTO meta VALUES (?, ?)")
         for (key, value) in (
             "schema_version" => string(PROJECT_CACHE_SCHEMA_VERSION),
             "project_name" => identity.project_name,
@@ -1597,30 +1572,18 @@ function write_meta_header!(cachedb::CacheDB)::Nothing
         )
             DBInterface.execute(statement, (key, value))
         end
-    finally
-        DBInterface.close!(connection)
     end
     return nothing
 end
 
-write_meta_header!(::MemoryCacheDB)::Nothing = nothing
+"""Read the identity header on the opening connection."""
+function _load_meta(connection)::Dict{String,String}
+    return Dict(String(row.key) => String(row.value)
+        for row in DBInterface.execute(connection, "SELECT key, value FROM meta"))
+end
 
-# Loading the index
-
-"""Read and validate the sole unbuffered cache header."""
-function _load_meta(cache::CacheDB)::Dict{String,String}
-    identity = cache.identity
-    meta = Dict{String,String}()
-    connection = DBInterface.connect(cache.db)
-    try
-        for row in DBInterface.execute(connection, "SELECT key, value FROM meta")
-            meta[String(row.key)] = String(row.value)
-        end
-    finally
-        DBInterface.close!(connection)
-    end
-    isempty(meta) &&
-        throw(ProjectCacheError(identity.cache_path, "cache has not been built yet"))
+"""Reject a schema or identity mismatch before any cache stores can write."""
+function _validate_meta(meta::Dict{String,String}, identity::ProjectCacheIdentity)::Nothing
     get(meta, "schema_version", "") == string(PROJECT_CACHE_SCHEMA_VERSION) ||
         throw(ProjectCacheSchemaError(
             identity.cache_path,
@@ -1637,23 +1600,7 @@ function _load_meta(cache::CacheDB)::Dict{String,String}
         "project '$(identity.project_name)' is cached for source '$cached_source', not " *
         "'$(identity.source_id)'; use Rebuild Cache to replace it",
     ))
-    return meta
-end
-
-cache_built(::MemoryCacheDB)::Bool = false
-
-"""Whether the cache has an identity header; full identity validation happens on load."""
-function cache_built(cache::CacheDB)::Bool
-    connection = DBInterface.connect(cache.db)
-    try
-        count = only(DBInterface.execute(
-            connection,
-            "SELECT count(*) AS count FROM meta",
-        )).count
-        return count > 0
-    finally
-        DBInterface.close!(connection)
-    end
+    return nothing
 end
 
 """
@@ -1723,7 +1670,6 @@ function _load_source_scan(
     collection_analysis::Dict{Int64,MetadataDict},
 )::SourceScan
     identity = cache.identity
-    _load_meta(cache)
     source_rows = read(cache.source_items)
     item_rows = read(cache.items)
     failure_rows = read(cache.failures)
@@ -1794,7 +1740,11 @@ function _load_source_scan(
     )
 end
 
-"""Load the complete browser index from a workspace's open cache, snapshotting committed state. Reuses the already-open [`CacheDB`](@ref) instead of opening a second handle."""
+"""
+Return a restore snapshot from the open cache, including buffered updates. A newly initialized or
+cleared disk cache returns an empty index. The session-only backend returns `nothing` because it
+has no restorable index.
+"""
 function load_cache_index(
     cachedb::CacheDB;
     on_progress::Union{Nothing,Function}=nothing,
@@ -1802,6 +1752,8 @@ function load_cache_index(
     index = @timed_dbg load_cache_index_body(cachedb)
     return _report_loaded_cache_index(index, on_progress)
 end
+
+load_cache_index(::MemoryCacheDB; on_progress=nothing) = nothing
 
 function load_cache_index_body(cachedb::CacheDB)::ProjectCacheIndex
     identity = cachedb.identity

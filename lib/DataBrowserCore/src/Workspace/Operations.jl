@@ -133,7 +133,6 @@ function _install_runtime!(
     workspace.status = WorkspaceStatus()
     workspace.status_dirty[] = true
     workspace.cancel_source = CancellationTokenSource()
-    start_cache!(cache_db)
     start_work_workers!(workspace)
     return nothing
 end
@@ -689,7 +688,7 @@ function scan_source!(
         @timed_dbg "scan_source" begin
             try
                 rebuild && clear_cache_index!(cachedb)
-                cached = if !rebuild && cache_built(cachedb)
+                cached = if !rebuild
                     try
                         @timed_dbg load_cache_index(cachedb)
                     catch error
@@ -708,7 +707,6 @@ function scan_source!(
                 publish_cache_state!(
                     workspace, scan_epoch, cached === nothing ? :missing : :ready, cached)
 
-                write_meta_header!(cachedb)
                 # Read previous fingerprints before discovery so new and changed source items can
                 # stream into the work queue during the walk.
                 previous = cached_source_fingerprints(cachedb)

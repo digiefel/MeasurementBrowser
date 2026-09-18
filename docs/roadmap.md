@@ -111,13 +111,13 @@ Decisions taken during the audit:
   precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
   `publish_work_success!` and its unused `collections`/`refresh_hierarchy` keywords;
   `rebuild_workspace_hierarchy!`, `cancel_analysis!`, `cancel_cache!`, `reset_work_graph!`,
-  `start_cache!`, `stop_cache!`, `_flush_operation`, `_flush_rows`, `_callback_name`,
+  `_flush_operation`, `_flush_rows`, `_callback_name`,
   `plot_kind_symbol`, `BrowserState.project_locked`, `BrowserState.project_preference`, Core's
   unused `using DataBrowserAnnotations`. Drop unused declared deps (`Statistics`, `Tables` in GUI;
   `DataFrames` in Plots) after verifying.
 - [ ] Fix docstrings that describe behavior the code does not have: `set_cache_memory_limit!`
-  (workspace) is not live; `load_cache_index` overlays uncommitted buffers; `cache_stage_summary`
-  counts queued, not persisted; `query_items` exposes item columns too; `close_cache_db!` ordering;
+  (workspace) is not live; `cache_stage_summary`
+  counts queued, not persisted; `query_items` exposes item columns too;
   `finish_debug_timings!` still records in-flight sections. Remove or create the missing
   `docs/cache.md` and `docs/profiling.md` targets.
 
@@ -136,8 +136,8 @@ Decisions taken during the audit:
 - [x] Finish removing Core's reads of Cache fields. Stage, fingerprint, metadata, and payload
   access uses Cache's exported interface. Core owns its workspace idle deadline; Cache keeps its
   flush-deadline helper private. Remove unused imports, including the concrete cache backend.
-- [ ] Let Cache own lifecycle setup: remove no-op start/stop calls and internalize identity/header
-  writes. Keep open, close, explicit flush and storage diagnostics meaningful.
+- [x] Cache owns lifecycle setup: opening initializes or validates identity before starting stores;
+  clearing results preserves identity; closing flushes stores and checkpoints the database.
 - [ ] Delete `MemoryCacheDB` and `AbstractCacheDB`; `cache=false` opens DuckDB `":memory:"`. Removes
   roughly ten duplicated method families whose semantics had already diverged (memory recorded
   result failures in `failures`, disk did not).

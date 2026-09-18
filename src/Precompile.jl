@@ -74,7 +74,7 @@ end
                 Cache.read_payload(workspace.cache.db, records; stage=DataBrowserAPI.ITEM_PROCESS)
             end
             Workspace.workspace_memory_snapshot(workspace)
-            Cache.cache_built(workspace.cache.db) && Cache.load_cache_index(workspace.cache.db)
+            Cache.load_cache_index(workspace.cache.db)
 
             state = Browser.BrowserState(
                 workspace=workspace,

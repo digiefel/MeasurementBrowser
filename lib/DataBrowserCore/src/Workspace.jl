@@ -47,7 +47,6 @@ using DataBrowserCache:
     RESULT_FAILED,
     RESULT_READY,
     cache_stage_summary,
-    cache_built,
     cache_has_pending_writes,
     cache_pending_counts,
     cached_result_state,
@@ -66,7 +65,6 @@ using DataBrowserCache:
     project_cache_identity,
     read_payload,
     reset_build_metrics!,
-    start_cache!,
     store_collection_metadata!,
     store_collection_index!,
     store_collection_process_result!,
@@ -80,8 +78,7 @@ using DataBrowserCache:
     store_source_read!,
     source_complete,
     cache_knows_source,
-    source_item_key!,
-    write_meta_header!
+    source_item_key!
 import DataBrowserCache
 import DataBrowserCache: query_items, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
@@ -348,7 +345,6 @@ function Workspace(
         CancellationTokenSource(),
         false,
     )
-    start_cache!(cache_db)
     start_work_workers!(workspace)
     return workspace
 end

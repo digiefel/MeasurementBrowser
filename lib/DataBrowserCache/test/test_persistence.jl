@@ -16,7 +16,7 @@ struct CacheItem <: AbstractDataItem end
         record = ItemRecord(id="item", label="item", type=CacheItem,
             source_item_key=source_item_key!(cache, "source"; mint=true))
         try
-            write_meta_header!(cache)
+            @test isempty(load_cache_index(cache).source.items)
             store_interpreted!(cache, CacheSourceItem(), "source", [record], [(x=[1, 2],)])
             store_processed!(cache, record, (x=[3, 4],))
             store_processed!(cache, record, (x=[5],))
@@ -24,6 +24,10 @@ struct CacheItem <: AbstractDataItem end
         finally
             close_cache_db!(cache)
         end
+        other_source = ProjectCacheIdentity("test", "other", "other", identity.cache_path)
+        other_project = ProjectCacheIdentity("other", "source", "source", identity.cache_path)
+        @test_throws ProjectCacheError open_cache_db(other_source)
+        @test_throws ProjectCacheError open_cache_db(other_project)
         cache = open_cache_db(identity)
         try
             @test Tables.columntable(something(only(read_payload(cache, [record]; stage=ITEM_PROCESS)))).x == [5]
@@ -36,9 +40,26 @@ struct CacheItem <: AbstractDataItem end
         try
             @test !has_payload(cache, "item"; stage=ITEM_PROCESS)
             @test isempty(load_cache_index(cache).source.items)
+            store_interpreted!(cache, CacheSourceItem(), "source", [record], [(x=[1],)])
+            clear_cache_index!(cache)
+            @test isempty(load_cache_index(cache).source.items)
         finally
             close_cache_db!(cache)
         end
+        @test_throws ProjectCacheError open_cache_db(other_source)
+        cache = open_cache_db(identity)
+        try
+            @test isempty(load_cache_index(cache).source.items)
+        finally
+            close_cache_db!(cache)
+        end
+        cache = open_cache_db(other_source; rebuild=true)
+        try
+            @test isempty(load_cache_index(cache).source.items)
+        finally
+            close_cache_db!(cache)
+        end
+        @test_throws ProjectCacheError open_cache_db(identity)
     end
 end
 
