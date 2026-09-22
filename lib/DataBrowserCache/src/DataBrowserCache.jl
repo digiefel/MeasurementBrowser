@@ -47,8 +47,7 @@ include("cache_buffer.jl")
 include("project_cache_domain.jl")
 include("source_stages.jl")
 
-export AbstractCacheDB,
-    BuildMetrics,
+export BuildMetrics,
     CacheResultKey,
     CacheResultStatus,
     CacheDB,
@@ -75,7 +74,6 @@ export AbstractCacheDB,
     delete_source_output!,
     has_payload,
     load_cache_index,
-    open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
     query_items,

@@ -16,7 +16,7 @@ struct BufferMutation{R}
     row::Union{Nothing,R}
 end
 
-abstract type AbstractDiskStore{K,R} end
+abstract type AbstractDatabaseStore{K,R} end
 
 function _quote_identifier(identifier::AbstractString)::String
     return "\"" * replace(String(identifier), "\"" => "\"\"") * "\""
@@ -115,9 +115,9 @@ _payload_table_name(storage_id::UInt16)::String = "payload_$(storage_id)"
 
 function _buffer_rows end
 
-# Disk-backed ordinary tables
+# Database-backed ordinary tables
 
-mutable struct RowStore{K,R} <: AbstractDiskStore{K,R}
+mutable struct RowStore{K,R} <: AbstractDatabaseStore{K,R}
     read_connection::DuckDB.Connection
     # DuckDB connections are not thread-safe; every read_connection use holds this lock.
     read_lock::ReentrantLock
@@ -175,7 +175,7 @@ function RowStore{K,R}(
     return store
 end
 
-# Disk-backed dynamically-widened metadata table
+# Database-backed dynamically-widened metadata table
 
 """A wide metadata column's logical type: the discriminator restoring the [`MetadataValue`](@ref)."""
 @enum MetaVType::Int8 begin
@@ -269,13 +269,13 @@ end
 """
 A dynamically-widened metadata table: one row per entity, one bare column per metadata name.
 
-Reuses the generic disk-store queue (`append!`/`edit!`/`delete!`/`clear!`/`close!`) with whole-row
+Reuses the generic database-store queue (`append!`/`edit!`/`delete!`/`clear!`/`close!`) with whole-row
 replace semantics. `edit!` type-checks each value against the first type registered for its name,
 registers unseen names in memory immediately, and returns the keys it dropped for a type conflict;
 the domain layer surfaces those as failures. The flush additively `ALTER TABLE ADD COLUMN`s new names
 in one transaction with the keyed deletes and the Appender pass.
 """
-mutable struct WideRowStore{K} <: AbstractDiskStore{K,MetadataDict}
+mutable struct WideRowStore{K} <: AbstractDatabaseStore{K,MetadataDict}
     read_connection::DuckDB.Connection
     read_lock::ReentrantLock
     write_connection::DuckDB.Connection
@@ -393,9 +393,9 @@ end
 
 function Base.read(store::WideRowStore{K})::Dict{K,MetadataDict} where {K}
     while true
-        writing, queued, vtypes, disk_columns = lock(store.flush_condition) do
+        writing, queued, vtypes, stored_columns = lock(store.flush_condition) do
             _require_open(store)
-            # Only decode flushed columns from disk; pending names live in queued/writing.
+            # Only decode flushed columns from the database; pending names live in queued/writing.
             (
                 store.writing,
                 store.queued,
@@ -409,7 +409,7 @@ function Base.read(store::WideRowStore{K})::Dict{K,MetadataDict} where {K}
                 store.read_connection, "SELECT * FROM $(store.quoted_table)")
                 raw_key = getproperty(database_row, store.key_column)
                 dict = MetadataDict()
-                for name in disk_columns
+                for name in stored_columns
                     vtype = vtypes[name]
                     raw = getproperty(database_row, name)
                     ismissing(raw) && continue
@@ -588,7 +588,7 @@ function close!(store::MemoryStore)::Nothing
     return nothing
 end
 
-# Disk-backed tabular table family
+# Database-backed tabular table family
 
 """One item's payload key: its integer surrogate and the payload stage it belongs to."""
 const PayloadKey = Tuple{Int64,PipelineStage}
@@ -607,7 +607,7 @@ end
 _buffer_rows(batch::TabularBodyBatch)::Int = _payload_rows(batch.body)
 
 mutable struct TabularFamilyStore <:
-               AbstractDiskStore{Tuple{UInt16,UInt32},TabularBodyBatch}
+               AbstractDatabaseStore{Tuple{UInt16,UInt32},TabularBodyBatch}
     read_connection::DuckDB.Connection
     # DuckDB connections are not thread-safe; every read_connection use holds this lock.
     read_lock::ReentrantLock
@@ -683,16 +683,16 @@ function TabularFamilyStore(
     return store
 end
 
-# Shared disk queue
+# Shared database queue
 
-_require_open(store::AbstractDiskStore)::Nothing =
+_require_open(store::AbstractDatabaseStore)::Nothing =
     store.closing ? error("cache store is closed") : nothing
 
-_require_writable(store::AbstractDiskStore)::Nothing =
+_require_writable(store::AbstractDatabaseStore)::Nothing =
     (_require_open(store); istaskfailed(store.flush_task) && fetch(store.flush_task); nothing)
 
 function _mutation_rows(
-    store::AbstractDiskStore{K,R},
+    store::AbstractDatabaseStore{K,R},
     mutation::Union{Nothing,BufferMutation{R}},
 )::Int where {K,R}
     (store.row_limit === nothing || mutation === nothing || mutation.row === nothing) && return 0
@@ -700,7 +700,7 @@ function _mutation_rows(
 end
 
 function _set_queued!(
-    store::AbstractDiskStore{K,R},
+    store::AbstractDatabaseStore{K,R},
     key::K,
     mutation::Union{Nothing,BufferMutation{R}},
 )::Nothing where {K,R}
@@ -717,7 +717,7 @@ function _set_queued!(
 end
 
 function _accept_rows!(
-    store::AbstractDiskStore{K,R},
+    store::AbstractDatabaseStore{K,R},
     key::K,
     row::R,
 )::Nothing where {K,R}
@@ -736,7 +736,7 @@ function _accept_rows!(
 end
 
 function Base.append!(
-    store::AbstractDiskStore{K,R},
+    store::AbstractDatabaseStore{K,R},
     key::K,
     row::R,
 )::Bool where {K,R}
@@ -760,7 +760,7 @@ function Base.append!(
 end
 
 function edit!(
-    store::AbstractDiskStore{K,R},
+    store::AbstractDatabaseStore{K,R},
     key::K,
     row::R,
 )::Bool where {K,R}
@@ -778,7 +778,7 @@ function edit!(
     end
 end
 
-function Base.delete!(store::AbstractDiskStore{K,R}, key::K)::Nothing where {K,R}
+function Base.delete!(store::AbstractDatabaseStore{K,R}, key::K)::Nothing where {K,R}
     lock(store.flush_condition) do
         _require_writable(store)
         previous = get(store.queued, key, nothing)
@@ -901,9 +901,9 @@ function _wait_condition_deadline(condition::Base.Threads.Condition, deadline::F
     return time() < deadline
 end
 
-_queue_empty(store::AbstractDiskStore)::Bool = isempty(store.queued)
+_queue_empty(store::AbstractDatabaseStore)::Bool = isempty(store.queued)
 
-function _flush_due(store::AbstractDiskStore, now::Float64)::Bool
+function _flush_due(store::AbstractDatabaseStore, now::Float64)::Bool
     _queue_empty(store) && return false
     at_capacity = store.row_limit !== nothing && store.queued_rows >= store.row_limit
     return store.closing || at_capacity ||
@@ -937,7 +937,7 @@ function _flush_rows(
     return Int64(rows)
 end
 
-function _flush_loop!(store::AbstractDiskStore{K,R})::Nothing where {K,R}
+function _flush_loop!(store::AbstractDatabaseStore{K,R})::Nothing where {K,R}
     while true
         writing = lock(store.flush_condition) do
             while !_flush_due(store, time())
@@ -1099,7 +1099,7 @@ function _read_tabular_locations(
 end
 
 """
-Rebuild one disk payload as the container type it was stored with, via `Tables.materializer`.
+Rebuild one stored payload as the container type it was stored with, via `Tables.materializer`.
 A container type that no longer deserializes (changed project code) is a cache miss — the cache
 may always be rebuilt — so the caller recomputes and replaces the entry.
 """
@@ -1139,7 +1139,7 @@ function Base.read(
             end
         end
         isempty(locations) && break
-        disk_rows = _read_tabular_locations(
+        stored_rows = _read_tabular_locations(
             store,
             collect(Set(values(locations))),
         )
@@ -1156,7 +1156,7 @@ function Base.read(
                 if handled
                     results[key] = data
                 elseif current_location == location
-                    results[key] = _materialize_payload(store, location, disk_rows[location])
+                    results[key] = _materialize_payload(store, location, stored_rows[location])
                 else
                     push!(retry, key)
                 end
@@ -1427,7 +1427,7 @@ function _reset_memory!(store::TabularFamilyStore)::Nothing
     return nothing
 end
 
-function clear!(store::AbstractDiskStore)::Nothing
+function clear!(store::AbstractDatabaseStore)::Nothing
     lock(store.flush_condition)
     try
         _require_writable(store)
@@ -1446,7 +1446,7 @@ function clear!(store::AbstractDiskStore)::Nothing
     return nothing
 end
 
-function close!(store::AbstractDiskStore)::Nothing
+function close!(store::AbstractDatabaseStore)::Nothing
     lock(store.flush_condition) do
         store.closing && error("cache store is already closed")
         store.closing = true

@@ -34,7 +34,7 @@ using DataBrowserAPI:
     SOURCE_INTERPRET
 
 using DataBrowserCache:
-    AbstractCacheDB,
+    CacheDB,
     BuildMetrics,
     CacheResultKey,
     CacheResultStatus,
@@ -60,7 +60,6 @@ using DataBrowserCache:
     has_payload,
     load_cache_index,
     cached_source_fingerprints,
-    open_memory_cache_db,
     open_cache_db,
     project_cache_identity,
     read_payload,
@@ -180,7 +179,7 @@ Loaded cache state for one workspace.
 """
 mutable struct WorkspaceCache
     identity::ProjectCacheIdentity
-    db::AbstractCacheDB
+    db::CacheDB
     disk_error::Union{Nothing,Exception}
     status::Union{Nothing,ProjectCacheStatus}
     operation::Symbol
@@ -274,15 +273,11 @@ function _open_workspace_cache(
     metrics::BuildMetrics;
     rebuild::Bool,
     cache::Bool,
-)::Tuple{AbstractCacheDB,Union{Nothing,Exception},ProjectCacheIdentity}
+)::Tuple{CacheDB,Union{Nothing,Exception},ProjectCacheIdentity}
     identity = project_cache_identity(project_name(project), source)
     disk_error::Union{Nothing,Exception} = nothing
-    cache_db::AbstractCacheDB = try
-        if cache
-            @timed_dbg open_cache_db(identity, metrics; rebuild)
-        else
-            open_memory_cache_db(identity, metrics)
-        end
+    cache_db::CacheDB = try
+        @timed_dbg open_cache_db(identity, metrics; rebuild, persistent=cache)
     catch error
         if cache && !rebuild && error isa ProjectCacheSchemaError
             disk_error = error
@@ -291,7 +286,7 @@ function _open_workspace_cache(
                 cache=identity.cache_path,
                 error,
             )
-            open_memory_cache_db(identity, metrics)
+            open_cache_db(identity, metrics; persistent=false)
         else
             rethrow()
         end

@@ -1,7 +1,7 @@
 """
 Materialize processed items for selected records through the workspace work graph.
 
-A disk cache reads processed payloads from DuckDB. A memory-only cache keeps them resident. Missing
+Processed payloads come from the same DuckDB cache in persistent and in-memory workspaces. Missing
 results promote the existing background job or create one whose interpreted-payload dependency
 uses the resident cache or the source fallback.
 """

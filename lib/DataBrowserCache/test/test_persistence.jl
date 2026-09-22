@@ -9,6 +9,36 @@ DataBrowserAPI.label(::CacheSourceItem) = "source"
 DataBrowserAPI.fingerprint(::CacheSourceItem) = 1
 struct CacheItem <: AbstractDataItem end
 
+@testset "in-memory storage supports payloads and queries without touching the cache file" begin
+    mktempdir() do dir
+        path = joinpath(dir, "cache.duckdb")
+        existing = "existing cache file"
+        write(path, existing)
+        identity = ProjectCacheIdentity("memory", "source", "source", path)
+        cache = open_cache_db(identity; persistent=false, rebuild=true)
+        try
+            record = ItemRecord(id="item", label="item", type=CacheItem,
+                source_item_key=source_item_key!(cache, "source"; mint=true))
+            store_interpreted!(cache, CacheSourceItem(), "source", [record], [(x=[1],)])
+            store_processed!(cache, record, (x=[2],))
+            store_item_metadata!(cache, record, Dict(:total => 2))
+            @test Tables.columntable(something(only(read_payload(cache, [record]; stage=ITEM_PROCESS)))).x == [2]
+            @test load_cache_index(cache).item_metadata["item"][:total] == 2
+            @test timedwait(() -> !cache_has_pending_writes(cache), 20) === :ok
+            @test query_items(cache, "total = 2") == ["item"]
+        finally
+            close_cache_db!(cache)
+        end
+        @test read(path, String) == existing
+        cache = open_cache_db(identity; persistent=false)
+        try
+            @test isempty(load_cache_index(cache).source.items)
+        finally
+            close_cache_db!(cache)
+        end
+    end
+end
+
 @testset "payload replacement and deletion survive reopening" begin
     mktempdir() do dir
         identity = ProjectCacheIdentity("test", "source", "source", joinpath(dir, "cache.duckdb"))

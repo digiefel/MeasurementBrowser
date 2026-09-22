@@ -138,9 +138,8 @@ Decisions taken during the audit:
   flush-deadline helper private. Remove unused imports, including the concrete cache backend.
 - [x] Cache owns lifecycle setup: opening initializes or validates identity before starting stores;
   clearing results preserves identity; closing flushes stores and checkpoints the database.
-- [ ] Delete `MemoryCacheDB` and `AbstractCacheDB`; `cache=false` opens DuckDB `":memory:"`. Removes
-  roughly ten duplicated method families whose semantics had already diverged (memory recorded
-  result failures in `failures`, disk did not).
+- [x] Use one DuckDB cache backend: `cache=false` opens a private `":memory:"` database. Persistent
+  and in-memory caches share stage results, metadata, queries, payload storage and invalidation.
 - [ ] Give stage outputs exact publication references and preserve metadata by producing stage.
   Separate recorded outcome from payload availability. Reuse valid downstream results after
   upstream eviction; reconstruct resident and restored values with the same metadata.

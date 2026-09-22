@@ -47,12 +47,12 @@ function settled(ws)
     @test !W.workspace_status(ws).busy
 end
 
-@testset "reconstruction, reuse and source replacement" begin
+@testset "reconstruction, reuse and source replacement (cache=$cache)" for cache in (true, false)
     mktempdir() do depot
         pushfirst!(DEPOT_PATH, depot)
         try
             project = EngineProject("engine", 0)
-            ws = W.open_workspace(project, EngineSource("source", 2, false); background_processing=true)
+            ws = W.open_workspace(project, EngineSource("source", 2, false); cache, background_processing=true)
             try
                 settled(ws)
                 items = W.materialize_items(ws, sort(W.query_items(ws)))
@@ -61,11 +61,11 @@ end
             finally
                 W.close_workspace!(ws)
             end
-            ws = W.open_workspace(project, EngineSource("source", 2, false); background_processing=true)
+            ws = W.open_workspace(project, EngineSource("source", 2, false); cache, background_processing=true)
             try
                 settled(ws)
                 @test metadata(only(W.materialize_items(ws, ["1"])))[:total] == 4
-                @test project.reads == 1
+                @test project.reads == (cache ? 1 : 2)
                 W.modify_workspace!(ws; source=EngineSource("source", 1, false))
                 settled(ws)
                 @test W.query_items(ws) == ["1"]
@@ -84,13 +84,13 @@ end
     end
 end
 
-@testset "failures are reused until the source changes" begin
+@testset "failure reuse and recovery (cache=$cache)" for cache in (true, false)
     mktempdir() do depot
         pushfirst!(DEPOT_PATH, depot)
         try
             project = EngineProject("failure", 0)
             for _ in 1:2
-                ws = W.open_workspace(project, EngineSource("source", 1, true))
+                ws = W.open_workspace(project, EngineSource("source", 1, true); cache)
                 try
                     settled(ws)
                     @test !isempty(W.workspace_status(ws).errors)
@@ -98,8 +98,8 @@ end
                     W.close_workspace!(ws)
                 end
             end
-            @test project.reads == 1
-            ws = W.open_workspace(project, EngineSource("source", 1, false))
+            @test project.reads == (cache ? 1 : 2)
+            ws = W.open_workspace(project, EngineSource("source", 1, false); cache)
             try
                 settled(ws)
                 @test isempty(W.workspace_status(ws).errors)

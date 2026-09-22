@@ -181,6 +181,11 @@ Core owns the workspace, index, scan, and work graph. Cache owns cache storage a
 snapshots or payloads through its exported interface. Core does not inspect Cache stores or use its
 private buffer helpers.
 
+Both persistent and in-memory workspaces use the same DuckDB stores and cache operations.
+`cache=false` opens a private `:memory:` database with temporary-file spilling disabled; closing
+the workspace discards it without changing the project's cache file. Source-read and interpreted
+payloads use resident `MemoryStore` buffers in both modes.
+
 ```mermaid
 flowchart LR
     core["DataBrowserCore<br/>workspace and work graph"]

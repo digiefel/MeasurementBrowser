@@ -1,5 +1,6 @@
 """
 Start cache loading and source scanning for one new workspace.
+With `cache=false`, keep the cache in memory and discard it on close; the project cache file is untouched.
 """
 function open_workspace(
     project::AbstractProject,
