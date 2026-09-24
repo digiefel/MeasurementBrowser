@@ -107,10 +107,9 @@ Decisions taken during the audit:
 ### 0.2.1 Repairs
 
 - [x] Run the validated performance benchmark after unit tests and write `bench/status.txt`.
-- [ ] Delete dead code: `Workspace.jl` imports of the nonexistent `resolve_type`/`type_name` (two
-  precompile warnings); the no-op `reconcile_source_metadata_cache!(…; collections=…)` call in
-  `publish_work_success!` and its unused `collections`/`refresh_hierarchy` keywords;
-  `rebuild_workspace_hierarchy!`, `cancel_analysis!`, `cancel_cache!`, `reset_work_graph!`,
+- [x] Remove unused Core cancellation/hierarchy/reset helpers and the no-op source-metadata
+  reconciliation call; keep one reconciliation path without unused options.
+- [ ] Delete dead code:
   `_flush_operation`, `_flush_rows`, `_callback_name`,
   `plot_kind_symbol`, `BrowserState.project_locked`, `BrowserState.project_preference`, Core's
   unused `using DataBrowserAnnotations`. Drop unused declared deps (`Statistics`, `Tables` in GUI;

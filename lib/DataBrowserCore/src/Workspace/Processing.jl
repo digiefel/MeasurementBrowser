@@ -130,25 +130,6 @@ function cancel_waiting_work!(workspace::Workspace)::Nothing
     return nothing
 end
 
-"""Reset idle work counters before a clean profiling rebuild."""
-function reset_work_graph!(workspace::Workspace)::Nothing
-    graph = workspace.work
-    lock(graph.lock) do
-        any(node -> node.state in (:queued, :running), values(graph.nodes)) &&
-            error("Cannot reset the work graph while work is active")
-        empty!(graph.nodes)
-        empty!(graph.queue)
-        empty!(graph.source_items)
-        empty!(graph.source_locks)
-        graph.total = 0
-        graph.completed = 0
-        graph.active = 0
-        graph.source_batch = 0
-        graph.source_batch_open = false
-    end
-    return nothing
-end
-
 """Start one work-conserving worker pool shared by every work kind."""
 function finish_work_node!(workspace::Workspace, node::WorkNode)::Vector{Channel{Any}}
     return lock(workspace.work.lock) do

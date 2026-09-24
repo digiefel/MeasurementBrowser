@@ -256,14 +256,6 @@ function cancel_scan!(workspace::Workspace)::Nothing
     end
     return nothing
 end
-cancel_analysis!(workspace::Workspace)::Nothing = (cancel_waiting_work!(workspace); nothing)
-
-"""
-Cancel in-flight cache work.
-
-Cache writes are now produced by the source scan itself, so cancelling cache work cancels the scan.
-"""
-cancel_cache!(workspace::Workspace)::Nothing = cancel_scan!(workspace)
 
 """Return records currently published for one source item."""
 function source_item_records(index::WorkspaceIndex, source_item_key_value::Int64)::Vector{ItemRecord}
@@ -331,19 +323,10 @@ function include_collection_metadata_keys!(index::WorkspaceIndex, collection_key
     return nothing
 end
 
-"""Refresh derived collection metadata after indexed records change."""
-function rebuild_workspace_hierarchy!(workspace::Workspace)::Nothing
-    refresh_collection_metadata_keys!(workspace.index)
-    return nothing
-end
-
 """Rebuild effective collection metadata from the collection values currently in the index."""
 function reconcile_source_metadata_cache!(
-    workspace::Workspace;
-    collections::Union{Nothing,Vector{Int64}}=nothing,
-    refresh_hierarchy::Bool=false,
+    workspace::Workspace,
 )::Vector{ItemRecord}
-    refresh_hierarchy || return ItemRecord[]
     old_collections = @timed_dbg "recon_copy" copy(workspace.index.collections)
     current_keys = collect(keys(workspace.index.collections.records))
     @timed_dbg "recon_resolve" for key in current_keys
@@ -620,7 +603,7 @@ function ingest_source_changes!(
         end
     end
     if changes.metadata_changed
-        stale = @timed_dbg "reconcile_metadata" reconcile_source_metadata_cache!(workspace; refresh_hierarchy=true)
+        stale = @timed_dbg "reconcile_metadata" reconcile_source_metadata_cache!(workspace)
         isempty(stale) || @timed_dbg "invalidate_work" invalidate_records_work!(workspace, stale)
         changed = changed || !isempty(stale)
     end
@@ -1053,7 +1036,6 @@ function publish_work_success!(
         delete_pruned_collection_records!(workspace, invalidated)
         enqueue_dependent_subtree!(workspace, resolved; collection_keys=invalidated)
         publish_metadata_conflicts!(workspace, source_ref, key.kind, conflicts)
-        reconcile_source_metadata_cache!(workspace; collections=invalidated)
     elseif key.kind === ITEM_PROCESS
         # The worker stored the processed payload before completing, so item analysis becomes
         # runnable the moment this node finishes and late joiners reading the cache find the data.
