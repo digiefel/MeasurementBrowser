@@ -17,13 +17,16 @@ function materialize_items(
     workspace::Workspace,
     ids::AbstractVector{<:AbstractString},
 )::Vector{AbstractDataItem}
-    records = ItemRecord[]
-    for id_value in ids
-        item_id = String(id_value)
-        haskey(workspace.index.items, item_id) || error(
-            "Cannot materialize item id '$item_id': no indexed item with that id exists in this workspace",
-        )
-        push!(records, workspace.index.items[item_id])
+    records = lock(workspace.publish_lock) do
+        records = ItemRecord[]
+        for id_value in ids
+            item_id = String(id_value)
+            haskey(workspace.index.items, item_id) || error(
+                "Cannot materialize item id '$item_id': no indexed item with that id exists in this workspace",
+            )
+            push!(records, workspace.index.items[item_id])
+        end
+        records
     end
     return materialize_items(workspace, records)
 end

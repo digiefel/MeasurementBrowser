@@ -165,7 +165,9 @@ function select_items!(
     ids::AbstractVector{<:AbstractString},
 )::Nothing
     selected = String[id for id in ids]
-    missing = String[id for id in selected if !haskey(workspace.index.items, id)]
+    missing = lock(workspace.publish_lock) do
+        String[id for id in selected if !haskey(workspace.index.items, id)]
+    end
     isempty(missing) || error(
         "Cannot select $(length(missing)) item id(s) that are not in this workspace: " *
         join(missing, ", "),
@@ -179,17 +181,7 @@ function select_items!(
     workspace::Workspace,
     items::AbstractVector{<:AbstractDataItem},
 )::Nothing
-    selected = String[]
-    for item in items
-        selected_id = id(item)
-        haskey(workspace.index.items, selected_id) || error(
-            "Cannot select item id '$selected_id': no indexed item with that id exists in this workspace",
-        )
-        push!(selected, selected_id)
-    end
-
-    workspace.selection.item_ids = selected
-    return nothing
+    return select_items!(workspace, String[id(item) for item in items])
 end
 
 """Clear the selection, or fail clearly for unsupported item selectors."""
@@ -841,7 +833,12 @@ query_items(workspace::Workspace, predicate::AbstractString)::Vector{String} =
     query_items(workspace.cache.db, predicate)
 
 """Return the stable IDs of all items currently published in a workspace."""
-query_items(workspace::Workspace)::Vector{String} = sort!(collect(keys(workspace.index.items)))
+function query_items(workspace::Workspace)::Vector{String}
+    ids = lock(workspace.publish_lock) do
+        collect(keys(workspace.index.items))
+    end
+    return sort!(ids)
+end
 
 """Resize this workspace's DuckDB cache buffer-pool limit (MiB) live; suits a GUI control."""
 set_cache_memory_limit!(workspace::Workspace, mib::Integer)::Int =
