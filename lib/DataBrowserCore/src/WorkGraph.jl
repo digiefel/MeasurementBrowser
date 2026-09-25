@@ -18,7 +18,6 @@ mutable struct WorkNode
     dependents::Set{WorkKey}
     pending::UInt64
     waiters::Vector{Channel{Any}}
-    queued_ns::UInt64
     input::Union{Nothing,Some}
 end
 
@@ -34,8 +33,6 @@ mutable struct WorkDependencyGraph
     total::Int
     completed::Int
     active::Int
-    source_batch::Int
-    source_batch_open::Bool
     closed::Bool
 end
 
@@ -52,8 +49,6 @@ function WorkDependencyGraph()::WorkDependencyGraph
         0,
         0,
         0,
-        0,
-        false,
         false,
     )
 end
@@ -102,7 +97,6 @@ function queue_ready_node!(graph::WorkDependencyGraph, node::WorkNode)::Nothing
     node.state === :queued && return nothing
     node.state = :queued
     graph.active += 1
-    node.queued_ns = time_ns()
     push_queue_entry!(graph, node.priority, (node.key, node.revision))
     notify(graph.condition; all=false)
     return nothing

@@ -193,7 +193,6 @@ function enqueue_work!(
                 Set{WorkKey}(),
                 UInt64(0),
                 previous_waiters,
-                time_ns(),
                 nothing,
             )
             graph.nodes[key] = node

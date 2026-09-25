@@ -112,6 +112,7 @@ Decisions taken during the audit:
 - [x] Delete unused cache, recipe, and plot helpers: `_flush_operation`, `_flush_rows`,
   `_callback_name`, and `plot_kind_symbol`.
 - [x] Remove unused GUI state fields and declared dependencies, and Core's unused annotation import.
+- [x] Remove unused scheduler fields and queue timestamp bookkeeping.
 - [ ] Fix docstrings that describe behavior the code does not have: `set_cache_memory_limit!`
   (workspace) is not live; `cache_stage_summary`
   counts queued, not persisted; `query_items` exposes item columns too;
