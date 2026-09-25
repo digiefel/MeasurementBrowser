@@ -224,7 +224,7 @@ DataBrowserSources → API : file discovery, loading, metadata extraction, data 
 DataBrowserRecipes → API : the callback dialect (define_project, register_*) implemented
                    as a client of the typed stage contract, plus premade recipes (CSV first)
 DataBrowserCache   → API : persistence (DuckDB where it fits); keyed by PROJECT, not workspace
-DataBrowserCore    → API, Sources, Cache, Annotations : the workspace, the index, background work,
+DataBrowserCore    → API, Sources, Cache : the workspace, the index, background work,
                    command execution, project save/load, provenance, REPL, and the runtime that
                    drives a project's callbacks through interpret → process → analyze; base support
                    for common data shapes such as tables, vectors, arrays, and image-like data; shapes

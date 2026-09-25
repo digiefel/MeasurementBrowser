@@ -6,7 +6,6 @@ module DataBrowserCore
 
 using DataBrowserAPI
 using DataBrowserAPI: source_item_path
-using DataBrowserAnnotations
 using DataBrowserSources
 using DataBrowserAPI: @timed_dbg
 

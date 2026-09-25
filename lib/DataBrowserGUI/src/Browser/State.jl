@@ -103,10 +103,8 @@ only controls, windows, local persistence, annotations, and rendering state.
 """
 Base.@kwdef mutable struct BrowserState
     workspace::Union{Nothing,Workspace.Workspace} = nothing
-    project_locked::Bool = false
     table_inspector::TableInspectorState = TableInspectorState()
     performance::PerformanceState = PerformanceState()
-    project_preference::String = "auto"
     saved_project_view::PersistedProjectView = PersistedProjectView()
     expanded_collection_ids::Vector{String} = String[]
     tree_filter::String = ""

@@ -11,7 +11,6 @@ import CImGui.CSyntax: @c
 const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
 using DataBrowserAPI:
-    project_name,
     source_label
 using DataBrowserAPI.ItemIndex: SourceScan
 using DataBrowserCache: ProjectCacheIdentity
@@ -602,10 +601,7 @@ function open_browser(
     wait::Bool=!isinteractive(),
     window_start::Symbol=:normal,
 )
-    state = BrowserState(
-        project_locked=true,
-        project_preference=project_name(workspace.project),
-    )
+    state = BrowserState()
     state.extensions = _instantiate_extensions()
     for ext in state.extensions
         init!(ext, state)

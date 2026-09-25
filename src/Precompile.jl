@@ -76,11 +76,7 @@ end
             Workspace.workspace_memory_snapshot(workspace)
             Cache.load_cache_index(workspace.cache.db)
 
-            state = Browser.BrowserState(
-                workspace=workspace,
-                project_locked=true,
-                project_preference=project_name(project),
-            )
+            state = Browser.BrowserState(workspace=workspace)
             Browser.current_status(state)
             Browser._project_visible_selection(state)
         finally
