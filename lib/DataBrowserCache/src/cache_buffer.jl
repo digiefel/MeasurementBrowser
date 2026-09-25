@@ -483,8 +483,6 @@ function _flush_to_db!(
     return nothing
 end
 
-_flush_operation(store::WideRowStore)::Symbol = Symbol("flush_", store.table_name)
-
 _clear_db!(store::WideRowStore)::Nothing =
     (_transaction(() -> DBInterface.execute(
         store.write_connection, "DELETE FROM $(store.quoted_table)"), store.write_connection);
@@ -908,33 +906,6 @@ function _flush_due(store::AbstractDatabaseStore, now::Float64)::Bool
     at_capacity = store.row_limit !== nothing && store.queued_rows >= store.row_limit
     return store.closing || at_capacity ||
         now - store.last_flush >= CACHE_BUFFER_FLUSH_INTERVAL
-end
-
-_flush_operation(store::RowStore)::Symbol = Symbol("flush_", store.table_name)
-_flush_operation(::TabularFamilyStore)::Symbol = :flush_payload
-
-function _flush_rows(batch::Dict{K,BufferMutation{R}})::Int64 where {K,R}
-    rows = 0
-    for mutation in values(batch)
-        mutation.kind === BUFFER_DELETE && continue
-        rows += 1
-    end
-    return Int64(rows)
-end
-
-function _flush_rows(
-    batch::Dict{
-        Tuple{UInt16,UInt32},
-        BufferMutation{TabularBodyBatch},
-    },
-)::Int64
-    rows = 0
-    for mutation in values(batch)
-        mutation.kind === BUFFER_DELETE && continue
-        row = something(mutation.row)
-        rows += _payload_rows(row.body)
-    end
-    return Int64(rows)
 end
 
 function _flush_loop!(store::AbstractDatabaseStore{K,R})::Nothing where {K,R}

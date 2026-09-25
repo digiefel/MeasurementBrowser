@@ -1,6 +1,3 @@
-"""Name of a callback, or "λ" for an anonymous function."""
-_callback_name(f)::String = (n = string(nameof(f)); startswith(n, "#") ? "λ" : n)
-
 """Count with a pluralized noun, e.g. `1 plot`, `3 plots`."""
 _plural(n::Integer, word::AbstractString)::String = "$n $word" * (n == 1 ? "" : "s")
 

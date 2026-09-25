@@ -109,11 +109,9 @@ Decisions taken during the audit:
 - [x] Run the validated performance benchmark after unit tests and write `bench/status.txt`.
 - [x] Remove unused Core cancellation/hierarchy/reset helpers and the no-op source-metadata
   reconciliation call; keep one reconciliation path without unused options.
-- [ ] Delete dead code:
-  `_flush_operation`, `_flush_rows`, `_callback_name`,
-  `plot_kind_symbol`, `BrowserState.project_locked`, `BrowserState.project_preference`, Core's
-  unused `using DataBrowserAnnotations`. Drop unused declared deps (`Statistics`, `Tables` in GUI;
-  `DataFrames` in Plots) after verifying.
+- [x] Delete unused cache, recipe, and plot helpers: `_flush_operation`, `_flush_rows`,
+  `_callback_name`, and `plot_kind_symbol`.
+- [ ] Remove unused GUI state fields and declared dependencies, and Core's unused annotation import.
 - [ ] Fix docstrings that describe behavior the code does not have: `set_cache_memory_limit!`
   (workspace) is not live; `cache_stage_summary`
   counts queued, not persisted; `query_items` exposes item columns too;

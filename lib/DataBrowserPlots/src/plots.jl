@@ -44,9 +44,6 @@ it applies to and the label that distinguishes plots for that kind.
 """
 struct RegisteredPlot{Kind,Label} <: PlotKind end
 
-"""The item-kind symbol a `RegisteredPlot` draws."""
-plot_kind_symbol(::Type{RegisteredPlot{Kind,Label}}) where {Kind,Label} = Kind
-
 """Stable name used to persist a plot choice in workspace view state."""
 plot_kind_name(plot_kind::Type{<:PlotKind})::String = String(nameof(plot_kind))
 plot_kind_name(::Type{RegisteredPlot{Kind,Label}}) where {Kind,Label} =
