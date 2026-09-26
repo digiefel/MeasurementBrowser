@@ -2,7 +2,7 @@ using DataBrowserAnnotations
 import CImGui as ig
 
 import DataBrowserCore.Workspace
-using DataBrowserCore: InspectorTable
+using ..DataBrowserGUI: ItemTable
 
 """Saved tree controls from `databrowser.toml`."""
 Base.@kwdef struct PersistedTreeView
@@ -50,7 +50,7 @@ end
 """State for the table-inspection window over selected item data."""
 Base.@kwdef mutable struct TableInspectorState
     visible::Bool = false
-    inspector_table::Union{Nothing,InspectorTable} = nothing
+    inspector_table::Union{Nothing,ItemTable} = nothing
     inspector_warnings::Vector{String} = String[]
     inspector_key::Union{Nothing,Tuple} = nothing  # (item_ids..., show_provenance)
     grid::DataGridState = DataGridState()

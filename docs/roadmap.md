@@ -183,8 +183,7 @@ workloads, completed disk writes, cache reads and process memory measurements.
   collection, not `Dict{Union{String,Int64},String}`.
 - [ ] Small Core cleanups: `indexed_collection_path` and `collection_value` drop the `Workspace`
   argument they ignore; the `ItemRecord` copy constructor stops `deepcopy`ing metadata by default;
-  the scan's `current::Dict{String,Any}` fingerprint map gets a type; `InspectorTable` and
-  `merge_item_tables` move out of Core (only GUI and Plots use them).
+  the scan's `current::Dict{String,Any}` fingerprint map gets a type.
 - [ ] Use compact integer item keys in SQL tables and other measured hot paths while retaining
   stable logical item identities at the project boundary.
 
@@ -225,8 +224,8 @@ workloads, completed disk writes, cache reads and process memory measurements.
 
 - [ ] Move the 58 `workspace.<field>` reads across ten GUI and Plots files onto the Phase 3
   functions. This is the first concrete step toward the shared command layer of 0.6.0.
-- [ ] One shared helper for selected-item table materialization; `TableInspector.jl:19-106` and
-  `TablePlotPanel.jl:67-113` are the same code.
+- [x] Share table preparation between the inspector and X/Y plot. GUI owns `ItemTable`,
+  table merging, and selected-item table materialization; Core provides processed items.
 - [ ] One hierarchy projection per frame. `_render_hierarchy_tree_panel` is 347 lines and walks the
   collection tree five times per frame; cache the prepared projection between invalidations and
   rebuild item-panel rows only when selection, visibility, tags, or item state change.

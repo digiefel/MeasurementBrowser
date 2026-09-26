@@ -56,8 +56,8 @@ flowchart TB
     gui -->|"open_workspace<br/>modify_workspace!<br/>select_items!<br/>materialize_items<br/>workspace_status"| core
     gui --> cache
     gui --> ann
-    plots --> gui
-    plots -->|"read_item_data<br/>InspectorTable"| core
+    plots -->|"GUI extension hooks<br/>ItemTable<br/>materialize_item_table"| gui
+    plots -->|"materialize_items"| core
     core --> src
     core --> cache
     core --> ann

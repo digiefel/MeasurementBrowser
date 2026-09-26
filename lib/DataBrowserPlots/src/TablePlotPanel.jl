@@ -5,9 +5,8 @@ using GLMakie: Axis, Figure, lines!, scatter!
 import DataBrowserGUI
 const Browser = DataBrowserGUI.Browser
 
-using DataBrowserCore: InspectorTable, merge_item_tables
+using DataBrowserGUI: ItemTable, materialize_item_table
 import DataBrowserCore.Workspace
-using DataBrowserAPI: item_data
 using .MakieImguiIntegration: MakieFigure
 
 function _column_combo!(
@@ -31,7 +30,7 @@ function _column_combo!(
 end
 
 function _table_plot_vectors(
-    table::InspectorTable,
+    table::ItemTable,
     x_col::Int,
     y_col::Int,
 )::Tuple{Vector{Float64},Vector{Float64}}
@@ -67,7 +66,7 @@ retry — and re-log — every frame.
 function _sync_table_plot_table!(
     state::Browser.BrowserState,
     table_plot::TablePlotState,
-)::Union{Nothing,InspectorTable}
+)::Union{Nothing,ItemTable}
     workspace = state.workspace
     if !(workspace isa Workspace.Workspace)
         _clear_table_plot_table!(table_plot)
@@ -86,21 +85,7 @@ function _sync_table_plot_table!(
     table_plot.table_key = key
     table_plot.table_error = ""
     table_plot.table = try
-        materialized = Workspace.materialize_items(workspace, selected_records)
-        pairs = Tuple{Any,Any}[]
-        for i in 1:length(selected_records)
-            record = get(workspace.index.items, selected_records[i].id, nothing)
-            label = record !== nothing ? record.label : string(materialized[i])
-            data = try
-                item_data(materialized[i])
-            catch err
-                bt = catch_backtrace()
-                @error "Table plot: failed to load item data" label exception=(err, bt)
-                continue
-            end
-            push!(pairs, (label, data))
-        end
-        table, _ = merge_item_tables(pairs)
+        table, _ = materialize_item_table(workspace, selected_records)
         table
     catch err
         bt = catch_backtrace()
@@ -116,7 +101,7 @@ end
 function _ensure_table_plot!(
     state::Browser.BrowserState,
     table_plot::TablePlotState,
-    table::InspectorTable,
+    table::ItemTable,
 )::Nothing
     table.rows == 0 && return nothing
     length(table.columns) < 2 && return nothing
@@ -170,7 +155,7 @@ function render_table_plot_window!(
 
         if !isempty(table_plot.table_error)
             ig.TextColored((1.0, 0.35, 0.35, 1.0), table_plot.table_error)
-        elseif table isa InspectorTable && table.rows > 0 && length(table.columns) >= 2
+        elseif table isa ItemTable && table.rows > 0 && length(table.columns) >= 2
             width = max(80.0, (ig.GetContentRegionAvail().x - 12.0) / 2.0)
             table_plot.x_column = _column_combo!(
                 "X##table_plot_x",

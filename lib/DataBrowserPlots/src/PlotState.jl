@@ -1,6 +1,6 @@
 using GLMakie: Figure
 
-using DataBrowserCore: InspectorTable
+using DataBrowserGUI: ItemTable
 
 """Runtime state for one plot window."""
 Base.@kwdef mutable struct PlotViewState
@@ -41,7 +41,7 @@ Base.@kwdef mutable struct TablePlotState
     x_column::Int = 1
     y_column::Int = 2
     # Merged table cached per selection so the window does not rebuild it every frame.
-    table::Union{Nothing,InspectorTable} = nothing
+    table::Union{Nothing,ItemTable} = nothing
     table_key::Union{Nothing,Tuple} = nothing
     table_error::String = ""
     figure::Union{Nothing,Figure} = nothing

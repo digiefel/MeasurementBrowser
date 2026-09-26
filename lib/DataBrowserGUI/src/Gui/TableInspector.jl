@@ -1,10 +1,10 @@
 import CImGui as ig
 import CImGui.CSyntax: @c
 
-using DataBrowserCore: InspectorTable, merge_item_tables
+using ..DataBrowserGUI: ItemTable, materialize_item_table
 
 import DataBrowserCore.Workspace
-using DataBrowserAPI: item_data, label
+using DataBrowserAPI: label
 
 # ---------------------------------------------------------------------------
 # Item-data source helpers
@@ -33,50 +33,17 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
     key = (workspace.scan.epoch, sort([r.id for r in selected_records]), inspector.show_provenance_column)
     inspector.inspector_key == key && return nothing
 
-    # Materialize (may load from cache or origin)
-    materialized = try
-        Workspace.materialize_items(workspace, selected_records)
+    table, warnings = try
+        materialize_item_table(workspace, selected_records)
     catch err
-        bt = catch_backtrace()
-        @error "Table inspector: failed to materialize items" exception=(err, bt)
-        inspector.inspector_table = nothing
-        inspector.inspector_warnings = ["Error loading items: $(first(split(sprint(showerror, err), '\n'; limit=2)))"]
-        inspector.inspector_key = key
-        return nothing
-    end
-
-    # Build labels from records (more useful than the item object's show); skip items whose
-    # data fails to load so one bad item never hides its siblings.
-    warnings = String[]
-    labeled_pairs = Tuple{Any,Any}[]
-    for i in 1:length(selected_records)
-        mat_item = materialized[i]
-        record = get(workspace.index.items, selected_records[i].id, nothing)
-        label = record !== nothing ? record.label : string(mat_item)
-        data = try
-            item_data(mat_item)
-        catch err
-            bt = catch_backtrace()
-            @error "Table inspector: failed to load item data" label exception=(err, bt)
-            push!(warnings, "Item '$label': failed to load data; skipped.")
-            continue
-        end
-        push!(labeled_pairs, (label, data))
-    end
-
-    table, merge_warnings = try
-        merge_item_tables(labeled_pairs)
-    catch err
-        bt = catch_backtrace()
-        @error "Table inspector: failed to build table" exception=(err, bt)
+        @error "Table inspector: failed to prepare table" exception=(err, catch_backtrace())
         inspector.inspector_table = nothing
         inspector.inspector_warnings = [
-            "Error building table: $(first(split(sprint(showerror, err), '\n'; limit=2)))",
+            "Error preparing table: $(first(split(sprint(showerror, err), '\n'; limit=2)))",
         ]
         inspector.inspector_key = key
         return nothing
     end
-    append!(warnings, merge_warnings)
 
     show_prov = inspector.show_provenance_column && length(table.item_labels) > 1
     if show_prov
@@ -90,7 +57,7 @@ function _sync_item_data_inspector!(state::BrowserState)::Nothing
             col == 1 && return inner.item_labels[inner.row_item[row]]
             return inner.getvalue(row, col - 1)
         end
-        table = InspectorTable(
+        table = ItemTable(
             columns, inner.rows, inner.row_item, inner.item_labels, getcell, getvalue)
     end
 
@@ -160,7 +127,7 @@ function render_table_inspector_window(state::BrowserState)::Nothing
         _sync_item_data_inspector!(state)
 
         table = inspector.inspector_table
-        has_item_data = table isa InspectorTable && table.rows > 0
+        has_item_data = table isa ItemTable && table.rows > 0
 
         if has_item_data && length(table.item_labels) > 1
             show_prov = inspector.show_provenance_column
@@ -176,7 +143,7 @@ function render_table_inspector_window(state::BrowserState)::Nothing
             for w in inspector.inspector_warnings
                 ig.TextDisabled(w)
             end
-            if table isa InspectorTable && table.rows == 0 && !isempty(table.item_labels)
+            if table isa ItemTable && table.rows == 0 && !isempty(table.item_labels)
                 ig.TextDisabled("No tabular data found in the selected items.")
             else
                 ig.TextDisabled("Select items to view their data.")
@@ -189,7 +156,7 @@ function render_table_inspector_window(state::BrowserState)::Nothing
 end
 
 """Render the item-data view as a full-width DataGrid."""
-function _render_item_data_view!(state::BrowserState, table::InspectorTable)::Nothing
+function _render_item_data_view!(state::BrowserState, table::ItemTable)::Nothing
     inspector = state.table_inspector
 
     for w in inspector.inspector_warnings

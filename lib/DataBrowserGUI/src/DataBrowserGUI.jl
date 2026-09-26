@@ -1,6 +1,7 @@
 """CImGui browser shell and panels."""
 module DataBrowserGUI
 
+include("TableModel.jl")
 include("Browser.jl")
 
 using .Browser: open_browser, close_browser!, BrowserSession, gui_timings, reset_timings!

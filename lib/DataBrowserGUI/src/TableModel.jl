@@ -1,9 +1,13 @@
 using Tables
 
-export InspectorTable, merge_item_tables
+using DataBrowserAPI: item_data, label
+using DataBrowserAPI.ItemIndex: ItemRecord
+import DataBrowserCore.Workspace
+
+export ItemTable, merge_item_tables, materialize_item_table
 
 """
-Merged table built from one or more materialized items' tabular `.data` payloads.
+Table view over one or more items' Tables-compatible payloads.
 
 `columns` is the union of all item columns in stable order.
 `row_item[r]` is the 1-based index into `item_labels` for row `r`.
@@ -14,7 +18,7 @@ fitting, export — must read `getvalue`, never parse display text.
 When only one item is selected, `item_labels` has one entry and all `row_item` values are 1;
 the provenance chrome is suppressed at render time.
 """
-struct InspectorTable
+struct ItemTable
     columns::Vector{String}
     rows::Int
     row_item::Vector{Int}
@@ -58,13 +62,13 @@ function _append_table!(
     return nothing
 end
 
-function _inspector_table_from_tables(
+function _item_table_from_tables(
     columns::Vector{String},
     tables::Vector,
     labels::Vector{String},
-)::InspectorTable
+)::ItemTable
     isempty(tables) &&
-        return InspectorTable(columns, 0, Int[], labels, (_, _) -> "", (_, _) -> missing)
+        return ItemTable(columns, 0, Int[], labels, (_, _) -> "", (_, _) -> missing)
 
     row_item = Int[]
     row_offsets = Int[]
@@ -99,19 +103,19 @@ function _inspector_table_from_tables(
         return Tables.getcolumn(tables[item_i], ci)[row_offsets[row]]
     end
 
-    return InspectorTable(columns, total_rows, row_item, labels, getcell, getvalue)
+    return ItemTable(columns, total_rows, row_item, labels, getcell, getvalue)
 end
 
 """
-Build an `InspectorTable` from a list of `(label, table)` pairs.
+Build an `ItemTable` from a list of `(label, table)` pairs.
 
 Pairs whose data does not satisfy `Tables.istable` are skipped with a warning, so one non-tabular
 item never hides its tabular siblings. Multiple items are merged by column union (missing columns
 render blank) with per-row provenance.
 
-Returns `(table::InspectorTable, warnings::Vector{String})`.
+Returns `(table::ItemTable, warnings::Vector{String})`.
 """
-function merge_item_tables(pairs::Vector{Tuple{Any,Any}})::Tuple{InspectorTable,Vector{String}}
+function merge_item_tables(pairs)::Tuple{ItemTable,Vector{String}}
     col_set = Set{String}()
     columns = String[]
     tables = Any[]
@@ -122,7 +126,38 @@ function merge_item_tables(pairs::Vector{Tuple{Any,Any}})::Tuple{InspectorTable,
             push!(warnings, "Item '$(label)' has non-tabular data; skipped.")
             continue
         end
-        _append_table!(col_set, columns, tables, labels, string(label), table)
+        _append_table!(col_set, columns, tables, labels, string(label), Tables.columns(table))
     end
-    return _inspector_table_from_tables(columns, tables, labels), warnings
+    return _item_table_from_tables(columns, tables, labels), warnings
+end
+
+"""
+    materialize_item_table(workspace, records) -> (table, warnings)
+
+Load the processed items for `records` and combine their Tables-compatible payloads into an
+`ItemTable`. Record labels identify each item's rows. Payload extraction failures and non-tabular
+payloads are reported in `warnings` and skipped; materialization and table construction errors
+propagate to the caller. This function does not select items or retain view state.
+"""
+function materialize_item_table(
+    workspace::Workspace.Workspace,
+    records::Vector{ItemRecord},
+)::Tuple{ItemTable,Vector{String}}
+    items = Workspace.materialize_items(workspace, records)
+    pairs = Tuple{String,Any}[]
+    warnings = String[]
+    for (record, item) in zip(records, items)
+        item_label = label(record)
+        data = try
+            item_data(item)
+        catch err
+            @error "Failed to load item data for table" label=item_label exception=(err, catch_backtrace())
+            push!(warnings, "Item '$item_label': failed to load data; skipped.")
+            continue
+        end
+        push!(pairs, (item_label, data))
+    end
+    table, merge_warnings = merge_item_tables(pairs)
+    append!(warnings, merge_warnings)
+    return table, warnings
 end

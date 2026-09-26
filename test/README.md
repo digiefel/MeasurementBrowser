@@ -45,8 +45,8 @@ julia --project=bench --threads=auto test/runtests.jl precompile --force
 | `Sources` | `test_directory.jl`: discovery, exclusions, recursion and change fingerprints. |
 | `Recipes` | `test_stages.jl`: registration through typed stages and CSV loading. |
 | `Cache` | `test_persistence.jl`: payload replacement/deletion across reopen; cached `nothing`. |
-| `Core` | `test_workspace.jl`: reconstruction, metadata precedence, reuse, invalidation and failures. `test_tables.jl`: heterogeneous table values and provenance. |
-| `GUI` | `test_clipboard.jl`: clipboard interchange preserves cell boundaries and quoting. |
+| `Core` | `test_workspace.jl`: reconstruction, metadata precedence, reuse, invalidation and failures. |
+| `GUI` | `test_tables.jl`: heterogeneous table values and provenance. `test_clipboard.jl`: clipboard interchange preserves cell boundaries and quoting. |
 | `Plots` | `test_view.jl`: live and fixed plot selections survive view persistence. |
 | `Profiling` | `test_timings.jl`: concurrent instrumentation, snapshots and lifecycle. |
 

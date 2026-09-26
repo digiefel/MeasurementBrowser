@@ -12,8 +12,5 @@ using DataBrowserAPI: @timed_dbg
 include("project_engine.jl")
 include("WorkGraph.jl")
 include("Workspace.jl")
-include("TableModel.jl")
-
-export InspectorTable, merge_item_tables
 
 end
