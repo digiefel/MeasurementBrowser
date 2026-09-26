@@ -95,7 +95,7 @@ the round trip without ever entering the payload.
 # `Type{<:RegisteredDataItem{K}}` accepts both the seeded UnionAll `RegisteredDataItem{kind}` and
 # a concrete `RegisteredDataItem{kind,D}` remembered from a live item.
 reconstruct(::Type{<:RegisteredDataItem{K}}, id::AbstractString, data, metadata::Dict) where {K} =
-    RegisteredDataItem{K}(String(id), "", AbstractCollection[], data, metadata_dict(metadata))
+    RegisteredDataItem{K}(String(id), String(id), AbstractCollection[], data, metadata_dict(metadata))
 
 """
 One collection level of a registered path, identified by its name.

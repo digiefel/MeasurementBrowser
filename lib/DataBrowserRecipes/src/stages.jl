@@ -81,9 +81,10 @@ function _registered_item(
     supplied_key = recipe.id === nothing ? nothing : recipe.id(data, local_metadata)
     key = supplied_key === nothing || supplied_key == "" ?
         string(position) : string(supplied_key)
-    label = recipe.label === nothing ? "" : String(recipe.label(data, local_metadata))
+    item_id = "$(source_item_id)#$(recipe.kind):$(key)"
+    label = recipe.label === nothing ? item_id : String(recipe.label(data, local_metadata))
     return RegisteredDataItem{recipe.kind}(
-        "$(source_item_id)#$(recipe.kind):$(key)",
+        item_id,
         label,
         collection_path,
         data,
@@ -246,5 +247,4 @@ function analyze(project::Project, item::RegisteredDataItem{K})::Dict{Symbol,Any
     recipe.analyze === nothing && return Dict{Symbol,Any}()
     return metadata_dict(recipe.analyze(item_data(item), metadata(item)))
 end
-
 

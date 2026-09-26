@@ -37,8 +37,13 @@ the same way.
 id(item::AbstractDataItem)::String = error(
     "Item type $(typeof(item)) must implement id(::$(typeof(item)))::String")
 
-"""Human-readable label for an item. An empty value uses a source-derived label."""
-label(::AbstractDataItem)::String = ""
+"""
+Human-readable label for an item.
+
+The default is its stable id, so an item always has a visible label without storing presentation
+state or consulting its source. Override this when a more descriptive label is available.
+"""
+label(item::AbstractDataItem)::String = id(item)
 
 """Display name for one item type."""
 label(T::Type{<:AbstractDataItem})::Symbol = nameof(T)

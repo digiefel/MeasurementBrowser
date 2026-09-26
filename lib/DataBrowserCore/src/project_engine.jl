@@ -114,7 +114,7 @@ function interpret_source_item(
             source_item_path=source_item_path_value,
             source_item_timestamp=source_item_timestamp(source_item),
             id=id(handle),
-            label=isempty(item_label_value) ? label(source_item) : item_label_value,
+            label=item_label_value,
             type=typeof(handle),
             collection_key=nothing,
             metadata=record_metadata,
@@ -161,4 +161,3 @@ function items_for_file(
         for (record, item) in zip(records, interpretation.interpreted_items)
     ]
 end
-
