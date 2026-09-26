@@ -119,7 +119,6 @@ function _install_runtime!(
         Dict{String,ItemRecord}(),
         Dict{String,Dict{Symbol,Any}}(),
         Symbol[],
-        nothing,
         Dict{Union{String,Int64},String}(),
         Dict{Int64,Vector{String}}(),
     )
@@ -210,6 +209,16 @@ end
 
 source_scan_running(workspace::Workspace)::Bool =
     workspace.scan.state in (:discovering, :canceling)
+
+"""
+    can_rebuild_cache(workspace) -> Bool
+
+Whether `rebuild_cache!` may be requested now. Returns `false` only for a
+closed workspace or an active source scan. The command performs its own
+validation when called.
+"""
+can_rebuild_cache(workspace::Workspace)::Bool =
+    !workspace.closed && !source_scan_running(workspace)
 
 cache_work_running(workspace::Workspace)::Bool =
     workspace.cache_state in (:loading, :writing, :canceling)
@@ -417,19 +426,6 @@ function enqueue_dependent_subtree!(
     return nothing
 end
 
-"""Refresh the authoritative published source snapshot from current index state."""
-function refresh_workspace_source!(workspace::Workspace)::Nothing
-    workspace.index.source = SourceScan(
-        source_id(workspace.source),
-        source_label(workspace.source),
-        copy(workspace.index.collections),
-        sort!(collect(values(workspace.index.items)); by=record ->
-            (record.source_item_key, record.id)),
-        ItemFailure[],
-    )
-    return nothing
-end
-
 """Remove all published output owned by one source item and invalidate affected collections."""
 function remove_source_item_output!(
     workspace::Workspace,
@@ -607,11 +603,6 @@ function ingest_source_changes!(
         isempty(stale) || @timed_dbg "invalidate_work" invalidate_records_work!(workspace, stale)
         changed = changed || !isempty(stale)
     end
-    # Upsert-only batches only enqueue work; the published index is unchanged until interpretation
-    # lands or removals/metadata reconcile run. Rebuild SourceScan then, not on every discover batch.
-    if !isempty(changes.removals) || changes.metadata_changed
-        @timed_dbg "refresh_source" refresh_workspace_source!(workspace)
-    end
     status === nothing || (workspace.cache.status = status)
     return changed
 end
@@ -648,11 +639,7 @@ function scan_source!(
         workspace.cache_error = ""
         workspace.cache.operation = rebuild ? :rebuild : :update
         reset_build_metrics!(workspace.metrics)
-        # Detach the previous scan so this one streams into a fresh hierarchy: progressive results
-        # update the displayed tree live while any still-finishing analysis from the previous scan
-        # keeps reading its own, now-detached hierarchy — no shared mutable state, no race. Errors
-        # reset so stale ones from the previous scan never linger.
-        workspace.index.source = nothing
+        # Errors reset so stale ones from the previous scan never linger.
         empty!(workspace.index.analysis_errors)
         cancel_source = CancellationTokenSource(get_token(workspace.cancel_source))
         scan.cancel_token = cancel_source
@@ -856,7 +843,6 @@ function replace_item_index!(
         items,
         item_metadata,
         sort!(collect(metadata_keys); by=String),
-        workspace.index.source,
         workspace.index.analysis_errors,
         items_by_source,
     )
@@ -888,13 +874,6 @@ function apply_cache_index!(
     # The cache restores the computed metadata layer; source-table diff before seed skips stale work.
     workspace.index.item_metadata = Dict{String,Dict{Symbol,Any}}(
         id => copy(dict) for (id, dict) in index.item_metadata)
-    workspace.index.source = SourceScan(
-        index.source.source_id,
-        index.source.source_label,
-        collections,
-        copy(index.source.items),
-        index.source.analysis_failures,
-    )
 
     workspace.index.analysis_errors = Dict{Union{String,Int64},String}(index.analysis_errors)
     for state in values(index.result_states)

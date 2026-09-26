@@ -79,7 +79,7 @@ function workspace_status(workspace::Workspace)::WorkspaceStatus
     if !isempty(errors) || status.error_source_items > 0
         return WorkspaceStatus(
             :error, "Errors", "Some work failed.", false, nothing, counts, errors)
-    elseif !(workspace.index.source isa SourceScan)
+    elseif !(scan.state in (:done, :unchanged))
         return WorkspaceStatus(:fresh, "Loaded",
             "Cache loaded; source not checked.", false, nothing, counts, errors)
     end

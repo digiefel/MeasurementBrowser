@@ -171,11 +171,9 @@ workloads, completed disk writes, cache reads and process memory measurements.
 
 - [ ] Evaluate the work graph against cancellation, invalidation, priority, streaming, and
   collection edge cases; finish with a bounded tuning pass or an explicit redesign.
-- [ ] Remove `WorkspaceIndex.source`. It is a full `SourceScan` snapshot rebuilt by
-  `refresh_workspace_source!` (copies the whole collection index and sorts every item per batch),
-  and its only two readers ask `isa SourceScan`. Derive that boolean from the scan state.
-  `SourceScan` remains the Cache load result only.
-- [ ] Add `WorkspaceIndex(source_id)`; delete the two hand-built seven-argument constructions.
+- [x] Keep one live workspace index. Derive source-check status from scan completion and rebuild
+  availability from workspace lifecycle. `SourceScan` remains the Cache load result only.
+- [ ] Add `WorkspaceIndex(source_id)`; replace the two hand-built empty-index constructions.
 - [ ] Name item metadata layers after the pipeline stages on `ItemRecord` and remove the parallel
   `WorkspaceIndex.item_metadata` dict, so each item's interpret and analyze layers live in one place.
 - [ ] One status model. `scan.state` (7 symbols), `cache_state` (8), `cache.operation` (4), and the

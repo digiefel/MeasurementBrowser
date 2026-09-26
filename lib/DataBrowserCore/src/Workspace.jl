@@ -83,10 +83,8 @@ import DataBrowserCache: query_items, set_cache_memory_limit!
 using DataBrowserAPI.ItemIndex:
     CollectionIndex,
     CollectionInput,
-    ItemFailure,
     ItemRecord,
     MetadataDict,
-    SourceScan,
     append_item!,
     clear_collection_analysis!,
     collection_inputs,
@@ -160,7 +158,6 @@ mutable struct WorkspaceIndex
     # overwrite); the entries layer stays on the record.
     item_metadata::Dict{String,Dict{Symbol,Any}}
     collection_metadata_keys::Vector{Symbol}
-    source::Union{Nothing,SourceScan}
     analysis_errors::Dict{Union{String,Int64},String}
     # Published item ids per source-item key, so per-publish lookups avoid scanning every item.
     items_by_source::Dict{Int64,Vector{String}}
@@ -317,7 +314,6 @@ function Workspace(
             Dict{String,ItemRecord}(),
             Dict{String,Dict{Symbol,Any}}(),
             Symbol[],
-            nothing,
             Dict{Union{String,Int64},String}(),
             Dict{Int64,Vector{String}}(),
         ),

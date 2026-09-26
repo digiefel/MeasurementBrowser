@@ -42,9 +42,48 @@ DataBrowserAPI.entries(::EngineProject, ::EngineSourceItem, version) =
 DataBrowserAPI.process(::EngineProject, i::EngineItem) = EngineItem(i.key, (x=i.data.x .* 2,), merge(i.meta, Dict(:total => -2)))
 DataBrowserAPI.analyze(::EngineProject, i::EngineItem) = Dict(:total => sum(i.data.x))
 
+mutable struct ControlledSource <: AbstractDataSource
+    release::Channel{Nothing}
+end
+struct ControlledSourceItem <: AbstractDataSourceItem end
+DataBrowserAPI.source_id(::ControlledSource) = "controlled"
+DataBrowserAPI.source_label(::ControlledSource) = "controlled"
+DataBrowserAPI.source_items(
+    source::ControlledSource;
+    kwargs...,
+) = begin
+    take!(source.release)
+    ControlledSourceItem[]
+end
+
 function settled(ws)
     W.wait_workspace_idle!(ws; timeout=20)
     @test !W.workspace_status(ws).busy
+end
+
+@testset "rebuild availability follows scan state and outcome" begin
+    source = ControlledSource(Channel{Nothing}(1))
+    project = EngineProject("controlled", 0)
+    ws = W.open_workspace(project, source; cache=false)
+    try
+        @test !W.can_rebuild_cache(ws)
+
+        W.cancel_scan!(ws)
+        put!(source.release, nothing)
+        W.wait_workspace_idle!(ws; timeout=20)
+        @test !W.workspace_status(ws).busy
+        @test W.can_rebuild_cache(ws)
+
+        put!(source.release, nothing)
+        W.rebuild_cache!(ws)
+        settled(ws)
+        @test isempty(W.query_items(ws))
+        @test W.workspace_status(ws).level === :fresh
+    finally
+        W.close_workspace!(ws)
+    end
+    @test !W.can_rebuild_cache(ws)
+    @test_throws ErrorException W.rebuild_cache!(ws)
 end
 
 @testset "reconstruction, reuse and source replacement (cache=$cache)" for cache in (true, false)
@@ -75,6 +114,11 @@ end
                 @test isempty(W.query_items(ws))
                 @test W.workspace_status(ws).level !== :error
                 @test isempty(W.workspace_status(ws).errors)
+                @test W.can_rebuild_cache(ws)
+                W.rebuild_cache!(ws)
+                settled(ws)
+                @test isempty(W.query_items(ws))
+                @test W.workspace_status(ws).level === :fresh
             finally
                 W.close_workspace!(ws)
             end
@@ -99,6 +143,17 @@ end
                 end
             end
             @test project.reads == (cache ? 1 : 2)
+            ws = W.open_workspace(project, EngineSource("source", 1, true); cache)
+            try
+                settled(ws)
+                @test !isempty(W.workspace_status(ws).errors)
+                @test W.can_rebuild_cache(ws)
+                W.rebuild_cache!(ws)
+                settled(ws)
+                @test !isempty(W.workspace_status(ws).errors)
+            finally
+                W.close_workspace!(ws)
+            end
             ws = W.open_workspace(project, EngineSource("source", 1, false); cache)
             try
                 settled(ws)

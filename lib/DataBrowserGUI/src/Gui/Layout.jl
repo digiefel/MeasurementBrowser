@@ -12,14 +12,13 @@ const _IMGUI_INI_BYTES = Ref{Vector{UInt8}}(UInt8[])
 
 using DataBrowserAPI:
     source_label
-using DataBrowserAPI.ItemIndex: SourceScan
 using DataBrowserCache: ProjectCacheIdentity
 import DataBrowserCore.Workspace
 using DataBrowserCore.Workspace:
     WorkspaceStatus,
+    can_rebuild_cache,
     refresh_status!,
-    rebuild_cache!,
-    source_scan_running
+    rebuild_cache!
 
 """Brighten or darken an ImGui button color by `delta` per RGB channel, clamped to [0, 1]."""
 shifted_color(color::NTuple{4,Float64}, delta::Real)::NTuple{4,Float64} =
@@ -171,13 +170,12 @@ function _render_cache_controls!(state::BrowserState)::Nothing
     end
 
     ig.Separator()
-    scan_running = source_scan_running(workspace)
-    rebuild_disabled = scan_running || !(workspace.index.source isa SourceScan)
-    rebuild_disabled && ig.BeginDisabled()
+    disabled = !can_rebuild_cache(workspace)
+    disabled && ig.BeginDisabled()
     if ig.Button(status.level === :missing ? "Build Cache" : "Rebuild Cache", (-1, 0))
         rebuild_cache!(workspace)
     end
-    rebuild_disabled && ig.EndDisabled()
+    disabled && ig.EndDisabled()
     return nothing
 end
 
